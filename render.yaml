@@ -1,0 +1,17 @@
+# Configuración de Render para BDC systems
+# Ver: https://render.com/docs/blueprint-spec
+
+services:
+  - type: web
+    name: bdc-systems
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: STORAGE_SECRET
+        generateValue: true
+      # Añadí aquí tus credenciales de MercadoLibre si las usas por env:
+      # - key: ML_CLIENT_ID
+      #   sync: false
+      # - key: ML_CLIENT_SECRET
+      #   sync: false

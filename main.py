@@ -3352,12 +3352,16 @@ def main() -> None:
     load_dotenv()
     init_db()
     port = int(os.getenv("PORT", 8083))
-    if os.getenv("NGROK_AUTO_START", "1").strip().lower() in ("1", "true", "yes"):
+    # En Render/cloud: PORT lo define la plataforma, no iniciar ngrok
+    es_produccion = "PORT" in os.environ or os.getenv("RENDER") == "true"
+    if not es_produccion and os.getenv("NGROK_AUTO_START", "1").strip().lower() in ("1", "true", "yes"):
         print("Iniciando ngrok...")
         _iniciar_ngrok(port)
+    # host 0.0.0.0 necesario para que Render/cloud pueda acceder al servicio
     ui.run(
         title="BDC systems",
         reload=False,
+        host="0.0.0.0" if es_produccion else "127.0.0.1",
         port=port,
         storage_secret=os.getenv("STORAGE_SECRET", "cambia-esta-clave"),
     )
