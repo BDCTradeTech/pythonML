@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Redirigiendo a BDC Systems...</title>
+  <style>
+    body { font-family: sans-serif; text-align: center; padding: 2rem; }
+    .msg { margin: 1rem 0; color: #333; }
+    a { color: #1976d2; }
+  </style>
+</head>
+<body>
+  <p class="msg" id="msg">Redirigiendo a BDC Systems...</p>
+  <p class="msg"><small>Si no se abre la app, <a href="#" id="link">haz clic aquí</a>.</small></p>
+
+  <script>
+    (function() {
+      var params = new URLSearchParams(window.location.search);
+      var code = params.get('code');
+      var error = params.get('error');
+      var errorDesc = params.get('error_description');
+      var base = 'http://localhost:8083';
+      var url;
+      if (error) {
+        url = base + '/?ml_oauth_error=' + encodeURIComponent(error) +
+          (errorDesc ? '&ml_oauth_error_desc=' + encodeURIComponent(errorDesc) : '');
+      } else if (code) {
+        url = base + '/?ml_oauth_code=' + encodeURIComponent(code);
+      } else {
+        document.getElementById('msg').textContent = 'No se recibió code ni error de MercadoLibre.';
+        return;
+      }
+      document.getElementById('link').href = url;
+      window.location.replace(url);
+    })();
+  </script>
+</body>
+</html>
