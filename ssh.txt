@@ -1,0 +1,22 @@
+passphrase: 8117
+C:\Users\Diego/.ssh/id_ed25519
+The key fingerprint is:
+SHA256:cE+ZL2WUolX2TRlaOPDgTrlkQcW7qY+qFgyM+QMI5R8 diego@DESKTOP-H4N48VN
+The key's randomart image is:
++--[ED25519 256]--+
+| ..       .*Bo.o+|
+|..        +=*=o+ |
+|. o E . .o+Boo+ .|
+| . = + o.o=+..   |
+|    + o S oo. o  |
+|     o o   . o   |
+|      . .   .    |
+|       .   ..    |
+|      ........   |
++----[SHA256]-----+
+
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILalSi7NpGE+zmsphiKMLFRnAaOb22Ik65NhacSZMk0f diego@DESKTOP-H4N48VN
+Name: laptop-diego
+
+root
+81172026

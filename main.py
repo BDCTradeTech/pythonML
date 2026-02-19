@@ -8,9 +8,10 @@ from math import ceil
 import html
 import json
 import sqlite3
+import calendar
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 import os
 import subprocess
@@ -23,6 +24,9 @@ from fastapi.responses import RedirectResponse
 from nicegui import app, background_tasks, context, run, ui
 
 DB_PATH = Path(__file__).with_name("app.db")
+
+# Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
+VERSION = "25020616"
 
 
 # ==========================
@@ -380,6 +384,27 @@ def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
         conn.close()
 
 
+def update_user_password(user_id: int, current_password: str, new_password: str) -> Optional[str]:
+    """Actualiza la contraseña del usuario. Devuelve mensaje de error o None si fue bien."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT password_hash FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return "Usuario no encontrado."
+        if row["password_hash"] != hash_password(current_password):
+            return "Contraseña actual incorrecta."
+        new_clean = (new_password or "").strip()
+        if len(new_clean) < 4:
+            return "La nueva contraseña debe tener al menos 4 caracteres."
+        cur.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_clean), user_id))
+        conn.commit()
+        return None
+    finally:
+        conn.close()
+
+
 def save_query(
     user_id: int,
     query_type: str,
@@ -490,8 +515,10 @@ def get_ml_access_token(user_id: int) -> Optional[str]:
         conn.close()
 
 
-def ml_get_my_items(access_token: str) -> Dict[str, Any]:
-    """Obtiene TODAS las publicaciones del vendedor desde la API de MercadoLibre (paginado)."""
+def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str, Any]:
+    """Obtiene las publicaciones del vendedor desde la API de MercadoLibre (paginado).
+    include_paused=False (default): solo activas, carga más rápido.
+    include_paused=True: incluye pausadas (sin stock), carga más lento."""
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
@@ -502,32 +529,38 @@ def ml_get_my_items(access_token: str) -> Dict[str, Any]:
     if not ml_user_id:
         return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener el usuario de ML"}
 
-    # 2. Listar TODOS los IDs de publicaciones (paginado: 50 por página)
+    # 2. Listar IDs: activas siempre; pausadas solo si include_paused (las sin stock)
+    # ML limita offset a 1000; pasarlo devuelve 400 Bad Request
     item_ids = []
-    offset = 0
-    limit = 50
-    while True:
-        search = requests.get(
-            f"{base}/users/{ml_user_id}/items/search",
-            headers=headers,
-            params={"limit": limit, "offset": offset, "status": "active"},
-            timeout=15,
-        )
-        search.raise_for_status()
-        search_data = search.json()
-        chunk = search_data.get("results", [])
-        if not chunk:
-            break
-        item_ids.extend(chunk)
-        if len(chunk) < limit:
-            break
-        offset += limit
+    seen: set = set()
+    MAX_OFFSET = 1000
+    statuses = ("active", "paused") if include_paused else ("active",)
+    for status_val in statuses:
+        offset = 0
+        limit = 50
+        while offset <= MAX_OFFSET:
+            search = requests.get(
+                f"{base}/users/{ml_user_id}/items/search",
+                headers=headers,
+                params={"limit": limit, "offset": offset, "status": status_val},
+                timeout=15,
+            )
+            search.raise_for_status()
+            search_data = search.json()
+            chunk = search_data.get("results", [])
+            for _id in chunk:
+                if _id and _id not in seen:
+                    seen.add(_id)
+                    item_ids.append(_id)
+            if len(chunk) < limit or offset + limit > MAX_OFFSET:
+                break
+            offset += limit
 
     paging = search_data.get("paging", {})
     total = paging.get("total", len(item_ids))
 
     if not item_ids:
-        return {"results": [], "paging": {"total": total}}
+        return {"results": [], "paging": {"total": total}, "seller_id": ml_user_id}
 
     # 3. Obtener detalles de cada ítem (la API acepta hasta 20 IDs por request)
     all_items = []
@@ -562,11 +595,14 @@ def ml_get_my_items(access_token: str) -> Dict[str, Any]:
                         color = c.capitalize()
                         break
             catalog_listing = body.get("catalog_listing") is True
+            # original_price existe cuando ML tiene precio promocional fijado
+            original_price = body.get("original_price") or body.get("base_price")
             return {
                 "id": body.get("id"),
                 "title": body.get("title", ""),
                 "price": body.get("price"),
                 "sale_price": body.get("sale_price"),
+                "original_price": original_price,
                 "available_quantity": body.get("available_quantity"),
                 "sold_quantity": body.get("sold_quantity"),
                 "status": body.get("status", ""),
@@ -575,6 +611,9 @@ def ml_get_my_items(access_token: str) -> Dict[str, Any]:
                 "catalog_listing": catalog_listing,
                 "marca": marca or "—",
                 "color": color or "—",
+                "last_updated": body.get("last_updated"),
+                "stop_time": body.get("stop_time"),
+                "date_created": body.get("date_created"),
             }
 
         for item_data in items_resp.json():
@@ -585,7 +624,7 @@ def ml_get_my_items(access_token: str) -> Dict[str, Any]:
                 body = item_data["body"]
                 all_items.append(_item_from_body(body))
 
-    return {"results": all_items, "paging": {"total": total}}
+    return {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
 
 
 def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[str, Any]:
@@ -807,6 +846,41 @@ def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> L
     return [None] * len(ids_clean)
 
 
+def ml_get_items_multiget_with_attributes(
+    access_token: Optional[str], item_ids: List[str], attributes: str = "id,catalog_listing,catalog_product_id"
+) -> List[Optional[Dict[str, Any]]]:
+    """Obtiene ítems pidiendo atributos específicos (para catalog_listing). Máx 20 ids."""
+    if not item_ids:
+        return []
+    ids_clean = [str(i).strip() for i in item_ids if str(i).strip()][:20]
+    if not ids_clean:
+        return [None] * len(item_ids)
+    ids_str = ",".join(ids_clean)
+    url = f"https://api.mercadolibre.com/items?ids={ids_str}&attributes={attributes}"
+    if access_token:
+        headers = {"Accept": "application/json", "Authorization": f"Bearer {access_token}"}
+        try:
+            resp = requests.get(url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            return [None] * len(ids_clean)
+    else:
+        return [None] * len(ids_clean)
+    if isinstance(data, dict) and "body" in data:
+        data = [data]
+    if not isinstance(data, list):
+        return [None] * len(ids_clean)
+    out = []
+    for elem in data:
+        if isinstance(elem, dict) and elem.get("code") == 200:
+            body = elem.get("body")
+            out.append(body if isinstance(body, dict) else None)
+        else:
+            out.append(None)
+    return out
+
+
 def ml_get_items_multiget_all(
     access_token: Optional[str], item_ids: List[str]
 ) -> List[Optional[Dict[str, Any]]]:
@@ -924,8 +998,11 @@ def ml_get_user_profile(access_token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
+ORDERS_MAX_OFFSET = 100000  # ML puede limitar offset; si devuelve 400 se detiene antes
+
+
 def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
-    """Lista órdenes del vendedor. Pagina hasta `limit` (máx 50 por request).
+    """Lista órdenes del vendedor. Pagina hasta `limit` (máx 50 por request, ML no acepta más).
     sort=date_desc para órdenes más recientes primero."""
     import logging
     log = logging.getLogger(__name__)
@@ -940,7 +1017,7 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
     ]:
         all_flat: List[Dict[str, Any]] = []
         off = offset
-        while len(all_flat) < limit:
+        while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
             params = {**extra, "limit": page_size, "offset": off, "sort": "date_desc"}
             try:
                 resp = requests.get(url, params=params, headers=headers, timeout=25)
@@ -990,6 +1067,23 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
                 break
 
         if all_flat:
+            # Si alguna orden no tiene order_items, obtener la orden completa (p. ej. search devuelve datos mínimos)
+            faltan_items = [o for o in all_flat[:limit] if not (o.get("order_items") or o.get("items")) and o.get("id")]
+            fetches = 0
+            max_enrich = min(1000, len(faltan_items))
+            for o in faltan_items[:max_enrich]:
+                if fetches >= 500:
+                    break
+                try:
+                    r = requests.get(f"https://api.mercadolibre.com/orders/{o['id']}", headers=headers, timeout=10)
+                    if r.status_code == 200:
+                        full = r.json()
+                        idx = next((i for i, x in enumerate(all_flat) if x.get("id") == o["id"]), -1)
+                        if idx >= 0 and (full.get("order_items") or full.get("items")):
+                            all_flat[idx] = full
+                            fetches += 1
+                except Exception:
+                    pass
             log.debug("ML orders: %d órdenes desde %s", len(all_flat), url.split("/")[-1])
             return {"results": all_flat[:limit], "paging": {"total": len(all_flat)}}
 
@@ -1170,15 +1264,17 @@ def show_main_layout(container) -> None:
         with ui.row().classes("w-full items-center justify-between q-pa-md bg-grey-2"):
             with ui.tabs() as tabs:
                 tab_home = ui.tab("Home")
-                tab_precios = ui.tab("Precios")
+                tab_estadisticas = ui.tab("Estadísticas")
+                tab_ventas = ui.tab("Ventas")
+                tab_precios = ui.tab("Productos")
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
+                tab_balance = ui.tab("Balance")
                 tab_config = ui.tab("Configuración")
             with ui.row().classes("items-center gap-4"):
-                version_str = datetime.now().strftime("%y%m%d%H")
-                ui.label(f"Ver {version_str}").classes("text-sm text-gray-600")
+                ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
                 ui.label(user['username'])
 
                 def logout() -> None:
@@ -1192,7 +1288,13 @@ def show_main_layout(container) -> None:
 
         with tab_panels:
             with ui.tab_panel(tab_home):
-                build_tab_home()
+                home_welcome_container = ui.column().classes("w-full")
+            build_tab_home_welcome(home_welcome_container)
+            with ui.tab_panel(tab_estadisticas):
+                estadisticas_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_ventas):
+                ventas_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_precios):
                 precios_container = ui.column().classes("w-full")
@@ -1209,16 +1311,31 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_pesos):
                 build_tab_pesos()
 
+            with ui.tab_panel(tab_balance):
+                balance_container = ui.column().classes("w-full")
+
             with ui.tab_panel(tab_config):
                 build_tab_config()
 
         precios_cargado = [False]
+        ventas_cargado = [False]
+        estadisticas_cargado = [False]
+        balance_cargado = [False]
 
         def on_tab_change(e) -> None:
             val = getattr(e, "value", None)
-            if val == "Precios" and not precios_cargado[0]:
+            if val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
+            elif val == "Ventas" and not ventas_cargado[0]:
+                ventas_cargado[0] = True
+                build_tab_ventas(ventas_container)
+            elif val == "Estadísticas" and not estadisticas_cargado[0]:
+                estadisticas_cargado[0] = True
+                build_tab_estadisticas(estadisticas_container)
+            elif val == "Balance" and not balance_cargado[0]:
+                balance_cargado[0] = True
+                build_tab_balance(balance_container)
 
         tab_panels.on_value_change(on_tab_change)
 
@@ -1228,38 +1345,80 @@ def show_main_layout(container) -> None:
 # ==========================
 
 
-def build_tab_home() -> None:
-    """Pestaña de inicio: datos de la cuenta ML, reputación y ventas."""
+def build_tab_home_welcome(container) -> None:
+    """Pestaña Home: bienvenida."""
+    user = require_login()
+    if not user:
+        return
+    with container:
+        ui.label("Bienvenido").classes("text-3xl font-bold text-primary mb-4")
+        ui.label(f"Hola, {user.get('username', 'Usuario')}").classes("text-xl text-gray-700 mb-2")
+        ui.label("Usá las pestañas para navegar: Estadísticas, Ventas, Productos, y más.").classes("text-gray-600 mb-4")
+
+
+def build_tab_estadisticas(estadisticas_container) -> None:
+    """Pestaña Estadísticas: datos de la cuenta ML, reputación y ventas. Carga síncrona con botón Actualizar."""
     user = require_login()
     if not user:
         return
 
     access_token = get_ml_access_token(user["id"])
     if not access_token:
-        with ui.column().classes("w-full max-w-2xl gap-4"):
-            ui.label("Bienvenido a BDC systems").classes("text-2xl font-semibold")
-            ui.label(
-                "Conectá tu cuenta de MercadoLibre en Configuración para ver aquí tu perfil, reputación y ventas."
-            ).classes("text-gray-600")
+        with estadisticas_container:
+            with ui.column().classes("w-full max-w-2xl gap-4"):
+                ui.label("Bienvenido a BDC systems").classes("text-2xl font-semibold")
+                ui.label(
+                    "Conectá tu cuenta de MercadoLibre en Configuración para ver aquí tu perfil, reputación y ventas."
+                ).classes("text-gray-600")
         return
 
-    # Cargar perfil y órdenes (puede ser lento)
-    profile = ml_get_user_profile(access_token)
-    seller_id = (profile or {}).get("id") or ml_get_user_id(access_token)
-    orders_data: Dict[str, Any] = {}
-    if seller_id:
-        orders_data = ml_get_orders(access_token, str(seller_id), limit=600, offset=0)
+    def cargar_y_pintar() -> None:
+        estadisticas_container.clear()
+        with estadisticas_container:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando datos...").classes("text-xl text-gray-700")
+        background_tasks.create(_cargar_estadisticas_async(), name="cargar_estadisticas")
 
-    rep = (profile or {}).get("seller_reputation") or {}
+    async def _cargar_estadisticas_async() -> None:
+        try:
+            profile = await run.io_bound(ml_get_user_profile, access_token)
+            seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
+            orders_data: Dict[str, Any] = {}
+            items_data: Dict[str, Any] = {"results": []}
+            if seller_id:
+                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
+            try:
+                items_data = await run.io_bound(ml_get_my_items, access_token, False)
+            except Exception:
+                pass
+        except Exception as e:
+            estadisticas_container.clear()
+            with estadisticas_container:
+                ui.label(f"❌ Error al cargar datos: {e}").classes("text-negative")
+            return
+        estadisticas_container.clear()
+        with estadisticas_container:
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar)
 
-    # Procesar órdenes para ventas
+    cargar_y_pintar()
+
+
+def _pintar_home_inline(
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None
+) -> None:
+    """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
     results = [o for o in raw_orders if isinstance(o, dict)]
+    rep = (profile or {}).get("seller_reputation") or {}
     today_local = datetime.now().date()
+    primer_dia_mes = today_local.replace(day=1)
     hoy_unidades, hoy_monto = 0, 0.0
     semana_unidades, semana_monto = 0, 0.0
     mes_unidades, mes_monto = 0, 0.0
+    ventas_mes_actual_unid, ventas_mes_actual_monto = 0, 0.0
     por_mes: Dict[str, Any] = {}
+    top_productos: Dict[str, Dict[str, Any]] = {}  # item_id -> {title, units}
 
     for ord_item in results:
         dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
@@ -1284,12 +1443,29 @@ def build_tab_home() -> None:
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
-        if (today_local - dt).days <= 7:
+        if (today_local - dt).days <= 6:
             semana_unidades += units
             semana_monto += total_amount
         if (today_local - dt).days <= 30:
             mes_unidades += units
             mes_monto += total_amount
+        if primer_dia_mes <= dt <= today_local:
+            ventas_mes_actual_unid += units
+            ventas_mes_actual_monto += total_amount
+            items = ord_item.get("order_items") or ord_item.get("items") or []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                obj = it.get("item") or it
+                qty = int(it.get("quantity") or it.get("qty") or 0)
+                if qty <= 0:
+                    continue
+                titulo = (obj.get("title") if isinstance(obj, dict) else None) or it.get("title") or "Sin nombre"
+                iid = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                key_id = iid or titulo[:80]
+                if key_id not in top_productos:
+                    top_productos[key_id] = {"title": titulo, "units": 0}
+                top_productos[key_id]["units"] += qty
         key = dt.strftime("%Y-%m")
         if key not in por_mes:
             por_mes[key] = {"units": 0, "total": 0.0}
@@ -1298,209 +1474,781 @@ def build_tab_home() -> None:
 
     meses_orden = sorted(por_mes.keys(), reverse=True)[:6]  # Solo 6 meses para caber en pantalla
 
-    # Layout compacto sin scroll - una sola pantalla
-    with ui.column().classes("w-full gap-2 max-w-6xl overflow-hidden"):
-        # Header con gradiente
-        with ui.row().classes("w-full items-center gap-4 p-3 rounded-xl bg-gradient-to-r from-indigo-600 to-blue-700 text-white shadow-lg"):
-            raw_pic = (profile or {}).get("thumbnail") or (profile or {}).get("picture") or (profile or {}).get("logo")
-            pic_url: Optional[str] = None
-            if isinstance(raw_pic, str) and raw_pic.strip():
-                pic_url = raw_pic.strip()
-            elif isinstance(raw_pic, dict):
-                pic_url = (raw_pic.get("url") or raw_pic.get("secure_url") or "").strip() or None
-            if pic_url:
-                ui.image(pic_url).classes("w-14 h-14 rounded-full object-cover ring-2 ring-white/50")
-            else:
-                ui.icon("store", size="2.5rem").classes("opacity-90")
-            ui.label((profile or {}).get("nickname") or (profile or {}).get("first_name") or "Usuario ML").classes(
-                "text-xl font-semibold"
-            )
-            power = rep.get("power_seller_status")
-            if power:
-                with ui.badge(color="amber").classes("ml-2"):
-                    ui.label(f"MercadoLíder {power.capitalize()}")
+    container.clear()
+    with container:
+            with ui.column().classes("w-full gap-2"):
+                # Barra amarilla MercadoLibre (#FFE600)
+                with ui.element("div").classes("w-full min-h-[88px] py-5 px-6 rounded-xl shadow-xl").style("background: linear-gradient(135deg, #FFE600 0%, #ffed4d 50%, #FFE600 100%);"):
+                    with ui.row().classes("w-full items-center gap-5"):
+                        # Logo/foto del usuario ML (thumbnail, picture o logo)
+                        prof = profile or {}
+                        raw_pic = prof.get("thumbnail") or prof.get("picture") or prof.get("logo") or prof.get("avatar")
+                        pic_url = None
+                        if isinstance(raw_pic, str) and raw_pic.strip():
+                            pic_url = raw_pic.strip()
+                        elif isinstance(raw_pic, dict):
+                            pic_url = (raw_pic.get("url") or raw_pic.get("secure_url") or raw_pic.get("data", {}).get("url") or "").strip() or None
+                        if pic_url:
+                            ui.image(pic_url).classes("w-20 h-20 rounded-full object-cover ring-4 ring-gray-800/30 shadow-lg")
+                        else:
+                            ui.icon("store", size="4rem").classes("text-gray-800 opacity-90")
+                        with ui.column().classes("gap-1"):
+                            ui.label(prof.get("nickname") or prof.get("first_name") or "Usuario ML").classes(
+                                "text-2xl font-bold text-gray-900"
+                            )
+                            power = rep.get("power_seller_status")
+                            if power:
+                                with ui.badge(color="amber").classes("text-amber-900 font-medium"):
+                                    ui.label(f"MercadoLíder {power.capitalize()}")
+                        ui.element("div").classes("flex-1")
+                        if on_refresh:
+                            ui.button("Actualizar", on_click=lambda: on_refresh()).props("flat dense round icon=refresh").classes("text-gray-800 hover:bg-gray-800/10")
+                # Grid: Reputación | Ventas | Gráfico | Históricas
+                with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden max-w-full"):
+                    # Reputación
+                    def _pct(val: Any) -> str:
+                        if val is None:
+                            return "—"
+                        try:
+                            v = float(val)
+                            if 0 <= v <= 1:
+                                return f"{v * 100:.2f}%"
+                            if 0 < v <= 100:
+                                return f"{v:.2f}%"
+                            return str(val)
+                        except (TypeError, ValueError):
+                            return str(val) if val is not None else "—"
 
-        # Grid: Reputación | Ventas | Gráfico | Históricas (todo en una fila compacta)
-        with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden"):
-            # Reputación
-            def _pct(val: Any) -> str:
-                if val is None:
-                    return "—"
+                    metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
+                    sales_meta = metrics.get("sales", {}) or {}
+                    completed = sales_meta.get("completed") or 0
+                    claims = metrics.get("claims", {}) or metrics.get("disputes", {}) or {}
+                    canc = metrics.get("cancellations", {}) or {}
+                    delayed = metrics.get("delayed_handling_time", {}) or {}
+                    mediat = metrics.get("mediations", {}) or metrics.get("disputes", {}) or {}
+
+                    def _get_rate(m: Dict[str, Any], total_completed: float = 0) -> Any:
+                        exc = m.get("excluded") or {}
+                        if isinstance(exc.get("real_rate"), (int, float)):
+                            return exc["real_rate"]
+                        if isinstance(exc.get("real_value"), (int, float)) and total_completed > 0:
+                            return exc["real_value"] / total_completed
+                        if isinstance(m.get("rate"), (int, float)):
+                            return m["rate"]
+                        if isinstance(m.get("value"), (int, float)) and total_completed > 0:
+                            return m["value"] / total_completed
+                        return None
+
+                    try:
+                        tot = float(completed) if completed else 0
+                    except (TypeError, ValueError):
+                        tot = 0
+                    rate_claims = _get_rate(claims, tot)
+                    rate_canc = _get_rate(canc, tot)
+                    rate_delayed = _get_rate(delayed, tot)
+                    rate_mediat = _get_rate(mediat, tot) if mediat else None
+                    level_id = rep.get("level_id") or "—"
+                    level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
+                    level_colors = {"1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308", "4_light_green": "#84cc16", "5_green": "#22c55e"}
+                    level_color = level_colors.get(str(level_id), "#6b7280")
+                    MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
+
+                    def _pct_to_float(v: Any) -> Optional[float]:
+                        if v is None:
+                            return None
+                        try:
+                            x = float(v)
+                            return x if 0 < x <= 1 else x / 100.0
+                        except (TypeError, ValueError):
+                            return None
+
+                    def _row_color(actual: Optional[float], max_val: float) -> str:
+                        if actual is None or actual == 0:
+                            return "text-emerald-600"
+                        return "text-red-600 font-semibold" if actual > max_val else "text-emerald-600"
+
+                    meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+                                    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+                    mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
+
+                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-4 border-l-4 border-l-emerald-500"):
+                        ui.label("Reputación").classes("text-lg font-semibold text-emerald-700 dark:text-emerald-400 mb-1")
+                        with ui.row().classes("gap-2 items-center mb-2"):
+                            ui.icon("lightbulb", size="sm").style(f"color: {level_color}")
+                            ui.label(f"Nivel: {level_label}").classes("text-base").style(f"color: {level_color}; font-weight: 600")
+                        with ui.column().classes("gap-1.5 text-base"):
+                            r_c = _pct_to_float(rate_claims)
+                            ui.label(f"• Reclamos: {_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS))
+                            r_m = _pct_to_float(rate_mediat)
+                            ui.label(f"• Mediaciones: {_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT))
+                            r_k = _pct_to_float(rate_canc)
+                            ui.label(f"• Cancelaciones: {_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC))
+                            r_d = _pct_to_float(rate_delayed)
+                            ui.label(f"• Demora envíos: {_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED))
+
+                    # Ventas (Hoy, 7d, 30d)
+                    with ui.card().classes("flex-1 min-w-[240px] shrink-0 p-4 border-l-4 border-l-blue-500 overflow-hidden"):
+                        ui.label("Ventas").classes("text-base font-semibold text-blue-700 dark:text-blue-400 mb-2")
+                        with ui.row().classes("gap-2 w-full flex-nowrap"):
+                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-blue-50 dark:bg-blue-900/40"):
+                                ui.label("Hoy").classes("text-sm text-blue-600")
+                                ui.label(str(hoy_unidades)).classes("text-xl font-bold text-blue-800")
+                                ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
+                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-emerald-50 dark:bg-emerald-900/40"):
+                                ui.label("7 días").classes("text-sm text-emerald-600")
+                                ui.label(str(semana_unidades)).classes("text-xl font-bold text-emerald-800")
+                                ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
+                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-amber-50 dark:bg-amber-900/40"):
+                                ui.label("30 días").classes("text-sm text-amber-600")
+                                ui.label(str(mes_unidades)).classes("text-xl font-bold text-amber-800")
+                                ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
+
+                    # Gráfico ventas por mes (valores en millones para eje Y legible)
+                    if meses_orden:
+                        orden_rev = list(reversed(meses_orden))
+                        meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
+                                     "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+                        chart_labels = [f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}" for k in orden_rev]
+                        chart_data = []
+                        for i, k in enumerate(orden_rev):
+                            val = round(por_mes[k]["total"] / 1e6, 2)
+                            is_actual = i == len(orden_rev) - 1
+                            lbl_m = f"${val:.2f}M"
+                            chart_data.append({
+                                "value": val,
+                                "itemStyle": {"color": "#10b981" if is_actual else "#6366f1"},
+                                "label": {"show": True, "position": "top", "formatter": lbl_m}
+                            })
+                        chart_options = {
+                            "grid": {"left": 50, "right": 25, "top": 25, "bottom": 35},
+                            "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 12, "interval": 0}},
+                            "yAxis": {"type": "value", "axisLabel": {"fontSize": 12}},
+                            "series": [{"type": "bar", "data": chart_data, "barWidth": "60%"}],
+                        }
+                        with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-4 border-l-4 border-l-indigo-500").style("min-height: 185px"):
+                            ui.label("Facturación Mensual").classes("text-base font-semibold text-indigo-600 mb-1 px-1")
+                            ui.echart(chart_options).classes("w-full").style("height: 155px")
+                    else:
+                        with ui.card().classes("flex-1 min-w-[120px] shrink-0 p-4 border-l-4 border-l-indigo-500"):
+                            ui.label("Facturación Mensual").classes("text-sm font-semibold")
+                            ui.label("Sin datos").classes("text-xs text-gray-500")
+
+                    # Ventas Históricas (tabla más grande)
+                    with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-indigo-500"):
+                        ui.label("Ventas Históricas").classes("text-base font-semibold text-indigo-600 mb-2")
+                        if not meses_orden:
+                            trans = rep.get("transactions", {}) or {}
+                            tot = trans.get("total") or trans.get("completed") or 0
+                            ui.label(f"Sin datos (perfil: {tot} trans.)" if tot else "No hay órdenes").classes("text-gray-500 text-sm")
+                        else:
+                            dolar_str = get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
+                            dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
+                            if dolar_oficial <= 0:
+                                dolar_oficial = 1475.0
+                            with ui.element("div").classes("w-full border rounded overflow-hidden"):
+                                with ui.row().classes("w-full font-semibold bg-indigo-600 text-white py-1.5 px-2 gap-2 items-center text-sm"):
+                                    ui.label("Mes").classes("min-w-[70px]")
+                                    ui.label("Unid").classes("w-14 text-right")
+                                    ui.label("Facturación $").classes("w-24 text-right")
+                                    ui.label("Facturación u$").classes("w-24 text-right")
+                                for key in meses_orden:
+                                    v = por_mes[key]
+                                    total_usd = (v["total"] / dolar_oficial) if dolar_oficial else 0.0
+                                    with ui.row().classes("w-full py-1 px-2 gap-2 items-center border-t border-gray-200 text-sm"):
+                                        ui.label(key).classes("min-w-[70px]")
+                                        ui.label(str(v["units"])).classes("w-14 text-right")
+                                        ui.label(f"$ {v['total']:,.0f}".replace(",", ".")).classes("w-24 text-right")
+                                        ui.label(f"u$ {total_usd:,.0f}".replace(",", ".")).classes("w-24 text-right")
+
+                claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
+                mediat_val = (mediat.get("value") or mediat.get("excluded", {}).get("real_value") or 0) if mediat else 0
+                canc_val = (canc.get("value") or canc.get("excluded", {}).get("real_value") or 0)
+                postventa_total = claims_val + mediat_val + canc_val
+
+                # Unidades vendidas semanales (últimos 14 días: esta semana + semana pasada)
+                ventas_por_dia: Dict[str, int] = {}
+                dias_semana_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+                for d in range(14):
+                    fd = today_local - timedelta(days=d)
+                    ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
+                for ord_item in results:
+                    dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
+                    if not dt_str:
+                        continue
+                    try:
+                        dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    if (today_local - dt).days > 13:
+                        continue
+                    items = ord_item.get("order_items") or ord_item.get("items") or []
+                    units = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
+                    if units == 0:
+                        total_amount = ord_item.get("total_amount") or ord_item.get("paid_amount") or 0
+                        if total_amount and float(total_amount or 0) > 0:
+                            units = 1
+                    key = dt.strftime("%Y-%m-%d")
+                    if key in ventas_por_dia:
+                        ventas_por_dia[key] += units
+
+                with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1.5 overflow-x-auto"):
+                    # Top ventas: 6 productos más vendidos del mes actual (sin scroll)
+                    top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:6]
+                    total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
+
+                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-3 border-l-4 border-l-emerald-600"):
+                        ui.label(f"Top ventas - {mes_actual_nom}").classes("text-base font-semibold text-emerald-800 mb-1")
+                        if not top_list:
+                            ui.label("Sin ventas este mes").classes("text-sm text-gray-500")
+                        else:
+                            with ui.row().classes("w-full py-0.5 font-semibold text-gray-600 border-b border-gray-200 text-sm"):
+                                ui.label("#").classes("w-5 shrink-0")
+                                ui.label("Producto").classes("flex-1 truncate min-w-0")
+                                ui.label("Qty").classes("w-8 shrink-0 text-right")
+                                ui.label("%").classes("w-8 shrink-0 text-right")
+                            for i, p in enumerate(top_list):
+                                pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
+                                tit = (p["title"] or "—")[:35]
+                                if len(p.get("title") or "") > 35:
+                                    tit += "…"
+                                with ui.row().classes("w-full py-0.5 gap-1 items-center border-b border-gray-100 text-sm"):
+                                    ui.label(f"{i+1}.").classes("w-5 text-gray-500 shrink-0")
+                                    ui.label(tit).classes("flex-1 truncate min-w-0")
+                                    ui.label(str(p["units"])).classes("w-8 shrink-0 text-right font-medium")
+                                    ui.label(f"{pct:.1f}%").classes("w-8 shrink-0 text-right text-emerald-600")
+
+                    # Stock: misma lógica que Productos barra gris (tipo = Catalogo si catalog_listing True, sino Propia)
+                    items_list = (items_data or {}).get("results") or []
+                    propias = [it for it in items_list if isinstance(it, dict) and it.get("catalog_listing") is not True]
+                    publicaciones_propias_con_stock = sum(1 for it in propias if (it.get("available_quantity") or 0) > 0)
+                    unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
+                    marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
+                    marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
+                    top3_stock = sorted(propias, key=lambda x: int(x.get("available_quantity") or 0), reverse=True)[:3]
+
+                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-3 border-l-4 border-l-amber-500"):
+                        ui.label("Stock").classes("text-base font-semibold text-amber-700 mb-1")
+                        ui.label(f"Publicaciones: {publicaciones_propias_con_stock}").classes("text-sm text-gray-700")
+                        ui.label(f"Unidades: {unidades_propias_en_stock:,.0f}".replace(",", ".")).classes("text-sm text-gray-700")
+                        ui.label(f"Marcas: {marcas_distintas}").classes("text-sm text-gray-700")
+                        if top3_stock:
+                            ui.label("Top 3 stock").classes("text-sm font-semibold text-amber-600 mt-1 mb-0.5")
+                            for p in top3_stock:
+                                tit_raw = p.get("title") or "—"
+                                tit = (tit_raw[:32] + "…") if len(tit_raw) > 32 else tit_raw
+                                qty = int(p.get("available_quantity") or 0)
+                                with ui.row().classes("w-full items-center gap-1 overflow-hidden py-0.5"):
+                                    ui.label(f"• {tit}").classes("text-sm text-gray-700 truncate flex-1 min-w-0")
+                                    ui.label(f"({qty})").classes("text-sm text-gray-700 shrink-0")
+
+                    # Unidades Vendidas Semanales (gráfico de barras, últimos 7 días)
+                    dias_orden = sorted(ventas_por_dia.keys())[-7:]
+                    uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
+                    uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
+                    var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
+                    if dias_orden:
+                        chart_labels = []
+                        chart_data = []
+                        for i, key in enumerate(dias_orden):
+                            fd = datetime.strptime(key, "%Y-%m-%d").date()
+                            dia_sem = dias_semana_es[fd.weekday()]
+                            chart_labels.append(f"{dia_sem} {fd.day}")
+                            uds = ventas_por_dia.get(key, 0)
+                            is_hoy = fd == today_local
+                            chart_data.append({"value": uds, "itemStyle": {"color": "#14b8a6" if is_hoy else "#0d9488"}})
+                        chart_options_sem = {
+                            "grid": {"left": 50, "right": 25, "top": 25, "bottom": 35},
+                            "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 11, "interval": 0}},
+                            "yAxis": {"type": "value", "axisLabel": {"fontSize": 12}},
+                            "series": [{"type": "bar", "data": chart_data, "barWidth": "60%", "label": {"show": True, "position": "top", "fontSize": 11}}],
+                        }
+                        with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-4 border-l-4 border-l-teal-500").style("min-height: 185px"):
+                            ui.label("Unidades Vendidas Semanales").classes("text-base font-semibold text-teal-700 mb-1 px-1")
+                            ui.echart(chart_options_sem).classes("w-full").style("height: 155px")
+                            with ui.column().classes("mt-2 gap-0.5 text-sm"):
+                                ui.label(f"Unidades vendidas esta semana: {uds_esta_semana}").classes("text-gray-700")
+                                ui.label(f"Unidades vendidas la semana pasada: {uds_semana_pasada}").classes("text-gray-700")
+                                variacion_cls = "text-emerald-600 font-semibold" if var_pct >= 0 else "text-red-600 font-semibold"
+                                ui.label(f"Variación semanal: {var_pct:+.1f}%").classes(variacion_cls)
+                    else:
+                        with ui.card().classes("flex-1 min-w-[120px] shrink-0 p-4 border-l-4 border-l-teal-500"):
+                            ui.label("Unidades Vendidas Semanales").classes("text-sm font-semibold")
+                            ui.label("Sin datos").classes("text-xs text-gray-500")
+
+                    # Ventas del mes, estimaciones y ganancias
+                    dias_transcurridos = (today_local - primer_dia_mes).days + 1
+                    dias_del_mes = calendar.monthrange(today_local.year, today_local.month)[1]
+                    venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
+                    venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+                    try:
+                        margen_str = get_cotizador_param("ml_ganancia_neta_venta", user_id) if user_id else None
+                        margen_val = float(str(margen_str or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")).replace(",", ".").strip())
+                    except (ValueError, TypeError):
+                        margen_val = 0.1
+                    ganancia_estimada_diaria = venta_diaria * margen_val
+                    ganancia_estimada_fecha = ventas_mes_actual_monto * margen_val
+                    ganancia_estimada_mes = venta_estimada_mes * margen_val
+
+                    with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-violet-500"):
+                        ui.label(f"Ventas y ganancia - {mes_actual_nom}").classes("text-base font-semibold text-violet-700 mb-2")
+                        with ui.column().classes("gap-1.5 text-sm"):
+                            ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            ui.label(f"Venta diaria: $ {venta_diaria:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            ticket_prom = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
+                            ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("font-bold text-gray-800")
+                            ui.label(f"Margen de ganancia estimada: {margen_val * 100:.2f}%").classes("text-gray-700")
+                            ui.label(f"Ganancia Bruta estimada diaria: $ {ganancia_estimada_diaria:,.0f}".replace(",", ".")).classes("text-gray-700 font-bold")
+                            ui.label(f"Ganancia Bruta estimada a la fecha: $ {ganancia_estimada_fecha:,.0f}".replace(",", ".")).classes("font-medium")
+                            ui.label(f"Ganancia Bruta estimada de todo el mes: $ {ganancia_estimada_mes:,.0f}".replace(",", ".")).classes("font-semibold")
+
+
+def build_tab_ventas(container) -> None:
+    """Pestaña Ventas: tabla de ventas desde el 1 del mes actual hasta hoy."""
+    container.clear()
+    user = require_login()
+    if not user:
+        return
+
+    access_token = get_ml_access_token(user["id"])
+    if not access_token:
+        with container:
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+        return
+
+    ventas_raw: List[Dict[str, Any]] = []
+    filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
+    agrupar_ref: Dict[str, bool] = {"val": False}
+    margenes_ref: Dict[str, str] = {}  # productos -> margen editable
+    ganancia_neta_ref: Dict[str, float] = {"val": 0.0}
+
+    sort_col_ventas: Dict[str, str] = {"val": "dt"}
+    sort_asc_ventas: Dict[str, bool] = {"val": True}
+
+    with container:
+        header_card = ui.column().classes("w-full mb-2")
+        filtro_row = ui.row().classes("w-full mb-2 items-center gap-4")
+        result_area = ui.column().classes("w-full gap-2")
+
+        def _update_btn_agrupar() -> None:
+            if agrupar_ref.get("val"):
+                btn_agrupar.text = "Desagrupar"
+            else:
+                btn_agrupar.text = "Agrupar"
+
+        def _toggle_agrupar() -> None:
+            agrupar_ref["val"] = not agrupar_ref.get("val", False)
+            _update_btn_agrupar()
+            _pintar_tabla()
+
+        def _update_margen(productos_key: str, val: str) -> None:
+            margenes_ref[productos_key] = val or ""
+
+        def _calcular_ganancia() -> None:
+            if not agrupar_ref.get("val"):
+                ganancia_neta_ref["val"] = 0.0
+                _pintar_tabla()
+                return
+            # Al agrupar, solo se consideran ventas con estado Concretada (paid)
+            ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
+            grupos: Dict[str, Dict[str, Any]] = {}
+            for v in ventas_filtradas:
+                key = v.get("agrupar_key") or (v.get("productos") or v.get("title", "—"))
+                if key not in grupos:
+                    grupos[key] = {"productos": v.get("productos") or v.get("title", "—"), "cantidad": 0, "monto": 0.0}
+                grupos[key]["cantidad"] += v["cantidad"]
+                grupos[key]["monto"] += v["monto"]
+            filas = list(grupos.values())
+            total = 0.0
+            for f in filas:
+                productos_key = f["productos"]
+                cantidad = int(f["cantidad"])
                 try:
-                    v = float(val)
-                    if 0 <= v <= 1:
-                        return f"{v * 100:.2f}%"
-                    if 0 < v <= 100:
-                        return f"{v:.2f}%"
-                    return str(val)
-                except (TypeError, ValueError):
-                    return str(val) if val is not None else "—"
+                    margen = float((margenes_ref.get(productos_key) or "0").replace(",", ".").strip())
+                except (ValueError, TypeError):
+                    margen = 0.0
+                total += cantidad * margen
+            ganancia_neta_ref["val"] = total
+            _pintar_tabla()
 
-            metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
-            sales_meta = metrics.get("sales", {}) or {}
-            completed = sales_meta.get("completed") or 0
-            claims = metrics.get("claims", {}) or metrics.get("disputes", {}) or {}
-            canc = metrics.get("cancellations", {}) or {}
-            delayed = metrics.get("delayed_handling_time", {}) or {}
-            mediat = metrics.get("mediations", {}) or metrics.get("disputes", {}) or {}
+        def _cargar_ventas() -> None:
+            if filtro_controls_ref:
+                filtro_controls_ref[0].set_visibility(False)
+            result_area.clear()
+            with result_area:
+                with ui.card().classes("w-full p-8 items-center gap-4"):
+                    ui.spinner(size="xl")
+                    ui.label("Cargando ventas...").classes("text-xl text-gray-700")
+            background_tasks.create(_cargar_ventas_async(), name="cargar_ventas")
 
-            def _get_rate(m: Dict[str, Any], total_completed: float = 0) -> Any:
-                exc = m.get("excluded") or {}
-                if isinstance(exc.get("real_rate"), (int, float)):
-                    return exc["real_rate"]
-                if isinstance(exc.get("real_value"), (int, float)) and total_completed > 0:
-                    return exc["real_value"] / total_completed
-                if isinstance(m.get("rate"), (int, float)):
-                    return m["rate"]
-                if isinstance(m.get("value"), (int, float)) and total_completed > 0:
-                    return m["value"] / total_completed
-                return None
+        def _sort_key_ventas(row: Dict[str, Any], col: str) -> Any:
+            if col == "dt":
+                return row.get("dt") or ""
+            if col == "fecha":
+                return row.get("fecha") or ""
+            if col == "productos":
+                return str(row.get("productos") or row.get("title", "")).lower()
+            if col == "cantidad":
+                return int(row.get("cantidad") or 0)
+            if col == "monto":
+                return float(row.get("monto") or 0)
+            if col == "status":
+                return str(row.get("status") or "").lower()
+            if col == "item_id":
+                return str(row.get("item_id") or "")
+            if col == "tipo":
+                return str(row.get("tipo") or "").lower()
+            return ""
 
-            try:
-                tot = float(completed) if completed else 0
-            except (TypeError, ValueError):
-                tot = 0
-            rate_claims = _get_rate(claims, tot)
-            rate_canc = _get_rate(canc, tot)
-            rate_delayed = _get_rate(delayed, tot)
-            rate_mediat = _get_rate(mediat, tot) if mediat else None
-            level_id = rep.get("level_id") or "—"
-            level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
-
-            with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-4 border-l-4 border-l-emerald-500"):
-                ui.label("Reputación").classes("text-base font-semibold text-emerald-700 dark:text-emerald-400 mb-1")
-                ui.label(f"Nivel: {level_label}").classes("text-sm text-gray-600 mb-2")
-                with ui.column().classes("gap-1.5 text-sm"):
-                    ui.label(f"• Reclamos: {_pct(rate_claims)}").classes("text-gray-700")
-                    ui.label(f"• Cancelaciones: {_pct(rate_canc)}").classes("text-gray-700")
-                    ui.label(f"• Mediaciones: {_pct(rate_mediat) if rate_mediat is not None else '—'}").classes("text-gray-700")
-                    ui.label(f"• Demora envíos: {_pct(rate_delayed)}").classes("text-gray-700")
-
-            # Ventas (Hoy, 7d, 30d)
-            with ui.card().classes("flex-1 min-w-[240px] shrink-0 p-4 border-l-4 border-l-blue-500"):
-                ui.label("Ventas").classes("text-base font-semibold text-blue-700 dark:text-blue-400 mb-2")
-                with ui.row().classes("gap-2 flex-wrap"):
-                    with ui.column().classes("p-3 flex-1 min-w-[80px] rounded-lg bg-blue-50 dark:bg-blue-900/40"):
-                        ui.label("Hoy").classes("text-sm text-blue-600")
-                        ui.label(str(hoy_unidades)).classes("text-xl font-bold text-blue-800")
-                        ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium")
-                    with ui.column().classes("p-3 flex-1 min-w-[80px] rounded-lg bg-emerald-50 dark:bg-emerald-900/40"):
-                        ui.label("7 días").classes("text-sm text-emerald-600")
-                        ui.label(str(semana_unidades)).classes("text-xl font-bold text-emerald-800")
-                        ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium")
-                    with ui.column().classes("p-3 flex-1 min-w-[80px] rounded-lg bg-amber-50 dark:bg-amber-900/40"):
-                        ui.label("30 días").classes("text-sm text-amber-600")
-                        ui.label(str(mes_unidades)).classes("text-xl font-bold text-amber-800")
-                        ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium")
-
-            # Gráfico ventas por mes (valores en millones para eje Y legible)
-            if meses_orden:
-                chart_data = [round(por_mes[k]["total"] / 1e6, 2) for k in reversed(meses_orden)]
-                chart_labels = list(reversed(meses_orden))
-                chart_options = {
-                    "grid": {"left": 50, "right": 25, "top": 25, "bottom": 35},
-                    "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 12, "interval": 0}},
-                    "yAxis": {
-                        "type": "value",
-                        "axisLabel": {"fontSize": 12, "formatter": "{value} M$"},
-                        "name": "M$",
-                        "nameTextStyle": {"fontSize": 11},
-                    },
-                    "series": [{"type": "bar", "data": chart_data, "itemStyle": {"color": "#6366f1"}, "barWidth": "60%"}],
-                }
-                with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-3").style("min-height: 180px"):
-                    ui.label("Ventas por mes").classes("text-base font-semibold text-indigo-600 mb-1 px-1")
-                    ui.echart(chart_options).classes("w-full").style("height: 150px")
+        def _on_sort_ventas(col: str) -> None:
+            if sort_col_ventas.get("val") == col:
+                sort_asc_ventas["val"] = not sort_asc_ventas.get("val", True)
             else:
-                with ui.card().classes("flex-1 min-w-[120px] shrink-0 p-3"):
-                    ui.label("Ventas por mes").classes("text-sm font-semibold")
-                    ui.label("Sin datos").classes("text-xs text-gray-500")
+                sort_col_ventas["val"] = col
+                sort_asc_ventas["val"] = True
+            _pintar_tabla()
 
-            # Ventas Históricas (tabla más grande)
-            with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-indigo-500"):
-                ui.label("Ventas Históricas").classes("text-base font-semibold text-indigo-600 mb-2")
-                if not meses_orden:
-                    trans = rep.get("transactions", {}) or {}
-                    tot = trans.get("total") or trans.get("completed") or 0
-                    ui.label(f"Sin datos (perfil: {tot} trans.)" if tot else "No hay órdenes").classes("text-gray-500 text-sm")
-                else:
-                    with ui.element("div").classes("w-full border rounded overflow-hidden"):
-                        with ui.row().classes("w-full font-semibold bg-indigo-600 text-white py-1.5 px-2 gap-2 items-center text-sm"):
-                            ui.label("Mes").classes("min-w-[70px]")
-                            ui.label("Unid").classes("w-14 text-right")
-                            ui.label("Facturación").classes("w-24 text-right")
-                        for key in meses_orden:
-                            v = por_mes[key]
-                            with ui.row().classes("w-full py-1 px-2 gap-2 items-center border-t border-gray-200 text-sm"):
-                                ui.label(key).classes("min-w-[70px]")
-                                ui.label(str(v["units"])).classes("w-14 text-right")
-                                ui.label(f"$ {v['total']:,.0f}".replace(",", ".")).classes("w-24 text-right")
-
-        # Segunda fila: Envíos, Flex, Postventa, Reclamos y Mediaciones
-        envios_hoy: Dict[str, int] = {}
-        flex_count = 0
-        for ord_item in results:
-            dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
-            if not dt_str:
-                continue
+        def _pintar_tabla() -> None:
+            """Pinta la tabla según ventas_raw, filtro y agrupar."""
+            estado_val = str(filtro_estado_ref.get("val", "todas") or "todas")
+            ventas_filtradas = ventas_raw
+            if estado_val == "pagada":
+                ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered")]
+            elif estado_val == "cancelada":
+                ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower()]
+            ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
+            ventas_pagada = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
+            facturacion_pagada = sum(v["monto"] for v in ventas_pagada)
             try:
-                dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-            except Exception:
-                continue
-            if dt != today_local:
-                continue
-            # Tipo de envío: logistic_type (self_service=Flex, drop_off, xd_drop_off, cross_docking, fulfillment=Full)
-            ship = ord_item.get("shipping") or {}
-            lt = ship.get("logistic_type") or ord_item.get("logistic_type") or ship.get("mode") or "otro"
-            envios_hoy[lt] = envios_hoy.get(lt, 0) + 1
-            if str(lt).lower() in ("self_service", "flex"):
-                flex_count += 1
-
-        claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
-        mediat_val = (mediat.get("value") or mediat.get("excluded", {}).get("real_value") or 0) if mediat else 0
-        canc_val = (canc.get("value") or canc.get("excluded", {}).get("real_value") or 0)
-        postventa_total = claims_val + mediat_val + canc_val
-
-        with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-2 overflow-x-auto"):
-            # Envíos hoy por tipo
-            with ui.card().classes("flex-1 min-w-[220px] shrink-0 p-4 border-l-4 border-l-cyan-500"):
-                ui.label("Envíos hoy (por tipo)").classes("text-base font-semibold text-cyan-700 mb-2")
-                if not envios_hoy:
-                    ui.label("Sin envíos hoy").classes("text-sm text-gray-500")
+                ml_ganancia_val = float(
+                    str(get_cotizador_param("ml_ganancia_neta_venta", user["id"]) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")).replace(",", ".").strip()
+                )
+            except (ValueError, TypeError):
+                ml_ganancia_val = 0.1
+            ganancia_estimada = facturacion_pagada * ml_ganancia_val
+            hoy = datetime.now().date()
+            primer_dia = hoy.replace(day=1)
+            dias_total = (hoy - primer_dia).days + 1
+            total_monto_ok = sum(v["monto"] for v in ventas_ok)
+            total_unidades_ok = sum(v["cantidad"] for v in ventas_ok)
+            n_ventas_ok = len(ventas_ok)
+            ticket_promedio = total_monto_ok / n_ventas_ok if n_ventas_ok > 0 else 0
+            header_card.clear()
+            with header_card:
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total de ventas").classes("text-xs text-gray-600")
+                            ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total de días").classes("text-xs text-gray-600")
+                            ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Ventas diarias").classes("text-xs text-gray-600")
+                            ventas_diarias = total_monto_ok / dias_total if dias_total > 0 else 0
+                            ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total en $").classes("text-xs text-gray-600")
+                            ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Ticket promedio").classes("text-xs text-gray-600")
+                            ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Ganancia estimada").classes("text-xs text-gray-600")
+                            ui.label(f"$ {ganancia_estimada:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Ganancia Neta Calculada").classes("text-xs text-gray-600")
+                            ui.label(f"$ {ganancia_neta_ref.get('val', 0):,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+            result_area.clear()
+            with result_area:
+                if not ventas_raw:
+                    ui.label("No hay ventas desde el 1 de este mes.").classes("text-gray-500")
+                elif not ventas_filtradas:
+                    ui.label("No hay ventas con el filtro seleccionado.").classes("text-gray-500")
                 else:
-                    total_env = sum(envios_hoy.values())
-                    ui.label(f"Total: {total_env}").classes("text-sm text-cyan-600 mb-1")
-                    with ui.column().classes("gap-1 text-sm"):
-                        for k, v in sorted(envios_hoy.items(), key=lambda x: -x[1]):
-                            lbl = {"self_service": "Flex", "drop_off": "Drop-off", "xd_drop_off": "XD Drop-off",
-                                   "cross_docking": "Coleta", "fulfillment": "Full", "default": "ME1", "otro": "Otro"}.get(str(k).lower(), str(k))
-                            ui.label(f"• {lbl}: {v}").classes("text-gray-700")
+                    if agrupar_ref.get("val"):
+                        # Solo agrupar ventas con estado Concretada (paid)
+                        ventas_a_agrupar = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
+                        if not ventas_a_agrupar:
+                            ui.label("No hay ventas Concretadas para agrupar.").classes("text-gray-500")
+                        else:
+                            grupos: Dict[str, Dict[str, Any]] = {}
+                            for v in ventas_a_agrupar:
+                                key = v.get("agrupar_key") or (v.get("productos") or v.get("title", "—"))
+                                if key not in grupos:
+                                    grupos[key] = {
+                                        "productos": v.get("productos") or v.get("title", "—"),
+                                        "tipos": set(),
+                                        "item_ids": set(),
+                                        "cantidad": 0,
+                                        "monto": 0.0,
+                                        "dt": v.get("dt"),
+                                    }
+                                grupos[key]["tipos"].add(v.get("tipo", "—"))
+                                if v.get("item_id") and v.get("item_id") != "—":
+                                    grupos[key]["item_ids"].add(str(v["item_id"]))
+                                grupos[key]["cantidad"] += v["cantidad"]
+                                grupos[key]["monto"] += v["monto"]
+                            filas = list(grupos.values())
+                            sort_col = sort_col_ventas.get("val", "cantidad")
+                            asc = sort_asc_ventas.get("val", False)
+                            if sort_col == "productos":
+                                filas.sort(key=lambda x: str(x.get("productos", "")).lower(), reverse=not asc)
+                            elif sort_col == "monto":
+                                filas.sort(key=lambda x: x["monto"], reverse=not asc)
+                            else:
+                                filas.sort(key=lambda x: x["cantidad"], reverse=not asc)
+                            with ui.element("div").classes("w-full"):
+                                with ui.element("table").classes("w-full border-collapse text-sm"):
+                                    with ui.element("thead"):
+                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("#")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("ID publicación")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("Tipo")
+                                            with ui.element("th").classes("px-2 py-2 border text-left"):
+                                                ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.button("Cant.", on_click=lambda: _on_sort_ventas("cantidad")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("Margen")
+                                            with ui.element("th").classes("px-2 py-2 border text-left"):
+                                                ui.button("Monto total", on_click=lambda: _on_sort_ventas("monto")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                    with ui.element("tbody"):
+                                        for idx, v in enumerate(filas, 1):
+                                            productos_key = str(v["productos"])
+                                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    ui.label(str(idx))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    item_ids = v.get("item_ids", set())
+                                                    ids_list = sorted(item_ids)[:3]
+                                                    ids_str = ", ".join(ids_list)
+                                                    if len(item_ids) > 3:
+                                                        ids_str += "..."
+                                                    ui.label(ids_str or "—")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    tipos_str = ", ".join(sorted(v.get("tipos", set()))) or "—"
+                                                    ui.label(tipos_str).classes("text-xs")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
+                                                    ui.label(productos_key[:80]).classes("truncate")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    ui.label(str(v["cantidad"]))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
+                                                    _inp = ui.input(value=margenes_ref.get(productos_key, "")).props("dense").classes("w-20")
+                                                    _inp.on_value_change(lambda e, k=productos_key: _update_margen(k, str(getattr(e, "value", "") or "")))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
+                                                    ui.label(f"$ {v['monto']:,.0f}".replace(",", "."))
+                    else:
+                        sort_col = sort_col_ventas.get("val", "dt")
+                        asc = sort_asc_ventas.get("val", False)
+                        ventas_orden = sorted(
+                            ventas_filtradas,
+                            key=lambda x: _sort_key_ventas(x, sort_col),
+                            reverse=not asc,
+                        )
+                        with ui.element("div").classes("w-full"):
+                            with ui.element("table").classes("w-full border-collapse text-sm"):
+                                with ui.element("thead"):
+                                    with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                        cols_ventas = [
+                                            ("#", "#", "text-center"),
+                                            ("dt", "Fecha", "text-center"),
+                                            ("item_id", "ID publicación", "text-center"),
+                                            ("tipo", "Tipo", "text-center"),
+                                            ("productos", "Producto", "text-left"),
+                                            ("cantidad", "Cant.", "text-center"),
+                                            ("monto", "Monto", "text-right"),
+                                            ("status", "Estado", "text-center"),
+                                        ]
+                                        for col_key, h, align in cols_ventas:
+                                            th_cls = f"px-2 py-2 border {align or 'text-left'}"
+                                            with ui.element("th").classes(th_cls):
+                                                if col_key == "#":
+                                                    ui.label(h)
+                                                else:
+                                                    ui.button(h, on_click=lambda c=col_key: _on_sort_ventas(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                with ui.element("tbody"):
+                                    for idx, v in enumerate(ventas_orden, 1):
+                                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(str(idx))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v["fecha"])
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v.get("item_id", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v.get("tipo", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
+                                                ui.label(v.get("productos", v.get("title", "—"))[:80]).classes("truncate")
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(str(v["cantidad"]))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
+                                                ui.label(v["monto_fmt"])
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v["status"])
 
-            # Flex (órdenes self_service de hoy)
-            with ui.card().classes("flex-1 min-w-[180px] shrink-0 p-4 border-l-4 border-l-violet-500"):
-                ui.label("Flex (hoy)").classes("text-base font-semibold text-violet-700 mb-2")
-                ui.label(str(flex_count)).classes("text-2xl font-bold text-violet-800")
-                ui.label("órdenes").classes("text-sm text-gray-600")
+        async def _cargar_ventas_async() -> None:
+            nonlocal ventas_raw
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
+                if not seller_id:
+                    result_area.clear()
+                    with result_area:
+                        ui.label("No se pudo obtener el perfil del vendedor.").classes("text-negative")
+                    if filtro_controls_ref:
+                        filtro_controls_ref[0].set_visibility(True)
+                    return
+                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit=2000, offset=0)
+            except Exception as e:
+                result_area.clear()
+                with result_area:
+                    ui.label(f"❌ Error al cargar ventas: {e}").classes("text-negative")
+                if filtro_controls_ref:
+                    filtro_controls_ref[0].set_visibility(True)
+                return
+            raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
+            orders = [o for o in raw_orders if isinstance(o, dict)]
+            hoy = datetime.now().date()
+            primer_dia = hoy.replace(day=1)
+            orders_mes = []
+            for o in orders:
+                dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
+                if dt_str and isinstance(dt_str, str):
+                    try:
+                        dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                        if primer_dia <= dt <= hoy:
+                            orders_mes.append(o)
+                    except Exception:
+                        pass
+            item_ids_to_fetch: List[str] = []
+            for o in orders_mes:
+                for it in o.get("order_items") or o.get("items") or []:
+                    if isinstance(it, dict):
+                        obj = it.get("item") or it
+                        iid = (str(obj.get("id") or it.get("item_id") or "").strip() if isinstance(obj, dict) else str(it.get("item_id") or "").strip())
+                        if iid and iid not in item_ids_to_fetch:
+                            item_ids_to_fetch.append(iid)
+            item_id_to_catalog: Dict[str, bool] = {}
+            if item_ids_to_fetch and access_token:
+                def _fetch_catalog_info(ids: List[str]) -> List[Optional[Dict[str, Any]]]:
+                    out: List[Optional[Dict[str, Any]]] = []
+                    for i in range(0, len(ids), 20):
+                        batch = ids[i : i + 20]
+                        batch_bodies = ml_get_items_multiget_with_attributes(access_token, batch)
+                        out.extend(batch_bodies)
+                    return out
+                bodies = await run.io_bound(_fetch_catalog_info, item_ids_to_fetch)
+                for b in bodies:
+                    if b and isinstance(b, dict):
+                        iid = str(b.get("id", "") or b.get("item_id", "")).strip()
+                        if not iid:
+                            continue
+                        # Catálogo = tiene catalog_listing True O tiene catalog_product_id no vacío
+                        cpid = b.get("catalog_product_id")
+                        has_catalog_id = bool(cpid and str(cpid).strip())
+                        catalog_listing = b.get("catalog_listing")
+                        is_catalog = has_catalog_id or catalog_listing is True or str(catalog_listing).lower() in ("true", "1")
+                        item_id_to_catalog[iid] = is_catalog
+            ventas_mes: List[Dict[str, Any]] = []
+            status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
+            for ord_item in orders_mes:
+                dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
+                if not dt_str or not isinstance(dt_str, str):
+                    continue
+                try:
+                    dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if dt < primer_dia or dt > hoy:
+                    continue
+                ord_total = ord_item.get("total_amount") or ord_item.get("paid_amount")
+                if ord_total is None and ord_item.get("payments"):
+                    pay = ord_item["payments"][0] if isinstance(ord_item["payments"], list) else {}
+                    ord_total = pay.get("total_amount") or pay.get("total_paid_amount") or pay.get("transaction_amount")
+                try:
+                    ord_total = float(ord_total or 0)
+                except (TypeError, ValueError):
+                    ord_total = 0.0
+                status_raw = (ord_item.get("status") or "").strip().lower()
+                status_display = status_map.get(status_raw, status_raw or "—")
+                items = ord_item.get("order_items") or ord_item.get("items") or []
+                ord_qty = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    obj = it.get("item") or it
+                    qty = int(it.get("quantity") or it.get("qty") or 0)
+                    if qty == 0:
+                        continue
+                    unit_price = it.get("unit_price")
+                    if unit_price is None:
+                        unit_price = ord_total / ord_qty if ord_qty > 0 else 0
+                    try:
+                        unit_price = float(unit_price or 0)
+                    except (TypeError, ValueError):
+                        unit_price = 0
+                    item_monto = qty * unit_price
+                    titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
+                    item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                    catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip()
+                    catalog = False
+                    if catalog_id:
+                        catalog = True
+                    if isinstance(obj, dict) and (obj.get("catalog_listing") is True or str(obj.get("catalog_listing", "")).lower() in ("true", "1")):
+                        catalog = True
+                    if not catalog and (it.get("catalog_listing") is True or str(it.get("catalog_listing", "")).lower() in ("true", "1")):
+                        catalog = True
+                    if not catalog and it.get("catalog_product_id"):
+                        catalog = True
+                    if not catalog and item_id:
+                        catalog = item_id_to_catalog.get(item_id, False) or item_id_to_catalog.get(item_id.upper(), False) or item_id_to_catalog.get(item_id.lower(), False)
+                    tipo = "Catálogo" if catalog else "Propia"
+                    agrupar_key = catalog_id or item_id or titulo
+                    ventas_mes.append({
+                        "dt": dt,
+                        "fecha": dt.strftime("%d/%m/%Y"),
+                        "productos": titulo[:100],
+                        "title": titulo[:100],
+                        "tipo": tipo,
+                        "cantidad": qty,
+                        "monto": item_monto,
+                        "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
+                        "status": status_display,
+                        "status_raw": status_raw,
+                        "agrupar_key": agrupar_key,
+                        "item_id": item_id or "—",
+                    })
+            ventas_raw = ventas_mes
+            if filtro_controls_ref:
+                filtro_controls_ref[0].set_visibility(True)
+            _pintar_tabla()
 
-            # Postventa (claims + mediaciones + cancelaciones)
-            with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-4 border-l-4 border-l-amber-500"):
-                ui.label("Postventa").classes("text-base font-semibold text-amber-700 mb-2")
-                ui.label(f"Reclamos: {claims_val}").classes("text-sm text-gray-700")
-                ui.label(f"Mediaciones: {mediat_val}").classes("text-sm text-gray-700")
-                ui.label(f"Cancelaciones: {canc_val}").classes("text-sm text-gray-700")
-                ui.label(f"Total: {postventa_total}").classes("text-sm font-semibold mt-1")
+        filtro_controls_ref: List[Any] = []  # Referencia al row de controles para mostrar/ocultar
 
-            # Reclamos y Mediaciones (detalle)
-            with ui.card().classes("flex-1 min-w-[240px] shrink-0 p-4 border-l-4 border-l-rose-500"):
-                ui.label("Reclamos y Mediaciones").classes("text-base font-semibold text-rose-700 mb-2")
-                with ui.column().classes("gap-1.5 text-sm"):
-                    ui.label(f"Reclamos: {claims_val} ({_pct(rate_claims)})").classes("text-gray-700")
-                    ui.label(f"Mediaciones: {mediat_val} ({_pct(rate_mediat) if rate_mediat is not None else '—'})").classes("text-gray-700")
-                    ui.label(f"Cancelaciones: {canc_val} ({_pct(rate_canc)})").classes("text-gray-700")
+        with filtro_row:
+            filtro_controls = ui.row().classes("items-center gap-4")
+            filtro_controls.set_visibility(False)
+            filtro_controls_ref.append(filtro_controls)
+            with filtro_controls:
+                filtro_estado = ui.select(
+                    {"todas": "Todas", "pagada": "Concretada", "cancelada": "Cancelada"},
+                    value=filtro_estado_ref.get("val", "pagada"),
+                    label="Estado",
+                ).classes("w-36").bind_value(filtro_estado_ref, "val")
+                filtro_estado.on_value_change(lambda: _pintar_tabla())
+                btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
+                ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
+                ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps")
+
+        _cargar_ventas()
 
 
 def build_tab_precios(container) -> None:
-    """Pestaña Precios: tabla similar a Mis productos con precio editable al hacer clic."""
+    """Pestaña Productos: clic en el cuadradito de la fila para editar precio."""
     container.clear()
     user = require_login()
     if not user:
@@ -1513,6 +2261,9 @@ def build_tab_precios(container) -> None:
             return
 
         result_area = ui.column().classes("w-full gap-2")
+        include_paused_ref: Dict[str, bool] = {"val": True}  # Incluir pausadas (sin stock) para poder mostrarlas
+        filtro_stock_ref: Dict[str, str] = {"val": "con_stock"}  # Por defecto mostrar solo con stock
+
         with result_area:
             with ui.card().classes("w-full p-8 items-center gap-4"):
                 ui.spinner(size="xl")
@@ -1524,11 +2275,11 @@ def build_tab_precios(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     ui.label("Cargando productos...").classes("text-xl text-gray-700")
-            background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios), name="cargar_precios")
+            background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
 
-        async def _cargar_precios_async(area, token, usr, on_actualizar) -> None:
+        async def _cargar_precios_async(area, token, usr, on_actualizar, inc_paused_ref, f_stock_ref) -> None:
             try:
-                data = await run.io_bound(ml_get_my_items, token)
+                data = await run.io_bound(ml_get_my_items, token, inc_paused_ref.get("val", False))
             except requests.exceptions.HTTPError as e:
                 area.clear()
                 with area:
@@ -1540,18 +2291,18 @@ def build_tab_precios(container) -> None:
                     ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
                 return
             try:
-                await run.io_bound(ml_enriquecer_sale_price, data.get("results", []), token)
-                _mostrar_tabla_precios(area, data, token, usr, on_actualizar)
+                _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
                 area.clear()
                 with area:
                     ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
 
-        background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios), name="cargar_precios")
+        background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
 
 
 def _mostrar_tabla_precios(
-    result_area, data: Dict[str, Any], access_token: str, user: Dict[str, Any], on_actualizar=None
+    result_area, data: Dict[str, Any], access_token: str, user: Dict[str, Any], on_actualizar=None,
+    include_paused_ref: Optional[Dict[str, bool]] = None, filtro_stock_ref: Optional[Dict[str, str]] = None,
 ) -> None:
     """Pinta la tabla de precios con celda de precio clickable para editar."""
     def fmt_moneda(val: Any) -> str:
@@ -1588,6 +2339,19 @@ def _mostrar_tabla_precios(
         subtotal = precio * stock
         tipo = "Catalogo" if i.get("catalog_listing") is True else "Propia"
         tiene_promo = sale_price is not None and abs(float(sale_price) - float(precio or 0)) > 0.01
+        # Última modificación: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
+        def _fmt_fecha(s: Any) -> str:
+            if not s or not isinstance(s, str):
+                return "—"
+            try:
+                dt = datetime.strptime(s[:10], "%Y-%m-%d")
+                return dt.strftime("%d/%m/%Y")
+            except Exception:
+                return str(s)[:10] if s else "—"
+
+        last_upd = i.get("last_updated")
+        raw_fecha = last_upd[:10] if last_upd and isinstance(last_upd, str) and len(last_upd) >= 10 else None
+        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "—"
         items_loaded.append({
             **i,
             "price_fmt": fmt_moneda(precio),
@@ -1600,6 +2364,8 @@ def _mostrar_tabla_precios(
             "marca": i.get("marca") or "—",
             "color": i.get("color") or "—",
             "title": str(i.get("title") or ""),
+            "ult_modif_fmt": ult_modif_fmt,
+            "fecha_ult_modif": raw_fecha or "",  # YYYY-MM-DD para ordenar; vacío si no hay
         })
 
     publicaciones_totales = len(items_loaded)
@@ -1612,7 +2378,7 @@ def _mostrar_tabla_precios(
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
-        if row.get("tipo") != "Propia":
+        if row.get("tipo") not in ("Propia", "Prop Comb"):
             ui.notify("Solo se puede editar el precio de publicaciones propias.", color="warning")
             return
         item_id = str(row.get("id", ""))
@@ -1663,16 +2429,37 @@ def _mostrar_tabla_precios(
                     background_tasks.create(_actualizar_precio())
 
                 with ui.row().classes("w-full justify-end gap-2 mt-3"):
-                    ui.button("Cancelar", on_click=dialog.close).props("flat")
+                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
                     ui.button("Guardar", on_click=guardar, color="primary")
 
         dialog.open()
 
     current_filtrados: List[Dict[str, Any]] = []
     current_table: List[Any] = []
+    sort_col_ref: Dict[str, Any] = {"val": "title"}
+    sort_asc_ref: Dict[str, bool] = {"val": True}
 
-    def _generar_jpg_precios(filtrados_actuales: List[Dict[str, Any]]) -> Optional[str]:
-        """Genera un JPG con la tabla de stock. Devuelve ruta del archivo o None si falla."""
+    def _sort_key_precios(row: Dict[str, Any], col_name: str) -> Any:
+        """Devuelve valor para ordenar según el tipo de columna."""
+        if col_name in ("price", "subtotal"):
+            return float(row.get(col_name) or 0)
+        if col_name in ("available_quantity", "sold_quantity"):
+            return int(row.get(col_name) or 0)
+        if col_name == "fecha_ult_modif":
+            return row.get("fecha_ult_modif") or ""
+        return str(row.get(col_name) or "").lower()
+
+    def _on_sort_click(col_name: str) -> None:
+        """Ordena por columna al hacer clic en el encabezado."""
+        if sort_col_ref.get("val") == col_name:
+            sort_asc_ref["val"] = not sort_asc_ref.get("val", True)
+        else:
+            sort_col_ref["val"] = col_name
+            sort_asc_ref["val"] = True
+        filtrar_y_pintar()
+
+    def _generar_jpg_precios(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> Optional[str]:
+        """Genera un JPG con la tabla de stock. include_ventas=True agrega columna Ventas al final."""
         try:
             from PIL import Image, ImageDraw, ImageFont
         except ImportError:
@@ -1681,8 +2468,12 @@ def _mostrar_tabla_precios(
             return None
         ahora = datetime.now()
         header_nt = f"Stock {ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
-        # Columnas: Stock dd-mm-aa, Marca, Producto, Color, Stock
+        # Columnas: Stock dd-mm-aa, Marca, Producto, Color, Stock [, Ventas]
         col_widths = [160, 130, 520, 100, 100]
+        headers = [header_nt, "Marca", "Producto", "Color", "Stock"]
+        if include_ventas:
+            col_widths = [160, 130, 440, 100, 100, 100]
+            headers.append("Ventas")
         row_h = 28
         header_h = 36
         pad = 12
@@ -1732,7 +2523,6 @@ def _mostrar_tabla_precios(
         header_border = 2
         draw.rectangle([pad, pad, w - pad, pad + header_h], outline=(0, 0, 0), width=header_border)
         x = pad
-        headers = [header_nt, "Marca", "Producto", "Color", "Stock"]
         for cw, title in zip(col_widths, headers):
             draw.rectangle([x, pad, x + cw, pad + header_h], fill=(25, 118, 210), outline=(0, 0, 0), width=header_border)
             _draw_centered(x, pad, cw, header_h, str(title), (255, 255, 255), font_bold)
@@ -1748,6 +2538,14 @@ def _mostrar_tabla_precios(
                 r.get("stock_fmt", "0"),
             ]
             cell_align = ["center", "center", "left", "center", "center"]
+            if include_ventas:
+                ventas_val = r.get("sold_quantity")
+                try:
+                    ventas_str = fmt_miles(ventas_val) if ventas_val is not None else "0"
+                except Exception:
+                    ventas_str = "0"
+                cells.append(ventas_str)
+                cell_align.append("center")
             for cw, cell, align in zip(col_widths, cells, cell_align):
                 draw.rectangle([x, y, x + cw, y + row_h], outline=(200, 200, 200))
                 if align == "left":
@@ -1761,9 +2559,10 @@ def _mostrar_tabla_precios(
         img.save(out.name, "JPEG", quality=90)
         return out.name
 
-    def imprimir_tabla() -> None:
+    def imprimir_tabla(include_ventas: bool = False) -> None:
         client = context.client
         tbl = current_table[0] if current_table else None
+        imprimir_ventas = include_ventas
 
         async def _imprimir_async() -> None:
             rows_to_print = current_filtrados
@@ -1781,7 +2580,7 @@ def _mostrar_tabla_precios(
             profile = await run.io_bound(ml_get_user_profile, access_token)
             nickname = (profile or {}).get("nickname") or "Usuario"
             safe_name = "".join(c for c in str(nickname) if c.isalnum() or c in "_-").strip() or "Usuario"
-            path = _generar_jpg_precios(rows_to_print)
+            path = _generar_jpg_precios(rows_to_print, include_ventas=imprimir_ventas)
             if path:
                 ahora = datetime.now()
                 nombre_archivo = f"{safe_name}_{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}-{ahora.hour:02d}-{ahora.minute:02d}.jpg"
@@ -1811,9 +2610,11 @@ def _mostrar_tabla_precios(
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "sale_price_fmt", "label": "Promo", "field": "sale_price_fmt", "sortable": False, "align": "right", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
+        {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
         {"name": "tipo", "label": "Tipo", "field": "tipo", "sortable": True, "align": "left", "headerStyle": header_style},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
+        {"name": "fecha_ult_modif", "label": "Última modificación", "field": "ult_modif_fmt", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 110px", ":sort": "(a, b, rowA, rowB) => (rowA.fecha_ult_modif || '').localeCompare(rowB.fecha_ult_modif || '')"},
     ]
 
     def filtrar_y_pintar() -> None:
@@ -1823,6 +2624,23 @@ def _mostrar_tabla_precios(
             filtrados = [x for x in filtrados if x.get("tipo") == "Propia"]
         elif tipo_val == "catalogo":
             filtrados = [x for x in filtrados if x.get("tipo") == "Catalogo"]
+        elif tipo_val == "combinadas":
+            # Solo propias; ventas = propia + catálogo relacionado (mismo catalog_product_id)
+            catalogos = [x for x in items_loaded if x.get("tipo") == "Catalogo"]
+            ventas_por_catalog_id: Dict[str, int] = {}
+            for c in catalogos:
+                cpid = c.get("catalog_product_id")
+                if cpid:
+                    ventas_por_catalog_id[str(cpid)] = ventas_por_catalog_id.get(str(cpid), 0) + (c.get("sold_quantity") or 0)
+            propias = [x for x in filtrados if x.get("tipo") == "Propia"]
+            filtrados = []
+            for p in propias:
+                row = dict(p)
+                propia_ventas = p.get("sold_quantity") or 0
+                catalog_ventas = ventas_por_catalog_id.get(str(p.get("catalog_product_id") or ""), 0)
+                row["sold_quantity"] = propia_ventas + catalog_ventas
+                row["tipo"] = "Prop Comb"
+                filtrados.append(row)
         stock_val = getattr(filtro_stock, "value", "con_stock")
         if stock_val == "con_stock":
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) > 0]
@@ -1831,43 +2649,66 @@ def _mostrar_tabla_precios(
         awei_val = getattr(filtro_awei, "value", "no_incluye")
         if awei_val == "no_incluye":
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
-        filtrados = sorted(filtrados, key=lambda r: (str(r.get("title") or "").lower()))
+        period_val = getattr(filtro_periodo, "value", "historica")
+        if period_val and period_val != "historica":
+            hoy = datetime.now().date()
+            dias_map = {"1_mes": 30, "3_meses": 90, "6_meses": 180, "1_anio": 365}
+            dias = dias_map.get(period_val, 0)
+            if dias > 0:
+                desde = hoy - timedelta(days=dias)
+                filtrados = [
+                    x for x in filtrados
+                    if x.get("fecha_ult_modif") and x["fecha_ult_modif"] >= desde.strftime("%Y-%m-%d")
+                ]
+        col_sort = sort_col_ref.get("val", "title")
+        asc = sort_asc_ref.get("val", True)
+        filtrados = sorted(filtrados, key=lambda r: _sort_key_precios(r, col_sort), reverse=not asc)
         current_filtrados.clear()
         current_filtrados.extend(filtrados)
 
         table_container.clear()
         with table_container:
-            tbl_precios = ui.table(
-                columns=columns_precios,
-                rows=filtrados,
-                row_key="id",
-                pagination=0,
-            ).classes("w-full").props("flat bordered dense")
-
-            # Solo abrir editar al hacer clic en la celda Precio (columna index 4)
-            PRECIO_COL_INDEX = 4
-            def on_row_click_precios(e):
-                args = getattr(e, "args", None)
-                if not args or not isinstance(args, list) or len(args) < 2:
-                    return
-                evt, row = args[0], args[1]
-                if not isinstance(row, dict) or row.get("tipo") != "Propia":
-                    return
-                # Verificar columna: evt.target.cellIndex o evt.column
-                col_idx = None
-                if isinstance(evt, dict):
-                    t = evt.get("target") or evt.get("srcElement")
-                    if isinstance(t, dict) and "cellIndex" in t:
-                        col_idx = t.get("cellIndex")
-                    elif isinstance(evt.get("column"), (int, float)):
-                        col_idx = int(evt["column"])
-                # Solo editar si se hizo clic en columna Precio; si evt no trae columna, permitir (fallback)
-                if col_idx == PRECIO_COL_INDEX or col_idx is None:
-                    abrir_editar_precio(row)
-
-            tbl_precios.on("rowClick", on_row_click_precios)
+            # Tabla custom (sin ui.table) para evitar error __call__ del slot; precio clickeable. Sin scroll interno (usa scroll de la página).
+            with ui.element("div").classes("w-full"):
+                with ui.element("table").classes("w-full border-collapse text-sm"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                            for col in columns_precios:
+                                align = "text-right" if col.get("align") == "right" else "text-left"
+                                col_name = col.get("name", col.get("field", ""))
+                                sortable = col.get("sortable", True)
+                                with ui.element("th").classes(f"px-2 py-2 border {align}"):
+                                    if sortable:
+                                        ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                    else:
+                                        ui.label(col["label"])
+                    with ui.element("tbody"):
+                        for row in filtrados:
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                for col in columns_precios:
+                                    field = col.get("field", col["name"])
+                                    val = row.get(field)
+                                    if val is None:
+                                        val = row.get(col["name"])
+                                    align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
+                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-sm"):
+                                        if col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
+                                            precio_str = fmt_moneda(val) if val is not None else "$0"
+                                            ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer font-medium text-primary hover:underline")
+                                        elif col["name"] == "price":
+                                            ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        elif col["name"] == "sale_price_fmt":
+                                            ui.label(str(val) if val is not None else "-")
+                                        elif col["name"] in ("available_quantity", "sold_quantity"):
+                                            ui.label(fmt_miles(val) if val is not None else "0")
+                                        elif col["name"] == "subtotal":
+                                            ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        elif col["name"] == "status":
+                                            s = str(val or "").lower()
+                                            ui.label("Activa" if s == "active" else "Suspendida")
+                                        else:
+                                            ui.label(str(val) if val is not None else "—")
             current_table.clear()
-            current_table.append(tbl_precios)
 
     with result_area:
         with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
@@ -1901,12 +2742,12 @@ def _mostrar_tabla_precios(
             ui.label("Filtros:").classes("text-sm")
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
-                value="con_stock",
+                value=filtro_stock_ref.get("val", "con_stock") if filtro_stock_ref else "con_stock",
                 label="Stock",
             ).classes("w-36")
             filtro_tipo = ui.select(
-                {"ambas": "Ambas", "propias": "Propias", "catalogo": "Catalogo"},
-                value="propias",
+                {"ambas": "Ambas", "propias": "Propias", "catalogo": "Catalogo", "combinadas": "Combinadas"},
+                value="combinadas",
                 label="Tipo",
             ).classes("w-36")
             filtro_awei = ui.select(
@@ -1914,12 +2755,31 @@ def _mostrar_tabla_precios(
                 value="no_incluye",
                 label="Awei",
             ).classes("w-36")
-            ui.button("Imprimir stock", on_click=imprimir_tabla, color="primary").props("icon=print")
+            filtro_periodo = ui.select(
+                {"historica": "Histórica", "1_mes": "1 mes", "3_meses": "3 meses", "6_meses": "6 meses", "1_anio": "1 año"},
+                value="historica",
+                label="Última modificación",
+            ).classes("w-36")
+            ui.button("Imprimir stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print")
+            ui.button("Imprimir ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print")
         table_container = ui.column().classes("w-full")
 
-    filtro_stock.on_value_change(lambda _: filtrar_y_pintar())
-    filtro_tipo.on_value_change(lambda _: filtrar_y_pintar())
-    filtro_awei.on_value_change(lambda _: filtrar_y_pintar())
+    def on_filtro_stock_change(*args):
+        e = args[0] if args else None
+        val = getattr(e, "value", "con_stock") if e else "con_stock"
+        if filtro_stock_ref:
+            filtro_stock_ref["val"] = val
+        if val in ("sin_stock", "todas") and include_paused_ref and not include_paused_ref.get("val"):
+            include_paused_ref["val"] = True
+            if on_actualizar:
+                on_actualizar()
+            return
+        filtrar_y_pintar()
+
+    filtro_stock.on_value_change(on_filtro_stock_change)
+    filtro_tipo.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
 
 
@@ -1934,7 +2794,9 @@ def build_tab_busqueda() -> None:
     with ui.column().classes("w-full gap-4"):
         ui.label("Búsqueda en MercadoLibre").classes("text-xl font-semibold")
         with ui.row().classes("items-center gap-3"):
-            input_busqueda = ui.input("Texto a buscar").classes("w-96").props("outlined dense")
+            input_busqueda = ui.input(
+                "Texto o ID de publicación (ej: MLA1996852282)"
+            ).classes("w-96").props("outlined dense")
             input_busqueda.on("keydown.enter", lambda: on_buscar())
 
             def on_buscar() -> None:
@@ -2019,18 +2881,59 @@ def build_tab_busqueda() -> None:
                 "has_active_listing": r.get("has_active_listing", True),
             }
 
+        def _looks_like_ml_item_id(s: str) -> bool:
+            """Detecta IDs tipo MLA1996852282 (3 letras + dígitos)."""
+            s = s.strip().upper()
+            return len(s) >= 10 and s[:3].isalpha() and s[3:].isdigit()
+
         async def _buscar_async() -> None:
             texto = (input_busqueda.value or "").strip()
             if not texto:
-                ui.notify("Ingresá un texto para buscar", color="warning")
+                ui.notify("Ingresá un texto o ID de publicación", color="warning")
                 return
             results_container.clear()
             with results_container:
                 ui.spinner(size="lg")
                 ui.label("Buscando en MercadoLibre...").classes("text-gray-600")
+            # Si parece ID de publicación (ej MLA1996852282), obtener por ID; si no existe, buscar
+            es_item_id = _looks_like_ml_item_id(texto)
+            raw_item = None
+            if es_item_id:
+                try:
+                    raw_item = await run.io_bound(ml_get_item, access_token, texto)
+                except Exception:
+                    raw_item = None
+                if raw_item is not None:
+                    mi_seller_id = None
+                    if access_token:
+                        try:
+                            profile = await run.io_bound(ml_get_user_profile, access_token)
+                            mi_seller_id = str((profile or {}).get("id") or "")
+                        except Exception:
+                            pass
+                    seller_id = str(raw_item.get("seller_id") or "")
+                    es_propia = mi_seller_id and seller_id and mi_seller_id == seller_id
+                    results_container.clear()
+                    with results_container:
+                        lbl_tipo = "Tu publicación" if es_propia else "Publicación de otro vendedor"
+                        ui.label(f"Datos que devuelve MercadoLibre para esta publicación ({lbl_tipo}):").classes(
+                            "text-base font-semibold mb-2"
+                        )
+                        json_str = html.escape(json.dumps(raw_item, indent=2, ensure_ascii=False))
+                        ui.html(
+                            f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 500px;">{json_str}</pre>'
+                        )
+                        perm = (raw_item.get("permalink") or "").strip()
+                        if perm:
+                            ui.link("Ver en MercadoLibre", perm, new_tab=True).classes("text-primary mt-2")
+                    return
+            # Búsqueda por texto o por ID cuando ml_get_item no encontró nada
             try:
                 solo_propias = getattr(solo_propias_switch, "value", True)
                 data = await run.io_bound(ml_search_similar, texto, 50, access_token, solo_propias)
+                # Para IDs: si no hay resultados con propias, probar sin filtrar por propias
+                if es_item_id and (not data.get("results") or len(data.get("results", [])) == 0) and solo_propias:
+                    data = await run.io_bound(ml_search_similar, texto, 50, access_token, False)
             except Exception as err:
                 data = {"results": [], "error": str(err)}
             results = data.get("results", [])[:50]
@@ -2050,6 +2953,7 @@ def build_tab_busqueda() -> None:
                     if full is None:
                         full = await run.io_bound(ml_get_item, access_token, item_id)
                     if full and isinstance(full, dict):
+                        r["_full_item"] = full  # Para mostrar JSON completo cuando es búsqueda por ID
                         if full.get("price") is not None:
                             r["price"] = full["price"]
                         elif access_token:
@@ -2101,9 +3005,11 @@ def build_tab_busqueda() -> None:
                         sid = str(r.get("seller_id") or "")
                         if sid and sid in nicknames:
                             r["seller"] = {"id": sid, "nickname": nicknames[sid]}
+            # Para búsqueda por ID: mostrar JSON completo; para texto: tabla resumida
+            mostrar_como_json = es_item_id and results
             rows = [_norm_busqueda(r, from_catalog) for r in results]
             filter_showed_all = False
-            if getattr(solo_activas_stock_switch, "value", True):
+            if not mostrar_como_json and getattr(solo_activas_stock_switch, "value", True):
                 rows_filtradas = [
                     x for x in rows
                     if x.get("has_active_listing", True)
@@ -2116,7 +3022,8 @@ def build_tab_busqueda() -> None:
                     rows = rows_filtradas
                 elif rows:
                     filter_showed_all = True
-            rows.sort(key=lambda x: x["price"])
+            if not mostrar_como_json:
+                rows.sort(key=lambda x: x["price"])
             results_container.clear()
             with results_container:
                 if data.get("error"):
@@ -2126,8 +3033,25 @@ def build_tab_busqueda() -> None:
                         from urllib.parse import quote
                         busq_url = f"https://listado.mercadolibre.com.ar/{quote(texto_busq)}"
                         ui.link("Buscar en MercadoLibre", busq_url, new_tab=True).classes("text-primary mt-2")
-                elif not rows:
+                elif not (rows if not mostrar_como_json else results):
                     ui.label("No se encontraron resultados.").classes("text-gray-500")
+                elif mostrar_como_json:
+                    ui.label("Datos que devuelve MercadoLibre para las publicaciones encontradas:").classes(
+                        "text-base font-semibold mb-3"
+                    )
+                    with ui.element("div").classes("w-full overflow-auto").style("max-height: 70vh;"):
+                        for i, r in enumerate(results):
+                            full_display = r.get("_full_item")
+                            if not full_display:
+                                full_display = {k: v for k, v in r.items() if k != "_full_item"}
+                            tit = (full_display.get("title") or full_display.get("name") or f"Resultado {i+1}")[:80]
+                            with ui.card().classes("w-full mt-2"):
+                                ui.label(tit).classes("font-semibold text-primary mb-2")
+                                json_str = html.escape(json.dumps(full_display, indent=2, ensure_ascii=False))
+                                ui.html(f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 400px;">{json_str}</pre>')
+                                perm = (full_display.get("permalink") or "").strip()
+                                if perm:
+                                    ui.link("Ver en MercadoLibre", perm, new_tab=True).classes("text-primary text-sm mt-1")
                 else:
                     if filter_showed_all:
                         ui.label(
@@ -2244,9 +3168,15 @@ def build_tab_pesos() -> None:
         except (TypeError, ValueError):
             return 0.0
 
-    with ui.column().classes("gap-4 p-4"):
-        cont = ui.column().classes("gap-2")
+    def _fmt_peso_display(val: Any) -> str:
+        """Formatea peso para mostrar con punto como separador de miles."""
+        n = _parse_peso(val)
+        return f"{int(n):,}".replace(",", ".") if n == int(n) else f"{n:,.1f}".replace(",", ".")
+
+    with ui.column().classes("gap-4 p-4 w-full"):
+        cont = ui.column().classes("gap-2 w-full overflow-x-auto")
         edit_rows: List[Dict[str, Any]] = []
+        row_to_inputs: List[tuple] = []
 
         def toggle_sort(col: str) -> None:
             if sort_col_pesario[0] == col:
@@ -2256,20 +3186,51 @@ def build_tab_pesos() -> None:
                 sort_asc_pesario[0] = True
             repintar()
 
+        def sync_inputs_to_rows() -> None:
+            for row_ref, rinputs in row_to_inputs:
+                if row_ref in pesario_data:
+                    row_ref["marca"] = str(rinputs["marca"].value or "")
+                    row_ref["producto"] = str(rinputs["producto"].value or "")
+                    row_ref["peso"] = str(rinputs["peso"].value or "")
+                    row_ref["fuente"] = str(rinputs["fuente"].value or "")
+
         def repintar() -> None:
+            sync_inputs_to_rows()
             cont.clear()
             edit_rows.clear()
+            row_to_inputs.clear()
             datos = list(pesario_data)
-            if sort_col_pesario[0] in ("marca", "producto"):
+            if sort_col_pesario[0] == "marca":
                 rev = not sort_asc_pesario[0]
-                datos.sort(key=lambda r: str(r.get(sort_col_pesario[0], "")).lower(), reverse=rev)
+                datos.sort(key=lambda r: str(r.get("marca", "")).lower(), reverse=rev)
+            elif sort_col_pesario[0] == "producto":
+                rev = not sort_asc_pesario[0]
+                datos.sort(key=lambda r: str(r.get("producto", "")).lower(), reverse=rev)
+            elif sort_col_pesario[0] == "peso":
+                rev = not sort_asc_pesario[0]
+                datos.sort(key=lambda r: _parse_peso(r.get("peso")), reverse=rev)
+            elif sort_col_pesario[0] == "fuente":
+                rev = not sort_asc_pesario[0]
+                datos.sort(key=lambda r: _parse_peso(r.get("fuente")), reverse=rev)
+            elif sort_col_pesario[0] == "total":
+                rev = not sort_asc_pesario[0]
+                datos.sort(key=lambda r: _parse_peso(r.get("peso")) + _parse_peso(r.get("fuente")), reverse=rev)
             with cont:
-                with ui.element("table").classes("border-collapse text-xs").style("table-layout: fixed; max-width: 640px; width: 640px; line-height: 1.2;"):
+                col_widths = {"marca": "100px", "producto": "399px", "peso": "70px", "fuente": "70px", "total": "90px", "ordenar": "56px", "borrar": "48px"}
+                with ui.element("table").classes("border-collapse text-xs shrink-0").style("table-layout: fixed; width: 833px; min-width: 833px; line-height: 1.2;"):
+                    with ui.element("colgroup"):
+                        ui.element("col").style("width: " + col_widths["marca"])
+                        ui.element("col").style("width: " + col_widths["producto"])
+                        ui.element("col").style("width: " + col_widths["peso"])
+                        ui.element("col").style("width: " + col_widths["fuente"])
+                        ui.element("col").style("width: " + col_widths["total"])
+                        ui.element("col").style("width: " + col_widths["ordenar"])
+                        ui.element("col").style("width: " + col_widths["borrar"])
                     with ui.element("thead"):
                         with ui.element("tr").classes("bg-blue-100 dark:bg-blue-900"):
-                            for col_key, h in [("marca", "Marca"), ("producto", "Producto"), (None, "Peso (gr)"), (None, "Fuente (gr)"), (None, "Total (gr)"), (None, "Borrar")]:
+                            for col_key, h in [("marca", "Marca"), ("producto", "Producto"), ("peso", "Peso (gr)"), ("fuente", "Fuente (gr)"), ("total", "Total (gr)"), (None, "Ordenar"), (None, "Borrar")]:
                                 th_cls = "font-semibold px-1 py-0.5 border border-gray-300"
-                                th_cls += " text-left" if col_key else " text-center"
+                                th_cls += " text-left" if col_key in ("marca", "producto") else " text-center"
                                 if col_key:
                                     th_cls += " cursor-pointer hover:bg-blue-200"
                                 th = ui.element("th").classes(th_cls)
@@ -2280,12 +3241,14 @@ def build_tab_pesos() -> None:
                     with ui.element("tbody"):
                         for row_idx, row in enumerate(datos):
                             rinputs: Dict[str, Any] = {}
+                            row_ref = row
+                            idx_in_data = pesario_data.index(row) if row in pesario_data else row_idx
                             with ui.element("tr"):
                                 for col in ["marca", "producto", "peso", "fuente"]:
                                     val = str(row.get(col, ""))
+                                    if col in ("peso", "fuente") and val and _parse_peso(val) != 0:
+                                        val = _fmt_peso_display(val)
                                     td_el = ui.element("td").classes("border border-gray-200").style("padding: 2px 4px; vertical-align: middle;")
-                                    if col == "producto":
-                                        td_el.style("min-width: 266px;")  # 33% más que 200px
                                     td_align = "text-center" if col in ("peso", "fuente") else ""
                                     with td_el:
                                         inp = ui.input(value=val).classes("w-full border-0 text-xs " + td_align).props("dense")
@@ -2294,30 +3257,48 @@ def build_tab_pesos() -> None:
                                     p0 = _parse_peso(row.get("peso"))
                                     f0 = _parse_peso(row.get("fuente"))
                                     t0 = p0 + f0
-                                    total_txt = str(int(t0)) if t0 == int(t0) else f"{t0:.1f}"
+                                    total_txt = _fmt_peso_display(str(int(t0)) if t0 == int(t0) else f"{t0:.1f}")
                                     lbl_total = ui.label(total_txt).classes("px-1")
 
                                     def actualizar_total(lbl=lbl_total, rinp=rinputs) -> None:
                                         p = _parse_peso(rinp["peso"].value)
                                         f = _parse_peso(rinp["fuente"].value)
                                         t = p + f
-                                        lbl.text = str(int(t)) if t == int(t) else f"{t:.1f}"
+                                        txt = _fmt_peso_display(str(int(t)) if t == int(t) else f"{t:.1f}")
+                                        lbl.text = txt
 
                                     rinputs["peso"].on_value_change(actualizar_total)
                                     rinputs["fuente"].on_value_change(actualizar_total)
                                 with ui.element("td").classes("border border-gray-200 w-8 text-center").style("padding: 2px 4px; vertical-align: middle;"):
+                                    def subir(i: int) -> None:
+                                        if 0 <= i < len(pesario_data) and i > 0:
+                                            sync_inputs_to_rows()
+                                            pesario_data[i], pesario_data[i - 1] = pesario_data[i - 1], pesario_data[i]
+                                            repintar()
+                                    def bajar(i: int) -> None:
+                                        if 0 <= i < len(pesario_data) and i < len(pesario_data) - 1:
+                                            sync_inputs_to_rows()
+                                            pesario_data[i], pesario_data[i + 1] = pesario_data[i + 1], pesario_data[i]
+                                            repintar()
+                                    with ui.row().classes("gap-0 justify-center"):
+                                        ui.button("▲", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                with ui.element("td").classes("border border-gray-200 w-8 text-center").style("padding: 2px 4px; vertical-align: middle;"):
                                     def borrar_pesario(rref: Dict[str, Any]) -> None:
+                                        sync_inputs_to_rows()
                                         if rref in pesario_data:
                                             pesario_data.remove(rref)
                                             repintar()
-                                    ui.button("×", on_click=lambda r=row: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
+                                    ui.button("×", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
+                            row_to_inputs.append((row_ref, rinputs))
                             edit_rows.append(rinputs)
 
         repintar()
 
         def guardar() -> None:
+            sync_inputs_to_rows()
             new_data = []
-            for rinputs in edit_rows:
+            for row_ref, rinputs in row_to_inputs:
                 p = _parse_peso(rinputs["peso"].value)
                 f = _parse_peso(rinputs["fuente"].value)
                 t = p + f
@@ -2340,6 +3321,358 @@ def build_tab_pesos() -> None:
         with ui.row().classes("gap-2"):
             ui.button("Agregar fila", on_click=agregar_fila, color="primary")
             ui.button("Guardar Tabla", on_click=guardar, color="secondary")
+
+
+def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int) -> Dict[str, float]:
+    """Calcula ventas y ganancias del mes desde órdenes ML (como en Estadísticas)."""
+    hoy = datetime.now().date()
+    primer_dia = hoy.replace(day=1)
+    raw = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
+    ventas_mes_actual_monto = 0.0
+    for o in raw:
+        if not isinstance(o, dict):
+            continue
+        dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
+        if not dt_str:
+            continue
+        try:
+            dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if not (primer_dia <= dt <= hoy):
+            continue
+        amt = o.get("total_amount") or o.get("paid_amount")
+        if amt is None and o.get("payments"):
+            p = o["payments"][0] if isinstance(o["payments"], list) else {}
+            amt = p.get("total_amount") or p.get("total_paid_amount") or p.get("transaction_amount")
+        try:
+            ventas_mes_actual_monto += float(amt or 0)
+        except (TypeError, ValueError):
+            pass
+    dias_transcurridos = (hoy - primer_dia).days + 1
+    dias_del_mes = calendar.monthrange(hoy.year, hoy.month)[1]
+    venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
+    venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+    try:
+        m = get_cotizador_param("ml_ganancia_neta_venta", user_id) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")
+        margen_val = float(str(m).replace(",", ".").strip())
+    except (ValueError, TypeError):
+        margen_val = 0.1
+    ganancia_a_fecha = ventas_mes_actual_monto * margen_val
+    ganancia_estimada_mes = venta_estimada_mes * margen_val
+    return {
+        "venta_a_fecha": ventas_mes_actual_monto,
+        "venta_estimada_mes": venta_estimada_mes,
+        "ganancia_a_fecha": ganancia_a_fecha,
+        "ganancia_estimada_mes": ganancia_estimada_mes,
+    }
+
+
+def build_tab_balance(container) -> None:
+    """Pestaña Balance: Gastos (editable), Ingresos (ventas/ganancias) y Resultados."""
+    user = require_login()
+    if not user:
+        return
+
+    uid = user["id"]
+    access_token = get_ml_access_token(uid)
+    gastos_data: List[Dict[str, Any]] = list(get_cotizador_tabla("gastos", uid))
+    sort_col_gastos: List[Optional[str]] = [None]
+    sort_asc_gastos: List[bool] = [True]
+
+    def _parse_importe(s: Any) -> float:
+        if s is None or s == "":
+            return 0.0
+        try:
+            # Quitar puntos de miles, coma decimal
+            raw = str(s).replace(".", "").replace(",", ".").strip()
+            return float(raw) if raw else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _fmt_importe_display(val: Any) -> str:
+        """Formatea importe para mostrar: 1.234.567 (punto miles, coma decimal)"""
+        n = _parse_importe(val)
+        if n == 0 and (val is None or str(val).strip() == ""):
+            return ""
+        if abs(n - int(n)) < 0.01:
+            return f"{int(n):,}".replace(",", ".")
+        entera = int(n)
+        dec = round((n - entera) * 100)
+        return f"{entera:,}".replace(",", ".") + f",{dec:02d}"
+
+    with container:
+        with ui.column().classes("w-full p-8 items-center gap-4"):
+            ui.spinner(size="xl")
+            ui.label("Cargando Balance...").classes("text-xl text-gray-700")
+    ingresos_ref: Dict[str, Any] = {"data": None}
+
+    async def _cargar_y_pintar() -> None:
+        orders_data: Dict[str, Any] = {}
+        if access_token:
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
+                if seller_id:
+                    orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
+                ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid)
+            except Exception:
+                ingresos_ref["data"] = None
+        else:
+            ingresos_ref["data"] = None
+        _pintar_contenido()
+
+    def _pintar_contenido() -> None:
+        container.clear()
+        with container:
+            header_card = ui.column().classes("w-full mb-2 p-4")
+            with ui.row().classes("w-full gap-4 p-4 items-start flex-wrap"):
+                # Columna izquierda: Gastos (tabla + botones)
+                with ui.column().classes("gap-2").style("max-width: 500px;"):
+                    with ui.card().classes("w-full p-4"):
+                        ui.label("Gastos").classes("text-lg font-semibold mb-2")
+                        cont = ui.column().classes("w-full gap-2")
+                        edit_rows_ref: List[Dict[str, Any]] = []
+                        gastos_buttons_row = ui.row().classes("gap-2 mt-2")
+                # Columna derecha: Ingresos y Resultados
+                with ui.column().classes("gap-2").style("max-width: 400px;"):
+                    ingresos_card = ui.column().classes("w-full gap-1")
+                    resultados_card = ui.column().classes("w-full gap-1")
+        def toggle_sort(col: str) -> None:
+            if sort_col_gastos[0] == col:
+                sort_asc_gastos[0] = not sort_asc_gastos[0]
+            else:
+                sort_col_gastos[0] = col
+                sort_asc_gastos[0] = True
+            repintar()
+
+        row_to_inputs: List[tuple] = []  # (row, rinputs) para mapear al guardar
+
+        def sync_inputs_to_rows() -> None:
+            """Copia valores de inputs a row dicts antes de repintar."""
+            for row, rinputs in row_to_inputs:
+                row["gasto"] = str(rinputs["gasto"].value or "")
+                row["importe"] = str(rinputs["importe"].value or "")
+
+        def _pintar_header() -> None:
+            sync_inputs_to_rows()
+            total_importes = sum(_parse_importe(r.get("importe")) for r in gastos_data)
+            inc = ingresos_ref["data"]
+            venta_fecha = inc.get("venta_a_fecha", 0) if inc else 0
+            ganancia_fecha = inc.get("ganancia_a_fecha", 0) if inc else 0
+            resultado_fecha = ganancia_fecha - total_importes
+            facturacion_est = inc.get("venta_estimada_mes", 0) if inc else 0
+            ganancia_bruta_est = inc.get("ganancia_estimada_mes", 0) if inc else 0
+            ganancia_neta_est = ganancia_bruta_est - total_importes
+            dolar_str = get_cotizador_param("dolar_oficial", uid) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1000")
+            dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 0
+            if dolar_oficial <= 0:
+                dolar_oficial = 1000
+            venta_fecha_usd = venta_fecha / dolar_oficial
+            ganancia_fecha_usd = ganancia_fecha / dolar_oficial
+            total_importes_usd = total_importes / dolar_oficial
+            resultado_fecha_usd = resultado_fecha / dolar_oficial
+            facturacion_est_usd = facturacion_est / dolar_oficial
+            ganancia_bruta_est_usd = ganancia_bruta_est / dolar_oficial
+            ganancia_neta_est_usd = ganancia_neta_est / dolar_oficial
+            header_card.clear()
+            with header_card:
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap"):
+                        # 1. Periodo (fecha)
+                        with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
+                            ui.label("Periodo").classes("text-xs text-gray-600 font-semibold")
+                            meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+                                        7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+                            hoy_g = datetime.now()
+                            periodo_str = f"{meses_es.get(hoy_g.month, hoy_g.strftime('%B'))} {hoy_g.strftime('%Y')}"
+                            ui.label(periodo_str).classes("text-lg font-bold text-primary")
+                        # 2. Datos Actuales Pesos
+                        with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
+                            ui.label("Datos Actuales (pesos)").classes("text-xs text-gray-600 font-semibold mb-1")
+                            with ui.row().classes("gap-4 flex-wrap"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Venta a la fecha").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {venta_fecha:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ganancia bruta a la fecha").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {ganancia_fecha:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Total Gastos").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {total_importes:,.0f}".replace(",", ".")).classes("text-base font-bold text-negative")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Resultado neto a la fecha").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {resultado_fecha:,.0f}".replace(",", ".")).classes("text-base font-bold " + ("text-positive" if resultado_fecha >= 0 else "text-negative"))
+                        # 3. Datos Estimados Pesos
+                        with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
+                            ui.label("Datos Estimados (pesos)").classes("text-xs text-gray-600 font-semibold mb-1")
+                            with ui.row().classes("gap-4 flex-wrap"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Venta estimada").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {facturacion_est:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ganancia bruta estimada").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {ganancia_bruta_est:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Total Gastos").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {total_importes:,.0f}".replace(",", ".")).classes("text-base font-bold text-negative")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Resultado neto estimado").classes("text-xs text-gray-600")
+                                    ui.label(f"$ {ganancia_neta_est:,.0f}".replace(",", ".")).classes("text-base font-bold " + ("text-positive" if ganancia_neta_est >= 0 else "text-negative"))
+                        # 4. Datos Estimados en Dólares
+                        with ui.column().classes("gap-0"):
+                            ui.label("Datos Estimados (dólares)").classes("text-xs text-gray-600 font-semibold mb-1")
+                            with ui.row().classes("gap-4 flex-wrap"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Venta estimada").classes("text-xs text-gray-600")
+                                    ui.label(f"u$s {facturacion_est_usd:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ganancia bruta estimada").classes("text-xs text-gray-600")
+                                    ui.label(f"u$s {ganancia_bruta_est_usd:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Total Gastos").classes("text-xs text-gray-600")
+                                    ui.label(f"u$s {total_importes_usd:,.0f}".replace(",", ".")).classes("text-base font-bold text-negative")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Resultado neto estimado").classes("text-xs text-gray-600")
+                                    ui.label(f"u$s {ganancia_neta_est_usd:,.0f}".replace(",", ".")).classes("text-base font-bold " + ("text-positive" if ganancia_neta_est_usd >= 0 else "text-negative"))
+            _pintar_resultados()
+
+        def _pintar_ingresos() -> None:
+            ingresos_card.clear()
+            with ingresos_card:
+                with ui.card().classes("w-full p-4 border-l-4 border-l-emerald-500"):
+                    ui.label("Ingresos").classes("text-lg font-semibold text-emerald-700 mb-2")
+                    inc = ingresos_ref["data"]
+                    if inc is None:
+                        ui.label("Conectá MercadoLibre para ver ingresos.").classes("text-gray-500")
+                    else:
+                        with ui.element("table").classes("w-full border-collapse text-sm"):
+                            with ui.element("tbody"):
+                                for label, key in [
+                                    ("Venta a la fecha", "venta_a_fecha"),
+                                    ("Venta estimada del mes", "venta_estimada_mes"),
+                                    ("Ganancia estimada a la fecha", "ganancia_a_fecha"),
+                                    ("Ganancia estimada del mes", "ganancia_estimada_mes"),
+                                ]:
+                                    sin_negrita = key in ("venta_a_fecha", "ganancia_a_fecha")
+                                    con_negrita_valor = key in ("venta_estimada_mes", "ganancia_estimada_mes")
+                                    with ui.element("tr").classes("border-t border-gray-200"):
+                                        with ui.element("td").classes("px-2 py-1 " + ("font-normal" if sin_negrita else "font-medium")):
+                                            ui.label(label)
+                                        with ui.element("td").classes("px-2 py-1 text-right " + ("font-semibold" if con_negrita_valor else "font-normal" if sin_negrita else "")):
+                                            ui.label(f"$ {inc.get(key, 0):,.0f}".replace(",", "."))
+
+        def _pintar_resultados() -> None:
+            sync_inputs_to_rows()
+            total_gastos = sum(_parse_importe(r.get("importe")) for r in gastos_data)
+            inc = ingresos_ref["data"]
+            resultados_card.clear()
+            with resultados_card:
+                with ui.card().classes("w-full p-4 border-l-4 border-l-blue-500"):
+                    ui.label("Resultados Netos").classes("text-lg font-semibold text-blue-700 mb-2")
+                    if inc is None:
+                        ui.label("Conectá MercadoLibre para ver resultados.").classes("text-gray-500")
+                    else:
+                        res_a_fecha = inc.get("ganancia_a_fecha", 0) - total_gastos
+                        res_estimado = inc.get("ganancia_estimada_mes", 0) - total_gastos
+                        with ui.element("table").classes("w-full border-collapse text-sm"):
+                            with ui.element("tbody"):
+                                with ui.element("tr").classes("border-t border-gray-200"):
+                                    with ui.element("td").classes("px-2 py-1 font-normal"):
+                                        ui.label("Resultado neto a la fecha")
+                                    with ui.element("td").classes("px-2 py-1 text-right font-normal"):
+                                        ui.label(f"$ {res_a_fecha:,.0f}".replace(",", "."))
+                                with ui.element("tr").classes("border-t border-gray-200"):
+                                    with ui.element("td").classes("px-2 py-1 font-medium"):
+                                        ui.label("Resultado neto estimado del mes")
+                                    with ui.element("td").classes("px-2 py-1 text-right font-semibold"):
+                                        ui.label(f"$ {res_estimado:,.0f}".replace(",", "."))
+
+        def repintar() -> None:
+            sync_inputs_to_rows()
+            cont.clear()
+            edit_rows_ref.clear()
+            row_to_inputs.clear()
+            datos = list(gastos_data)
+            if sort_col_gastos[0] == "gasto":
+                rev = not sort_asc_gastos[0]
+                datos.sort(key=lambda r: str(r.get("gasto", "")).lower(), reverse=rev)
+            elif sort_col_gastos[0] == "importe":
+                rev = not sort_asc_gastos[0]
+                datos.sort(key=lambda r: _parse_importe(r.get("importe")), reverse=rev)
+            with cont:
+                with ui.element("div").classes("w-full overflow-auto").style("max-height: 70vh;"):
+                    with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
+                        with ui.element("thead"):
+                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                                with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 60%;").on("click", lambda: toggle_sort("gasto")):
+                                    ui.label("Gasto")
+                                with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 30%;").on("click", lambda: toggle_sort("importe")):
+                                    ui.label("Importe")
+                                with ui.element("th").classes("px-1 py-2 border text-center").style("width: 70px;"):
+                                    ui.label("Ordenar")
+                                with ui.element("th").classes("px-1 py-2 border text-center").style("width: 50px;"):
+                                    ui.label("Borrar")
+                        with ui.element("tbody"):
+                            for idx, row in enumerate(datos):
+                                rinputs: Dict[str, Any] = {}
+                                row_idx_in_data = gastos_data.index(row) if row in gastos_data else idx
+                                imp_raw = str(row.get("importe", ""))
+                                imp_display = _fmt_importe_display(imp_raw) if imp_raw else ""
+                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100").style("width: 60%;"):
+                                        inp_gasto = ui.input(value=str(row.get("gasto", ""))).classes("w-full border-0").props("dense")
+                                        rinputs["gasto"] = inp_gasto
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right").style("width: 30%;"):
+                                        with ui.row().classes("w-full items-center gap-1 justify-end text-right"):
+                                            ui.label("$").classes("text-gray-600 text-sm")
+                                            inp_imp = ui.input(value=imp_display).classes("flex-1 min-w-0 border-0").props("dense").style("text-align: right;")
+                                            rinputs["importe"] = inp_imp
+                                    with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
+                                        def subir(i: int) -> None:
+                                            if 0 <= i < len(gastos_data) and i > 0:
+                                                gastos_data[i], gastos_data[i - 1] = gastos_data[i - 1], gastos_data[i]
+                                                repintar()
+                                        def bajar(i: int) -> None:
+                                            if 0 <= i < len(gastos_data) and i < len(gastos_data) - 1:
+                                                gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
+                                                repintar()
+                                        with ui.row().classes("gap-0 justify-center"):
+                                            ui.button("▲", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("▼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                    with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
+                                        def borrar_fila(r: Dict[str, Any]) -> None:
+                                            if r in gastos_data:
+                                                gastos_data.remove(r)
+                                                repintar()
+                                        ui.button("×", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                edit_rows_ref.append(rinputs)
+                                row_to_inputs.append((row, rinputs))
+            _pintar_header()
+
+        repintar()
+        _pintar_ingresos()
+        _pintar_resultados()
+
+        def agregar_fila() -> None:
+            gastos_data.append({"gasto": "", "importe": ""})
+            repintar()
+
+        def guardar() -> None:
+            for row, rinputs in row_to_inputs:
+                row["gasto"] = str(rinputs["gasto"].value or "")
+                row["importe"] = str(rinputs["importe"].value or "")
+            set_cotizador_tabla("gastos", gastos_data, uid)
+            repintar()
+            _pintar_header()
+            ui.notify("Gastos guardados en la base de datos", color="positive")
+
+        gastos_buttons_row.clear()
+        with gastos_buttons_row:
+            ui.button("Agregar fila", on_click=agregar_fila, color="primary")
+            ui.button("Guardar tabla", on_click=guardar, color="secondary")
+
+    background_tasks.create(_cargar_y_pintar(), name="cargar_balance")
 
 
 def build_tab_config() -> None:
@@ -2426,51 +3759,33 @@ def build_tab_config() -> None:
                 )
                 ui.link("Conectar con MercadoLibre", auth_url, new_tab=True).classes("text-primary font-medium")
 
-    # Datos que devuelve MercadoLibre (ejemplo de una publicación)
-    with ui.card().classes("w-full max-w-4xl mt-4"):
-        ui.label("Datos que devuelve MercadoLibre sobre tus publicaciones").classes("text-lg font-semibold mb-3")
-        ui.label(
-            "Podés cargar el JSON completo de una de tus publicaciones para ver todos los campos que devuelve la API."
-        ).classes("text-sm text-gray-600 mb-3")
-        ml_data_area = ui.column().classes("w-full gap-2")
-        example_visible = [False]  # ref para alternar botón
+    # Cambiar contraseña
+    with ui.card().classes("w-full max-w-2xl"):
+        ui.label("Cambiar contraseña").classes("text-lg font-semibold mb-3")
+        inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
+        inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
+        inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
 
-        def toggle_ejemplo_ml() -> None:
-            if example_visible[0]:
-                ml_data_area.clear()
-                example_visible[0] = False
-                btn_ml.text = "Cargar ejemplo de una publicación"
+        def cambiar_clave() -> None:
+            actual = (inp_actual.value or "").strip()
+            nueva = (inp_nueva.value or "").strip()
+            confirmar = (inp_confirmar.value or "").strip()
+            if not actual:
+                ui.notify("Ingresá tu contraseña actual", color="warning")
                 return
-            ml_data_area.clear()
-            with ml_data_area:
-                ui.spinner(size="sm")
-                ui.label("Cargando...").classes("text-gray-600")
-            access_token = get_ml_access_token(user["id"])
-            if not access_token:
-                ml_data_area.clear()
-                with ml_data_area:
-                    ui.label("No hay cuenta de MercadoLibre vinculada.").classes("text-warning")
-                btn_ml.text = "Cargar ejemplo de una publicación"
+            if nueva != confirmar:
+                ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
                 return
-            try:
-                raw = ml_get_one_item_full(access_token)
-                ml_data_area.clear()
-                with ml_data_area:
-                    if raw is None:
-                        ui.label("No tenés publicaciones o no se pudo obtener el ejemplo.").classes("text-gray-600")
-                    else:
-                        ui.label("Ejemplo (una publicación):").classes("text-sm font-medium")
-                        json_str = html.escape(json.dumps(raw, indent=2, ensure_ascii=False))
-                        ui.html(f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm" style="max-height: 400px;">{json_str}</pre>')
-                example_visible[0] = True
-                btn_ml.text = "Cerrar ejemplo"
-            except Exception as e:
-                ml_data_area.clear()
-                with ml_data_area:
-                    ui.label(f"Error: {e}").classes("text-negative")
-                btn_ml.text = "Cargar ejemplo de una publicación"
+            error = update_user_password(user["id"], actual, nueva)
+            if error:
+                ui.notify(error, color="negative")
+                return
+            ui.notify("Contraseña cambiada correctamente", color="positive")
+            inp_actual.value = ""
+            inp_nueva.value = ""
+            inp_confirmar.value = ""
 
-        btn_ml = ui.button("Cargar ejemplo de una publicación", on_click=toggle_ejemplo_ml, color="secondary")
+        ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
 
 
 # Valores por defecto del cotizador
@@ -2480,6 +3795,7 @@ COTIZADOR_DEFAULTS = {
     "ml_comision": "0.15", "ml_debcre": "0.006", "ml_sirtac": "0.008", "ml_envios": "5823",
     "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_cobrado": "0.836",
     "ml_3cuotas": "1.12149", "ml_6cuotas": "1.21067",
+    "ml_ganancia_neta_venta": "0.1000",
     "valor_kg_miami": "13.5", "almacenaje_miami_x2": "1.8", "dias_almacenaje_miami": "2", "almacenaje_dias_kg_miami": "0.9",
     "seguro_miami": "24.75", "descuento_lhs_kg": "1.33267522",
     "valor_kg_china": "27", "almacenaje_china_x3": "2.7", "dias_almacenaje_china": "3", "almacenaje_dias_kg_china": "0.9",
@@ -2660,28 +3976,26 @@ def _calc_courier_row(
     ml_3cuotas = params.get("ml_3cuotas", 1.12149)
     ml_6cuotas = params.get("ml_6cuotas", 1.21067)
     ml_comision = params.get("ml_comision", 0.15)
+    ml_sirtac = params.get("ml_sirtac", 0.008)
     iva_21 = params.get("iva_21", 0.21)
     ml_envios_val = params.get("ml_envios", 5823)
-    ml_envios = ml_envios_val if ml_envios_val > 100 else 5823  # B12 es monto fijo en pesos
-    ml_envios_gratuitos = params.get("ml_envios_gratuitos", 33000)
-    ml_cobrado = params.get("ml_cobrado", 0.836)
+    ml_envios = ml_envios_val if ml_envios_val > 100 else 5823  # ML - Envíos: monto fijo en pesos
     ml_iibb_per = params.get("ml_iibb_per", 0.055)
 
     cuotas3 = venta_ml * ml_3cuotas if venta_ml > 0 else 0
     cuotas6 = venta_ml * ml_6cuotas if venta_ml > 0 else 0
     markup = ((venta_ml / AC) - 1) if venta_ml > 0 and AC > 0 else 0
-    cobrado_ml = 0
-    if venta_ml > 0:
-        base = venta_ml * ml_cobrado  # ML - Cobrado × Venta ML
-        # Si venta >= Envíos gratuitos: restar ML-Envíos. Si venta < Envíos gratuitos: no restar.
-        cobrado_ml = base - ml_envios if venta_ml >= ml_envios_gratuitos else base
+    comi_ml = venta_ml * ml_comision if venta_ml > 0 else 0
+    cobrado_ml = venta_ml - comi_ml if venta_ml > 0 else 0
     iva_impor = (T / qty) if venta_ml > 0 and qty > 0 else 0
-    iva_meli = venta_ml * ml_comision * iva_21 if venta_ml > 0 else 0
+    iva_meli = comi_ml - (comi_ml / 1.21) if venta_ml > 0 else 0
     iva_venta = venta_ml - (venta_ml / (iva_rate + 1)) if venta_ml > 0 else 0
     iva_total = iva_venta - iva_meli - iva_impor
+    deb_cred = venta_ml * ml_sirtac if venta_ml > 0 else 0
     iibb_per = venta_ml * ml_iibb_per if venta_ml > 0 else 0
-    costo_vta = (((venta_ml - cobrado_ml) + (iva_total if iva_total > 0 else 0) + iibb_per) / venta_ml) if venta_ml > 0 else 0
-    margen = (cobrado_ml - AC - iva_total - iibb_per) if venta_ml > 0 else 0
+    envio = ml_envios
+    costo_vta = (((venta_ml - cobrado_ml) + (iva_total if iva_total > 0 else 0) + deb_cred + iibb_per + envio) / venta_ml) if venta_ml > 0 else 0
+    margen = (cobrado_ml - AC - iva_total - deb_cred - iibb_per - envio) if venta_ml > 0 else 0
     margen_vta = (margen / venta_ml) if venta_ml > 0 else 0
     margen_costo = (margen / AC) if AC > 0 else 0
 
@@ -2718,11 +4032,14 @@ def _calc_courier_row(
         "cuotas6": _mon(_fmt(cuotas6, 0)),
         "markup": _fmt(markup * 100, 1) + "%",
         "cobrado_ml": _mon(_fmt(cobrado_ml, 0)),
+        "comi_ml": _mon(_fmt(comi_ml, 0)),
         "iva_impor": _mon(_fmt(iva_impor, 0)),
         "iva_meli": _mon(_fmt(iva_meli, 0)),
         "iva_venta": _mon(_fmt(iva_venta, 0)),
         "iva_total": _mon(_fmt(iva_total, 0)),
+        "deb_cred": _mon(_fmt(deb_cred, 0)),
         "iibb_per": _mon(_fmt(iibb_per, 0)),
+        "envio": _mon(_fmt(envio, 0)),
         "costo_vta": _fmt(costo_vta * 100, 1) + "%",
         "margen": _mon(_fmt(margen, 0)),
         "margen_vta": _fmt(margen_vta * 100, 1) + "%",
@@ -2773,6 +4090,30 @@ def build_tab_importacion() -> None:
     if not importacion_rows:
         importacion_rows = []
 
+    sort_col_importacion: List[Optional[str]] = [None]
+    sort_asc_importacion: List[bool] = [True]
+
+    def _parse_sort_val(v: Any, col: str) -> Any:
+        """Valor para ordenar: numérico si aplica, sino string."""
+        if v is None or v == "":
+            return 0.0 if col in ["fob", "qty", "peso_unitario", "extras", "cambio_pa", "venta_ml"] else ""
+        s = str(v).replace("$", "").replace(".", "").replace(",", ".").strip()
+        try:
+            return float(s)
+        except (ValueError, TypeError):
+            return str(v).lower()
+
+    def toggle_sort_importacion(col: str) -> None:
+        if sort_col_importacion[0] == col:
+            sort_asc_importacion[0] = not sort_asc_importacion[0]
+        else:
+            sort_col_importacion[0] = col
+            sort_asc_importacion[0] = True
+        sync_inputs_to_rows()
+        rev = not sort_asc_importacion[0]
+        importacion_rows.sort(key=lambda r: _parse_sort_val(r.get(col), col), reverse=rev)
+        repintar()
+
     with ui.column().classes("w-full gap-2 p-2"):
         ui.label("Importación - Cotizador Courier").classes("text-xl font-semibold")
 
@@ -2781,8 +4122,8 @@ def build_tab_importacion() -> None:
 
         opciones_origen = [r.get("origen", "") for r in origen_data if r.get("origen")]
         opciones_impuestos = [r.get("posicion", "") for r in posicion_data if r.get("posicion")]
-        cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "iibb_per", "costo_vta", "margen", "margen_vta", "margen_costo"]
-        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA LHS", "IIBB", "Courier", "Total", "Traída", "Costo$", "Costo u$", "3ctas", "6ctas", "MarkUp", "CobrML", "IVAImp", "IVAMel", "IVAVta", "IVA", "IIBB+PER", "CstoVta", "Margen$", "MargVta", "MargCos"]
+        cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "comi_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "deb_cred", "iibb_per", "envio", "costo_vta", "margen", "margen_vta", "margen_costo"]
+        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA LHS", "IIBB", "Courier", "Total", "Traída", "Costo$", "Costo u$", "3ctas", "6ctas", "MarkUp", "CobrML", "ComiML", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "CstoVta", "Margen$", "MargVta", "MargCos"]
         cols_ocultas = ["derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "cuotas3", "cuotas6", "iva_impor", "iva_meli", "iva_venta"]
         cols_input_ocultas = ["extras", "trafo"]
         vista_completa = [False]
@@ -2818,10 +4159,12 @@ def build_tab_importacion() -> None:
                     with ui.element("thead"):
                         with ui.element("tr").classes("bg-blue-100 dark:bg-blue-900"):
                             for j, (c, h) in enumerate(zip(all_cols, all_headers)):
-                                th_cls = "font-semibold px-1 py-1 text-center border border-gray-300 whitespace-nowrap text-xs"
+                                th_cls = "font-semibold px-1 py-1 text-center border border-gray-300 whitespace-nowrap text-xs cursor-pointer hover:bg-blue-200"
                                 if not col_visible(c):
                                     th_cls += " hidden"
-                                with ui.element("th").classes(th_cls):
+                                th = ui.element("th").classes(th_cls)
+                                th.on("click", lambda col=c: toggle_sort_importacion(col))
+                                with th:
                                     ui.label(h)
                             with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs").style("min-width: 48px;"):
                                 ui.label("Ordenar")
@@ -2996,6 +4339,27 @@ def build_tab_datos() -> None:
 
         with ui.row().classes("w-full gap-4 flex-wrap"):
             # Dolar
+            def _fmt_dolar_display(v: str) -> str:
+                """Formatea valor numérico con punto para miles."""
+                if not v or not str(v).strip():
+                    return ""
+                try:
+                    n = float(str(v).replace(".", "").replace(",", "."))
+                    return f"{int(n):,}".replace(",", ".")
+                except (ValueError, TypeError):
+                    return str(v)
+
+            def _parse_dolar(s: Any) -> str:
+                """Parsea valor de input ($ 1.475 o 1475) a string sin formato para guardar."""
+                if s is None or s == "":
+                    return ""
+                raw = str(s).replace("$", "").replace(".", "").replace(",", ".").strip()
+                try:
+                    n = float(raw)
+                    return str(int(n)) if n == int(n) else f"{n:.2f}"
+                except (ValueError, TypeError):
+                    return str(s).strip()
+
             with ui.card().classes("p-4 w-fit min-w-[180px]"):
                 ui.label("Dólar").classes("text-lg font-semibold mb-3")
                 inputs_params: Dict[str, Any] = {}
@@ -3004,14 +4368,43 @@ def build_tab_datos() -> None:
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[70px] text-sm")
-                        inputs_params[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+                        val_raw = _get(key)
+                        val_fmt = _fmt_dolar_display(val_raw) if val_raw else ""
+                        val_display = f"$ {val_fmt}" if val_fmt else ""
+                        inputs_params[key] = ui.input(value=val_display).classes("flex-1 max-w-[100px]").props("dense")
+
+            def _fmt_usd_display(v: str) -> str:
+                """Formatea valor numérico: punto para miles, coma para decimales."""
+                if not v or not str(v).strip():
+                    return ""
+                try:
+                    s = str(v).strip()
+                    n = float(s.replace(",", "."))  # asumir . o , como decimal
+                    if n == int(n):
+                        return f"{int(n):,}".replace(",", ".")
+                    return f"{n:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+                except (ValueError, TypeError):
+                    return str(v)
+
+            def _parse_usd(s: Any) -> str:
+                """Parsea valor con u$ a string para guardar."""
+                if s is None or s == "":
+                    return ""
+                raw = str(s).replace("u$", "").replace("$", "").replace(".", "").replace(",", ".").strip()
+                try:
+                    n = float(raw)
+                    return str(int(n)) if n == int(n) else f"{n:.2f}"
+                except (ValueError, TypeError):
+                    return str(s).strip()
 
             # Traida por Kilo
             with ui.card().classes("p-4 w-fit min-w-[140px]"):
                 ui.label("Traida por Kilo").classes("text-lg font-semibold mb-3")
                 with ui.row().classes("items-center gap-2 py-0.5"):
                     ui.label("Kilo").classes("min-w-[60px] text-sm")
-                    inputs_params["kilo"] = ui.input(value=_get("kilo")).classes("flex-1 max-w-[80px]").props("dense")
+                    val_kilo = _get("kilo")
+                    val_kilo_disp = f"u$ {_fmt_usd_display(val_kilo)}" if val_kilo else ""
+                    inputs_params["kilo"] = ui.input(value=val_kilo_disp).classes("flex-1 max-w-[80px]").props("dense")
 
             # Mercadolibre
             with ui.card().classes("p-4 w-fit min-w-[220px]"):
@@ -3020,12 +4413,14 @@ def build_tab_datos() -> None:
                     ("ML - Comisión", "ml_comision"), ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
                     ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"), ("ML - Cobrado", "ml_cobrado"),
                     ("ML 3 cuotas", "ml_3cuotas"), ("ML 6 cuotas", "ml_6cuotas"),
+                    ("Ganancia Neta sobre Venta", "ml_ganancia_neta_venta"),
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[100px] text-sm")
                         inputs_params[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
 
             # Miami
+            usd_keys_miami = {"valor_kg_miami", "almacenaje_dias_kg_miami"}
             with ui.card().classes("p-4 w-fit min-w-[220px]"):
                 ui.label("Miami").classes("text-lg font-semibold mb-3")
                 inputs_miami: Dict[str, Any] = {}
@@ -3035,9 +4430,12 @@ def build_tab_datos() -> None:
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[120px] text-sm")
-                        inputs_miami[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+                        val_raw = _get(key)
+                        val_disp = f"u$ {_fmt_usd_display(val_raw)}" if key in usd_keys_miami and val_raw else (val_raw or "")
+                        inputs_miami[key] = ui.input(value=val_disp).classes("flex-1 max-w-[100px]").props("dense")
 
             # China
+            usd_keys_china = {"valor_kg_china", "almacenaje_dias_kg_china"}
             with ui.card().classes("p-4 w-fit min-w-[220px]"):
                 ui.label("China").classes("text-lg font-semibold mb-3")
                 inputs_china: Dict[str, Any] = {}
@@ -3048,11 +4446,20 @@ def build_tab_datos() -> None:
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[120px] text-sm")
-                        inputs_china[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+                        val_raw = _get(key)
+                        val_disp = f"u$ {_fmt_usd_display(val_raw)}" if key in usd_keys_china and val_raw else (val_raw or "")
+                        inputs_china[key] = ui.input(value=val_disp).classes("flex-1 max-w-[100px]").props("dense")
 
         def guardar_params() -> None:
+            dolar_keys = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho"}
+            usd_keys = {"kilo", "valor_kg_miami", "almacenaje_dias_kg_miami", "valor_kg_china", "almacenaje_dias_kg_china"}
             for key, inp in {**inputs_params, **inputs_miami, **inputs_china}.items():
-                set_cotizador_param(key, str(inp.value or ""), uid)
+                val = str(inp.value or "").strip()
+                if key in dolar_keys:
+                    val = _parse_dolar(val)
+                elif key in usd_keys:
+                    val = _parse_usd(val)
+                set_cotizador_param(key, val, uid)
             ui.notify("Parámetros guardados", color="positive")
 
         ui.button("Guardar parámetros", on_click=guardar_params, color="primary").classes("mb-2")
@@ -3074,7 +4481,28 @@ def build_tab_datos() -> None:
             except (TypeError, ValueError):
                 return 0.0
 
-        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True) -> None:
+        def _fmt_pesos_display(val: Any) -> str:
+            """Formatea valor en pesos: $ y punto para miles."""
+            if val is None or str(val).strip() == "":
+                return ""
+            try:
+                n = float(str(val).replace(".", "").replace(",", "."))
+                return f"$ {int(n):,}".replace(",", ".") if n == int(n) else f"$ {n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            except (ValueError, TypeError):
+                return str(val)
+
+        def _parse_pesos_fmt(s: Any) -> str:
+            """Parsea valor con $ y puntos a string para guardar."""
+            if s is None or s == "":
+                return ""
+            raw = str(s).replace("$", "").replace(".", "").replace(",", ".").strip()
+            try:
+                n = float(raw)
+                return str(int(n)) if n == int(n) else f"{n:.2f}"
+            except (ValueError, TypeError):
+                return str(s).strip()
+
+        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True, col_formato: Optional[Dict[str, str]] = None) -> None:
             card_classes = "p-4"
             if card_ancho:
                 card_classes += f" {card_ancho}"
@@ -3111,9 +4539,13 @@ def build_tab_datos() -> None:
                                     with ui.element("tr"):
                                         for col in cols:
                                             val = str(row.get(col, ""))
+                                            if col_formato and col in col_formato:
+                                                val = _fmt_pesos_display(val) if val else ""
                                             with ui.element("td").classes("p-0.5 border border-gray-200"):
                                                 if computed and col in computed:
                                                     disp = computed[col](row) if callable(computed[col]) else str(row.get(col, ""))
+                                                    if col_formato and col in col_formato:
+                                                        disp = _fmt_pesos_display(disp) if disp else ""
                                                     lbl = ui.label(disp).classes("text-xs")
                                                     rinputs[col] = lbl
                                                 else:
@@ -3123,8 +4555,18 @@ def build_tab_datos() -> None:
                                         if computed and computed_deps:
                                             def make_updater(comp_col: str, lbl_ref: Any) -> None:
                                                 def upd() -> None:
-                                                    row = {c: str(rinputs[c].value or "") for c in cols if c not in (computed or {})}
-                                                    lbl_ref.text = computed[comp_col](row)
+                                                    row = {}
+                                                    for c in cols:
+                                                        if c in (computed or {}):
+                                                            continue
+                                                        raw = str(rinputs[c].value or "")
+                                                        if col_formato and c in col_formato:
+                                                            raw = _parse_pesos_fmt(raw)
+                                                        row[c] = raw
+                                                    disp = computed[comp_col](row)
+                                                    if col_formato and comp_col in col_formato:
+                                                        disp = _fmt_pesos_display(disp) if disp else ""
+                                                    lbl_ref.text = disp
                                                 return upd
                                             for comp_col, deps in computed_deps.items():
                                                 if comp_col in rinputs:
@@ -3166,7 +4608,10 @@ def build_tab_datos() -> None:
                         for c in cols:
                             if computed and c in computed:
                                 continue
-                            row[c] = str(rinputs[c].value or "")
+                            raw = str(rinputs[c].value or "")
+                            if col_formato and c in col_formato:
+                                raw = _parse_pesos_fmt(raw)
+                            row[c] = raw
                         if computed:
                             for c in computed:
                                 row[c] = computed[c](row)
@@ -3189,7 +4634,8 @@ def build_tab_datos() -> None:
             _tabla_editable("envios_ml", ["envio", "importe", "porc_10", "costo"],
                 ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envío MercadoLibre",
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
-                computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit")
+                computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
+                col_formato={"importe": "$", "porc_10": "$", "costo": "$"})
             _tabla_editable("courier", ["courier", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
                 ["Courier", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
                 tabla_courier_data, "Costos por Courier",
@@ -3348,9 +4794,27 @@ def _iniciar_ngrok(port: int) -> None:
         print(f"  No se pudo iniciar ngrok: {e}")
 
 
+def _arreglar_storage_nicegui() -> None:
+    """Crea .nicegui y elimina archivos de storage corruptos para que NiceGUI los recree."""
+    storage_dir = Path(__file__).parent / ".nicegui"
+    storage_dir.mkdir(exist_ok=True)
+    for f in storage_dir.glob("storage-*.json"):
+        try:
+            if f.stat().st_size == 0:
+                f.unlink()
+            else:
+                json.loads(f.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
 def main() -> None:
     load_dotenv()
     init_db()
+    _arreglar_storage_nicegui()
     port = int(os.getenv("PORT", 8083))
     # En Render/cloud: PORT lo define la plataforma, no iniciar ngrok
     es_produccion = "PORT" in os.environ or os.getenv("RENDER") == "true"
