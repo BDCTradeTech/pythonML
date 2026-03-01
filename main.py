@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 
@@ -1548,6 +1549,10 @@ def _pintar_home_inline(
         por_mes[key]["units"] += units
         por_mes[key]["total"] += total_amount
 
+    # Incluir siempre el mes actual aunque no tenga ventas (para que el gráfico muestre marzo, etc.)
+    mes_actual_key = today_local.strftime("%Y-%m")
+    if mes_actual_key not in por_mes:
+        por_mes[mes_actual_key] = {"units": 0, "total": 0.0}
     meses_orden = sorted(por_mes.keys(), reverse=True)[:6]  # Solo 6 meses para caber en pantalla
 
     container.clear()
@@ -1856,27 +1861,15 @@ def _pintar_home_inline(
                     dias_del_mes = calendar.monthrange(today_local.year, today_local.month)[1]
                     venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
                     venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
-                    try:
-                        margen_str = get_cotizador_param("ml_ganancia_neta_venta", user_id) if user_id else None
-                        margen_val = float(str(margen_str or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")).replace(",", ".").strip())
-                    except (ValueError, TypeError):
-                        margen_val = 0.1
-                    ganancia_estimada_diaria = venta_diaria * margen_val
-                    ganancia_estimada_fecha = ventas_mes_actual_monto * margen_val
-                    ganancia_estimada_mes = venta_estimada_mes * margen_val
 
                     with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-violet-500"):
-                        ui.label(f"Ventas y ganancia - {mes_actual_nom}").classes("text-base font-semibold text-violet-700 mb-2")
+                        ui.label(f"Ventas - {mes_actual_nom}").classes("text-base font-semibold text-violet-700 mb-2")
                         with ui.column().classes("gap-1.5 text-sm"):
                             ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).classes("text-gray-700")
                             ui.label(f"Venta diaria: $ {venta_diaria:,.0f}".replace(",", ".")).classes("text-gray-700")
                             ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
                             ticket_prom = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
                             ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("font-bold text-gray-800")
-                            ui.label(f"Margen de ganancia estimada: {margen_val * 100:.2f}%").classes("text-gray-700")
-                            ui.label(f"Ganancia Bruta estimada diaria: $ {ganancia_estimada_diaria:,.0f}".replace(",", ".")).classes("text-gray-700 font-bold")
-                            ui.label(f"Ganancia Bruta estimada a la fecha: $ {ganancia_estimada_fecha:,.0f}".replace(",", ".")).classes("font-medium")
-                            ui.label(f"Ganancia Bruta estimada de todo el mes: $ {ganancia_estimada_mes:,.0f}".replace(",", ".")).classes("font-semibold")
 
 
 def build_tab_ventas(container) -> None:
@@ -1893,13 +1886,15 @@ def build_tab_ventas(container) -> None:
         return
 
     ventas_raw: List[Dict[str, Any]] = []
+    all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}}
+    filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
-    agrupar_ref: Dict[str, bool] = {"val": True}  # Por defecto agrupado para no repetir publicaciones con mismo SKU
+    agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
     ganancia_neta_ref: Dict[str, float] = {"val": 0.0}
 
     sort_col_ventas: Dict[str, str] = {"val": "dt"}
-    sort_asc_ventas: Dict[str, bool] = {"val": True}
+    sort_asc_ventas: Dict[str, bool] = {"val": False}  # Fecha más reciente primero
 
     with container:
         header_card = ui.column().classes("w-full mb-2")
@@ -1946,6 +1941,89 @@ def build_tab_ventas(container) -> None:
                 total += cantidad * margen
             ganancia_neta_ref["val"] = total
             _pintar_tabla()
+
+        def _order_in_range(o: Dict, start: datetime.date, end: datetime.date) -> bool:
+            dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
+            if not dt_str or not isinstance(dt_str, str):
+                return False
+            try:
+                dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                return start <= dt <= end
+            except Exception:
+                return False
+
+        def _aplicar_filtro_fecha() -> None:
+            orders = all_orders_ref.get("orders") or []
+            if not orders:
+                return
+            hoy = datetime.now().date()
+            primer_dia = hoy.replace(day=1)
+            ultimo_mes = primer_dia - timedelta(days=1)
+            primer_dia_anterior = ultimo_mes.replace(day=1)
+            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
+            if fecha_val not in ("mes_actual", "mes_anterior"):
+                fecha_val = "mes_actual"
+            if fecha_val == "mes_actual":
+                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia, hoy)]
+            else:
+                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
+            _construir_ventas_desde_orders(orders_periodo)
+            _pintar_tabla()
+
+        def _construir_ventas_desde_orders(orders_periodo: List[Dict]) -> None:
+            nonlocal ventas_raw
+            item_id_to_catalog = all_orders_ref.get("item_id_to_catalog") or {}
+            item_id_to_sku = all_orders_ref.get("item_id_to_sku") or {}
+            status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
+            ventas_mes = []
+            for ord_item in orders_periodo:
+                dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
+                if not dt_str or not isinstance(dt_str, str):
+                    continue
+                try:
+                    dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                ord_total = ord_item.get("total_amount") or ord_item.get("paid_amount")
+                if ord_total is None and ord_item.get("payments"):
+                    pay = ord_item["payments"][0] if isinstance(ord_item["payments"], list) else {}
+                    ord_total = pay.get("total_amount") or pay.get("total_paid_amount") or pay.get("transaction_amount")
+                try:
+                    ord_total = float(ord_total or 0)
+                except (TypeError, ValueError):
+                    ord_total = 0.0
+                status_raw = (ord_item.get("status") or "").strip().lower()
+                status_display = status_map.get(status_raw, status_raw or "—")
+                items = ord_item.get("order_items") or ord_item.get("items") or []
+                ord_qty = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
+                for it in items:
+                    if not isinstance(it, dict):
+                        continue
+                    obj = it.get("item") or it
+                    qty = int(it.get("quantity") or it.get("qty") or 0)
+                    if qty == 0:
+                        continue
+                    unit_price = it.get("unit_price")
+                    if unit_price is None:
+                        unit_price = ord_total / ord_qty if ord_qty > 0 else 0
+                    try:
+                        unit_price = float(unit_price or 0)
+                    except (TypeError, ValueError):
+                        unit_price = 0
+                    item_monto = qty * unit_price
+                    titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
+                    item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                    catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip() if isinstance(obj, dict) else str(it.get("catalog_product_id") or "")
+                    catalog = bool(catalog_id) or item_id_to_catalog.get(item_id, False)
+                    tipo = "Catálogo" if catalog else "Propia"
+                    sku = item_id_to_sku.get(item_id, "")
+                    agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
+                    ventas_mes.append({
+                        "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "productos": titulo[:100], "title": titulo[:100],
+                        "tipo": tipo, "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
+                        "status": status_display, "status_raw": status_raw, "agrupar_key": agrupar_key, "item_id": item_id or "—",
+                    })
+            ventas_raw = ventas_mes
 
         def _cargar_ventas() -> None:
             if filtro_controls_ref:
@@ -2004,7 +2082,12 @@ def build_tab_ventas(container) -> None:
             ganancia_estimada = facturacion_pagada * ml_ganancia_val
             hoy = datetime.now().date()
             primer_dia = hoy.replace(day=1)
-            dias_total = (hoy - primer_dia).days + 1
+            ultimo_mes = primer_dia - timedelta(days=1)
+            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
+            if fecha_val == "mes_anterior":
+                dias_total = calendar.monthrange(ultimo_mes.year, ultimo_mes.month)[1]
+            else:
+                dias_total = (hoy - primer_dia).days + 1
             total_monto_ok = sum(v["monto"] for v in ventas_ok)
             total_unidades_ok = sum(v["cantidad"] for v in ventas_ok)
             n_ventas_ok = len(ventas_ok)
@@ -2082,8 +2165,6 @@ def build_tab_ventas(container) -> None:
                                                 ui.label("#")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("ID publicación")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Tipo")
                                             with ui.element("th").classes("px-2 py-2 border text-left"):
                                                 ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
@@ -2105,9 +2186,6 @@ def build_tab_ventas(container) -> None:
                                                     if len(item_ids) > 3:
                                                         ids_str += "..."
                                                     ui.label(ids_str or "—")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    tipos_str = ", ".join(sorted(v.get("tipos", set()))) or "—"
-                                                    ui.label(tipos_str).classes("text-xs")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
                                                     ui.label(productos_key[:80]).classes("truncate")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2133,7 +2211,6 @@ def build_tab_ventas(container) -> None:
                                             ("#", "#", "text-center"),
                                             ("dt", "Fecha", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
-                                            ("tipo", "Tipo", "text-center"),
                                             ("productos", "Producto", "text-left"),
                                             ("cantidad", "Cant.", "text-center"),
                                             ("monto", "Monto", "text-right"),
@@ -2155,8 +2232,6 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v["fecha"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v.get("item_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                ui.label(v.get("tipo", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
                                                 ui.label(v.get("productos", v.get("title", "—"))[:80]).classes("truncate")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2188,20 +2263,20 @@ def build_tab_ventas(container) -> None:
                 return
             raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
             orders = [o for o in raw_orders if isinstance(o, dict)]
+            all_orders_ref["orders"] = orders
             hoy = datetime.now().date()
             primer_dia = hoy.replace(day=1)
-            orders_mes = []
-            for o in orders:
-                dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
-                if dt_str and isinstance(dt_str, str):
-                    try:
-                        dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-                        if primer_dia <= dt <= hoy:
-                            orders_mes.append(o)
-                    except Exception:
-                        pass
+            ultimo_mes = primer_dia - timedelta(days=1)
+            primer_dia_anterior = ultimo_mes.replace(day=1)
+            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
+            if fecha_val not in ("mes_actual", "mes_anterior"):
+                fecha_val = "mes_actual"
+            if fecha_val == "mes_actual":
+                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia, hoy)]
+            else:
+                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
             item_ids_to_fetch: List[str] = []
-            for o in orders_mes:
+            for o in orders_periodo:
                 for it in o.get("order_items") or o.get("items") or []:
                     if isinstance(it, dict):
                         obj = it.get("item") or it
@@ -2215,7 +2290,7 @@ def build_tab_ventas(container) -> None:
                     out: List[Optional[Dict[str, Any]]] = []
                     for i in range(0, len(ids), 20):
                         batch = ids[i : i + 20]
-                        batch_bodies = ml_get_items_multiget_with_attributes(access_token, batch)
+                        batch_bodies = ml_get_items_multiget(access_token, batch)
                         out.extend(batch_bodies)
                     return out
                 bodies = await run.io_bound(_fetch_catalog_info, item_ids_to_fetch)
@@ -2238,9 +2313,12 @@ def build_tab_ventas(container) -> None:
                                 if sku_val:
                                     item_id_to_sku[iid] = sku_val
                                 break
+            all_orders_ref["item_id_to_catalog"] = item_id_to_catalog
+            all_orders_ref["item_id_to_sku"] = item_id_to_sku
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
-            for ord_item in orders_mes:
+            dia_ini, dia_fin = (primer_dia, hoy) if fecha_val == "mes_actual" else (primer_dia_anterior, ultimo_mes) if fecha_val == "mes_anterior" else (None, None)
+            for ord_item in orders_periodo:
                 dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
                 if not dt_str or not isinstance(dt_str, str):
                     continue
@@ -2248,7 +2326,7 @@ def build_tab_ventas(container) -> None:
                     dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
                 except Exception:
                     continue
-                if dt < primer_dia or dt > hoy:
+                if dia_ini is not None and (dt < dia_ini or dt > dia_fin):
                     continue
                 ord_total = ord_item.get("total_amount") or ord_item.get("paid_amount")
                 if ord_total is None and ord_item.get("payments"):
@@ -2279,16 +2357,14 @@ def build_tab_ventas(container) -> None:
                     item_monto = qty * unit_price
                     titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
                     item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
-                    catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip()
-                    catalog = False
-                    if catalog_id:
-                        catalog = True
-                    if isinstance(obj, dict) and (obj.get("catalog_listing") is True or str(obj.get("catalog_listing", "")).lower() in ("true", "1")):
-                        catalog = True
-                    if not catalog and (it.get("catalog_listing") is True or str(it.get("catalog_listing", "")).lower() in ("true", "1")):
-                        catalog = True
-                    if not catalog and it.get("catalog_product_id"):
-                        catalog = True
+                    catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip() if isinstance(obj, dict) else str(it.get("catalog_product_id") or "").strip()
+                    catalog = bool(catalog_id)
+                    if not catalog and isinstance(obj, dict):
+                        cl = obj.get("catalog_listing")
+                        catalog = cl is True or str(cl or "").lower() in ("true", "1")
+                    if not catalog:
+                        cl = it.get("catalog_listing")
+                        catalog = cl is True or str(cl or "").lower() in ("true", "1")
                     if not catalog and item_id:
                         catalog = item_id_to_catalog.get(item_id, False) or item_id_to_catalog.get(item_id.upper(), False) or item_id_to_catalog.get(item_id.lower(), False)
                     tipo = "Catálogo" if catalog else "Propia"
@@ -2321,6 +2397,12 @@ def build_tab_ventas(container) -> None:
             filtro_controls.set_visibility(False)
             filtro_controls_ref.append(filtro_controls)
             with filtro_controls:
+                filtro_fecha = ui.select(
+                    {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
+                    value=filtro_fecha_ref.get("val", "mes_actual"),
+                    label="Fecha",
+                ).classes("w-36").bind_value(filtro_fecha_ref, "val")
+                filtro_fecha.on_value_change(lambda: _aplicar_filtro_fecha())
                 filtro_estado = ui.select(
                     {"todas": "Todas", "pagada": "Concretada", "cancelada": "Cancelada"},
                     value=filtro_estado_ref.get("val", "pagada"),
@@ -2932,6 +3014,8 @@ def build_tab_precios_detalle(container) -> None:
         return 0.0 if precio < ml_envios_gratuitos else ml_envios
 
     items_loaded: List[Dict[str, Any]] = []
+    filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
+    ventas_por_periodo_ref: Dict[str, Dict[str, int]] = {}  # "historico"|"mes_actual"|"mes_anterior" -> {dedupe_key: ventas}
     filtro_stock_ref: Dict[str, str] = {"val": "con_stock"}
     filtro_awei_ref: Dict[str, str] = {"val": "no_incluye"}
     include_paused_ref: Dict[str, bool] = {"val": False}
@@ -2940,6 +3024,8 @@ def build_tab_precios_detalle(container) -> None:
     sort_asc_ref: Dict[str, bool] = {"val": True}
     table_container_ref: Dict[str, Any] = {}
     cargar_listo_ref: Dict[str, Any] = {"listo": False, "error": None, "totales": 0, "con_stock": 0}
+    filtrados_actuales_ref: Dict[str, List[Dict[str, Any]]] = {"rows": []}
+    calcular_labels_ref: Dict[str, Any] = {}
 
     def _pintar_ui_desde_ref():
         """Pinta la UI cuando los datos están listos. Se llama desde el timer en el main thread."""
@@ -2960,13 +3046,36 @@ def build_tab_precios_detalle(container) -> None:
             with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
                 with ui.row().classes("w-full justify-around flex-wrap gap-4"):
                     with ui.column().classes("items-center"):
-                        ui.label("Publicaciones Totales").classes("text-sm text-gray-600")
-                        ui.label(str(totales)).classes("text-2xl font-bold text-primary")
-                    with ui.column().classes("items-center"):
                         ui.label("Publicaciones con stock").classes("text-sm text-gray-600")
                         ui.label(str(con_stock)).classes("text-2xl font-bold text-primary")
+                    with ui.column().classes("items-center"):
+                        ui.label("Unidades vendidas").classes("text-sm text-gray-600")
+                        lbl_uds = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["unidades"] = lbl_uds
+                    with ui.column().classes("items-center"):
+                        ui.label("Facturación total").classes("text-sm text-gray-600")
+                        lbl_fact = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["facturacion"] = lbl_fact
+                    with ui.column().classes("items-center"):
+                        ui.label("Margen total").classes("text-sm text-gray-600")
+                        lbl_margen = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["margen"] = lbl_margen
+                    with ui.column().classes("items-center"):
+                        ui.label("Margen % sobre venta").classes("text-sm text-gray-600")
+                        lbl_margen_pct = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["margen_pct"] = lbl_margen_pct
+                    with ui.column().classes("items-center"):
+                        ui.label("Margen estimado (Datos)").classes("text-sm text-gray-600")
+                        ganancia_neta = get_cotizador_param("ml_ganancia_neta_venta", uid) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")
+                        ganancia_pct = float(str(ganancia_neta).replace(",", ".").strip()) * 100
+                        lbl_margen_est = ui.label(f"{ganancia_pct:.2f}%".replace(".", ",")).classes("text-2xl font-bold text-primary")
             with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
                 ui.label("Filtros:").classes("text-sm")
+                filtro_fecha = ui.select(
+                    {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
+                    value=filtro_fecha_ref.get("val", "mes_actual"),
+                    label="Fecha",
+                ).classes("w-36")
                 filtro_stock = ui.select(
                     {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
                     value=filtro_stock_ref.get("val", "con_stock"),
@@ -2978,26 +3087,96 @@ def build_tab_precios_detalle(container) -> None:
                     label="Awei",
                 ).classes("w-36")
                 btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
-            table_container_ref["container"] = ui.column().classes("w-full")
+                btn_calcular = ui.button("Calcular", color="secondary").props("icon=calculate")
+
+                def calcular_totales() -> None:
+                    filas = filtrados_actuales_ref.get("rows") or []
+                    uds = sum(int(r.get("ventas") or 0) for r in filas)
+                    facturacion = sum(float(r.get("precio") or 0) * int(r.get("ventas") or 0) for r in filas)
+                    margen_total = sum(float(r.get("margen_pesos") or 0) * int(r.get("ventas") or 0) for r in filas)
+                    margen_pct = (margen_total / facturacion * 100) if facturacion > 0 else 0.0
+                    for k, lbl in calcular_labels_ref.items():
+                        if not lbl:
+                            continue
+                        if k == "unidades":
+                            lbl.text = str(uds)
+                        elif k == "facturacion":
+                            lbl.text = fmt_moneda(facturacion)
+                        elif k == "margen":
+                            lbl.text = fmt_moneda(margen_total)
+                        elif k == "margen_pct":
+                            lbl.text = f"{margen_pct:.2f}%"
+
+                calcular_labels_ref["_calcular_fn"] = calcular_totales
+                btn_calcular.on_click(calcular_totales)
+            # Wrapper con overlay de carga (permanece visible durante filtrar_y_pintar)
+            with ui.column().classes("relative w-full").style("min-height: 200px;") as wrapper:
+                overlay = ui.element("div").classes("absolute inset-0 bg-white/90 flex items-start justify-center pt-12 z-10 gap-3").style("min-height: 150px;")
+                with overlay:
+                    ui.spinner(size="lg")
+                    overlay_label = ui.label("Actualizando filtros...").classes("text-gray-600 text-lg")
+                overlay.set_visibility(False)
+                table_container_ref["container"] = ui.column().classes("w-full")
+                table_container_ref["overlay"] = overlay
+                table_container_ref["overlay_label"] = overlay_label
+
+            def _aplicar_calcular() -> None:
+                fn = calcular_labels_ref.get("_calcular_fn")
+                if fn:
+                    fn()
+
+            def _filtrar_con_indicador(msg: str = "Actualizando filtros...") -> None:
+                """Muestra overlay con spinner, ejecuta filtrar_y_pintar y oculta overlay al terminar."""
+                ov = table_container_ref.get("overlay")
+                lbl = table_container_ref.get("overlay_label")
+                if lbl:
+                    lbl.text = msg
+                if ov:
+                    ov.set_visibility(True)
+
+                def _pintar_despues() -> None:
+                    filtrar_y_pintar()
+                    _aplicar_calcular()
+                    if ov:
+                        ov.set_visibility(False)
+                ui.timer(0.15, _pintar_despues, once=True)
+            table_container_ref["_filtrar_fn"] = _filtrar_con_indicador
 
             def on_stock_change(e):
                 val = getattr(e, "value", "con_stock")
                 filtro_stock_ref["val"] = val
                 if val in ("sin_stock", "todas"):
                     include_paused_ref["val"] = True
+                    ov = table_container_ref.get("overlay")
+                    lbl = table_container_ref.get("overlay_label")
+                    if lbl:
+                        lbl.text = "Cargando (incluye sin stock)..."
+                    if ov:
+                        ov.set_visibility(True)
                     background_tasks.create(_cargar(), name="cargar_precios_detalle")
                 else:
-                    filtrar_y_pintar()
+                    _filtrar_con_indicador()
 
             def on_awei_change(e):
                 filtro_awei_ref["val"] = getattr(e, "value", "no_incluye")
-                filtrar_y_pintar()
+                _filtrar_con_indicador()
 
             def toggle_vista():
                 vista_modo_ref["val"] = "completo" if vista_modo_ref.get("val") == "minimo" else "minimo"
                 btn_vista.text = "Completo" if vista_modo_ref["val"] == "minimo" else "Mínimo"
-                filtrar_y_pintar()
+                _filtrar_con_indicador()
 
+            def on_fecha_change(e):
+                val = getattr(e, "value", "mes_actual")
+                filtro_fecha_ref["val"] = val if val in ("mes_actual", "mes_anterior") else "mes_actual"
+                periodo = filtro_fecha_ref["val"]
+                ventas_dict = ventas_por_periodo_ref.get(periodo, {})
+                for row in items_loaded:
+                    dk = row.get("dedupe_key") or ("id:" + str(row.get("id", "")))
+                    row["ventas"] = ventas_dict.get(dk, 0)
+                _filtrar_con_indicador()
+
+            filtro_fecha.on_value_change(on_fecha_change)
             filtro_stock.on_value_change(on_stock_change)
             filtro_awei.on_value_change(on_awei_change)
             btn_vista.on_click(toggle_vista)
@@ -3008,6 +3187,7 @@ def build_tab_precios_detalle(container) -> None:
                 ui.label("No hay publicaciones en MercadoLibre.").classes("text-gray-500")
         else:
             filtrar_y_pintar()
+            _aplicar_calcular()
         timer_ref["t"].active = False
 
     timer_ref: Dict[str, Any] = {}
@@ -3016,7 +3196,7 @@ def build_tab_precios_detalle(container) -> None:
         with content_column:
             with ui.card().classes("w-full p-8 items-center gap-4"):
                 ui.spinner(size="xl")
-                ui.label("Cargando precios...").classes("text-xl text-gray-700")
+                ui.label("Cargando productos y ventas...").classes("text-xl text-gray-700")
         timer_ref["t"] = ui.timer(0.3, _pintar_ui_desde_ref)
 
     def fmt_moneda(val: Any) -> str:
@@ -3079,7 +3259,7 @@ def build_tab_precios_detalle(container) -> None:
             return "—"
 
     def _sort_key(row: Dict[str, Any], col: str) -> Any:
-        if col in ("precio", "stock", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
+        if col in ("precio", "stock", "ventas", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
             return float(row.get(col) or 0)
         return str(row.get(col) or "").lower()
 
@@ -3088,6 +3268,7 @@ def build_tab_precios_detalle(container) -> None:
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
+        ("ventas", "Ventas", "center", True),
         ("costo", "Costo u$ +IVA", "right", True),
         ("precio", "Precio", "right", True),
         ("tipo_iva", "Tipo IVA", "right", True),
@@ -3108,6 +3289,7 @@ def build_tab_precios_detalle(container) -> None:
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
+        ("ventas", "Ventas", "center", True),
         ("costo", "Costo u$ +IVA", "right", True),
         ("precio", "Precio", "right", True),
         ("margen_pesos", "Margen $", "center", True),
@@ -3360,60 +3542,74 @@ def build_tab_precios_detalle(container) -> None:
         col_sort = sort_col_ref.get("val", "producto")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key(r, col_sort), reverse=not asc)
+        filtrados_actuales_ref["rows"] = filtrados
         cols = COLUMNAS_MINIMO if vista_modo_ref.get("val") == "minimo" else COLUMNAS_COMPLETO
         tc = table_container_ref.get("container")
         if not tc:
             return
         tc.clear()
+        es_completo = vista_modo_ref.get("val") == "completo"
         with tc:
-            with ui.element("table").classes("w-full border-collapse text-sm"):
-                with ui.element("thead"):
-                    with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+            # Vista completo: tabla compacta que quepa en pantalla (texto más chico, columnas ajustadas)
+            tab_cls = "border-collapse text-xs" if es_completo else "border-collapse text-sm"
+            prod_width = "min-width: 120px; max-width: 180px;" if es_completo else "min-width: 220px;"
+            cell_px = "px-1 py-0.5" if es_completo else "px-2 py-1"
+            with ui.element("div").classes("w-full overflow-x-auto"):
+                with ui.element("table").classes(tab_cls).style("table-layout: fixed; width: 100%; min-width: 100%" if es_completo else "width: max-content; min-width: 100%"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
                             for field, label, align, sortable in cols:
-                                th_style = "min-width: 380px;" if field == "producto" else ""
-                                with ui.element("th").classes(f"px-2 py-2 border text-center whitespace-nowrap").style(th_style):
+                                th_style = prod_width if field == "producto" else "min-width: 60px;" if es_completo else ""
+                                with ui.element("th").classes(f"{cell_px} border text-center whitespace-nowrap").style(th_style):
                                     if sortable:
                                         ui.button(label, on_click=lambda c=field: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold w-full")
                                     else:
                                         ui.label(label)
-                with ui.element("tbody"):
-                    for r in filtrados:
-                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: show_row_dialog(r)):
-                            for field, label, align, _ in cols:
-                                val = r.get(field)
-                                td_align = "text-center" if align == "center" else ("text-right" if align == "right" else "text-left")
-                                td_style = "min-width: 380px;" if field == "producto" else ""
-                                with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {td_align} text-sm").style(td_style):
-                                    if field == "producto":
-                                        txt = str(val or "")[:100] + ("..." if len(str(val or "")) > 100 else "")
-                                        ui.label(txt)
-                                    elif field == "costo":
-                                        ui.label(fmt_usd(val) if val is not None else "u$0,00")
-                                    elif field in ("precio", "iva_total", "iva_meli", "iva_impor", "comision", "cobrado", "deb_cred", "iibb", "envio"):
-                                        ui.label(fmt_moneda(val) if val is not None else "$0")
-                                    elif field == "margen_pesos":
-                                        costo_r = float(r.get("costo") or 0)
-                                        mp = float(val) if val is not None else 0
-                                        lbl = ui.label(fmt_moneda(val) if val is not None else "$0")
-                                        if costo_r <= 0:
-                                            lbl.classes("font-bold text-black")
+                    with ui.element("tbody"):
+                        for r in filtrados:
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: show_row_dialog(r)):
+                                for field, label, align, _ in cols:
+                                    val = r.get(field)
+                                    td_align = "text-center" if align == "center" else ("text-right" if align == "right" else "text-left")
+                                    td_style = prod_width if field == "producto" else "min-width: 60px;" if es_completo else ""
+                                    with ui.element("td").classes(f"{cell_px} border-b border-gray-100 {td_align}" + (" truncate" if es_completo and field == "producto" else "")).style(td_style):
+                                        if field == "producto":
+                                            txt = (str(val or "")[:80] + ("..." if len(str(val or "")) > 80 else "")) if es_completo else (str(val or "")[:100] + ("..." if len(str(val or "")) > 100 else ""))
+                                            ui.label(txt)
+                                        elif field == "costo":
+                                            ui.label(fmt_usd(val) if val is not None else "u$0,00")
+                                        elif field in ("precio", "iva_total", "iva_meli", "iva_impor", "comision", "cobrado", "deb_cred", "iibb", "envio"):
+                                            ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        elif field == "margen_pesos":
+                                            costo_r = float(r.get("costo") or 0)
+                                            mp = float(val) if val is not None else 0
+                                            lbl = ui.label(fmt_moneda(val) if val is not None else "$0")
+                                            if costo_r <= 0:
+                                                lbl.classes("font-bold text-black")
+                                            else:
+                                                lbl.classes("font-bold " + ("text-positive" if mp > 0 else "text-negative"))
+                                        elif field == "tipo_iva":
+                                            t = float(val) if val is not None else 0.105
+                                            ui.label("10,5%" if abs(t - 0.105) < 0.001 else "21%")
+                                        elif field in ("margen_costo_pct", "margen_venta_pct"):
+                                            costo_r = float(r.get("costo") or 0)
+                                            mp = float(r.get("margen_pesos") or 0)
+                                            pct_str = fmt_pct(val) if es_completo else fmt_pct2(val)
+                                            base_cls = "text-xs " if es_completo else ""
+                                            lbl = ui.label(pct_str)
+                                            if costo_r <= 0:
+                                                lbl.classes(base_cls + "font-bold text-black")
+                                            else:
+                                                lbl.classes(base_cls + "font-bold " + ("text-positive" if mp > 0 else "text-negative"))
+                                        elif field == "stock":
+                                            ui.label(str(val) if val is not None else "0")
+                                        elif field == "ventas":
+                                            ui.label(str(val) if val is not None else "0")
                                         else:
-                                            lbl.classes("font-bold " + ("text-positive" if mp > 0 else "text-negative"))
-                                    elif field == "tipo_iva":
-                                        t = float(val) if val is not None else 0.105
-                                        ui.label("10,5%" if abs(t - 0.105) < 0.001 else "21%")
-                                    elif field in ("margen_costo_pct", "margen_venta_pct"):
-                                        costo_r = float(r.get("costo") or 0)
-                                        mp = float(r.get("margen_pesos") or 0)
-                                        lbl = ui.label(fmt_pct2(val))
-                                        if costo_r <= 0:
-                                            lbl.classes("font-bold text-black")
-                                        else:
-                                            lbl.classes("font-bold " + ("text-positive" if mp > 0 else "text-negative"))
-                                    elif field == "stock":
-                                        ui.label(str(val) if val is not None else "0")
-                                    else:
-                                        ui.label(str(val) if val is not None else "—")
+                                            ui.label(str(val) if val is not None else "—")
+        fn_calcular = calcular_labels_ref.get("_calcular_fn")
+        if callable(fn_calcular):
+            fn_calcular()
 
     def _on_sort_click(col: str) -> None:
         if sort_col_ref.get("val") == col:
@@ -3421,13 +3617,34 @@ def build_tab_precios_detalle(container) -> None:
         else:
             sort_col_ref["val"] = col
             sort_asc_ref["val"] = True
-        filtrar_y_pintar()
+        fn = table_container_ref.get("_filtrar_fn")
+        if fn:
+            fn("Ordenando...")
+        else:
+            filtrar_y_pintar()
 
     async def _cargar() -> None:
         if timer_ref.get("t"):
             timer_ref["t"].active = True
+        include_paused = include_paused_ref.get("val", False)
         try:
-            data = await run.io_bound(ml_get_my_items, access_token, include_paused_ref.get("val", True))
+            # Cargar items primero para mostrar tabla rápido; órdenes en paralelo para ventas por período
+            async def _fetch_items():
+                return await run.io_bound(ml_get_my_items, access_token, include_paused)
+            async def _fetch_orders():
+                try:
+                    profile = await run.io_bound(ml_get_user_profile, access_token)
+                    seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
+                    if seller_id:
+                        od = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
+                        return (od, seller_id)
+                except Exception:
+                    pass
+                return ({}, None)
+            data, orders_result = await asyncio.gather(_fetch_items(), _fetch_orders())
+            orders_data, seller_id = orders_result if isinstance(orders_result, tuple) else ({}, None)
+            if not isinstance(orders_data, dict):
+                orders_data = {}
         except Exception as e:
             cargar_listo_ref["error"] = str(e)
             cargar_listo_ref["listo"] = True
@@ -3445,11 +3662,79 @@ def build_tab_precios_detalle(container) -> None:
                 return 999999999
 
         items_ordenados = sorted(items, key=lambda x: _id_num(x.get("id")))
-        seen_dedupe: set = set()  # catalog_product_id o SELLER_SKU para no repetir (siempre queda el ID más chico)
+        # Mapeo item_id -> dedupe_key para todos los ítems (incl. los que deduplicamos)
+        item_id_to_dedupe: Dict[str, str] = {}
         for i in items_ordenados:
             catalog_id = str(i.get("catalog_product_id") or "").strip()
             seller_sku = (i.get("seller_sku") or "").strip()
-            catalog_listing = i.get("catalog_listing") is True or str(i.get("catalog_listing", "")).lower() in ("true", "1")
+            item_id_str = str(i.get("id", ""))
+            dk = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "id:" + item_id_str)
+            item_id_to_dedupe[item_id_str] = dk
+        # Ventas históricas (de sold_quantity en items)
+        ventas_historico: Dict[str, int] = {}
+        for i in items_ordenados:
+            catalog_id = str(i.get("catalog_product_id") or "").strip()
+            seller_sku = (i.get("seller_sku") or "").strip()
+            clave = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "id:" + str(i.get("id", "")))
+            sold = int(i.get("sold_quantity") or 0)
+            ventas_historico[clave] = ventas_historico.get(clave, 0) + sold
+        # Ventas por mes actual y mes anterior desde órdenes (ya cargadas en paralelo)
+        ventas_mes_actual: Dict[str, int] = {}
+        ventas_mes_anterior: Dict[str, int] = {}
+        try:
+            if seller_id and orders_data:
+                raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
+                orders = [o for o in raw_orders if isinstance(o, dict)]
+                hoy = datetime.now().date()
+                primer_dia_actual = hoy.replace(day=1)
+                ultimo_mes = primer_dia_actual - timedelta(days=1)
+                primer_dia_anterior = ultimo_mes.replace(day=1)
+
+                def _agg_ventas(orders_list: List[Dict], target: Dict[str, int]) -> None:
+                    for order in orders_list:
+                        dt_str = order.get("date_created") or order.get("date_closed") or order.get("date_last_updated") or ""
+                        if not dt_str or not isinstance(dt_str, str):
+                            continue
+                        try:
+                            dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                        except Exception:
+                            continue
+                        for it in order.get("order_items") or order.get("items") or []:
+                            if not isinstance(it, dict):
+                                continue
+                            qty = int(it.get("quantity") or it.get("qty") or 0)
+                            if qty == 0:
+                                continue
+                            obj = it.get("item") or it
+                            item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                            catalog_id_oi = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "") if isinstance(obj, dict) else str(it.get("catalog_product_id") or "")
+                            dedupe_key = ("c:" + catalog_id_oi) if catalog_id_oi.strip() else item_id_to_dedupe.get(item_id, "id:" + item_id)
+                            target[dedupe_key] = target.get(dedupe_key, 0) + qty
+
+                for o in orders:
+                    dt_str = o.get("date_created") or o.get("date_closed") or ""
+                    if not dt_str:
+                        continue
+                    try:
+                        dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                    except Exception:
+                        continue
+                    if primer_dia_actual <= dt <= hoy:
+                        _agg_ventas([o], ventas_mes_actual)
+                    elif primer_dia_anterior <= dt <= ultimo_mes:
+                        _agg_ventas([o], ventas_mes_anterior)
+        except Exception:
+            pass
+        ventas_por_periodo_ref["historico"] = ventas_historico
+        ventas_por_periodo_ref["mes_actual"] = ventas_mes_actual
+        ventas_por_periodo_ref["mes_anterior"] = ventas_mes_anterior
+
+        seen_dedupe: set = set()
+        periodo_activo = filtro_fecha_ref.get("val", "mes_actual")
+        ventas_dict = ventas_por_periodo_ref.get(periodo_activo, ventas_historico)
+        for i in items_ordenados:
+            catalog_id = str(i.get("catalog_product_id") or "").strip()
+            seller_sku = (i.get("seller_sku") or "").strip()
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
             if dedupe_key and dedupe_key in seen_dedupe:
                 continue
@@ -3476,12 +3761,16 @@ def build_tab_precios_detalle(container) -> None:
                 margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                 margen_venta_pct = (margen_pesos / precio_real * 100) if precio_real > 0 else 0.0
+            dk_final = dedupe_key or ("id:" + item_id_str)
+            ventas = ventas_dict.get(dk_final, 0)
             items_loaded.append({
                 "id": str(i.get("id", "")),
                 "thumbnail": i.get("thumbnail") or "",
                 "marca": i.get("marca") or "—",
                 "producto": str(i.get("title") or ""),
                 "stock": stock,
+                "ventas": ventas,
+                "dedupe_key": dk_final,
                 "precio": precio_real,
                 "tipo_iva": tipo_iva,
                 "iva_total": iva_total,
@@ -4047,10 +4336,12 @@ def build_tab_pesos() -> None:
             ui.button("Guardar Tabla", on_click=guardar, color="secondary")
 
 
-def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int) -> Dict[str, float]:
-    """Calcula ventas y ganancias del mes desde órdenes ML (como en Estadísticas)."""
+def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int, periodo: str = "mes_actual") -> Dict[str, float]:
+    """Calcula ventas y ganancias desde órdenes ML. periodo: mes_actual, mes_anterior o historico."""
     hoy = datetime.now().date()
     primer_dia = hoy.replace(day=1)
+    ultimo_mes = primer_dia - timedelta(days=1)
+    primer_dia_anterior = ultimo_mes.replace(day=1)
     raw = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
     ventas_mes_actual_monto = 0.0
     for o in raw:
@@ -4063,7 +4354,14 @@ def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int) -> 
             dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
         except Exception:
             continue
-        if not (primer_dia <= dt <= hoy):
+        if periodo == "mes_actual":
+            if not (primer_dia <= dt <= hoy):
+                continue
+        elif periodo == "mes_anterior":
+            if not (primer_dia_anterior <= dt <= ultimo_mes):
+                continue
+        # historico: sin filtro de fecha
+        elif periodo != "historico":
             continue
         amt = o.get("total_amount") or o.get("paid_amount")
         if amt is None and o.get("payments"):
@@ -4073,10 +4371,17 @@ def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int) -> 
             ventas_mes_actual_monto += float(amt or 0)
         except (TypeError, ValueError):
             pass
-    dias_transcurridos = (hoy - primer_dia).days + 1
-    dias_del_mes = calendar.monthrange(hoy.year, hoy.month)[1]
+    if periodo == "mes_actual":
+        dias_transcurridos = (hoy - primer_dia).days + 1
+        dias_del_mes = calendar.monthrange(hoy.year, hoy.month)[1]
+    elif periodo == "mes_anterior":
+        dias_transcurridos = (ultimo_mes - primer_dia_anterior).days + 1
+        dias_del_mes = dias_transcurridos
+    else:
+        dias_transcurridos = 1
+        dias_del_mes = 1
     venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
-    venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+    venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else ventas_mes_actual_monto
     try:
         m = get_cotizador_param("ml_ganancia_neta_venta", user_id) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")
         margen_val = float(str(m).replace(",", ".").strip())
@@ -4130,6 +4435,8 @@ def build_tab_balance(container) -> None:
             ui.spinner(size="xl")
             ui.label("Cargando Balance...").classes("text-xl text-gray-700")
     ingresos_ref: Dict[str, Any] = {"data": None}
+    orders_balance_ref: Dict[str, Any] = {"data": {}}
+    filtro_fecha_balance_ref: Dict[str, str] = {"val": "mes_actual"}
 
     async def _cargar_y_pintar() -> None:
         orders_data: Dict[str, Any] = {}
@@ -4139,11 +4446,15 @@ def build_tab_balance(container) -> None:
                 seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
                 if seller_id:
                     orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
-                ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid)
+                orders_balance_ref["data"] = orders_data
+                periodo = filtro_fecha_balance_ref.get("val", "mes_actual")
+                ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid, periodo)
             except Exception:
                 ingresos_ref["data"] = None
+                orders_balance_ref["data"] = {}
         else:
             ingresos_ref["data"] = None
+            orders_balance_ref["data"] = {}
         _pintar_contenido()
 
     def _pintar_contenido() -> None:
@@ -4205,12 +4516,26 @@ def build_tab_balance(container) -> None:
                     with ui.row().classes("w-full gap-6 flex-wrap"):
                         # 1. Periodo (fecha)
                         with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
-                            ui.label("Periodo").classes("text-xs text-gray-600 font-semibold")
-                            meses_es = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-                                        7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-                            hoy_g = datetime.now()
-                            periodo_str = f"{meses_es.get(hoy_g.month, hoy_g.strftime('%B'))} {hoy_g.strftime('%Y')}"
-                            ui.label(periodo_str).classes("text-lg font-bold text-primary")
+                            ui.label("Fecha").classes("text-xs text-gray-600 font-semibold mb-1")
+                            _val_fecha = filtro_fecha_balance_ref.get("val", "mes_actual")
+                            if _val_fecha not in ("mes_actual", "mes_anterior"):
+                                _val_fecha = "mes_actual"
+                            sel_fecha = ui.select(
+                                {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
+                                value=_val_fecha,
+                                label="",
+                            ).classes("w-36").props("dense outlined")
+
+                            def on_fecha_balance_change(e):
+                                filtro_fecha_balance_ref["val"] = getattr(e, "value", "mes_actual")
+                                od = orders_balance_ref.get("data") or {}
+                                if od:
+                                    ingresos_ref["data"] = _compute_ingresos_from_orders(od, uid, filtro_fecha_balance_ref["val"])
+                                    _pintar_header()
+                                    _pintar_ingresos()
+                                    _pintar_resultados()
+
+                            sel_fecha.on_value_change(on_fecha_balance_change)
                         # 2. Datos Actuales Pesos
                         with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
                             ui.label("Datos Actuales (pesos)").classes("text-xs text-gray-600 font-semibold mb-1")
