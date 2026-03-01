@@ -26,7 +26,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "25020616"
+VERSION = "1.35.2"
 
 
 # ==========================
@@ -153,6 +153,20 @@ def init_db() -> None:
                 )
             cur.execute("DROP TABLE cotizador_datos_old")
 
+    # Precios por producto (tipo_iva y costo u$ por id de publicación ML, por usuario)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS precios_producto (
+            id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            tipo_iva REAL NOT NULL,
+            costo_u REAL NOT NULL,
+            PRIMARY KEY (id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     # Filas de Importación guardadas (datos completos por fila)
     cur.execute(
         """
@@ -226,6 +240,35 @@ def set_setting(key: str, value: float) -> None:
         cur.execute(
             "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = ?",
             (key, value, value),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_precios_producto(item_id: str, user_id: int) -> Optional[Dict[str, Any]]:
+    """Obtiene tipo_iva y costo_u guardados para un producto (por id ML)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT tipo_iva, costo_u FROM precios_producto WHERE id = ? AND user_id = ?",
+            (item_id, user_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def set_precios_producto(item_id: str, user_id: int, tipo_iva: float, costo_u: float) -> None:
+    """Guarda tipo_iva y costo_u para un producto."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO precios_producto (id, user_id, tipo_iva, costo_u) VALUES (?, ?, ?, ?) ON CONFLICT(id, user_id) DO UPDATE SET tipo_iva=?, costo_u=?",
+            (item_id, user_id, tipo_iva, costo_u, tipo_iva, costo_u),
         )
         conn.commit()
     finally:
@@ -577,15 +620,34 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
         def _item_from_body(body: dict) -> dict:
             marca = ""
             color = ""
+            seller_sku = ""
             for att in body.get("attributes") or []:
-                aid = att.get("id") or ""
-                if aid in ("BRAND", "Marca"):
+                aid = (att.get("id") or "").strip().upper()
+                if aid in ("BRAND", "MARCA"):
                     val = att.get("value_name") or att.get("value_id")
                     marca = str(val) if val is not None else ""
-                elif aid in ("COLOR", "Color", "Colour"):
+                elif aid in ("COLOR", "COLOUR"):
                     val = att.get("value_name") or att.get("value_id")
                     if val:
                         color = str(val)
+                        break
+                elif aid == "SELLER_SKU":
+                    v = att.get("value_name") or att.get("value") or att.get("value_id")
+                    if v is None and att.get("values"):
+                        v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
+                    if v is not None:
+                        seller_sku = str(v).strip()
+            if not seller_sku:
+                seller_sku = (body.get("seller_custom_field") or "").strip()
+            if not seller_sku:
+                for var in body.get("variations") or []:
+                    for vatt in (var.get("attribute_combinations") or var.get("attributes") or []):
+                        if (vatt.get("id") or "").strip().upper() == "SELLER_SKU":
+                            v = vatt.get("value_name") or vatt.get("value") or vatt.get("value_id")
+                            if v is not None:
+                                seller_sku = str(v).strip()
+                                break
+                    if seller_sku:
                         break
             if not color:
                 tit = (body.get("title") or "").lower()
@@ -597,9 +659,14 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
             catalog_listing = body.get("catalog_listing") is True
             # original_price existe cuando ML tiene precio promocional fijado
             original_price = body.get("original_price") or body.get("base_price")
+            thumbnail = body.get("thumbnail") or ""
+            if not thumbnail and body.get("pictures"):
+                pic = (body.get("pictures") or [{}])[0]
+                thumbnail = pic.get("secure_url") or pic.get("url") or ""
             return {
                 "id": body.get("id"),
                 "title": body.get("title", ""),
+                "thumbnail": thumbnail,
                 "price": body.get("price"),
                 "sale_price": body.get("sale_price"),
                 "original_price": original_price,
@@ -609,6 +676,7 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                 "permalink": body.get("permalink", ""),
                 "catalog_product_id": body.get("catalog_product_id"),
                 "catalog_listing": catalog_listing,
+                "seller_sku": seller_sku,
                 "marca": marca or "—",
                 "color": color or "—",
                 "last_updated": body.get("last_updated"),
@@ -847,7 +915,7 @@ def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> L
 
 
 def ml_get_items_multiget_with_attributes(
-    access_token: Optional[str], item_ids: List[str], attributes: str = "id,catalog_listing,catalog_product_id"
+    access_token: Optional[str], item_ids: List[str], attributes: str = "id,catalog_listing,catalog_product_id,attributes"
 ) -> List[Optional[Dict[str, Any]]]:
     """Obtiene ítems pidiendo atributos específicos (para catalog_listing). Máx 20 ids."""
     if not item_ids:
@@ -1267,6 +1335,7 @@ def show_main_layout(container) -> None:
                 tab_estadisticas = ui.tab("Estadísticas")
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
+                tab_precios_detalle = ui.tab("Precios")
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
@@ -1299,6 +1368,9 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_precios):
                 precios_container = ui.column().classes("w-full")
 
+            with ui.tab_panel(tab_precios_detalle):
+                precios_detalle_container = ui.column().classes("w-full")
+
             with ui.tab_panel(tab_busqueda):
                 build_tab_busqueda()
 
@@ -1318,6 +1390,7 @@ def show_main_layout(container) -> None:
                 build_tab_config()
 
         precios_cargado = [False]
+        precios_detalle_cargado = [False]
         ventas_cargado = [False]
         estadisticas_cargado = [False]
         balance_cargado = [False]
@@ -1327,6 +1400,9 @@ def show_main_layout(container) -> None:
             if val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
+            elif val == "Precios" and not precios_detalle_cargado[0]:
+                precios_detalle_cargado[0] = True
+                build_tab_precios_detalle(precios_detalle_container)
             elif val == "Ventas" and not ventas_cargado[0]:
                 ventas_cargado[0] = True
                 build_tab_ventas(ventas_container)
@@ -1818,7 +1894,7 @@ def build_tab_ventas(container) -> None:
 
     ventas_raw: List[Dict[str, Any]] = []
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
-    agrupar_ref: Dict[str, bool] = {"val": False}
+    agrupar_ref: Dict[str, bool] = {"val": True}  # Por defecto agrupado para no repetir publicaciones con mismo SKU
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
     ganancia_neta_ref: Dict[str, float] = {"val": 0.0}
 
@@ -2133,6 +2209,7 @@ def build_tab_ventas(container) -> None:
                         if iid and iid not in item_ids_to_fetch:
                             item_ids_to_fetch.append(iid)
             item_id_to_catalog: Dict[str, bool] = {}
+            item_id_to_sku: Dict[str, str] = {}
             if item_ids_to_fetch and access_token:
                 def _fetch_catalog_info(ids: List[str]) -> List[Optional[Dict[str, Any]]]:
                     out: List[Optional[Dict[str, Any]]] = []
@@ -2153,6 +2230,14 @@ def build_tab_ventas(container) -> None:
                         catalog_listing = b.get("catalog_listing")
                         is_catalog = has_catalog_id or catalog_listing is True or str(catalog_listing).lower() in ("true", "1")
                         item_id_to_catalog[iid] = is_catalog
+                        # SKU (SELLER_SKU) para agrupar publicaciones propias duplicadas
+                        attrs = b.get("attributes") or []
+                        for a in attrs:
+                            if isinstance(a, dict) and (a.get("id") or "").upper() == "SELLER_SKU":
+                                sku_val = (a.get("value_name") or a.get("value") or "").strip()
+                                if sku_val:
+                                    item_id_to_sku[iid] = sku_val
+                                break
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             for ord_item in orders_mes:
@@ -2207,7 +2292,9 @@ def build_tab_ventas(container) -> None:
                     if not catalog and item_id:
                         catalog = item_id_to_catalog.get(item_id, False) or item_id_to_catalog.get(item_id.upper(), False) or item_id_to_catalog.get(item_id.lower(), False)
                     tipo = "Catálogo" if catalog else "Propia"
-                    agrupar_key = catalog_id or item_id or titulo
+                    # Para propias: usar SKU si existe (evita duplicados por mismo producto distinto id)
+                    sku = item_id_to_sku.get(item_id) or item_id_to_sku.get(item_id.upper()) or item_id_to_sku.get(item_id.lower()) or ""
+                    agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
@@ -2241,6 +2328,7 @@ def build_tab_ventas(container) -> None:
                 ).classes("w-36").bind_value(filtro_estado_ref, "val")
                 filtro_estado.on_value_change(lambda: _pintar_tabla())
                 btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
+                _update_btn_agrupar()
                 ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
                 ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps")
 
@@ -2781,6 +2869,642 @@ def _mostrar_tabla_precios(
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
+
+
+def build_tab_precios_detalle(container) -> None:
+    """Pestaña Precios: tabla con id, marca, producto, stock, precio, iva, costo, comision, cobrado, iibb, margen $, margen costo, margen venta."""
+    container.clear()
+    user = require_login()
+    if not user:
+        return
+
+    uid = user["id"]
+    access_token = get_ml_access_token(uid)
+    if not access_token:
+        with container:
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+        return
+
+    def _parse_float(s: Any) -> float:
+        if s is None or s == "":
+            return 0.0
+        try:
+            raw = str(s).replace(".", "").replace(",", ".").strip()
+            return float(raw) if raw else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _parse_rate(s: Any) -> float:
+        """Parsea tasas 0.15, 0,15 o 15 (como %). Valores entre 0 y 1.5 se usan tal cual; si > 1.5 se divide por 100."""
+        if s is None or s == "":
+            return 0.0
+        try:
+            raw = str(s).strip().replace(",", ".")
+            v = float(raw) if raw else 0.0
+            return v if v <= 1.5 else v / 100.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    ml_comision = _parse_rate(get_cotizador_param("ml_comision", uid) or COTIZADOR_DEFAULTS.get("ml_comision", "0.15"))
+    ml_iibb_per = _parse_rate(get_cotizador_param("ml_iibb_per", uid) or COTIZADOR_DEFAULTS.get("ml_iibb_per", "0.055"))
+    ml_debcre = _parse_rate(get_cotizador_param("ml_debcre", uid) or COTIZADOR_DEFAULTS.get("ml_debcre", "0.006"))
+    ml_envios_val = get_cotizador_param("ml_envios", uid) or COTIZADOR_DEFAULTS.get("ml_envios", "5823")
+    ml_envios = _parse_float(ml_envios_val) if ml_envios_val and _parse_float(ml_envios_val) > 100 else 5823.0
+    ml_envios_grat_val = get_cotizador_param("ml_envios_gratuitos", uid) or COTIZADOR_DEFAULTS.get("ml_envios_gratuitos", "33000")
+    ml_envios_gratuitos = _parse_float(ml_envios_grat_val) if ml_envios_grat_val else 33000.0
+    dolar_str = get_cotizador_param("dolar_oficial", uid) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
+    dolar_oficial = _parse_float(dolar_str) if dolar_str else 1475.0
+    if dolar_oficial <= 0:
+        dolar_oficial = 1475.0
+
+    IVA_IMPORTACION_APROX = 0.09  # Aprox. IVA ya pagado en importación (sobre costo u$ * dolar)
+
+    def _calc_iva(precio: float, tipo_iva: float, comision: float, costo_usd: float) -> tuple:
+        """Devuelve (iva_total, iva_meli, iva_impor)."""
+        iva_venta = precio * tipo_iva / (1 + tipo_iva)
+        iva_meli = comision * 0.21 / 1.21  # IVA crédito fiscal de comisión ML
+        iva_impor = IVA_IMPORTACION_APROX * costo_usd * dolar_oficial
+        iva_total = iva_venta - iva_meli - iva_impor
+        return (iva_total, iva_meli, iva_impor)
+
+    def _envio_a_restar(precio: float) -> float:
+        """Si precio < ml_envios_gratuitos, no se resta envío."""
+        return 0.0 if precio < ml_envios_gratuitos else ml_envios
+
+    items_loaded: List[Dict[str, Any]] = []
+    filtro_stock_ref: Dict[str, str] = {"val": "con_stock"}
+    filtro_awei_ref: Dict[str, str] = {"val": "no_incluye"}
+    include_paused_ref: Dict[str, bool] = {"val": False}
+    vista_modo_ref: Dict[str, str] = {"val": "minimo"}
+    sort_col_ref: Dict[str, str] = {"val": "producto"}
+    sort_asc_ref: Dict[str, bool] = {"val": True}
+    table_container_ref: Dict[str, Any] = {}
+    cargar_listo_ref: Dict[str, Any] = {"listo": False, "error": None, "totales": 0, "con_stock": 0}
+
+    def _pintar_ui_desde_ref():
+        """Pinta la UI cuando los datos están listos. Se llama desde el timer en el main thread."""
+        if not cargar_listo_ref.get("listo"):
+            return
+        cargar_listo_ref["listo"] = False
+        err = cargar_listo_ref.get("error")
+        if err:
+            content_column.clear()
+            with content_column:
+                ui.label(f"❌ Error al cargar: {err}").classes("text-negative")
+            timer_ref["t"].active = False
+            return
+        totales = cargar_listo_ref.get("totales", 0)
+        con_stock = cargar_listo_ref.get("con_stock", 0)
+        content_column.clear()
+        with content_column:
+            with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
+                with ui.row().classes("w-full justify-around flex-wrap gap-4"):
+                    with ui.column().classes("items-center"):
+                        ui.label("Publicaciones Totales").classes("text-sm text-gray-600")
+                        ui.label(str(totales)).classes("text-2xl font-bold text-primary")
+                    with ui.column().classes("items-center"):
+                        ui.label("Publicaciones con stock").classes("text-sm text-gray-600")
+                        ui.label(str(con_stock)).classes("text-2xl font-bold text-primary")
+            with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
+                ui.label("Filtros:").classes("text-sm")
+                filtro_stock = ui.select(
+                    {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
+                    value=filtro_stock_ref.get("val", "con_stock"),
+                    label="Stock",
+                ).classes("w-36")
+                filtro_awei = ui.select(
+                    {"incluye": "Incluye", "no_incluye": "No incluye"},
+                    value=filtro_awei_ref.get("val", "no_incluye"),
+                    label="Awei",
+                ).classes("w-36")
+                btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
+            table_container_ref["container"] = ui.column().classes("w-full")
+
+            def on_stock_change(e):
+                val = getattr(e, "value", "con_stock")
+                filtro_stock_ref["val"] = val
+                if val in ("sin_stock", "todas"):
+                    include_paused_ref["val"] = True
+                    background_tasks.create(_cargar(), name="cargar_precios_detalle")
+                else:
+                    filtrar_y_pintar()
+
+            def on_awei_change(e):
+                filtro_awei_ref["val"] = getattr(e, "value", "no_incluye")
+                filtrar_y_pintar()
+
+            def toggle_vista():
+                vista_modo_ref["val"] = "completo" if vista_modo_ref.get("val") == "minimo" else "minimo"
+                btn_vista.text = "Completo" if vista_modo_ref["val"] == "minimo" else "Mínimo"
+                filtrar_y_pintar()
+
+            filtro_stock.on_value_change(on_stock_change)
+            filtro_awei.on_value_change(on_awei_change)
+            btn_vista.on_click(toggle_vista)
+
+        if not items_loaded:
+            content_column.clear()
+            with content_column:
+                ui.label("No hay publicaciones en MercadoLibre.").classes("text-gray-500")
+        else:
+            filtrar_y_pintar()
+        timer_ref["t"].active = False
+
+    timer_ref: Dict[str, Any] = {}
+    with container:
+        content_column = ui.column().classes("w-full gap-2")
+        with content_column:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando precios...").classes("text-xl text-gray-700")
+        timer_ref["t"] = ui.timer(0.3, _pintar_ui_desde_ref)
+
+    def fmt_moneda(val: Any) -> str:
+        if val is None:
+            return "$0"
+        try:
+            n = int(round(float(val)))
+            return "$" + f"{n:,}".replace(",", ".")
+        except (TypeError, ValueError):
+            return "$0"
+
+    def fmt_usd(val: Any) -> str:
+        """Formato para costo u$: u$ adelante, 2 decimales, punto para miles."""
+        if val is None:
+            return "u$0,00"
+        try:
+            n = float(val)
+            s = f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            return "u$" + s
+        except (TypeError, ValueError):
+            return "u$0,00"
+
+    def _parse_moneda(s: Any) -> float:
+        """Parsea string como $1.234.567 -> float."""
+        if s is None or s == "":
+            return 0.0
+        try:
+            raw = str(s).replace("$", "").replace(".", "").replace(",", ".").strip()
+            return float(raw) if raw else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _parse_usd(s: Any) -> float:
+        """Parsea string como u$1.234,56 o u$1234.56 -> float."""
+        if s is None or s == "":
+            return 0.0
+        try:
+            raw = str(s).replace("u$", "").replace("$", "").replace(".", "").replace(",", ".").strip()
+            return float(raw) if raw else 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def fmt_pct(val: Any) -> str:
+        if val is None:
+            return "—"
+        try:
+            n = float(val)
+            return f"{n:.1f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    def fmt_pct2(val: Any) -> str:
+        """Porcentaje con 2 decimales (para margen costo y margen venta)."""
+        if val is None:
+            return "—"
+        try:
+            n = float(val)
+            return f"{n:.2f}%"
+        except (TypeError, ValueError):
+            return "—"
+
+    def _sort_key(row: Dict[str, Any], col: str) -> Any:
+        if col in ("precio", "stock", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
+            return float(row.get(col) or 0)
+        return str(row.get(col) or "").lower()
+
+    COLUMNAS_COMPLETO = [
+        ("id", "ID", "left", True),
+        ("marca", "Marca", "left", True),
+        ("producto", "Producto", "left", True),
+        ("stock", "Stock", "center", True),
+        ("costo", "Costo u$ +IVA", "right", True),
+        ("precio", "Precio", "right", True),
+        ("tipo_iva", "Tipo IVA", "right", True),
+        ("comision", "Comisión", "right", True),
+        ("cobrado", "Cobrado", "right", True),
+        ("iva_meli", "IVA Meli", "center", True),
+        ("iva_impor", "IVA impor", "center", True),
+        ("iva_total", "IVA total", "center", True),
+        ("deb_cred", "Deb-Cred", "right", True),
+        ("iibb", "IIBB", "right", True),
+        ("envio", "Envío", "right", True),
+        ("margen_pesos", "Margen $", "center", True),
+        ("margen_venta_pct", "Margen venta %", "center", True),
+        ("margen_costo_pct", "Margen costo %", "center", True),
+    ]
+    COLUMNAS_MINIMO = [
+        ("id", "ID", "left", True),
+        ("marca", "Marca", "left", True),
+        ("producto", "Producto", "left", True),
+        ("stock", "Stock", "center", True),
+        ("costo", "Costo u$ +IVA", "right", True),
+        ("precio", "Precio", "right", True),
+        ("margen_pesos", "Margen $", "center", True),
+        ("margen_venta_pct", "Margen venta %", "center", True),
+        ("margen_costo_pct", "Margen costo %", "center", True),
+    ]
+
+    def show_row_dialog(row: Dict[str, Any]) -> None:
+        d = ui.dialog()
+        inp_refs: Dict[str, Any] = {}
+        recalc_container_ref: Dict[str, Any] = {}
+
+        def _recalcular() -> None:
+            precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
+            costo_str = inp_refs.get("costo") and getattr(inp_refs["costo"], "value", None) or ""
+            tipo_iva_str = inp_refs.get("tipo_iva") and getattr(inp_refs["tipo_iva"], "value", None) or "0.105"
+            precio = _parse_moneda(precio_str)
+            costo = _parse_usd(costo_str)
+            tipo_iva = float(tipo_iva_str) if tipo_iva_str else 0.105
+            if precio < 1:
+                precio = float(row.get("precio") or 0) or 1
+            comision = precio * ml_comision
+            cobrado = precio - comision
+            deb_cred = precio * ml_debcre
+            iibb = precio * ml_iibb_per
+            iva_venta = precio * tipo_iva / (1 + tipo_iva)
+            iva_total, iva_meli, iva_impor = _calc_iva(precio, tipo_iva, comision, costo)
+            envio = _envio_a_restar(precio)
+            costo_pesos = costo * dolar_oficial
+            if costo_pesos <= 0:
+                margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
+            else:
+                margen_pesos = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio
+                margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                margen_venta_pct = (margen_pesos / precio * 100) if precio > 0 else 0.0
+            if recalc_container_ref.get("costo_pesos_label"):
+                recalc_container_ref["costo_pesos_label"].text = fmt_moneda(costo_pesos)
+            data = {"comision": comision, "cobrado": cobrado, "iva_venta": iva_venta, "iva_total": iva_total,
+                    "iva_meli": iva_meli, "iva_impor": iva_impor, "deb_cred": deb_cred, "iibb": iibb, "envio": envio,
+                    "costo_pesos": costo_pesos, "margen_pesos": margen_pesos,
+                    "margen_costo_pct": margen_costo_pct, "margen_venta_pct": margen_venta_pct}
+            _pintar_recalc(recalc_container_ref["container"], data)
+
+        def _pintar_recalc(cont, data: Dict[str, Any]) -> None:
+            costo_pesos = float(data.get("costo_pesos") or 0)
+            mp = float(data.get("margen_pesos") or 0)
+            if costo_pesos <= 0:
+                margen_cls = "font-bold text-black"
+            else:
+                margen_cls = "font-bold " + ("text-positive" if mp > 0 else "text-negative")
+            cont.clear()
+            with cont:
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("cobrado"))).classes("text-sm font-bold text-primary")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Comisión").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("IVA venta").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("iva_venta"))).classes("text-sm")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    with ui.row().classes("gap-4"):
+                        ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
+                        ui.label(fmt_moneda(data.get("iva_meli"))).classes("text-sm")
+                    with ui.row().classes("gap-4"):
+                        ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
+                        ui.label(fmt_moneda(data.get("iva_impor"))).classes("text-sm")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("IVA total (iva venta - iva meli - iva impor)").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("iva_total"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Deb-Cred").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("deb_cred"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("IIBB").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("iibb"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4 border-b-2 border-gray-300"):
+                    ui.label("Envío").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("envio"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-2 gap-4"):
+                    ui.label("Margen $").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("margen_pesos"))).classes(margen_cls)
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Margen venta %").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_pct2(data.get("margen_venta_pct"))).classes(margen_cls)
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Margen costo %").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_pct2(data.get("margen_costo_pct"))).classes(margen_cls)
+
+        with d:
+            with ui.card().classes("p-6 min-w-[400px] max-w-[560px]"):
+                with ui.row().classes("w-full gap-4 mb-4"):
+                    thumb_url = row.get("thumbnail") or ""
+                    if thumb_url:
+                        ui.image(thumb_url).classes("w-24 h-24 object-contain rounded border").style("min-width: 96px; min-height: 96px;")
+                    else:
+                        with ui.column().classes("w-24 h-24 rounded border bg-gray-100 items-center justify-center").style("min-width: 96px; min-height: 96px;"):
+                            ui.label("Sin foto").classes("text-xs text-gray-500")
+                    with ui.column().classes("flex-1 min-w-0 gap-2"):
+                        ui.label(str(row.get("id", "—"))).classes("text-sm font-mono text-gray-600")
+                        ui.label(str(row.get("marca", "—"))).classes("text-sm font-medium")
+                        txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
+                        ui.label(txt).classes("text-sm font-bold")
+                        ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
+                with ui.column().classes("w-full gap-0 border-b-2 border-gray-300 pb-3"):
+                    with ui.row().classes("w-full justify-between py-2 items-center"):
+                        ui.label("Precio").classes("text-sm font-medium text-gray-600")
+                        inp_precio = ui.input(value=fmt_moneda(row.get("precio"))).classes("text-sm w-32").props("dense")
+                        inp_refs["precio"] = inp_precio
+                    with ui.row().classes("w-full justify-between py-2 items-center"):
+                        ui.label("Tipo IVA").classes("text-sm font-medium text-gray-600")
+                        tipo_val = float(row.get("tipo_iva") or 0.105)
+                        sel = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=str(tipo_val)).classes("text-sm w-32").props("dense")
+                        inp_refs["tipo_iva"] = sel
+                    with ui.row().classes("w-full justify-between py-2 items-center gap-4 border-b-2 border-gray-300"):
+                        with ui.row().classes("items-center gap-2"):
+                            ui.label("Costo +IVA u$").classes("text-sm font-medium text-gray-600")
+                            _costo_val = row.get("costo")
+                            _costo_inicial = f"{float(_costo_val):.2f}".replace(".", ",") if _costo_val is not None else "0"
+                            _costo_wrap_id = f"costo-wrap-{row.get('id', 'x')}"
+                            with ui.element("div").style("display: inline-block").props(f'id={_costo_wrap_id}'):
+                                inp_costo = ui.input(value=_costo_inicial).classes("text-sm w-24").props("dense input-class=costo-usd-input")
+                            inp_refs["costo"] = inp_costo
+
+                            def _add_costo_filter():
+                                _wid = _costo_wrap_id
+                                ui.run_javascript(f'''
+                                    var wrapper = document.getElementById("{_wid}");
+                                    var inp = wrapper ? wrapper.querySelector("input") : null;
+                                    if (inp && !inp.dataset.costoFilter) {{
+                                        inp.dataset.costoFilter = "1";
+                                        inp.addEventListener("input", function() {{
+                                            var v = this.value;
+                                            var f = v.replace(/[^0-9,]/g, "");
+                                            var commas = (f.match(/,/g) || []).length;
+                                            if (commas > 1) {{
+                                                var idx = f.indexOf(",");
+                                                f = f.substring(0, idx+1) + f.substring(idx+1).replace(/,/g, "");
+                                            }}
+                                            if (v !== f) {{ this.value = f; this.dispatchEvent(new Event("input", {{bubbles: true}})); }}
+                                        }});
+                                        inp.addEventListener("keypress", function(e) {{
+                                            if (e.key === "," && this.value.indexOf(",") >= 0) {{ e.preventDefault(); return; }}
+                                            if (/[0-9,]/.test(e.key)) return;
+                                            e.preventDefault();
+                                        }});
+                                    }}
+                                ''')
+
+                            ui.timer(0.15, _add_costo_filter, once=True)
+
+                            def _filtrar_costo_usd(e=None):
+                                ctrl = inp_refs.get("costo")
+                                if not ctrl:
+                                    return
+                                val = str(getattr(e, "value", None) or ctrl.value or "")
+                                filtrado = "".join(c for c in val if c in "0123456789,")
+                                if filtrado.count(",") > 1:
+                                    idx = filtrado.find(",")
+                                    filtrado = filtrado[: idx + 1] + filtrado[idx + 1 :].replace(",", "")
+                                if val != filtrado:
+                                    ctrl.value = filtrado
+
+                            inp_costo.on_value_change(lambda e: _filtrar_costo_usd(e))
+                        with ui.row().classes("items-center gap-2"):
+                            ui.label("Costo $").classes("text-sm font-medium text-gray-600")
+                            costo_pesos = (float(row.get("costo") or 0) * dolar_oficial)
+                            recalc_container_ref["costo_pesos_label"] = ui.label(fmt_moneda(costo_pesos)).classes("text-sm")
+                    recalc_container_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
+                _recalcular()
+                with ui.row().classes("w-full justify-end gap-2 mt-4"):
+                    ui.button("Cerrar", on_click=lambda: d.close(), color="secondary").props("flat")
+                    ui.button("Calcular", on_click=_recalcular, color="secondary")
+                    ui.button("Guardar", on_click=lambda: _guardar_precio_popup(row, inp_refs, d), color="primary")
+        d.open()
+
+    def _guardar_precio_popup(row: Dict[str, Any], inp_refs: Dict[str, Any], dlg) -> None:
+        """Guarda precio, iva, costo: actualiza items_loaded, ML y la tabla."""
+        item_id = str(row.get("id", ""))
+        if not item_id:
+            ui.notify("ID de publicación no válido.", color="negative")
+            return
+        precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
+        costo_str = inp_refs.get("costo") and getattr(inp_refs["costo"], "value", None) or ""
+        tipo_iva_str = inp_refs.get("tipo_iva") and getattr(inp_refs["tipo_iva"], "value", None) or "0.105"
+        nuevo_precio = _parse_moneda(precio_str)
+        nuevo_costo = _parse_usd(costo_str)
+        nuevo_tipo_iva = float(tipo_iva_str) if tipo_iva_str else 0.105
+        if nuevo_precio < 1:
+            ui.notify("El precio debe ser al menos $1.", color="negative")
+            return
+        dlg.close()
+        ui.notify("Actualizando precio en MercadoLibre...", color="info")
+        client = context.client
+
+        async def _actualizar() -> None:
+            try:
+                await run.io_bound(ml_update_item_price, access_token, item_id, nuevo_precio)
+                await run.io_bound(set_precios_producto, item_id, uid, nuevo_tipo_iva, nuevo_costo)
+                for it in items_loaded:
+                    if str(it.get("id")) == item_id:
+                        it["precio"] = nuevo_precio
+                        it["tipo_iva"] = nuevo_tipo_iva
+                        it["costo"] = nuevo_costo
+                        comision = nuevo_precio * ml_comision
+                        cobrado = nuevo_precio - comision
+                        deb_cred = nuevo_precio * ml_debcre
+                        iibb_monto = nuevo_precio * ml_iibb_per
+                        iva_total, iva_meli, iva_impor = _calc_iva(nuevo_precio, nuevo_tipo_iva, comision, nuevo_costo)
+                        envio_restar = _envio_a_restar(nuevo_precio)
+                        costo_pesos = nuevo_costo * dolar_oficial
+                        if costo_pesos <= 0:
+                            margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
+                        else:
+                            margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar
+                            margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                            margen_venta_pct = (margen_pesos / nuevo_precio * 100) if nuevo_precio > 0 else 0.0
+                        it["comision"] = comision
+                        it["cobrado"] = cobrado
+                        it["iva_total"] = iva_total
+                        it["iva_meli"] = iva_meli
+                        it["iva_impor"] = iva_impor
+                        it["deb_cred"] = deb_cred
+                        it["iibb"] = iibb_monto
+                        it["envio"] = envio_restar
+                        it["margen_pesos"] = margen_pesos
+                        it["margen_costo_pct"] = margen_costo_pct
+                        it["margen_venta_pct"] = margen_venta_pct
+                        break
+                with client:
+                    filtrar_y_pintar()
+                    ui.notify("Precio actualizado correctamente.", color="positive")
+            except Exception as e:
+                with client:
+                    ui.notify(f"Error al actualizar: {e}", color="negative")
+
+        background_tasks.create(_actualizar(), name="guardar_precio_popup")
+
+    def filtrar_y_pintar() -> None:
+        filtrados = list(items_loaded)
+        stock_val = filtro_stock_ref.get("val", "con_stock")
+        if stock_val == "con_stock":
+            filtrados = [x for x in filtrados if (x.get("stock") or 0) > 0]
+        elif stock_val == "sin_stock":
+            filtrados = [x for x in filtrados if (x.get("stock") or 0) == 0]
+        awei_val = filtro_awei_ref.get("val", "no_incluye")
+        if awei_val == "no_incluye":
+            filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
+        col_sort = sort_col_ref.get("val", "producto")
+        asc = sort_asc_ref.get("val", True)
+        filtrados = sorted(filtrados, key=lambda r: _sort_key(r, col_sort), reverse=not asc)
+        cols = COLUMNAS_MINIMO if vista_modo_ref.get("val") == "minimo" else COLUMNAS_COMPLETO
+        tc = table_container_ref.get("container")
+        if not tc:
+            return
+        tc.clear()
+        with tc:
+            with ui.element("table").classes("w-full border-collapse text-sm"):
+                with ui.element("thead"):
+                    with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                            for field, label, align, sortable in cols:
+                                th_style = "min-width: 380px;" if field == "producto" else ""
+                                with ui.element("th").classes(f"px-2 py-2 border text-center whitespace-nowrap").style(th_style):
+                                    if sortable:
+                                        ui.button(label, on_click=lambda c=field: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold w-full")
+                                    else:
+                                        ui.label(label)
+                with ui.element("tbody"):
+                    for r in filtrados:
+                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: show_row_dialog(r)):
+                            for field, label, align, _ in cols:
+                                val = r.get(field)
+                                td_align = "text-center" if align == "center" else ("text-right" if align == "right" else "text-left")
+                                td_style = "min-width: 380px;" if field == "producto" else ""
+                                with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {td_align} text-sm").style(td_style):
+                                    if field == "producto":
+                                        txt = str(val or "")[:100] + ("..." if len(str(val or "")) > 100 else "")
+                                        ui.label(txt)
+                                    elif field == "costo":
+                                        ui.label(fmt_usd(val) if val is not None else "u$0,00")
+                                    elif field in ("precio", "iva_total", "iva_meli", "iva_impor", "comision", "cobrado", "deb_cred", "iibb", "envio"):
+                                        ui.label(fmt_moneda(val) if val is not None else "$0")
+                                    elif field == "margen_pesos":
+                                        costo_r = float(r.get("costo") or 0)
+                                        mp = float(val) if val is not None else 0
+                                        lbl = ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        if costo_r <= 0:
+                                            lbl.classes("font-bold text-black")
+                                        else:
+                                            lbl.classes("font-bold " + ("text-positive" if mp > 0 else "text-negative"))
+                                    elif field == "tipo_iva":
+                                        t = float(val) if val is not None else 0.105
+                                        ui.label("10,5%" if abs(t - 0.105) < 0.001 else "21%")
+                                    elif field in ("margen_costo_pct", "margen_venta_pct"):
+                                        costo_r = float(r.get("costo") or 0)
+                                        mp = float(r.get("margen_pesos") or 0)
+                                        lbl = ui.label(fmt_pct2(val))
+                                        if costo_r <= 0:
+                                            lbl.classes("font-bold text-black")
+                                        else:
+                                            lbl.classes("font-bold " + ("text-positive" if mp > 0 else "text-negative"))
+                                    elif field == "stock":
+                                        ui.label(str(val) if val is not None else "0")
+                                    else:
+                                        ui.label(str(val) if val is not None else "—")
+
+    def _on_sort_click(col: str) -> None:
+        if sort_col_ref.get("val") == col:
+            sort_asc_ref["val"] = not sort_asc_ref.get("val", True)
+        else:
+            sort_col_ref["val"] = col
+            sort_asc_ref["val"] = True
+        filtrar_y_pintar()
+
+    async def _cargar() -> None:
+        if timer_ref.get("t"):
+            timer_ref["t"].active = True
+        try:
+            data = await run.io_bound(ml_get_my_items, access_token, include_paused_ref.get("val", True))
+        except Exception as e:
+            cargar_listo_ref["error"] = str(e)
+            cargar_listo_ref["listo"] = True
+            return
+        items = data.get("results", [])
+        items_loaded.clear()
+
+        def _id_num(id_val: Any) -> int:
+            """Extrae la parte numérica del ID (ej. MLA1444322457 -> 1444322457) para ordenar."""
+            s = str(id_val or "")
+            num = "".join(c for c in s if c.isdigit()) or "0"
+            try:
+                return int(num)
+            except ValueError:
+                return 999999999
+
+        items_ordenados = sorted(items, key=lambda x: _id_num(x.get("id")))
+        seen_dedupe: set = set()  # catalog_product_id o SELLER_SKU para no repetir (siempre queda el ID más chico)
+        for i in items_ordenados:
+            catalog_id = str(i.get("catalog_product_id") or "").strip()
+            seller_sku = (i.get("seller_sku") or "").strip()
+            catalog_listing = i.get("catalog_listing") is True or str(i.get("catalog_listing", "")).lower() in ("true", "1")
+            dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
+            if dedupe_key and dedupe_key in seen_dedupe:
+                continue
+            if dedupe_key:
+                seen_dedupe.add(dedupe_key)
+            precio = float(i.get("price") or 0)
+            sale_price = i.get("sale_price")
+            precio_real = float(sale_price) if sale_price is not None else precio
+            stock = int(i.get("available_quantity") or 0)
+            item_id_str = str(i.get("id", ""))
+            guardado = get_precios_producto(item_id_str, uid)
+            costo = float(guardado["costo_u"]) if guardado else 0.0
+            tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+            comision = precio_real * ml_comision
+            cobrado = precio_real - comision
+            iva_total, iva_meli, iva_impor = _calc_iva(precio_real, tipo_iva, comision, costo)
+            deb_cred = precio_real * ml_debcre
+            iibb_monto = precio_real * ml_iibb_per
+            envio_restar = _envio_a_restar(precio_real)
+            costo_pesos = costo * dolar_oficial
+            if costo_pesos <= 0:
+                margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
+            else:
+                margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar
+                margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                margen_venta_pct = (margen_pesos / precio_real * 100) if precio_real > 0 else 0.0
+            items_loaded.append({
+                "id": str(i.get("id", "")),
+                "thumbnail": i.get("thumbnail") or "",
+                "marca": i.get("marca") or "—",
+                "producto": str(i.get("title") or ""),
+                "stock": stock,
+                "precio": precio_real,
+                "tipo_iva": tipo_iva,
+                "iva_total": iva_total,
+                "iva_meli": iva_meli,
+                "iva_impor": iva_impor,
+                "costo": costo,
+                "comision": comision,
+                "cobrado": cobrado,
+                "deb_cred": deb_cred,
+                "iibb": iibb_monto,
+                "envio": envio_restar,
+                "margen_pesos": margen_pesos,
+                "margen_costo_pct": margen_costo_pct,
+                "margen_venta_pct": margen_venta_pct,
+            })
+        publicaciones_totales = len(items_loaded)
+        publicaciones_con_stock = sum(1 for x in items_loaded if (x.get("stock") or 0) > 0)
+        cargar_listo_ref["error"] = None
+        cargar_listo_ref["totales"] = publicaciones_totales
+        cargar_listo_ref["con_stock"] = publicaciones_con_stock
+        cargar_listo_ref["listo"] = True
+
+    background_tasks.create(_cargar(), name="cargar_precios_detalle")
 
 
 def build_tab_busqueda() -> None:
@@ -3434,10 +4158,10 @@ def build_tab_balance(container) -> None:
                         cont = ui.column().classes("w-full gap-2")
                         edit_rows_ref: List[Dict[str, Any]] = []
                         gastos_buttons_row = ui.row().classes("gap-2 mt-2")
-                # Columna derecha: Ingresos y Resultados
-                with ui.column().classes("gap-2").style("max-width: 400px;"):
-                    ingresos_card = ui.column().classes("w-full gap-1")
-                    resultados_card = ui.column().classes("w-full gap-1")
+                # Columna derecha: Ingresos y Resultados Netos (lado a lado)
+                with ui.row().classes("gap-4 flex-wrap"):
+                    ingresos_card = ui.column().classes("gap-1")
+                    resultados_card = ui.column().classes("gap-1")
         def toggle_sort(col: str) -> None:
             if sort_col_gastos[0] == col:
                 sort_asc_gastos[0] = not sort_asc_gastos[0]
@@ -3551,8 +4275,6 @@ def build_tab_balance(container) -> None:
                                 for label, key in [
                                     ("Venta a la fecha", "venta_a_fecha"),
                                     ("Venta estimada del mes", "venta_estimada_mes"),
-                                    ("Ganancia estimada a la fecha", "ganancia_a_fecha"),
-                                    ("Ganancia estimada del mes", "ganancia_estimada_mes"),
                                 ]:
                                     sin_negrita = key in ("venta_a_fecha", "ganancia_a_fecha")
                                     con_negrita_valor = key in ("venta_estimada_mes", "ganancia_estimada_mes")
@@ -3682,110 +4404,116 @@ def build_tab_config() -> None:
 
     ui.label("Configuración").classes("text-2xl font-semibold mb-6")
 
-    # App de MercadoLibre (cada usuario puede tener su propia app con distinto App ID y Client Secret)
+    # MercadoLibre + Estado de la cuenta (tarjeta combinada)
     app_creds = get_ml_app_credentials(user["id"])
-    with ui.card().classes("w-full max-w-2xl"):
-        ui.label("App de MercadoLibre").classes("text-lg font-semibold mb-3")
-        ui.label("Cada usuario puede conectar su propia app de MercadoLibre (con su App ID y Client Secret).").classes("text-sm text-gray-600 mb-3")
-        inp_client_id = ui.input("App ID (client_id)", value=app_creds["client_id"] if app_creds else "").classes("w-full max-w-md").props("type=text")
-        inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full max-w-md").props("type=password password-toggle")
-        default_redirect = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-        inp_redirect = ui.input("Redirect URI (debe coincidir con la app en MercadoLibre Developers)", value=app_creds.get("redirect_uri") or default_redirect if app_creds else default_redirect).classes("w-full max-w-md")
-        def guardar_app_ml() -> None:
-            cid = (inp_client_id.value or "").strip()
-            csec = (inp_client_secret.value or "").strip()
-            redir = (inp_redirect.value or "").strip() or default_redirect
-            if not cid or not csec:
-                ui.notify("Ingresá App ID y Client Secret", color="warning")
-                return
-            set_ml_app_credentials(user["id"], cid, csec, redir or None)
-            ui.notify("Credenciales de la app guardadas", color="positive")
-        ui.button("Guardar credenciales de la app", on_click=guardar_app_ml, color="primary").classes("mt-2")
-
-    # Estado de MercadoLibre (cuenta vinculada)
+    default_redirect = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM ml_credentials WHERE user_id = ?", (user["id"],))
     ml_creds = cur.fetchone()
     conn.close()
 
-    with ui.card().classes("w-full max-w-2xl"):
-        ui.label("MercadoLibre").classes("text-lg font-semibold mb-3")
-        if ml_creds:
-            with ui.row().classes("items-center gap-3 mb-2 flex-wrap"):
-                ui.icon("check_circle", color="positive", size="sm")
-                ui.label("Cuenta vinculada").classes("text-positive font-medium")
+    with ui.row().classes("w-full gap-4 items-start flex-wrap"):
+        with ui.card().classes("flex-1 min-w-0 max-w-2xl"):
+            ui.label("MercadoLibre").classes("text-lg font-semibold mb-3")
+            ui.label(
+                "Paso 1: Ingresá App ID y Client Secret de tu app en MercadoLibre Developers.\n"
+                "Paso 2: Redirect URI debe coincidir EXACTAMENTE con el configurado en tu app (ej: https://tu-ngrok.ngrok-free.dev/ml/callback).\n"
+                "Paso 3: Guardar credenciales. Paso 4: Conectar cuenta.\n"
+                "Para cambiar de cuenta ML: Desvincular → ingresar otras credenciales → Guardar → Conectar."
+            ).classes("text-sm text-gray-600 mb-3 whitespace-pre-line")
 
-                app_link = get_ml_app_credentials(user["id"])
-                if app_link:
-                    client_id = app_link["client_id"]
-                    redirect_uri = app_link.get("redirect_uri") or os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-                else:
-                    client_id = os.getenv("ML_CLIENT_ID")
-                    redirect_uri = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-                if client_id:
-                    from urllib.parse import quote
-                    scope = quote("offline_access read write")
-                    auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={client_id}&redirect_uri={quote(redirect_uri)}&scope={scope}"
-                    ui.link("Vincular de nuevo", auth_url, new_tab=True).classes("text-primary text-sm")
+            inp_client_id = ui.input("App ID (client_id)", value=app_creds["client_id"] if app_creds else "").classes("w-full max-w-md").props("type=text")
+            inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full max-w-md").props("type=password password-toggle")
+            inp_redirect = ui.input("Redirect URI (EXACTO como en MercadoLibre Developers)", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full max-w-md")
 
-            if ml_creds["expires_at"]:
-                try:
-                    exp = ml_creds["expires_at"][:19].replace("T", " ")
-                    ui.label(f"Token vence: {exp}").classes("text-sm text-gray-600")
-                except Exception:
-                    ui.label(f"Token vence: {ml_creds['expires_at']}").classes("text-sm text-gray-600")
-        else:
-            with ui.row().classes("items-center gap-3 mb-3"):
-                ui.icon("warning", color="warning", size="sm")
-                ui.label("Sin cuenta vinculada").classes("text-warning font-medium")
+            def guardar_app_ml() -> None:
+                cid = (inp_client_id.value or "").strip()
+                csec = (inp_client_secret.value or "").strip()
+                redir = (inp_redirect.value or "").strip() or default_redirect
+                if not cid or not csec:
+                    ui.notify("Ingresá App ID y Client Secret", color="warning")
+                    return
+                set_ml_app_credentials(user["id"], cid, csec, redir or None)
+                ui.notify("Credenciales guardadas correctamente", color="positive")
 
-            app_creds_link = get_ml_app_credentials(user["id"])
-            if app_creds_link:
-                client_id = app_creds_link["client_id"]
-                redirect_uri = app_creds_link.get("redirect_uri") or os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-            else:
-                client_id = os.getenv("ML_CLIENT_ID")
-                redirect_uri = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-
-            if not client_id:
-                ui.label("Guardá primero tu App ID y Client Secret en la sección de arriba.").classes("text-sm text-gray-600")
-            else:
+            def conectar_ml() -> None:
+                cid = (inp_client_id.value or "").strip()
+                csec = (inp_client_secret.value or "").strip()
+                redir = (inp_redirect.value or "").strip() or default_redirect
+                if not cid or not csec:
+                    ui.notify("Ingresá App ID y Client Secret y guardá antes de conectar", color="warning")
+                    return
+                set_ml_app_credentials(user["id"], cid, csec, redir or None)
                 from urllib.parse import quote
                 scope = quote("offline_access read write")
-                auth_url = (
-                    f"https://auth.mercadolibre.com.ar/authorization"
-                    f"?response_type=code&client_id={client_id}&redirect_uri={quote(redirect_uri)}&scope={scope}"
-                )
-                ui.link("Conectar con MercadoLibre", auth_url, new_tab=True).classes("text-primary font-medium")
+                auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={cid}&redirect_uri={quote(redir)}&scope={scope}"
+                ui.navigate.to(auth_url)
 
-    # Cambiar contraseña
-    with ui.card().classes("w-full max-w-2xl"):
-        ui.label("Cambiar contraseña").classes("text-lg font-semibold mb-3")
-        inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
-        inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
-        inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
+            with ui.row().classes("gap-2 mt-2"):
+                ui.button("Guardar credenciales", on_click=guardar_app_ml, color="primary")
+                ui.button("Conectar cuenta", on_click=conectar_ml, color="secondary")
 
-        def cambiar_clave() -> None:
-            actual = (inp_actual.value or "").strip()
-            nueva = (inp_nueva.value or "").strip()
-            confirmar = (inp_confirmar.value or "").strip()
-            if not actual:
-                ui.notify("Ingresá tu contraseña actual", color="warning")
-                return
-            if nueva != confirmar:
-                ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
-                return
-            error = update_user_password(user["id"], actual, nueva)
-            if error:
-                ui.notify(error, color="negative")
-                return
-            ui.notify("Contraseña cambiada correctamente", color="positive")
-            inp_actual.value = ""
-            inp_nueva.value = ""
-            inp_confirmar.value = ""
+            # Estado de la cuenta (dentro de la misma tarjeta)
+            ui.separator().classes("my-4")
+            ui.label("Estado de la cuenta").classes("text-base font-semibold mb-2")
+            if ml_creds:
+                with ui.row().classes("items-center gap-3 mb-2 flex-wrap"):
+                    ui.icon("check_circle", color="positive", size="sm")
+                    ui.label("Cuenta vinculada").classes("text-positive font-medium")
 
-        ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
+                    def desvincular_ml() -> None:
+                        conn = get_connection()
+                        try:
+                            cur = conn.cursor()
+                            cur.execute("DELETE FROM ml_credentials WHERE user_id = ?", (user["id"],))
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        ui.notify("Cuenta desvinculada. Podés conectar otra cuenta.", color="positive")
+                        ui.navigate.reload()
+
+                    ui.button("Desvincular cuenta", on_click=desvincular_ml, color="secondary")
+
+                if ml_creds["expires_at"]:
+                    try:
+                        exp = ml_creds["expires_at"][:19].replace("T", " ")
+                        ui.label(f"Token vence: {exp}").classes("text-sm text-gray-600")
+                    except Exception:
+                        ui.label(f"Token vence: {ml_creds['expires_at']}").classes("text-sm text-gray-600")
+            else:
+                with ui.row().classes("items-center gap-3 mb-2"):
+                    ui.icon("warning", color="warning", size="sm")
+                    ui.label("Sin cuenta vinculada").classes("text-warning font-medium")
+                ui.label("Usá el botón 'Conectar cuenta' de arriba (usa las credenciales que guardaste).").classes("text-sm text-gray-600")
+
+        # Cambiar contraseña (expandible) - al lado de MercadoLibre
+        with ui.card().classes("flex-1 min-w-0 max-w-md"):
+            with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full"):
+                inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
+                inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
+                inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
+
+                def cambiar_clave() -> None:
+                    actual = (inp_actual.value or "").strip()
+                    nueva = (inp_nueva.value or "").strip()
+                    confirmar = (inp_confirmar.value or "").strip()
+                    if not actual:
+                        ui.notify("Ingresá tu contraseña actual", color="warning")
+                        return
+                    if nueva != confirmar:
+                        ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
+                        return
+                    error = update_user_password(user["id"], actual, nueva)
+                    if error:
+                        ui.notify(error, color="negative")
+                        return
+                    ui.notify("Contraseña cambiada correctamente", color="positive")
+                    inp_actual.value = ""
+                    inp_nueva.value = ""
+                    inp_confirmar.value = ""
+
+                ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
 
 
 # Valores por defecto del cotizador
@@ -4719,6 +5447,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             with root:
                 ui.label("❌ Configurá tu App ID y Client Secret en Configuración antes de conectar.").classes("text-negative mb-4")
             return
+        redirect_uri = (redirect_uri or "").strip() or "http://localhost:8083/ml/callback"
         try:
             resp = requests.post(
                 "https://api.mercadolibre.com/oauth/token",
@@ -4729,10 +5458,31 @@ def index(request: Request) -> None:  # type: ignore[override]
                     "code": ml_code,
                     "redirect_uri": redirect_uri,
                 },
-                headers={"Accept": "application/json"},
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded"},
                 timeout=10,
             )
             resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            resp_err = getattr(e, "response", None)
+            err_msg = str(e)
+            try:
+                if resp_err is not None:
+                    err_body = resp_err.json()
+                    err_msg = err_body.get("message") or err_body.get("error") or str(err_body)
+            except Exception:
+                if resp_err is not None and resp_err.text:
+                    err_msg = resp_err.text[:500]
+            with root:
+                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
+                ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
+                ui.label(
+                    "Posibles causas:\n"
+                    "• redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
+                    "• Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
+                    "• El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
+                ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
+                ui.link("Volver a Configuración", "/").classes("text-primary")
+            return
         except Exception as e:
             with root:
                 ui.label(f"❌ Error al obtener token: {e}").classes("text-negative mb-4")

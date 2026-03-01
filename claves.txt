@@ -19,3 +19,20 @@ yjjqkZDpCUc8XTqe4Mm6PEQhf9GBUq3E
 
 diegolas@gmail.com
 12345
+
+---
+
+GitHub
+Raton01#26
+
+---
+
+En la PC
+cd C:\Users\Diego\Desktop\PythonML
+git add .
+git commit -m "Tu mensaje"
+git push origin main
+
+En DigitalOcean
+ssh root@157.230.88.160
+cd /opt/pythonml && git pull origin main && sudo systemctl restart pythonml
