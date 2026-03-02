@@ -27,7 +27,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.35.2"
+VERSION = "1.40.0"
 
 
 # ==========================
@@ -677,6 +677,8 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                 "permalink": body.get("permalink", ""),
                 "catalog_product_id": body.get("catalog_product_id"),
                 "catalog_listing": catalog_listing,
+                "listing_type_id": body.get("listing_type_id"),
+                "sale_terms": body.get("sale_terms"),
                 "seller_sku": seller_sku,
                 "marca": marca or "—",
                 "color": color or "—",
@@ -694,6 +696,33 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                 all_items.append(_item_from_body(body))
 
     return {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+
+
+def _tipo_publicacion_desde_item(item: Dict[str, Any]) -> str:
+    """Propia o Catálogo según catalog_listing (igual que en Ventas)."""
+    if not item or not isinstance(item, dict):
+        return "Propia"
+    cl = item.get("catalog_listing")
+    return "Catálogo" if (cl is True or str(cl or "").lower() in ("true", "1")) else "Propia"
+
+
+def _cuotas_desde_item(item: Dict[str, Any]) -> str:
+    """x1, x3 o x6 según listing_type_id y sale_terms/attributes (igual que en Ventas)."""
+    listing_type_id = str(item.get("listing_type_id") or "").strip().lower()
+    if listing_type_id == "gold_special":
+        return "x1"
+    if listing_type_id == "gold_pro":
+        def _tiene_3x_campaign(terms: list) -> bool:
+            for a in terms or []:
+                if isinstance(a, dict) and (str(a.get("id") or "").upper() == "INSTALLMENTS_CAMPAIGN"):
+                    vn = str(a.get("value_name") or "").lower()
+                    if "3x_campaign" in vn or vn == "3x_campaign":
+                        return True
+            return False
+        if _tiene_3x_campaign(item.get("sale_terms")) or _tiene_3x_campaign(item.get("attributes")):
+            return "x3"
+        return "x6"
+    return "x1"
 
 
 def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[str, Any]:
@@ -1070,13 +1099,103 @@ def ml_get_user_profile(access_token: str) -> Optional[Dict[str, Any]]:
 ORDERS_MAX_OFFSET = 100000  # ML puede limitar offset; si devuelve 400 se detiene antes
 
 
-def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+def ml_get_orders(
+    access_token: str,
+    seller_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+) -> Dict[str, Any]:
     """Lista órdenes del vendedor. Pagina hasta `limit` (máx 50 por request, ML no acepta más).
-    sort=date_desc para órdenes más recientes primero."""
+    sort=date_desc para órdenes más recientes primero.
+    date_from/date_to: ISO 8601 (ej. 2025-02-01T00:00:00.000-03:00) para filtrar por fecha."""
     import logging
     log = logging.getLogger(__name__)
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     page_size = 50
+    date_params: Dict[str, str] = {}
+    if date_from:
+        date_params["order_created_from"] = date_from
+    if date_to:
+        date_params["order_created_to"] = date_to
+
+    all_flat: List[Dict[str, Any]] = []
+    seen_ids: set = set()
+
+    def _do_fetch(use_date_filter: bool) -> None:
+        nonlocal all_flat, seen_ids
+        params_filter = date_params if use_date_filter else {}
+        for url, extra in [
+            ("https://api.mercadolibre.com/orders/search", {"seller": seller_id}),
+            ("https://api.mercadolibre.com/orders/search", {"seller": seller_id, "caller.id": seller_id}),
+            ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id}),
+            ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id, "caller.id": seller_id}),
+        ]:
+            off = offset
+            while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
+                params: Dict[str, Any] = {**extra, **params_filter, "limit": page_size, "offset": off, "sort": "date_desc"}
+                try:
+                    resp = requests.get(url, params=params, headers=headers, timeout=25)
+                    if not resp.ok:
+                        if off == offset:
+                            try:
+                                err_body = resp.json()
+                            except Exception:
+                                err_body = resp.text[:300]
+                            log.debug("ML orders %s %s: %s", url.split("/")[-1], resp.status_code, err_body)
+                        break
+                    data = resp.json()
+                    raw = data.get("results") or data.get("orders") or data.get("elements") or []
+
+                    if not raw:
+                        break
+
+                    if isinstance(raw[0], (int, float)):
+                        for oid in raw[:page_size]:
+                            try:
+                                r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers=headers, timeout=10)
+                                if r.status_code == 200:
+                                    ob = r.json()
+                                    oid_val = ob.get("id")
+                                    if oid_val and str(oid_val) not in seen_ids:
+                                        seen_ids.add(str(oid_val))
+                                        all_flat.append(ob)
+                            except Exception:
+                                pass
+                        off += len(raw)
+                        if len(raw) < page_size:
+                            break
+                        continue
+
+                    for o in _flatten_raw(raw):
+                        oid_val = o.get("id")
+                        if oid_val and str(oid_val) not in seen_ids:
+                            seen_ids.add(str(oid_val))
+                            all_flat.append(o)
+                    off += len(raw)
+                    if len(raw) < page_size:
+                        break
+                except Exception as ex:
+                    log.debug("ML orders %s: %s", url.split("/")[-1], ex)
+                    break
+
+            if len(all_flat) >= limit:
+                break
+
+    def _flatten_raw(raw_list: list) -> list:
+        out = []
+        for r in raw_list:
+            if not isinstance(r, dict):
+                continue
+            nested = r.get("orders") or []
+            if nested:
+                for o in nested:
+                    if isinstance(o, dict):
+                        out.append(o)
+            else:
+                out.append(r)
+        return out
 
     for url, extra in [
         ("https://api.mercadolibre.com/orders/search", {"seller": seller_id}),
@@ -1084,10 +1203,9 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
         ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id}),
         ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id, "caller.id": seller_id}),
     ]:
-        all_flat: List[Dict[str, Any]] = []
         off = offset
         while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
-            params = {**extra, "limit": page_size, "offset": off, "sort": "date_desc"}
+            params: Dict[str, Any] = {**extra, **date_params, "limit": page_size, "offset": off, "sort": "date_desc"}
             try:
                 resp = requests.get(url, params=params, headers=headers, timeout=25)
                 if not resp.ok:
@@ -1100,16 +1218,20 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
                     break
                 data = resp.json()
                 raw = data.get("results") or data.get("orders") or data.get("elements") or []
+
                 if not raw:
                     break
 
-                # IDs sueltos (int): obtener cada orden
                 if isinstance(raw[0], (int, float)):
                     for oid in raw[:page_size]:
                         try:
                             r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers=headers, timeout=10)
                             if r.status_code == 200:
-                                all_flat.append(r.json())
+                                ob = r.json()
+                                oid_val = ob.get("id")
+                                if oid_val and str(oid_val) not in seen_ids:
+                                    seen_ids.add(str(oid_val))
+                                    all_flat.append(ob)
                         except Exception:
                             pass
                     off += len(raw)
@@ -1117,17 +1239,11 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
                         break
                     continue
 
-                # Aplanar si hay orders anidados
-                for r in raw:
-                    if not isinstance(r, dict):
-                        continue
-                    nested = r.get("orders") or []
-                    if nested:
-                        for o in nested:
-                            if isinstance(o, dict):
-                                all_flat.append(o)
-                    else:
-                        all_flat.append(r)
+                for o in _flatten_raw(raw):
+                    oid_val = o.get("id")
+                    if oid_val and str(oid_val) not in seen_ids:
+                        seen_ids.add(str(oid_val))
+                        all_flat.append(o)
                 off += len(raw)
                 if len(raw) < page_size:
                     break
@@ -1135,26 +1251,28 @@ def ml_get_orders(access_token: str, seller_id: str, limit: int = 100, offset: i
                 log.debug("ML orders %s: %s", url.split("/")[-1], ex)
                 break
 
-        if all_flat:
-            # Si alguna orden no tiene order_items, obtener la orden completa (p. ej. search devuelve datos mínimos)
-            faltan_items = [o for o in all_flat[:limit] if not (o.get("order_items") or o.get("items")) and o.get("id")]
-            fetches = 0
-            max_enrich = min(1000, len(faltan_items))
-            for o in faltan_items[:max_enrich]:
-                if fetches >= 500:
-                    break
-                try:
-                    r = requests.get(f"https://api.mercadolibre.com/orders/{o['id']}", headers=headers, timeout=10)
-                    if r.status_code == 200:
-                        full = r.json()
-                        idx = next((i for i, x in enumerate(all_flat) if x.get("id") == o["id"]), -1)
-                        if idx >= 0 and (full.get("order_items") or full.get("items")):
-                            all_flat[idx] = full
-                            fetches += 1
-                except Exception:
-                    pass
-            log.debug("ML orders: %d órdenes desde %s", len(all_flat), url.split("/")[-1])
-            return {"results": all_flat[:limit], "paging": {"total": len(all_flat)}}
+        if len(all_flat) >= limit:
+            break
+
+    if all_flat:
+        faltan_items = [o for o in all_flat[:limit] if not (o.get("order_items") or o.get("items")) and o.get("id")]
+        fetches = 0
+        max_enrich = min(2000, len(faltan_items))
+        for o in faltan_items[:max_enrich]:
+            if fetches >= 1000:
+                break
+            try:
+                r = requests.get(f"https://api.mercadolibre.com/orders/{o['id']}", headers=headers, timeout=10)
+                if r.status_code == 200:
+                    full = r.json()
+                    idx = next((i for i, x in enumerate(all_flat) if x.get("id") == o["id"]), -1)
+                    if idx >= 0 and (full.get("order_items") or full.get("items")):
+                        all_flat[idx] = full
+                        fetches += 1
+            except Exception:
+                pass
+        log.debug("ML orders: %d órdenes total", len(all_flat))
+        return {"results": all_flat[:limit], "paging": {"total": len(all_flat)}}
 
     return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener órdenes"}
 
@@ -1886,8 +2004,10 @@ def build_tab_ventas(container) -> None:
         return
 
     ventas_raw: List[Dict[str, Any]] = []
-    all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}}
+    all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}, "item_id_to_tipo_venta": {}, "item_id_to_cuotas": {}}
     filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
+    filtro_publicacion_ref: Dict[str, str] = {"val": "todas"}
+    filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
     agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
@@ -1900,6 +2020,31 @@ def build_tab_ventas(container) -> None:
         header_card = ui.column().classes("w-full mb-2")
         filtro_row = ui.row().classes("w-full mb-2 items-center gap-4")
         result_area = ui.column().classes("w-full gap-2")
+
+        def _cuotas_desde_item(body: Dict[str, Any]) -> str:
+            """Devuelve x1, x3 o x6 según listing_type_id y INSTALLMENTS_CAMPAIGN (en sale_terms o attributes)."""
+            listing_type_id = str(body.get("listing_type_id") or "").strip().lower()
+            if listing_type_id == "gold_special":
+                return "x1"
+            if listing_type_id == "gold_pro":
+                def _tiene_3x_campaign(items: list) -> bool:
+                    for a in items or []:
+                        if isinstance(a, dict) and (str(a.get("id") or "").upper() == "INSTALLMENTS_CAMPAIGN"):
+                            vn = str(a.get("value_name") or "").lower()
+                            if "3x_campaign" in vn or vn == "3x_campaign":
+                                return True
+                    return False
+                if _tiene_3x_campaign(body.get("sale_terms")) or _tiene_3x_campaign(body.get("attributes")):
+                    return "x3"
+                return "x6"
+            return "x1"
+
+        def _tipo_base_desde_body(body: Dict[str, Any]) -> str:
+            """Devuelve Propia o Catálogo. Solo catalog_listing=True es Catálogo; catalog_listing=false o ausente es Propia."""
+            if not body or not isinstance(body, dict):
+                return "Propia"
+            cl = body.get("catalog_listing")
+            return "Catálogo" if (cl is True or str(cl or "").lower() in ("true", "1")) else "Propia"
 
         def _update_btn_agrupar() -> None:
             if agrupar_ref.get("val"):
@@ -1953,6 +2098,13 @@ def build_tab_ventas(container) -> None:
                 return False
 
         def _aplicar_filtro_fecha() -> None:
+            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
+            if fecha_val not in ("mes_actual", "mes_anterior"):
+                fecha_val = "mes_actual"
+            # Si selecciona mes anterior y no lo tenemos, cargar
+            if fecha_val == "mes_anterior" and not all_orders_ref.get("mes_anterior_cargado"):
+                _cargar_ventas()
+                return
             orders = all_orders_ref.get("orders") or []
             if not orders:
                 return
@@ -1960,9 +2112,6 @@ def build_tab_ventas(container) -> None:
             primer_dia = hoy.replace(day=1)
             ultimo_mes = primer_dia - timedelta(days=1)
             primer_dia_anterior = ultimo_mes.replace(day=1)
-            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
-            if fecha_val not in ("mes_actual", "mes_anterior"):
-                fecha_val = "mes_actual"
             if fecha_val == "mes_actual":
                 orders_periodo = [o for o in orders if _order_in_range(o, primer_dia, hoy)]
             else:
@@ -1974,6 +2123,7 @@ def build_tab_ventas(container) -> None:
             nonlocal ventas_raw
             item_id_to_catalog = all_orders_ref.get("item_id_to_catalog") or {}
             item_id_to_sku = all_orders_ref.get("item_id_to_sku") or {}
+            item_id_to_cuotas = all_orders_ref.get("item_id_to_cuotas") or {}
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             ventas_mes = []
             for ord_item in orders_periodo:
@@ -2014,13 +2164,19 @@ def build_tab_ventas(container) -> None:
                     titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
                     item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
                     catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip() if isinstance(obj, dict) else str(it.get("catalog_product_id") or "")
-                    catalog = bool(catalog_id) or item_id_to_catalog.get(item_id, False)
+                    cl = obj.get("catalog_listing") if isinstance(obj, dict) else it.get("catalog_listing")
+                    if cl is None and isinstance(obj, dict):
+                        cl = it.get("catalog_listing")
+                    catalog = cl is True or str(cl or "").lower() in ("true", "1")
+                    if (cl is None or not catalog) and item_id:
+                        catalog = item_id_to_catalog.get(item_id, False) or item_id_to_catalog.get(item_id.upper(), False) or item_id_to_catalog.get(item_id.lower(), False)
                     tipo = "Catálogo" if catalog else "Propia"
                     sku = item_id_to_sku.get(item_id, "")
                     agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
+                    cuotas = item_id_to_cuotas.get(item_id) or item_id_to_cuotas.get(item_id.upper()) or item_id_to_cuotas.get(item_id.lower()) or "x1"
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "productos": titulo[:100], "title": titulo[:100],
-                        "tipo": tipo, "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
+                        "tipo": tipo, "tipo_venta": tipo, "cuotas": cuotas, "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
                         "status": status_display, "status_raw": status_raw, "agrupar_key": agrupar_key, "item_id": item_id or "—",
                     })
             ventas_raw = ventas_mes
@@ -2052,6 +2208,10 @@ def build_tab_ventas(container) -> None:
                 return str(row.get("item_id") or "")
             if col == "tipo":
                 return str(row.get("tipo") or "").lower()
+            if col == "tipo_venta":
+                return str(row.get("tipo_venta") or "").lower()
+            if col == "cuotas":
+                return str(row.get("cuotas") or "").lower()
             return ""
 
         def _on_sort_ventas(col: str) -> None:
@@ -2070,6 +2230,14 @@ def build_tab_ventas(container) -> None:
                 ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered")]
             elif estado_val == "cancelada":
                 ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower()]
+            pub_val = str(filtro_publicacion_ref.get("val", "todas") or "todas")
+            if pub_val == "propias":
+                ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Propia"]
+            elif pub_val == "catalogo":
+                ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Catálogo"]
+            cuotas_val = str(filtro_cuotas_ref.get("val", "todas") or "todas")
+            if cuotas_val in ("x1", "x3", "x6"):
+                ventas_filtradas = [v for v in ventas_filtradas if (v.get("cuotas") or "x1") == cuotas_val]
             ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
             ventas_pagada = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
             facturacion_pagada = sum(v["monto"] for v in ventas_pagada)
@@ -2138,12 +2306,18 @@ def build_tab_ventas(container) -> None:
                                     grupos[key] = {
                                         "productos": v.get("productos") or v.get("title", "—"),
                                         "tipos": set(),
+                                        "tipos_venta": set(),
+                                        "cuotas": set(),
                                         "item_ids": set(),
                                         "cantidad": 0,
                                         "monto": 0.0,
                                         "dt": v.get("dt"),
                                     }
                                 grupos[key]["tipos"].add(v.get("tipo", "—"))
+                                if v.get("tipo_venta") and v.get("tipo_venta") != "—":
+                                    grupos[key]["tipos_venta"].add(str(v["tipo_venta"]))
+                                if v.get("cuotas"):
+                                    grupos[key]["cuotas"].add(str(v["cuotas"]))
                                 if v.get("item_id") and v.get("item_id") != "—":
                                     grupos[key]["item_ids"].add(str(v["item_id"]))
                                 grupos[key]["cantidad"] += v["cantidad"]
@@ -2165,6 +2339,10 @@ def build_tab_ventas(container) -> None:
                                                 ui.label("#")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("ID publicación")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("Tipo de venta")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("Cuotas")
                                             with ui.element("th").classes("px-2 py-2 border text-left"):
                                                 ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
@@ -2186,6 +2364,12 @@ def build_tab_ventas(container) -> None:
                                                     if len(item_ids) > 3:
                                                         ids_str += "..."
                                                     ui.label(ids_str or "—")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    tipos_venta_str = ", ".join(sorted(v.get("tipos_venta", set()))) or "—"
+                                                    ui.label(tipos_venta_str).classes("text-xs")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    cuotas_str = ", ".join(sorted(v.get("cuotas", set()))) or "—"
+                                                    ui.label(cuotas_str).classes("text-xs")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
                                                     ui.label(productos_key[:80]).classes("truncate")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2211,6 +2395,8 @@ def build_tab_ventas(container) -> None:
                                             ("#", "#", "text-center"),
                                             ("dt", "Fecha", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
+                                            ("tipo_venta", "Tipo de venta", "text-center"),
+                                            ("cuotas", "Cuotas", "text-center"),
                                             ("productos", "Producto", "text-left"),
                                             ("cantidad", "Cant.", "text-center"),
                                             ("monto", "Monto", "text-right"),
@@ -2232,6 +2418,10 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v["fecha"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v.get("item_id", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v.get("tipo_venta", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v.get("cuotas", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
                                                 ui.label(v.get("productos", v.get("title", "—"))[:80]).classes("truncate")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2253,7 +2443,25 @@ def build_tab_ventas(container) -> None:
                     if filtro_controls_ref:
                         filtro_controls_ref[0].set_visibility(True)
                     return
-                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit=2000, offset=0)
+                hoy = datetime.now().date()
+                primer_dia = hoy.replace(day=1)
+                ultimo_mes = primer_dia - timedelta(days=1)
+                primer_dia_anterior = ultimo_mes.replace(day=1)
+                fecha_val = filtro_fecha_ref.get("val", "mes_actual")
+                if fecha_val == "mes_actual":
+                    date_from = primer_dia.strftime("%Y-%m-%dT00:00:00.000-03:00")
+                    date_to = hoy.strftime("%Y-%m-%dT23:59:59.999-03:00")
+                    orders_data = await run.io_bound(
+                        ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
+                        date_from=date_from, date_to=date_to,
+                    )
+                else:
+                    date_from = primer_dia_anterior.strftime("%Y-%m-%dT00:00:00.000-03:00")
+                    date_to = ultimo_mes.strftime("%Y-%m-%dT23:59:59.999-03:00")
+                    orders_data = await run.io_bound(
+                        ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
+                        date_from=date_from, date_to=date_to,
+                    )
             except Exception as e:
                 result_area.clear()
                 with result_area:
@@ -2263,7 +2471,6 @@ def build_tab_ventas(container) -> None:
                 return
             raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
             orders = [o for o in raw_orders if isinstance(o, dict)]
-            all_orders_ref["orders"] = orders
             hoy = datetime.now().date()
             primer_dia = hoy.replace(day=1)
             ultimo_mes = primer_dia - timedelta(days=1)
@@ -2271,10 +2478,20 @@ def build_tab_ventas(container) -> None:
             fecha_val = filtro_fecha_ref.get("val", "mes_actual")
             if fecha_val not in ("mes_actual", "mes_anterior"):
                 fecha_val = "mes_actual"
+            # Merge con órdenes ya cargadas (p.ej. mes anterior cuando cambian de mes)
+            orders_existentes = all_orders_ref.get("orders") or []
+            ids_existentes = {str(o.get("id")) for o in orders_existentes if o.get("id")}
+            for o in orders:
+                if o.get("id") and str(o.get("id")) not in ids_existentes:
+                    orders_existentes.append(o)
+                    ids_existentes.add(str(o.get("id")))
+            all_orders_ref["orders"] = orders_existentes
             if fecha_val == "mes_actual":
-                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia, hoy)]
+                orders_periodo = [o for o in orders_existentes if _order_in_range(o, primer_dia, hoy)]
+                all_orders_ref["mes_actual_cargado"] = True
             else:
-                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
+                orders_periodo = [o for o in orders_existentes if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
+                all_orders_ref["mes_anterior_cargado"] = True
             item_ids_to_fetch: List[str] = []
             for o in orders_periodo:
                 for it in o.get("order_items") or o.get("items") or []:
@@ -2283,28 +2500,32 @@ def build_tab_ventas(container) -> None:
                         iid = (str(obj.get("id") or it.get("item_id") or "").strip() if isinstance(obj, dict) else str(it.get("item_id") or "").strip())
                         if iid and iid not in item_ids_to_fetch:
                             item_ids_to_fetch.append(iid)
-            item_id_to_catalog: Dict[str, bool] = {}
-            item_id_to_sku: Dict[str, str] = {}
-            if item_ids_to_fetch and access_token:
+            item_id_to_catalog: Dict[str, bool] = dict(all_orders_ref.get("item_id_to_catalog") or {})
+            item_id_to_sku: Dict[str, str] = dict(all_orders_ref.get("item_id_to_sku") or {})
+            item_id_to_tipo_venta: Dict[str, str] = dict(all_orders_ref.get("item_id_to_tipo_venta") or {})
+            item_id_to_cuotas: Dict[str, str] = dict(all_orders_ref.get("item_id_to_cuotas") or {})
+            ids_pendientes = [iid for iid in item_ids_to_fetch if iid not in item_id_to_catalog]
+            if ids_pendientes and access_token:
                 def _fetch_catalog_info(ids: List[str]) -> List[Optional[Dict[str, Any]]]:
                     out: List[Optional[Dict[str, Any]]] = []
+                    attrs = "id,catalog_listing,catalog_product_id,listing_type_id,attributes,sale_terms"
                     for i in range(0, len(ids), 20):
                         batch = ids[i : i + 20]
-                        batch_bodies = ml_get_items_multiget(access_token, batch)
+                        batch_bodies = ml_get_items_multiget_with_attributes(access_token, batch, attrs)
                         out.extend(batch_bodies)
                     return out
-                bodies = await run.io_bound(_fetch_catalog_info, item_ids_to_fetch)
+                bodies = await run.io_bound(_fetch_catalog_info, ids_pendientes)
                 for b in bodies:
                     if b and isinstance(b, dict):
                         iid = str(b.get("id", "") or b.get("item_id", "")).strip()
                         if not iid:
                             continue
-                        # Catálogo = tiene catalog_listing True O tiene catalog_product_id no vacío
-                        cpid = b.get("catalog_product_id")
-                        has_catalog_id = bool(cpid and str(cpid).strip())
-                        catalog_listing = b.get("catalog_listing")
-                        is_catalog = has_catalog_id or catalog_listing is True or str(catalog_listing).lower() in ("true", "1")
+                        # Catálogo = catalog_listing=True. Propia = catalog_listing=false o ausente (catalog_product_id no define tipo)
+                        cl = b.get("catalog_listing")
+                        is_catalog = cl is True or str(cl or "").lower() in ("true", "1")
                         item_id_to_catalog[iid] = is_catalog
+                        item_id_to_tipo_venta[iid] = _tipo_base_desde_body(b)
+                        item_id_to_cuotas[iid] = _cuotas_desde_item(b)
                         # SKU (SELLER_SKU) para agrupar publicaciones propias duplicadas
                         attrs = b.get("attributes") or []
                         for a in attrs:
@@ -2315,6 +2536,8 @@ def build_tab_ventas(container) -> None:
                                 break
             all_orders_ref["item_id_to_catalog"] = item_id_to_catalog
             all_orders_ref["item_id_to_sku"] = item_id_to_sku
+            all_orders_ref["item_id_to_tipo_venta"] = item_id_to_tipo_venta
+            all_orders_ref["item_id_to_cuotas"] = item_id_to_cuotas
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             dia_ini, dia_fin = (primer_dia, hoy) if fecha_val == "mes_actual" else (primer_dia_anterior, ultimo_mes) if fecha_val == "mes_anterior" else (None, None)
@@ -2358,25 +2581,25 @@ def build_tab_ventas(container) -> None:
                     titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
                     item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
                     catalog_id = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip() if isinstance(obj, dict) else str(it.get("catalog_product_id") or "").strip()
-                    catalog = bool(catalog_id)
-                    if not catalog and isinstance(obj, dict):
-                        cl = obj.get("catalog_listing")
-                        catalog = cl is True or str(cl or "").lower() in ("true", "1")
-                    if not catalog:
+                    cl = obj.get("catalog_listing") if isinstance(obj, dict) else it.get("catalog_listing")
+                    if cl is None and isinstance(obj, dict):
                         cl = it.get("catalog_listing")
-                        catalog = cl is True or str(cl or "").lower() in ("true", "1")
-                    if not catalog and item_id:
+                    catalog = cl is True or str(cl or "").lower() in ("true", "1")
+                    if cl is None or (not catalog and item_id):
                         catalog = item_id_to_catalog.get(item_id, False) or item_id_to_catalog.get(item_id.upper(), False) or item_id_to_catalog.get(item_id.lower(), False)
                     tipo = "Catálogo" if catalog else "Propia"
                     # Para propias: usar SKU si existe (evita duplicados por mismo producto distinto id)
                     sku = item_id_to_sku.get(item_id) or item_id_to_sku.get(item_id.upper()) or item_id_to_sku.get(item_id.lower()) or ""
                     agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
+                    cuotas = item_id_to_cuotas.get(item_id) or item_id_to_cuotas.get(item_id.upper()) or item_id_to_cuotas.get(item_id.lower()) or "x1"
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
                         "productos": titulo[:100],
                         "title": titulo[:100],
                         "tipo": tipo,
+                        "tipo_venta": tipo,
+                        "cuotas": cuotas,
                         "cantidad": qty,
                         "monto": item_monto,
                         "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
@@ -2403,6 +2626,18 @@ def build_tab_ventas(container) -> None:
                     label="Fecha",
                 ).classes("w-36").bind_value(filtro_fecha_ref, "val")
                 filtro_fecha.on_value_change(lambda: _aplicar_filtro_fecha())
+                filtro_publicacion = ui.select(
+                    {"todas": "Todas", "propias": "Propias", "catalogo": "Catálogo"},
+                    value=filtro_publicacion_ref.get("val", "todas"),
+                    label="Publicación",
+                ).classes("w-36").bind_value(filtro_publicacion_ref, "val")
+                filtro_publicacion.on_value_change(lambda: _pintar_tabla())
+                filtro_cuotas = ui.select(
+                    {"todas": "Todas", "x1": "x1", "x3": "x3", "x6": "x6"},
+                    value=filtro_cuotas_ref.get("val", "todas"),
+                    label="Cuotas",
+                ).classes("w-36").bind_value(filtro_cuotas_ref, "val")
+                filtro_cuotas.on_value_change(lambda: _pintar_tabla())
                 filtro_estado = ui.select(
                     {"todas": "Todas", "pagada": "Concretada", "cancelada": "Cancelada"},
                     value=filtro_estado_ref.get("val", "pagada"),
@@ -3269,6 +3504,8 @@ def build_tab_precios_detalle(container) -> None:
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
         ("ventas", "Ventas", "center", True),
+        ("tipo_publicacion", "Tipo pub.", "left", True),
+        ("cuotas", "Cuotas", "center", True),
         ("costo", "Costo u$ +IVA", "right", True),
         ("precio", "Precio", "right", True),
         ("tipo_iva", "Tipo IVA", "right", True),
@@ -3280,9 +3517,9 @@ def build_tab_precios_detalle(container) -> None:
         ("deb_cred", "Deb-Cred", "right", True),
         ("iibb", "IIBB", "right", True),
         ("envio", "Envío", "right", True),
-        ("margen_pesos", "Margen $", "center", True),
-        ("margen_venta_pct", "Margen venta %", "center", True),
-        ("margen_costo_pct", "Margen costo %", "center", True),
+        ("margen_pesos", "Gan $", "center", True),
+        ("margen_venta_pct", "Gan Vta %", "center", True),
+        ("margen_costo_pct", "Gan % Cos", "center", True),
     ]
     COLUMNAS_MINIMO = [
         ("id", "ID", "left", True),
@@ -3292,9 +3529,9 @@ def build_tab_precios_detalle(container) -> None:
         ("ventas", "Ventas", "center", True),
         ("costo", "Costo u$ +IVA", "right", True),
         ("precio", "Precio", "right", True),
-        ("margen_pesos", "Margen $", "center", True),
-        ("margen_venta_pct", "Margen venta %", "center", True),
-        ("margen_costo_pct", "Margen costo %", "center", True),
+        ("margen_pesos", "Gan $", "center", True),
+        ("margen_venta_pct", "Gan Vta %", "center", True),
+        ("margen_costo_pct", "Gan % Cos", "center", True),
     ]
 
     def show_row_dialog(row: Dict[str, Any]) -> None:
@@ -3371,13 +3608,13 @@ def build_tab_precios_detalle(container) -> None:
                     ui.label("Envío").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("envio"))).classes("text-sm text-negative")
                 with ui.row().classes("w-full justify-between py-2 gap-4"):
-                    ui.label("Margen $").classes("text-sm font-medium text-gray-600")
+                    ui.label("Gan $").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("margen_pesos"))).classes(margen_cls)
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
-                    ui.label("Margen venta %").classes("text-sm font-medium text-gray-600")
+                    ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_pct2(data.get("margen_venta_pct"))).classes(margen_cls)
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
-                    ui.label("Margen costo %").classes("text-sm font-medium text-gray-600")
+                    ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_pct2(data.get("margen_costo_pct"))).classes(margen_cls)
 
         with d:
@@ -3729,17 +3966,27 @@ def build_tab_precios_detalle(container) -> None:
         ventas_por_periodo_ref["mes_actual"] = ventas_mes_actual
         ventas_por_periodo_ref["mes_anterior"] = ventas_mes_anterior
 
-        seen_dedupe: set = set()
-        periodo_activo = filtro_fecha_ref.get("val", "mes_actual")
-        ventas_dict = ventas_por_periodo_ref.get(periodo_activo, ventas_historico)
+        # Agrupar por dedupe_key; preferir catalog_listing=false (Propia), solo usar Catálogo si no hay Propia
+        grupos_por_dedupe: Dict[str, List[Dict]] = {}
         for i in items_ordenados:
             catalog_id = str(i.get("catalog_product_id") or "").strip()
             seller_sku = (i.get("seller_sku") or "").strip()
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
-            if dedupe_key and dedupe_key in seen_dedupe:
-                continue
-            if dedupe_key:
-                seen_dedupe.add(dedupe_key)
+            dk = dedupe_key or ("id:" + str(i.get("id", "")))
+            if dk not in grupos_por_dedupe:
+                grupos_por_dedupe[dk] = []
+            grupos_por_dedupe[dk].append(i)
+        periodo_activo = filtro_fecha_ref.get("val", "mes_actual")
+        ventas_dict = ventas_por_periodo_ref.get(periodo_activo, ventas_historico)
+        items_a_mostrar: List[Dict] = []
+        for dk, grupo in grupos_por_dedupe.items():
+            propias = [x for x in grupo if x.get("catalog_listing") is not True]
+            elegido = propias[0] if propias else grupo[0]
+            items_a_mostrar.append(elegido)
+        for i in items_a_mostrar:
+            catalog_id = str(i.get("catalog_product_id") or "").strip()
+            seller_sku = (i.get("seller_sku") or "").strip()
+            dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
             precio = float(i.get("price") or 0)
             sale_price = i.get("sale_price")
             precio_real = float(sale_price) if sale_price is not None else precio
@@ -3771,6 +4018,8 @@ def build_tab_precios_detalle(container) -> None:
                 "stock": stock,
                 "ventas": ventas,
                 "dedupe_key": dk_final,
+                "tipo_publicacion": _tipo_publicacion_desde_item(i),
+                "cuotas": _cuotas_desde_item(i),
                 "precio": precio_real,
                 "tipo_iva": tipo_iva,
                 "iva_total": iva_total,
@@ -3904,16 +4153,19 @@ def build_tab_busqueda() -> None:
             if not texto:
                 ui.notify("Ingresá un texto o ID de publicación", color="warning")
                 return
+            # Si el usuario ingresa solo números, intentar primero con MLA adelante
+            texto_buscar = "MLA" + texto if texto.isdigit() else texto
+            texto_fallback = texto if texto.isdigit() else None  # Para reintentar sin MLA si no hay resultados
             results_container.clear()
             with results_container:
                 ui.spinner(size="lg")
                 ui.label("Buscando en MercadoLibre...").classes("text-gray-600")
             # Si parece ID de publicación (ej MLA1996852282), obtener por ID; si no existe, buscar
-            es_item_id = _looks_like_ml_item_id(texto)
+            es_item_id = _looks_like_ml_item_id(texto_buscar)
             raw_item = None
             if es_item_id:
                 try:
-                    raw_item = await run.io_bound(ml_get_item, access_token, texto)
+                    raw_item = await run.io_bound(ml_get_item, access_token, texto_buscar)
                 except Exception:
                     raw_item = None
                 if raw_item is not None:
@@ -3932,21 +4184,31 @@ def build_tab_busqueda() -> None:
                         ui.label(f"Datos que devuelve MercadoLibre para esta publicación ({lbl_tipo}):").classes(
                             "text-base font-semibold mb-2"
                         )
-                        json_str = html.escape(json.dumps(raw_item, indent=2, ensure_ascii=False))
+                        json_str = json.dumps(raw_item, indent=2, ensure_ascii=False)
                         ui.html(
-                            f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 500px;">{json_str}</pre>'
+                            f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 500px;">{html.escape(json_str)}</pre>'
                         )
                         perm = (raw_item.get("permalink") or "").strip()
-                        if perm:
-                            ui.link("Ver en MercadoLibre", perm, new_tab=True).classes("text-primary mt-2")
+                        with ui.row().classes("gap-2 mt-2"):
+                            if perm:
+                                ui.button("Ver en MercadoLibre", on_click=lambda: ui.run_javascript(f'window.open({json.dumps(perm)})')).props("flat no-caps").classes("text-primary")
+                            async def _copiar_datos() -> None:
+                                await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(json_str)}).then(() => true)")
+                                ui.notify("Datos copiados al portapapeles", type="positive")
+                            ui.button("Copiar datos", on_click=lambda: background_tasks.create(_copiar_datos(), name="copy")).props("flat no-caps")
                     return
             # Búsqueda por texto o por ID cuando ml_get_item no encontró nada
             try:
                 solo_propias = getattr(solo_propias_switch, "value", True)
-                data = await run.io_bound(ml_search_similar, texto, 50, access_token, solo_propias)
+                data = await run.io_bound(ml_search_similar, texto_buscar, 50, access_token, solo_propias)
                 # Para IDs: si no hay resultados con propias, probar sin filtrar por propias
                 if es_item_id and (not data.get("results") or len(data.get("results", [])) == 0) and solo_propias:
-                    data = await run.io_bound(ml_search_similar, texto, 50, access_token, False)
+                    data = await run.io_bound(ml_search_similar, texto_buscar, 50, access_token, False)
+                # Si ingresó solo números y no hubo resultados con MLA, intentar sin MLA
+                if texto_fallback and (not data.get("results") or len(data.get("results", [])) == 0):
+                    data = await run.io_bound(ml_search_similar, texto_fallback, 50, access_token, solo_propias)
+                    if (not data.get("results") or len(data.get("results", [])) == 0) and solo_propias:
+                        data = await run.io_bound(ml_search_similar, texto_fallback, 50, access_token, False)
             except Exception as err:
                 data = {"results": [], "error": str(err)}
             results = data.get("results", [])[:50]
@@ -4060,11 +4322,16 @@ def build_tab_busqueda() -> None:
                             tit = (full_display.get("title") or full_display.get("name") or f"Resultado {i+1}")[:80]
                             with ui.card().classes("w-full mt-2"):
                                 ui.label(tit).classes("font-semibold text-primary mb-2")
-                                json_str = html.escape(json.dumps(full_display, indent=2, ensure_ascii=False))
-                                ui.html(f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 400px;">{json_str}</pre>')
+                                json_str_card = json.dumps(full_display, indent=2, ensure_ascii=False)
+                                ui.html(f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 400px;">{html.escape(json_str_card)}</pre>')
                                 perm = (full_display.get("permalink") or "").strip()
-                                if perm:
-                                    ui.link("Ver en MercadoLibre", perm, new_tab=True).classes("text-primary text-sm mt-1")
+                                with ui.row().classes("gap-2 mt-1"):
+                                    if perm:
+                                        ui.button("Ver en MercadoLibre", on_click=lambda p=perm: ui.run_javascript(f'window.open({json.dumps(p)})')).props("flat dense no-caps").classes("text-primary text-sm")
+                                    async def _copiar_resultado(js: str) -> None:
+                                        await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(js)}).then(() => true)")
+                                        ui.notify("Datos copiados al portapapeles", type="positive")
+                                    ui.button("Copiar datos", on_click=lambda j=json_str_card: background_tasks.create(_copiar_resultado(j), name="copy")).props("flat dense no-caps text-sm")
                 else:
                     if filter_showed_all:
                         ui.label(
