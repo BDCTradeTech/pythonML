@@ -17,6 +17,10 @@ from typing import Any, Callable, Dict, List, Optional
 import os
 import subprocess
 import tempfile
+from collections import defaultdict
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
 import time
 import requests
 from dotenv import load_dotenv
@@ -27,7 +31,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260302.14"
+VERSION = "1.260302.17"
 
 
 # ==========================
@@ -951,6 +955,43 @@ def ml_get_product_detail(access_token: Optional[str], product_id: str) -> Optio
         return resp.json() if isinstance(resp.json(), dict) else None
     except Exception:
         return None
+
+
+def _extraer_color_desde_texto(texto: str) -> str:
+    """Busca palabras de color en un texto. Devuelve la primera coincidencia o ''."""
+    if not texto or not isinstance(texto, str):
+        return ""
+    t = texto.lower()
+    colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor", "black", "white", "blue", "red", "gray", "grey", "green", "yellow", "orange", "pink", "brown", "silver", "gold"]
+    for c in colores:
+        if c in t:
+            return c.capitalize()
+    return ""
+
+
+def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
+    """Obtiene el texto de la descripción del ítem. Devuelve '' si falla."""
+    if not access_token or not str(item_id).strip():
+        return ""
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/descriptions",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=8,
+        )
+        if not resp.ok:
+            return ""
+        data = resp.json()
+        if not isinstance(data, list) or not data:
+            return ""
+        for d in data:
+            if isinstance(d, dict):
+                txt = d.get("plain_text") or d.get("text") or ""
+                if txt:
+                    return str(txt)
+        return ""
+    except Exception:
+        return ""
 
 
 def ml_get_item(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
@@ -3385,25 +3426,194 @@ def build_tab_precios_detalle(container) -> None:
                         ganancia_neta = get_cotizador_param("ml_ganancia_neta_venta", uid) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")
                         ganancia_pct = float(str(ganancia_neta).replace(",", ".").strip()) * 100
                         lbl_margen_est = ui.label(f"{ganancia_pct:.2f}%".replace(".", ",")).classes("text-2xl font-bold text-primary")
-            with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
-                ui.label("Filtros:").classes("text-sm")
-                filtro_fecha = ui.select(
-                    {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
-                    value=filtro_fecha_ref.get("val", "mes_actual"),
-                    label="Fecha",
-                ).classes("w-36")
-                filtro_stock = ui.select(
-                    {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
-                    value=filtro_stock_ref.get("val", "con_stock"),
-                    label="Stock",
-                ).classes("w-36")
-                filtro_awei = ui.select(
-                    {"incluye": "Incluye", "no_incluye": "No incluye"},
-                    value=filtro_awei_ref.get("val", "no_incluye"),
-                    label="Awei",
-                ).classes("w-36")
-                btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
-                btn_calcular = ui.button("Calcular", color="secondary").props("icon=calculate")
+            with ui.row().classes("items-center gap-4 mb-3 flex-wrap w-full justify-between"):
+                with ui.row().classes("items-center gap-4 flex-wrap"):
+                    ui.label("Filtros:").classes("text-sm")
+                    filtro_fecha = ui.select(
+                        {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
+                        value=filtro_fecha_ref.get("val", "mes_actual"),
+                        label="Fecha",
+                    ).classes("w-36")
+                    filtro_stock = ui.select(
+                        {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
+                        value=filtro_stock_ref.get("val", "con_stock"),
+                        label="Stock",
+                    ).classes("w-36")
+                    filtro_awei = ui.select(
+                        {"incluye": "Incluye", "no_incluye": "No incluye"},
+                        value=filtro_awei_ref.get("val", "no_incluye"),
+                        label="Awei",
+                    ).classes("w-36")
+                    btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
+                    btn_calcular = ui.button("Calcular", color="secondary").props("icon=calculate")
+                ui.space()
+                ui.button("QUIEBRE STOCK", on_click=lambda: _quiebre_stock_click(), color="primary").classes("uppercase").props("icon=print")
+
+                def _quiebre_stock_click() -> None:
+                    client = context.client
+                    container = content_column
+                    background_tasks.create(_quiebre_stock_async(client, container), name="quiebre_stock")
+
+                async def _quiebre_stock_async(client, container) -> None:
+                    """Genera Excel con productos vendidos en los últimos 60 días que no tienen stock."""
+                    try:
+                        with container:
+                            ui.notify("Generando Quiebre Stock...", color="info")
+                        profile = await run.io_bound(ml_get_user_profile, access_token)
+                        seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
+                        nickname = (profile or {}).get("nickname") or "Usuario"
+                        safe_nick = "".join(c for c in str(nickname) if c.isalnum() or c in "_-").strip() or "Usuario"
+                        if not seller_id:
+                            with container:
+                                ui.notify("No se pudo obtener el perfil del vendedor.", color="negative")
+                            return
+                        hoy = datetime.now().date()
+                        hace_60 = hoy - timedelta(days=60)
+                        date_from = hace_60.strftime("%Y-%m-%dT00:00:00.000-03:00")
+                        date_to = hoy.strftime("%Y-%m-%dT23:59:59.999-03:00")
+                        ord_res = await run.io_bound(
+                            ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
+                            date_from=date_from, date_to=date_to,
+                        )
+                        raw = ord_res.get("results") or ord_res.get("orders") or ord_res.get("elements") or []
+                        orders_merged = list({str(o.get("id")): o for o in raw if isinstance(o, dict) and o.get("id")}.values())
+                        ventas_quiebre: List[Dict[str, Any]] = []
+                        item_ids_set: set = set()
+                        for ord_item in orders_merged:
+                            dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
+                            if dt_str:
+                                try:
+                                    dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                                    if dt < hace_60:
+                                        continue
+                                except Exception:
+                                    pass
+                            status_raw = (ord_item.get("status") or "").strip().lower()
+                            if "cancel" in status_raw:
+                                continue
+                            for it in ord_item.get("order_items") or ord_item.get("items") or []:
+                                if not isinstance(it, dict):
+                                    continue
+                                obj = it.get("item") or it
+                                qty = int(it.get("quantity") or it.get("qty") or 0)
+                                if qty == 0:
+                                    continue
+                                titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
+                                item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                                if not item_id:
+                                    continue
+                                ventas_quiebre.append({"productos": titulo[:200], "cantidad": qty, "item_id": item_id})
+                                item_ids_set.add(item_id)
+                        if not ventas_quiebre:
+                            with container:
+                                ui.notify("No hay ventas en los últimos 60 días.", color="warning")
+                            return
+                        item_ids_list = list(item_ids_set)
+                        item_id_to_info: Dict[str, Dict[str, Any]] = {}
+                        for i in range(0, len(item_ids_list), 20):
+                            batch = item_ids_list[i : i + 20]
+                            bodies = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, batch, "id,title,available_quantity,catalog_product_id,attributes")
+                            for b in (bodies or []):
+                                if b and isinstance(b, dict):
+                                    iid = str(b.get("id") or "").strip()
+                                    if iid:
+                                        marca, color = "", ""
+                                        for att in b.get("attributes") or []:
+                                            aid = (str(att.get("id") or "")).strip().upper()
+                                            if aid in ("BRAND", "MARCA"):
+                                                val = att.get("value_name") or att.get("value_id")
+                                                marca = str(val) if val is not None else ""
+                                            elif aid in ("COLOR", "COLOUR"):
+                                                val = att.get("value_name") or att.get("value_id")
+                                                color = str(val) if val is not None else ""
+                                        catalog_id = str(b.get("catalog_product_id") or "").strip()
+                                        item_id_to_info[iid] = {"stock": int(b.get("available_quantity") or 0), "marca": marca or "—", "color": color or "—", "catalog_product_id": catalog_id, "title": (b.get("title") or "")[:200]}
+                        ids_sin_color = [iid for iid in item_ids_list if (item_id_to_info.get(iid) or {}).get("color") == "—"]
+                        item_id_to_color_desc: Dict[str, str] = {}
+                        for iid in ids_sin_color[:25]:
+                            desc = await run.io_bound(ml_get_item_description, access_token, iid)
+                            c = _extraer_color_desde_texto(desc)
+                            if c:
+                                item_id_to_color_desc[iid] = c
+                        agg: Dict[tuple, int] = defaultdict(int)
+                        prod_titulos: Dict[tuple, str] = {}
+                        for v in ventas_quiebre:
+                            iid = v.get("item_id", "")
+                            info = item_id_to_info.get(iid) or item_id_to_info.get(iid.upper()) or item_id_to_info.get(iid.lower()) if iid else None
+                            stock = info["stock"] if info else -1
+                            marca = info["marca"] if info else "—"
+                            color = (info["color"] if info else "—") or item_id_to_color_desc.get(iid) or item_id_to_color_desc.get(iid.upper()) or item_id_to_color_desc.get(iid.lower()) or "—"
+                            if color == "—":
+                                color = _extraer_color_desde_texto(v["productos"]) or "—"
+                            if stock == 0:
+                                catalog_id = (info or {}).get("catalog_product_id", "")
+                                key = (catalog_id or v["productos"], marca, color)
+                                agg[key] += v["cantidad"]
+                                titulo_rep = (info or {}).get("title") or v["productos"]
+                                if key not in prod_titulos or len(titulo_rep) > len(prod_titulos.get(key, "")):
+                                    prod_titulos[key] = titulo_rep
+                        if not agg:
+                            with container:
+                                ui.notify("Todos los productos vendidos tienen stock. No hay quiebre.", color="info")
+                            return
+                        filas = sorted(agg.items(), key=lambda x: (str(prod_titulos.get(x[0], x[0][0])).upper(), -x[1]))
+                        ahora = datetime.now()
+                        sheet_name = f"Quiebre stock {ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
+                        wb = Workbook()
+                        ws = wb.active
+                        ws.title = sheet_name[:31]
+                        ws.column_dimensions["A"].width = 120
+                        ws.column_dimensions["B"].width = 15
+                        ws.column_dimensions["C"].width = 15
+                        ws.column_dimensions["D"].width = 15
+                        black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+                        white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                        header_font = Font(color="FFFFFF", bold=True)
+                        thin_side = Side(border_style="thin")
+                        all_borders = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+                        header_align = Alignment(horizontal="center", vertical="center")
+                        center_align = Alignment(horizontal="center", vertical="center")
+                        h1 = f"{str(nickname).upper()} - PRODUCTOS SIN STOCK"
+                        for col, h in enumerate((h1, "MARCA", "COLOR", "VENTAS 60 DIAS"), start=1):
+                            c = ws.cell(row=1, column=col, value=h)
+                            c.fill = black_fill
+                            c.font = header_font
+                            c.border = all_borders
+                            c.alignment = header_align
+                        for idx, (key, ventas) in enumerate(filas, start=2):
+                            prod = prod_titulos.get(key, key[0])
+                            marca, color = key[1], key[2]
+                            for col, val in enumerate((prod, marca, color, ventas), start=1):
+                                cell = ws.cell(row=idx, column=col, value=val)
+                                cell.fill = white_fill
+                                cell.border = all_borders
+                                if col == 4:
+                                    cell.alignment = center_align
+                        ahora = datetime.now()
+                        yy = ahora.year % 100
+                        nombre_archivo = f"Compra_{safe_nick}_{yy:02d}_{ahora.month:02d}_{ahora.day:02d}.xlsx"
+                        fd, path = tempfile.mkstemp(suffix=".xlsx")
+                        try:
+                            os.close(fd)
+                            wb.save(path)
+                            with container:
+                                ui.download(path, nombre_archivo)
+
+                                def _cleanup() -> None:
+                                    try:
+                                        if path and os.path.exists(path):
+                                            os.unlink(path)
+                                    except Exception:
+                                        pass
+
+                                ui.timer(5.0, _cleanup, once=True)
+                                ui.notify(f"Descargado: {nombre_archivo}", color="positive")
+                        except Exception as e:
+                            with container:
+                                ui.notify(f"Error al guardar Excel: {e}", color="negative")
+                    except Exception as e:
+                        with container:
+                            ui.notify(f"Error Quiebre Stock: {e}", color="negative")
 
                 def calcular_totales() -> None:
                     filas = filtrados_actuales_ref.get("rows") or []
