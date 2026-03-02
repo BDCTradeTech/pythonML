@@ -27,7 +27,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.40.0"
+VERSION = "1.260302.14"
 
 
 # ==========================
@@ -573,12 +573,12 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
     if not ml_user_id:
         return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener el usuario de ML"}
 
-    # 2. Listar IDs: activas siempre; pausadas solo si include_paused (las sin stock)
+    # 2. Listar IDs: activas siempre; pausadas y closed solo si include_paused (catálogo vendido puede estar en closed)
     # ML limita offset a 1000; pasarlo devuelve 400 Bad Request
     item_ids = []
     seen: set = set()
     MAX_OFFSET = 1000
-    statuses = ("active", "paused") if include_paused else ("active",)
+    statuses = ("active", "paused", "closed") if include_paused else ("active",)
     for status_val in statuses:
         offset = 0
         limit = 50
@@ -707,22 +707,99 @@ def _tipo_publicacion_desde_item(item: Dict[str, Any]) -> str:
 
 
 def _cuotas_desde_item(item: Dict[str, Any]) -> str:
-    """x1, x3 o x6 según listing_type_id y sale_terms/attributes (igual que en Ventas)."""
+    """x1, x3, x6, x9 o x12 según listing_type_id y sale_terms/attributes (INSTALLMENTS_CAMPAIGN)."""
     listing_type_id = str(item.get("listing_type_id") or "").strip().lower()
     if listing_type_id == "gold_special":
         return "x1"
     if listing_type_id == "gold_pro":
-        def _tiene_3x_campaign(terms: list) -> bool:
+        def _cuotas_desde_campaign(terms: list) -> str:
             for a in terms or []:
                 if isinstance(a, dict) and (str(a.get("id") or "").upper() == "INSTALLMENTS_CAMPAIGN"):
                     vn = str(a.get("value_name") or "").lower()
-                    if "3x_campaign" in vn or vn == "3x_campaign":
-                        return True
-            return False
-        if _tiene_3x_campaign(item.get("sale_terms")) or _tiene_3x_campaign(item.get("attributes")):
-            return "x3"
-        return "x6"
+                    if "12x" in vn:
+                        return "x12"
+                    if "9x" in vn:
+                        return "x9"
+                    if "6x" in vn:
+                        return "x6"
+                    if "3x" in vn or "3x_campaign" in vn or vn == "3x_campaign":
+                        return "x3"
+            return ""
+        cuotas = _cuotas_desde_campaign(item.get("sale_terms")) or _cuotas_desde_campaign(item.get("attributes"))
+        if cuotas:
+            return cuotas
+        return "x6"  # gold_pro por defecto: 6 cuotas
     return "x1"
+
+
+def _body_to_precios_item(body: dict) -> dict:
+    """Convierte el body de la API /items al formato usado en Precios (igual que _item_from_body en ml_get_my_items)."""
+    marca = ""
+    color = ""
+    seller_sku = ""
+    for att in body.get("attributes") or []:
+        aid = (att.get("id") or "").strip().upper()
+        if aid in ("BRAND", "MARCA"):
+            val = att.get("value_name") or att.get("value_id")
+            marca = str(val) if val is not None else ""
+        elif aid in ("COLOR", "COLOUR"):
+            val = att.get("value_name") or att.get("value_id")
+            if val:
+                color = str(val)
+                break
+        elif aid == "SELLER_SKU":
+            v = att.get("value_name") or att.get("value") or att.get("value_id")
+            if v is None and att.get("values"):
+                v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
+            if v is not None:
+                seller_sku = str(v).strip()
+    if not seller_sku:
+        seller_sku = (body.get("seller_custom_field") or "").strip()
+    if not seller_sku:
+        for var in body.get("variations") or []:
+            for vatt in (var.get("attribute_combinations") or var.get("attributes") or []):
+                if (vatt.get("id") or "").strip().upper() == "SELLER_SKU":
+                    v = vatt.get("value_name") or vatt.get("value") or vatt.get("value_id")
+                    if v is not None:
+                        seller_sku = str(v).strip()
+                        break
+            if seller_sku:
+                break
+    if not color:
+        tit = (body.get("title") or "").lower()
+        colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor"]
+        for c in colores:
+            if c in tit:
+                color = c.capitalize()
+                break
+    catalog_listing = body.get("catalog_listing") is True
+    original_price = body.get("original_price") or body.get("base_price")
+    thumbnail = body.get("thumbnail") or ""
+    if not thumbnail and body.get("pictures"):
+        pic = (body.get("pictures") or [{}])[0]
+        thumbnail = pic.get("secure_url") or pic.get("url") or ""
+    return {
+        "id": body.get("id"),
+        "title": body.get("title", ""),
+        "thumbnail": thumbnail,
+        "price": body.get("price"),
+        "sale_price": body.get("sale_price"),
+        "original_price": original_price,
+        "available_quantity": body.get("available_quantity"),
+        "sold_quantity": body.get("sold_quantity"),
+        "status": body.get("status", ""),
+        "permalink": body.get("permalink", ""),
+        "catalog_product_id": body.get("catalog_product_id"),
+        "catalog_listing": catalog_listing,
+        "listing_type_id": body.get("listing_type_id"),
+        "sale_terms": body.get("sale_terms"),
+        "seller_sku": seller_sku,
+        "marca": marca or "—",
+        "color": color or "—",
+        "last_updated": body.get("last_updated"),
+        "stop_time": body.get("stop_time"),
+        "date_created": body.get("date_created"),
+    }
 
 
 def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[str, Any]:
@@ -3223,6 +3300,10 @@ def build_tab_precios_detalle(container) -> None:
             return 0.0
 
     ml_comision = _parse_rate(get_cotizador_param("ml_comision", uid) or COTIZADOR_DEFAULTS.get("ml_comision", "0.15"))
+    cuotas_3x = _parse_rate(get_cotizador_param("cuotas_3x", uid) or COTIZADOR_DEFAULTS.get("cuotas_3x", "0.094"))
+    cuotas_6x = _parse_rate(get_cotizador_param("cuotas_6x", uid) or COTIZADOR_DEFAULTS.get("cuotas_6x", "0.151"))
+    cuotas_9x = _parse_rate(get_cotizador_param("cuotas_9x", uid) or COTIZADOR_DEFAULTS.get("cuotas_9x", "0.207"))
+    cuotas_12x = _parse_rate(get_cotizador_param("cuotas_12x", uid) or COTIZADOR_DEFAULTS.get("cuotas_12x", "0.259"))
     ml_iibb_per = _parse_rate(get_cotizador_param("ml_iibb_per", uid) or COTIZADOR_DEFAULTS.get("ml_iibb_per", "0.055"))
     ml_debcre = _parse_rate(get_cotizador_param("ml_debcre", uid) or COTIZADOR_DEFAULTS.get("ml_debcre", "0.006"))
     ml_envios_val = get_cotizador_param("ml_envios", uid) or COTIZADOR_DEFAULTS.get("ml_envios", "5823")
@@ -3253,7 +3334,7 @@ def build_tab_precios_detalle(container) -> None:
     ventas_por_periodo_ref: Dict[str, Dict[str, int]] = {}  # "historico"|"mes_actual"|"mes_anterior" -> {dedupe_key: ventas}
     filtro_stock_ref: Dict[str, str] = {"val": "con_stock"}
     filtro_awei_ref: Dict[str, str] = {"val": "no_incluye"}
-    include_paused_ref: Dict[str, bool] = {"val": False}
+    include_paused_ref: Dict[str, bool] = {"val": True}  # Incluir pausadas para traer todos los productos
     vista_modo_ref: Dict[str, str] = {"val": "minimo"}
     sort_col_ref: Dict[str, str] = {"val": "producto"}
     sort_asc_ref: Dict[str, bool] = {"val": True}
@@ -3407,8 +3488,8 @@ def build_tab_precios_detalle(container) -> None:
                 periodo = filtro_fecha_ref["val"]
                 ventas_dict = ventas_por_periodo_ref.get(periodo, {})
                 for row in items_loaded:
-                    dk = row.get("dedupe_key") or ("id:" + str(row.get("id", "")))
-                    row["ventas"] = ventas_dict.get(dk, 0)
+                    grupo_ids = row.get("grupo_ids") or [str(row.get("id", ""))]
+                    row["ventas"] = sum(ventas_dict.get("id:" + vid, 0) for vid in grupo_ids if vid)
                 _filtrar_con_indicador()
 
             filtro_fecha.on_value_change(on_fecha_change)
@@ -3465,11 +3546,15 @@ def build_tab_precios_detalle(container) -> None:
             return 0.0
 
     def _parse_usd(s: Any) -> float:
-        """Parsea string como u$1.234,56 o u$1234.56 -> float."""
+        """Parsea string como u$1.234,56 o u$12.5 o u$12,5 -> float. Acepta . o , como decimal."""
         if s is None or s == "":
             return 0.0
         try:
-            raw = str(s).replace("u$", "").replace("$", "").replace(".", "").replace(",", ".").strip()
+            raw = str(s).replace("u$", "").replace("$", "").replace(",", ".").strip()
+            # Si hay varios puntos, el último es decimal (1.234.56 -> 1234.56)
+            if "." in raw:
+                p = raw.split(".")
+                raw = "".join(p[:-1]) + "." + p[-1]
             return float(raw) if raw else 0.0
         except (ValueError, TypeError):
             return 0.0
@@ -3556,15 +3641,19 @@ def build_tab_precios_detalle(container) -> None:
             iva_total, iva_meli, iva_impor = _calc_iva(precio, tipo_iva, comision, costo)
             envio = _envio_a_restar(precio)
             costo_pesos = costo * dolar_oficial
+            # Costo cuotas: 0 si x1; precio * tasa según 3x, 6x, 9x o 12x
+            cuotas_val = str(row.get("cuotas") or "x1").strip().lower()
+            tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
+            costo_cuotas = precio * tasa_cuotas if tasa_cuotas else 0.0
             if costo_pesos <= 0:
                 margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
             else:
-                margen_pesos = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio
+                margen_pesos = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                 margen_venta_pct = (margen_pesos / precio * 100) if precio > 0 else 0.0
             if recalc_container_ref.get("costo_pesos_label"):
                 recalc_container_ref["costo_pesos_label"].text = fmt_moneda(costo_pesos)
-            data = {"comision": comision, "cobrado": cobrado, "iva_venta": iva_venta, "iva_total": iva_total,
+            data = {"comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas, "iva_venta": iva_venta, "iva_total": iva_total,
                     "iva_meli": iva_meli, "iva_impor": iva_impor, "deb_cred": deb_cred, "iibb": iibb, "envio": envio,
                     "costo_pesos": costo_pesos, "margen_pesos": margen_pesos,
                     "margen_costo_pct": margen_costo_pct, "margen_venta_pct": margen_venta_pct}
@@ -3585,6 +3674,9 @@ def build_tab_precios_detalle(container) -> None:
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
                     ui.label("Comisión").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("costo_cuotas"))).classes("text-sm text-negative")
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
                     ui.label("IVA venta").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("iva_venta"))).classes("text-sm")
@@ -3661,17 +3753,19 @@ def build_tab_precios_detalle(container) -> None:
                                         inp.dataset.costoFilter = "1";
                                         inp.addEventListener("input", function() {{
                                             var v = this.value;
-                                            var f = v.replace(/[^0-9,]/g, "");
-                                            var commas = (f.match(/,/g) || []).length;
-                                            if (commas > 1) {{
-                                                var idx = f.indexOf(",");
-                                                f = f.substring(0, idx+1) + f.substring(idx+1).replace(/,/g, "");
+                                            var f = v.replace(/[^0-9,.]/g, "");
+                                            f = f.replace(/\\./g, ",");
+                                            var decimals = (f.match(/,/g) || []);
+                                            if (decimals.length > 1) {{
+                                                var first = f.indexOf(",");
+                                                f = f.substring(0, first+1) + f.substring(first+1).replace(/,/g, "");
                                             }}
                                             if (v !== f) {{ this.value = f; this.dispatchEvent(new Event("input", {{bubbles: true}})); }}
                                         }});
                                         inp.addEventListener("keypress", function(e) {{
-                                            if (e.key === "," && this.value.indexOf(",") >= 0) {{ e.preventDefault(); return; }}
-                                            if (/[0-9,]/.test(e.key)) return;
+                                            var k = e.key;
+                                            if ((k === "," || k === ".") && /[,.]/.test(this.value)) {{ e.preventDefault(); return; }}
+                                            if (/[0-9,.]/.test(k)) return;
                                             e.preventDefault();
                                         }});
                                     }}
@@ -3684,10 +3778,12 @@ def build_tab_precios_detalle(container) -> None:
                                 if not ctrl:
                                     return
                                 val = str(getattr(e, "value", None) or ctrl.value or "")
-                                filtrado = "".join(c for c in val if c in "0123456789,")
-                                if filtrado.count(",") > 1:
-                                    idx = filtrado.find(",")
-                                    filtrado = filtrado[: idx + 1] + filtrado[idx + 1 :].replace(",", "")
+                                filtrado = "".join(c for c in val if c in "0123456789,.")
+                                filtrado = filtrado.replace(".", ",")
+                                dec_count = filtrado.count(",")
+                                if dec_count > 1:
+                                    first_dec = filtrado.find(",")
+                                    filtrado = filtrado[: first_dec + 1] + filtrado[first_dec + 1 :].replace(",", "")
                                 if val != filtrado:
                                     ctrl.value = filtrado
 
@@ -3739,13 +3835,17 @@ def build_tab_precios_detalle(container) -> None:
                         iva_total, iva_meli, iva_impor = _calc_iva(nuevo_precio, nuevo_tipo_iva, comision, nuevo_costo)
                         envio_restar = _envio_a_restar(nuevo_precio)
                         costo_pesos = nuevo_costo * dolar_oficial
+                        cuotas_val = str(it.get("cuotas") or "x1").strip().lower()
+                        tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
+                        costo_cuotas = nuevo_precio * tasa_cuotas if tasa_cuotas else 0.0
                         if costo_pesos <= 0:
                             margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
                         else:
-                            margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar
+                            margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar - costo_cuotas
                             margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                             margen_venta_pct = (margen_pesos / nuevo_precio * 100) if nuevo_precio > 0 else 0.0
                         it["comision"] = comision
+                        it["costo_cuotas"] = costo_cuotas
                         it["cobrado"] = cobrado
                         it["iva_total"] = iva_total
                         it["iva_meli"] = iva_meli
@@ -3769,6 +3869,8 @@ def build_tab_precios_detalle(container) -> None:
     def filtrar_y_pintar() -> None:
         filtrados = list(items_loaded)
         stock_val = filtro_stock_ref.get("val", "con_stock")
+        periodo = filtro_fecha_ref.get("val", "mes_actual")
+        ventas_dict = ventas_por_periodo_ref.get(periodo, {})
         if stock_val == "con_stock":
             filtrados = [x for x in filtrados if (x.get("stock") or 0) > 0]
         elif stock_val == "sin_stock":
@@ -3873,8 +3975,29 @@ def build_tab_precios_detalle(container) -> None:
                     profile = await run.io_bound(ml_get_user_profile, access_token)
                     seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
                     if seller_id:
-                        od = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
-                        return (od, seller_id)
+                        hoy = datetime.now().date()
+                        primer_dia_actual = hoy.replace(day=1)
+                        ultimo_mes = primer_dia_actual - timedelta(days=1)
+                        primer_dia_anterior = ultimo_mes.replace(day=1)
+                        od_actual = await run.io_bound(
+                            ml_get_orders, access_token, str(seller_id), 2000, 0,
+                            date_from=primer_dia_actual.strftime("%Y-%m-%dT00:00:00.000-03:00"),
+                            date_to=hoy.strftime("%Y-%m-%dT23:59:59.999-03:00"),
+                        )
+                        od_anterior = await run.io_bound(
+                            ml_get_orders, access_token, str(seller_id), 2000, 0,
+                            date_from=primer_dia_anterior.strftime("%Y-%m-%dT00:00:00.000-03:00"),
+                            date_to=ultimo_mes.strftime("%Y-%m-%dT23:59:59.999-03:00"),
+                        )
+                        raw_a = od_actual.get("results") or od_actual.get("orders") or od_actual.get("elements") or []
+                        raw_b = od_anterior.get("results") or od_anterior.get("orders") or od_anterior.get("elements") or []
+                        seen = {str(o.get("id")) for o in raw_a if isinstance(o, dict) and o.get("id")}
+                        merged = [o for o in raw_a if isinstance(o, dict)]
+                        for o in raw_b:
+                            if isinstance(o, dict) and o.get("id") and str(o.get("id")) not in seen:
+                                seen.add(str(o.get("id")))
+                                merged.append(o)
+                        return ({"results": merged}, seller_id)
                 except Exception:
                     pass
                 return ({}, None)
@@ -3907,17 +4030,17 @@ def build_tab_precios_detalle(container) -> None:
             item_id_str = str(i.get("id", ""))
             dk = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "id:" + item_id_str)
             item_id_to_dedupe[item_id_str] = dk
-        # Ventas históricas (de sold_quantity en items)
+        # Ventas históricas (sold_quantity por item_id; no agrupar por catalog para evitar ventas cruzadas)
         ventas_historico: Dict[str, int] = {}
         for i in items_ordenados:
-            catalog_id = str(i.get("catalog_product_id") or "").strip()
-            seller_sku = (i.get("seller_sku") or "").strip()
-            clave = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "id:" + str(i.get("id", "")))
-            sold = int(i.get("sold_quantity") or 0)
-            ventas_historico[clave] = ventas_historico.get(clave, 0) + sold
+            item_id_str = str(i.get("id", ""))
+            if item_id_str:
+                sold = int(i.get("sold_quantity") or 0)
+                ventas_historico["id:" + item_id_str] = ventas_historico.get("id:" + item_id_str, 0) + sold
         # Ventas por mes actual y mes anterior desde órdenes (ya cargadas en paralelo)
         ventas_mes_actual: Dict[str, int] = {}
         ventas_mes_anterior: Dict[str, int] = {}
+        item_id_to_catalog_from_orders: Dict[str, str] = {}  # Para orden items sin catalog_product_id
         try:
             if seller_id and orders_data:
                 raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -3926,6 +4049,39 @@ def build_tab_precios_detalle(container) -> None:
                 primer_dia_actual = hoy.replace(day=1)
                 ultimo_mes = primer_dia_actual - timedelta(days=1)
                 primer_dia_anterior = ultimo_mes.replace(day=1)
+                # Recolectar item_ids de orden sin catalog_product_id para fetchear
+                ids_sin_catalog: List[str] = []
+                for o in orders:
+                    for it in o.get("order_items") or o.get("items") or []:
+                        if not isinstance(it, dict):
+                            continue
+                        obj = it.get("item") or it
+                        iid = str(obj.get("id") or it.get("item_id") or "").strip() if isinstance(obj, dict) else str(it.get("item_id") or "").strip()
+                        if not iid:
+                            continue
+                        iid_mla = iid if iid.upper().startswith("MLA") else ("MLA" + iid if iid.isdigit() else iid)
+                        cat_oi = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "").strip() if isinstance(obj, dict) else str(it.get("catalog_product_id") or "").strip()
+                        if not cat_oi and iid_mla not in item_id_to_dedupe and iid_mla not in ids_sin_catalog:
+                            ids_sin_catalog.append(iid_mla)
+                if ids_sin_catalog and access_token:
+                    def _fetch_catalog_ids(token: str, ids: List[str]) -> Dict[str, str]:
+                        out: Dict[str, str] = {}
+                        for batch_start in range(0, min(len(ids), 100), 20):
+                            batch = ids[batch_start : batch_start + 20]
+                            bodies = ml_get_items_multiget_with_attributes(token, batch, "id,catalog_product_id")
+                            for b in (bodies or []):
+                                if b and isinstance(b, dict):
+                                    bid = str(b.get("id") or "").strip()
+                                    cpid = str(b.get("catalog_product_id") or "").strip()
+                                    if bid and cpid:
+                                        out[bid] = cpid
+                        return out
+                    try:
+                        item_id_to_catalog_from_orders.update(
+                            await run.io_bound(_fetch_catalog_ids, access_token, ids_sin_catalog)
+                        )
+                    except Exception:
+                        pass
 
                 def _agg_ventas(orders_list: List[Dict], target: Dict[str, int]) -> None:
                     for order in orders_list:
@@ -3943,10 +4099,16 @@ def build_tab_precios_detalle(container) -> None:
                             if qty == 0:
                                 continue
                             obj = it.get("item") or it
-                            item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
+                            item_id_raw = obj.get("id") if isinstance(obj, dict) else None
+                            if item_id_raw is None:
+                                item_id_raw = it.get("item_id")
+                            item_id = str(item_id_raw or "").strip()
+                            if not item_id:
+                                continue
+                            item_id_mla = item_id if item_id.upper().startswith("MLA") else ("MLA" + item_id if item_id.isdigit() else item_id)
                             catalog_id_oi = str(obj.get("catalog_product_id") or it.get("catalog_product_id") or "") if isinstance(obj, dict) else str(it.get("catalog_product_id") or "")
-                            dedupe_key = ("c:" + catalog_id_oi) if catalog_id_oi.strip() else item_id_to_dedupe.get(item_id, "id:" + item_id)
-                            target[dedupe_key] = target.get(dedupe_key, 0) + qty
+                            catalog_id_oi = (catalog_id_oi or item_id_to_catalog_from_orders.get(item_id_mla) or item_id_to_catalog_from_orders.get(item_id) or "").strip()
+                            target["id:" + item_id_mla] = target.get("id:" + item_id_mla, 0) + qty
 
                 for o in orders:
                     dt_str = o.get("date_created") or o.get("date_closed") or ""
@@ -3960,6 +4122,30 @@ def build_tab_precios_detalle(container) -> None:
                         _agg_ventas([o], ventas_mes_actual)
                     elif primer_dia_anterior <= dt <= ultimo_mes:
                         _agg_ventas([o], ventas_mes_anterior)
+
+                # Incluir items con ventas que no vinieron en ml_get_my_items (límite por status)
+                ids_con_ventas: set = set()
+                for k in list(ventas_mes_actual.keys()) + list(ventas_mes_anterior.keys()):
+                    if isinstance(k, str) and k.startswith("id:") and len(k) > 3:
+                        ids_con_ventas.add(k[3:])
+                ids_en_items = {str(i.get("id", "")) for i in items_ordenados if i.get("id")}
+                ids_faltantes = [x for x in ids_con_ventas if x and x not in ids_en_items]
+                if ids_faltantes and access_token:
+                    try:
+                        bodies_extra = await run.io_bound(ml_get_items_multiget_all, access_token, ids_faltantes[:50])
+                        for b in (bodies_extra or []):
+                            if b and isinstance(b, dict):
+                                item_extra = _body_to_precios_item(b)
+                                if item_extra.get("id"):
+                                    items_ordenados.append(item_extra)
+                                    iid = str(item_extra["id"])
+                                    cat = str(item_extra.get("catalog_product_id") or "").strip()
+                                    sku = (item_extra.get("seller_sku") or "").strip()
+                                    dk = ("c:" + cat) if cat else ("s:" + sku if sku else "id:" + iid)
+                                    item_id_to_dedupe[iid] = dk
+                                    ventas_historico["id:" + iid] = ventas_historico.get("id:" + iid, 0) + int(item_extra.get("sold_quantity") or 0)
+                    except Exception:
+                        pass
         except Exception:
             pass
         ventas_por_periodo_ref["historico"] = ventas_historico
@@ -3978,12 +4164,12 @@ def build_tab_precios_detalle(container) -> None:
             grupos_por_dedupe[dk].append(i)
         periodo_activo = filtro_fecha_ref.get("val", "mes_actual")
         ventas_dict = ventas_por_periodo_ref.get(periodo_activo, ventas_historico)
-        items_a_mostrar: List[Dict] = []
+        items_a_mostrar: List[tuple] = []
         for dk, grupo in grupos_por_dedupe.items():
-            propias = [x for x in grupo if x.get("catalog_listing") is not True]
-            elegido = propias[0] if propias else grupo[0]
-            items_a_mostrar.append(elegido)
-        for i in items_a_mostrar:
+            for i in grupo:
+                items_a_mostrar.append((i, [i]))
+        def _agregar_row(items_list: list, item_dict: Dict[str, Any], grupo_single: List[Dict]) -> None:
+            i = item_dict
             catalog_id = str(i.get("catalog_product_id") or "").strip()
             seller_sku = (i.get("seller_sku") or "").strip()
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
@@ -4002,15 +4188,19 @@ def build_tab_precios_detalle(container) -> None:
             iibb_monto = precio_real * ml_iibb_per
             envio_restar = _envio_a_restar(precio_real)
             costo_pesos = costo * dolar_oficial
+            cuotas_val = str(_cuotas_desde_item(i) or "x1").strip().lower()
+            tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
+            costo_cuotas = precio_real * tasa_cuotas if tasa_cuotas else 0.0
             if costo_pesos <= 0:
                 margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
             else:
-                margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar
+                margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar - costo_cuotas
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                 margen_venta_pct = (margen_pesos / precio_real * 100) if precio_real > 0 else 0.0
             dk_final = dedupe_key or ("id:" + item_id_str)
-            ventas = ventas_dict.get(dk_final, 0)
-            items_loaded.append({
+            ventas = sum(ventas_dict.get("id:" + str(it_g.get("id", "")), 0) for it_g in grupo_single)
+            grupo_ids = [str(it_g.get("id", "")) for it_g in grupo_single if it_g.get("id")]
+            items_list.append({
                 "id": str(i.get("id", "")),
                 "thumbnail": i.get("thumbnail") or "",
                 "marca": i.get("marca") or "—",
@@ -4018,6 +4208,7 @@ def build_tab_precios_detalle(container) -> None:
                 "stock": stock,
                 "ventas": ventas,
                 "dedupe_key": dk_final,
+                "grupo_ids": grupo_ids or [str(i.get("id", ""))],
                 "tipo_publicacion": _tipo_publicacion_desde_item(i),
                 "cuotas": _cuotas_desde_item(i),
                 "precio": precio_real,
@@ -4028,6 +4219,7 @@ def build_tab_precios_detalle(container) -> None:
                 "costo": costo,
                 "comision": comision,
                 "cobrado": cobrado,
+                "costo_cuotas": costo_cuotas,
                 "deb_cred": deb_cred,
                 "iibb": iibb_monto,
                 "envio": envio_restar,
@@ -4035,6 +4227,71 @@ def build_tab_precios_detalle(container) -> None:
                 "margen_costo_pct": margen_costo_pct,
                 "margen_venta_pct": margen_venta_pct,
             })
+
+        def _item_from_body_export(body: dict) -> dict:
+            marca, color, seller_sku = "", "", ""
+            for att in body.get("attributes") or []:
+                aid = (str(att.get("id") or "")).strip().upper()
+                if aid in ("BRAND", "MARCA"):
+                    val = att.get("value_name") or att.get("value_id")
+                    marca = str(val) if val is not None else ""
+                elif aid in ("COLOR", "COLOUR"):
+                    val = att.get("value_name") or att.get("value_id")
+                    if val:
+                        color = str(val)
+                        break
+                elif aid == "SELLER_SKU":
+                    v = att.get("value_name") or att.get("value") or att.get("value_id")
+                    if v is None and att.get("values"):
+                        v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
+                    if v is not None:
+                        seller_sku = str(v).strip()
+            if not seller_sku:
+                seller_sku = (body.get("seller_custom_field") or "").strip()
+            catalog_listing = body.get("catalog_listing") is True
+            thumbnail = body.get("thumbnail") or ""
+            if not thumbnail and body.get("pictures"):
+                pic = (body.get("pictures") or [{}])[0]
+                thumbnail = pic.get("secure_url") or pic.get("url") or ""
+            return {
+                "id": body.get("id"),
+                "title": body.get("title", ""),
+                "thumbnail": thumbnail,
+                "price": body.get("price"),
+                "sale_price": body.get("sale_price"),
+                "available_quantity": body.get("available_quantity"),
+                "catalog_product_id": body.get("catalog_product_id"),
+                "catalog_listing": catalog_listing,
+                "listing_type_id": body.get("listing_type_id"),
+                "sale_terms": body.get("sale_terms"),
+                "seller_sku": seller_sku,
+                "marca": marca or "—",
+            }
+
+        for i, grupo in items_a_mostrar:
+            _agregar_row(items_loaded, i, grupo)
+
+        ids_ya_incluidos = {str(r.get("id", "")) for r in items_loaded}
+        item_ids_con_ventas = [k[3:] for k in ventas_dict if isinstance(k, str) and k.startswith("id:") and ventas_dict.get(k, 0) > 0]
+        ids_faltantes = [x for x in item_ids_con_ventas if x and x not in ids_ya_incluidos]
+        if ids_faltantes and access_token:
+            try:
+                attrs = "id,title,thumbnail,price,sale_price,available_quantity,catalog_product_id,catalog_listing,listing_type_id,sale_terms,attributes"
+                for batch_start in range(0, min(len(ids_faltantes), 200), 20):
+                    batch = ids_faltantes[batch_start : batch_start + 20]
+                    bodies_extra = ml_get_items_multiget_with_attributes(access_token, batch, attrs)
+                    for b in (bodies_extra or []):
+                        if not b or not isinstance(b, dict):
+                            continue
+                        item_id_b = str(b.get("id") or "").strip()
+                        if not item_id_b or item_id_b in ids_ya_incluidos:
+                            continue
+                        item_norm = _item_from_body_export(b)
+                        _agregar_row(items_loaded, item_norm, [item_norm])
+                        ids_ya_incluidos.add(item_id_b)
+            except Exception:
+                pass
+
         publicaciones_totales = len(items_loaded)
         publicaciones_con_stock = sum(1 for x in items_loaded if (x.get("stock") or 0) > 0)
         cargar_listo_ref["error"] = None
@@ -4191,11 +4448,44 @@ def build_tab_busqueda() -> None:
                         perm = (raw_item.get("permalink") or "").strip()
                         with ui.row().classes("gap-2 mt-2"):
                             if perm:
-                                ui.button("Ver en MercadoLibre", on_click=lambda: ui.run_javascript(f'window.open({json.dumps(perm)})')).props("flat no-caps").classes("text-primary")
-                            async def _copiar_datos() -> None:
-                                await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(json_str)}).then(() => true)")
-                                ui.notify("Datos copiados al portapapeles", type="positive")
-                            ui.button("Copiar datos", on_click=lambda: background_tasks.create(_copiar_datos(), name="copy")).props("flat no-caps")
+                                ui.button("Ver en MercadoLibre", on_click=lambda p=perm: ui.run_javascript(f'window.open({json.dumps(p)})'), color="primary").classes("rounded px-4 py-2").props("no-caps unelevated")
+                            def _copiar_click(datos: str):
+                                esc = json.dumps(datos)
+                                ui.run_javascript(f'''
+                                    (function() {{
+                                        var texto = {esc};
+                                        var done = function() {{
+                                            try {{ window.__copiadoOk = true; }} catch(e) {{}}
+                                        }};
+                                        if (navigator.clipboard && navigator.clipboard.writeText) {{
+                                            navigator.clipboard.writeText(texto).then(done).catch(function() {{
+                                                var ta = document.createElement("textarea");
+                                                ta.value = texto;
+                                                ta.style.position = "fixed";
+                                                ta.style.left = "-9999px";
+                                                document.body.appendChild(ta);
+                                                ta.select();
+                                                ta.setSelectionRange(0, 999999);
+                                                try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                document.body.removeChild(ta);
+                                                done();
+                                            }});
+                                        }} else {{
+                                            var ta = document.createElement("textarea");
+                                            ta.value = texto;
+                                            ta.style.position = "fixed";
+                                            ta.style.left = "-9999px";
+                                            document.body.appendChild(ta);
+                                            ta.select();
+                                            ta.setSelectionRange(0, 999999);
+                                            try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                            document.body.removeChild(ta);
+                                            done();
+                                        }}
+                                    }})();
+                                ''')
+                                ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V donde quieras.", type="positive")
+                            ui.button("Copiar datos", on_click=lambda d=json_str: _copiar_click(d), color="secondary").classes("rounded px-4 py-2").props("no-caps unelevated")
                     return
             # Búsqueda por texto o por ID cuando ml_get_item no encontró nada
             try:
@@ -4307,7 +4597,7 @@ def build_tab_busqueda() -> None:
                     if texto_busq:
                         from urllib.parse import quote
                         busq_url = f"https://listado.mercadolibre.com.ar/{quote(texto_busq)}"
-                        ui.link("Buscar en MercadoLibre", busq_url, new_tab=True).classes("text-primary mt-2")
+                        ui.button("Buscar en MercadoLibre", on_click=lambda u=busq_url: ui.run_javascript(f'window.open({json.dumps(u)})')).props("flat no-caps").classes("text-primary mt-2")
                 elif not (rows if not mostrar_como_json else results):
                     ui.label("No se encontraron resultados.").classes("text-gray-500")
                 elif mostrar_como_json:
@@ -4327,11 +4617,37 @@ def build_tab_busqueda() -> None:
                                 perm = (full_display.get("permalink") or "").strip()
                                 with ui.row().classes("gap-2 mt-1"):
                                     if perm:
-                                        ui.button("Ver en MercadoLibre", on_click=lambda p=perm: ui.run_javascript(f'window.open({json.dumps(p)})')).props("flat dense no-caps").classes("text-primary text-sm")
-                                    async def _copiar_resultado(js: str) -> None:
-                                        await ui.run_javascript(f"navigator.clipboard.writeText({json.dumps(js)}).then(() => true)")
-                                        ui.notify("Datos copiados al portapapeles", type="positive")
-                                    ui.button("Copiar datos", on_click=lambda j=json_str_card: background_tasks.create(_copiar_resultado(j), name="copy")).props("flat dense no-caps text-sm")
+                                        ui.button("Ver en MercadoLibre", on_click=lambda p=perm: ui.run_javascript(f'window.open({json.dumps(p)})'), color="primary").classes("rounded px-3 py-1.5").props("no-caps unelevated")
+                                    def _copiar_card(js: str) -> None:
+                                        esc = json.dumps(js)
+                                        ui.run_javascript(f'''
+                                            (function() {{
+                                                var texto = {esc};
+                                                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                                                    navigator.clipboard.writeText(texto).then(function() {{}}).catch(function() {{
+                                                        var ta = document.createElement("textarea");
+                                                        ta.value = texto;
+                                                        ta.style.position = "fixed"; ta.style.left = "-9999px";
+                                                        document.body.appendChild(ta);
+                                                        ta.select();
+                                                        ta.setSelectionRange(0, 999999);
+                                                        try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                        document.body.removeChild(ta);
+                                                    }});
+                                                }} else {{
+                                                    var ta = document.createElement("textarea");
+                                                    ta.value = texto;
+                                                    ta.style.position = "fixed"; ta.style.left = "-9999px";
+                                                    document.body.appendChild(ta);
+                                                    ta.select();
+                                                    ta.setSelectionRange(0, 999999);
+                                                    try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                    document.body.removeChild(ta);
+                                                }}
+                                            }})();
+                                        ''')
+                                        ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V.", type="positive")
+                                    ui.button("Copiar datos", on_click=lambda j=json_str_card: _copiar_card(j), color="secondary").classes("rounded px-3 py-1.5").props("no-caps unelevated")
                 else:
                     if filter_showed_all:
                         ui.label(
@@ -4339,20 +4655,57 @@ def build_tab_busqueda() -> None:
                         ).classes("text-amber-600 text-sm mb-2")
                     with ui.element("div").classes("w-full overflow-x-auto border rounded-lg").style("min-width: 800px;"):
                         with ui.row().classes("w-full bg-blue-600 text-white py-2 px-3 font-semibold flex-nowrap"):
-                            ui.label("Nombre del producto").classes("min-w-[350px] shrink-0 text-left")
+                            ui.label("Nombre del producto").classes("min-w-[280px] shrink-0 text-left")
                             ui.label("Precio").classes("min-w-[120px] shrink-0 text-right")
-                            ui.label("Vendedor").classes("min-w-[180px] shrink-0 text-left")
+                            ui.label("Vendedor").classes("min-w-[150px] shrink-0 text-left")
                             ui.label("Stock disp.").classes("min-w-[90px] shrink-0 text-right")
                             ui.label("Tipo").classes("min-w-[90px] shrink-0 text-left")
-                        for r in rows:
+                            ui.label("Acciones").classes("min-w-[180px] shrink-0 text-left")
+                        for idx, r in enumerate(rows):
+                            raw_for_copiar = results[idx] if idx < len(results) else {}
+                            datos_api = raw_for_copiar.get("_full_item") or raw_for_copiar
+                            json_para_copiar = json.dumps(datos_api, indent=2, ensure_ascii=False)
+                            perm = r.get("permalink", "#")
                             with ui.row().classes("w-full py-2 px-3 border-b border-gray-200 hover:bg-gray-50 flex-nowrap"):
-                                tit = (r.get("title") or "")[:100] + ("..." if len(r.get("title") or "") > 100 else "")
-                                link_url = r.get("permalink", "#")
-                                ui.link(tit, link_url, new_tab=True).classes("min-w-[350px] shrink-0 text-left text-primary hover:underline cursor-pointer").props("target=_blank")
+                                tit = (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else "")
+                                ui.label(tit).classes("min-w-[280px] shrink-0 text-left")
                                 ui.label(r.get("price_display", "—")).classes("min-w-[120px] shrink-0 text-right font-medium")
-                                ui.label(str(r.get("seller", "—"))).classes("min-w-[180px] shrink-0 text-left")
+                                ui.label(str(r.get("seller", "—"))).classes("min-w-[150px] shrink-0 text-left")
                                 ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "—")))).classes("min-w-[90px] shrink-0 text-right")
                                 ui.label(r.get("tipo", "")).classes("min-w-[90px] shrink-0 text-left")
+                                with ui.row().classes("min-w-[180px] shrink-0 gap-1"):
+                                    if perm and perm != "#":
+                                        ui.button("Ver en ML", on_click=lambda p=perm: ui.run_javascript(f'window.open({json.dumps(p)})'), color="primary").classes("rounded px-2 py-1").props("no-caps unelevated")
+                                    def _copiar_tabla(js: str) -> None:
+                                        esc = json.dumps(js)
+                                        ui.run_javascript(f'''
+                                            (function() {{
+                                                var texto = {esc};
+                                                if (navigator.clipboard && navigator.clipboard.writeText) {{
+                                                    navigator.clipboard.writeText(texto).then(function() {{}}).catch(function() {{
+                                                        var ta = document.createElement("textarea");
+                                                        ta.value = texto;
+                                                        ta.style.position = "fixed"; ta.style.left = "-9999px";
+                                                        document.body.appendChild(ta);
+                                                        ta.select();
+                                                        ta.setSelectionRange(0, 999999);
+                                                        try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                        document.body.removeChild(ta);
+                                                    }});
+                                                }} else {{
+                                                    var ta = document.createElement("textarea");
+                                                    ta.value = texto;
+                                                    ta.style.position = "fixed"; ta.style.left = "-9999px";
+                                                    document.body.appendChild(ta);
+                                                    ta.select();
+                                                    ta.setSelectionRange(0, 999999);
+                                                    try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                    document.body.removeChild(ta);
+                                                }}
+                                            }})();
+                                        ''')
+                                        ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V.", type="positive")
+                                    ui.button("Copiar datos", on_click=lambda j=json_para_copiar: _copiar_tabla(j), color="secondary").classes("rounded px-2 py-1").props("no-caps unelevated")
 
 
 
@@ -5116,6 +5469,7 @@ COTIZADOR_DEFAULTS = {
     "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_cobrado": "0.836",
     "ml_3cuotas": "1.12149", "ml_6cuotas": "1.21067",
     "ml_ganancia_neta_venta": "0.1000",
+    "cuotas_3x": "0.094", "cuotas_6x": "0.151", "cuotas_9x": "0.207", "cuotas_12x": "0.259",
     "valor_kg_miami": "13.5", "almacenaje_miami_x2": "1.8", "dias_almacenaje_miami": "2", "almacenaje_dias_kg_miami": "0.9",
     "seguro_miami": "24.75", "descuento_lhs_kg": "1.33267522",
     "valor_kg_china": "27", "almacenaje_china_x3": "2.7", "dias_almacenaje_china": "3", "almacenaje_dias_kg_china": "0.9",
@@ -5732,12 +6086,24 @@ def build_tab_datos() -> None:
                 for label, key in [
                     ("ML - Comisión", "ml_comision"), ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
                     ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"), ("ML - Cobrado", "ml_cobrado"),
-                    ("ML 3 cuotas", "ml_3cuotas"), ("ML 6 cuotas", "ml_6cuotas"),
                     ("Ganancia Neta sobre Venta", "ml_ganancia_neta_venta"),
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[100px] text-sm")
                         inputs_params[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+
+            # Cuotas y Promociones
+            inputs_cuotas: Dict[str, Any] = {}
+            with ui.card().classes("p-4 w-fit min-w-[200px]"):
+                ui.label("Cuotas y Promociones").classes("text-lg font-semibold mb-3")
+                for label, key in [
+                    ("Cuotas 3x", "cuotas_3x"), ("Cuotas 6x", "cuotas_6x"),
+                    ("Cuotas 9x", "cuotas_9x"), ("Cuotas 12x", "cuotas_12x"),
+                    ("ML 3 cuotas", "ml_3cuotas"), ("ML 6 cuotas", "ml_6cuotas"),
+                ]:
+                    with ui.row().classes("items-center gap-2 py-0.5"):
+                        ui.label(label).classes("min-w-[80px] text-sm")
+                        inputs_cuotas[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
 
             # Miami
             usd_keys_miami = {"valor_kg_miami", "almacenaje_dias_kg_miami"}
@@ -5773,7 +6139,7 @@ def build_tab_datos() -> None:
         def guardar_params() -> None:
             dolar_keys = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho"}
             usd_keys = {"kilo", "valor_kg_miami", "almacenaje_dias_kg_miami", "valor_kg_china", "almacenaje_dias_kg_china"}
-            for key, inp in {**inputs_params, **inputs_miami, **inputs_china}.items():
+            for key, inp in {**inputs_params, **inputs_cuotas, **inputs_miami, **inputs_china}.items():
                 val = str(inp.value or "").strip()
                 if key in dolar_keys:
                     val = _parse_dolar(val)
