@@ -32,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260305.10"
+VERSION = "1.260305.17"
 
 
 # ==========================
@@ -393,6 +393,89 @@ def save_importacion_filas(user_id: int, rows: List[Dict[str, Any]]) -> None:
                 (user_id, i, json.dumps(row, ensure_ascii=False), now),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+BACKUP_VERSION = 1
+
+
+def export_user_db_data(user_id: int) -> bytes:
+    """Exporta solo datos operativos: cotizador (parámetros, tablas, pesos, gastos), precios por producto, importación. NO incluye credenciales, password, app id, client secret."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        ahora = datetime.now()
+        data: Dict[str, Any] = {
+            "version": BACKUP_VERSION,
+            "exported_at": ahora.isoformat(),
+            "fecha_descarga": ahora.strftime("%Y-%m-%d %H:%M"),
+            "user_id_original": user_id,
+            "cotizador_datos": [],
+            "precios_producto": [],
+            "importacion_filas": [],
+        }
+        cur.execute("SELECT clave, valor FROM cotizador_datos WHERE user_id = ?", (user_id,))
+        data["cotizador_datos"] = [{"clave": r["clave"], "valor": r["valor"]} for r in cur.fetchall()]
+        cur.execute("SELECT id, tipo_iva, costo_u FROM precios_producto WHERE user_id = ?", (user_id,))
+        data["precios_producto"] = [{"id": r["id"], "tipo_iva": r["tipo_iva"], "costo_u": r["costo_u"]} for r in cur.fetchall()]
+        cur.execute("SELECT fila_orden, datos_json FROM importacion_filas WHERE user_id = ? ORDER BY fila_orden", (user_id,))
+        data["importacion_filas"] = [{"fila_orden": r["fila_orden"], "datos_json": r["datos_json"]} for r in cur.fetchall()]
+        return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+    finally:
+        conn.close()
+
+
+def import_user_db_data(user_id: int, content: bytes) -> str:
+    """Importa datos operativos desde un backup JSON. Reemplaza cotizador, precios, importación. No toca credenciales ni contraseña."""
+    try:
+        data = json.loads(content.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        return f"Archivo inválido: {e}"
+    if not isinstance(data, dict):
+        return "El archivo debe contener un objeto JSON válido."
+    version = data.get("version", 0)
+    if version > BACKUP_VERSION:
+        return f"El backup es de una versión más nueva ({version}). Actualizá la app."
+    uid = int(user_id)
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        # cotizador_datos: borrar todo del usuario e insertar backup
+        cur.execute("DELETE FROM cotizador_datos WHERE user_id = ?", (uid,))
+        for item in data.get("cotizador_datos") or []:
+            if isinstance(item, dict) and item.get("clave") is not None:
+                val = item.get("valor")
+                val_str = val if val is not None else ""
+                if isinstance(val_str, (dict, list)):
+                    val_str = json.dumps(val_str, ensure_ascii=False)
+                else:
+                    val_str = str(val_str) if val_str != "" else ""
+                cur.execute("INSERT INTO cotizador_datos (user_id, clave, valor) VALUES (?, ?, ?)", (uid, str(item["clave"]), val_str))
+        # precios_producto: borrar todo del usuario e insertar backup
+        cur.execute("DELETE FROM precios_producto WHERE user_id = ?", (uid,))
+        for item in data.get("precios_producto") or []:
+            if isinstance(item, dict) and item.get("id") is not None:
+                item_id = str(item["id"])
+                tipo_iva = float(item.get("tipo_iva") or 0.105)
+                costo_u = float(item.get("costo_u") or 0)
+                cur.execute("INSERT INTO precios_producto (id, user_id, tipo_iva, costo_u) VALUES (?, ?, ?, ?)", (item_id, uid, tipo_iva, costo_u))
+        # importacion_filas: borrar todo del usuario e insertar backup
+        cur.execute("DELETE FROM importacion_filas WHERE user_id = ?", (uid,))
+        now = datetime.utcnow().isoformat()
+        for item in sorted(data.get("importacion_filas") or [], key=lambda x: x.get("fila_orden", 0)):
+            if isinstance(item, dict) and "datos_json" in item:
+                dj = item["datos_json"]
+                if isinstance(dj, (dict, list)):
+                    dj = json.dumps(dj, ensure_ascii=False)
+                else:
+                    dj = str(dj)
+                cur.execute("INSERT INTO importacion_filas (user_id, fila_orden, datos_json, created_at) VALUES (?, ?, ?, ?)", (uid, int(item.get("fila_orden", 0)), dj, now))
+        conn.commit()
+        return "ok"
+    except Exception as e:
+        conn.rollback()
+        return str(e)
     finally:
         conn.close()
 
@@ -884,8 +967,8 @@ def ml_get_item_sale_price(access_token: Optional[str], item_id: str) -> Optiona
 
 
 def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
-    """Obtiene amount y regular_amount de GET /items/{id}/sale_price.
-    Si regular_amount existe y difiere de amount → hay promoción. Retorna {amount, regular_amount} o None."""
+    """Obtiene amount, regular_amount, promotion_id, promotion_type y campaign_id de GET /items/{id}/sale_price.
+    promotion_id/type pueden estar en metadata (API ML a veces los pone ahí)."""
     if not access_token or not str(item_id).strip():
         return None
     try:
@@ -902,9 +985,229 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
             reg = data.get("regular_amount")
             if amt is not None:
                 try:
-                    return {"amount": float(amt), "regular_amount": float(reg) if reg is not None else None}
+                    metadata = data.get("metadata") or {}
+                    meta = metadata if isinstance(metadata, dict) else {}
+                    out = {
+                        "amount": float(amt),
+                        "regular_amount": float(reg) if reg is not None else None,
+                        "promotion_id": data.get("promotion_id") or meta.get("promotion_id"),
+                        "promotion_type": (data.get("promotion_type") or meta.get("promotion_type") or "").strip() or None,
+                        "campaign_id": data.get("campaign_id") or meta.get("campaign_id"),
+                    }
+                    return out
                 except (TypeError, ValueError):
                     pass
+    except Exception:
+        pass
+    return None
+
+
+def ml_get_promotion_item_discounts_by_user(
+    access_token: Optional[str], item_id: str, user_id: str, total_discount_pct: float
+) -> Optional[Dict[str, float]]:
+    """Fallback: cuando sale_price no devuelve promotion_id, buscar en promociones del usuario."""
+    if not access_token or not item_id or not user_id:
+        return None
+    try:
+        resp = requests.get(
+            "https://api.mercadolibre.com/seller-promotions/users/" + str(user_id),
+            params={"app_version": "v2"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        promos = data.get("results") or []
+        item_id_str = str(item_id or "").strip()
+        item_id_short = item_id_str[3:] if item_id_str.upper().startswith("MLA") and len(item_id_str) > 3 else item_id_str
+        for p in promos:
+            if not isinstance(p, dict):
+                continue
+            promo_id = p.get("id")
+            promo_type = (p.get("type") or "").strip().upper()
+            if not promo_id or not promo_type:
+                continue
+            try:
+                items_resp = requests.get(
+                    f"https://api.mercadolibre.com/seller-promotions/promotions/{promo_id}/items",
+                    params={"promotion_type": promo_type, "item_id": item_id, "app_version": "v2"},
+                    headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                    timeout=10,
+                )
+                if items_resp.status_code != 200:
+                    continue
+                items_data = items_resp.json()
+                results = items_data.get("results") or []
+                for r in results:
+                    rid = str(r.get("id", "")).strip() if isinstance(r, dict) else ""
+                    rid_short = rid[3:] if rid.upper().startswith("MLA") and len(rid) > 3 else rid
+                    if rid and (rid == item_id_str or rid_short == item_id_short):
+                        meli = r.get("meli_percentage") or r.get("meli_percent")
+                        seller = r.get("seller_percentage") or r.get("seller_percent")
+                        if meli is not None or seller is not None:
+                            meli_f = float(meli or 0)
+                            seller_f = float(seller or 0)
+                            return {"meli_pct": meli_f, "seller_pct": seller_f}
+                        benefits = p.get("benefits") or {}
+                        meli = benefits.get("meli_percent") or benefits.get("meli_percentage")
+                        seller = benefits.get("seller_percent") or benefits.get("seller_percentage")
+                        if meli is not None or seller is not None:
+                            meli_f = float(meli or 0)
+                            seller_f = float(seller or 0)
+                            if meli_f + seller_f > 0.01:
+                                if abs((meli_f + seller_f) - total_discount_pct) < 1:
+                                    return {"meli_pct": meli_f, "seller_pct": seller_f}
+                                if abs((meli_f + seller_f) - 100) < 1:
+                                    return {"meli_pct": total_discount_pct * meli_f / 100, "seller_pct": total_discount_pct * seller_f / 100}
+                                return {"meli_pct": meli_f, "seller_pct": seller_f}
+                        break
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return None
+
+
+def ml_get_promotion_item_discounts_by_campaign(
+    access_token: Optional[str], campaign_id: str, item_id: str, total_discount_pct: float, user_id: str,
+    promotion_type_hint: Optional[str] = None,
+) -> Optional[Dict[str, float]]:
+    """Usa campaign_id de metadata. Si sale_price dio promotion_type (ej. MARKETPLACE_CAMPAIGN), lo prueba primero."""
+    if not access_token or not campaign_id or not item_id or not user_id:
+        return None
+    cid = str(campaign_id).strip()
+    pt_hint = (promotion_type_hint or "").strip().upper() if promotion_type_hint else ""
+    try:
+        if pt_hint and pt_hint not in ("OFFER", "OFFER-"):
+            out = ml_get_promotion_item_discounts(access_token, cid, pt_hint, item_id, total_discount_pct)
+            if out:
+                return out
+        resp = requests.get(
+            "https://api.mercadolibre.com/seller-promotions/users/" + str(user_id),
+            params={"app_version": "v2"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            promos = data.get("results") or []
+            cid_norm = (cid[2:] if cid.upper().startswith("P-") else cid).upper()
+            for p in promos:
+                if not isinstance(p, dict):
+                    continue
+                promo_id = str(p.get("id") or "").strip()
+                promo_type = (p.get("type") or "").strip().upper()
+                pid_norm = (promo_id[2:] if promo_id.upper().startswith("P-") else promo_id).upper()
+                if promo_type and pid_norm == cid_norm:
+                    out = ml_get_promotion_item_discounts(
+                        access_token, cid, promo_type, item_id, total_discount_pct
+                    )
+                    if out:
+                        return out
+        if cid.upper().startswith("P-MLA"):
+            for fallback_type in ("SMART", "MARKETPLACE_CAMPAIGN"):
+                if fallback_type == pt_hint:
+                    continue
+                out = ml_get_promotion_item_discounts(access_token, cid, fallback_type, item_id, total_discount_pct)
+                if out:
+                    return out
+    except Exception:
+        pass
+    return None
+
+
+def _find_item_in_promo_results(
+    results: List[Dict], item_id: str, total_discount_pct: float
+) -> Optional[Dict[str, float]]:
+    """Busca el item en results y devuelve {meli_pct, seller_pct} si tiene meli/seller."""
+    item_id_str = str(item_id or "").strip()
+    item_id_short = item_id_str[3:] if item_id_str.upper().startswith("MLA") and len(item_id_str) > 3 else item_id_str
+    for r in results:
+        rid = str(r.get("id", "")).strip() if isinstance(r, dict) else ""
+        rid_short = rid[3:] if rid.upper().startswith("MLA") and len(rid) > 3 else rid
+        if rid and (rid == item_id_str or rid_short == item_id_short):
+            meli = r.get("meli_percentage") or r.get("meli_percent")
+            seller = r.get("seller_percentage") or r.get("seller_percent")
+            if meli is not None or seller is not None:
+                meli_f = float(meli or 0)
+                seller_f = float(seller or 0)
+                if meli_f + seller_f > 0.01:
+                    if abs((meli_f + seller_f) - total_discount_pct) < 1:
+                        return {"meli_pct": meli_f, "seller_pct": seller_f}
+                    if abs((meli_f + seller_f) - 100) < 1:
+                        return {"meli_pct": total_discount_pct * meli_f / 100, "seller_pct": total_discount_pct * seller_f / 100}
+                    return {"meli_pct": meli_f, "seller_pct": seller_f}
+            break
+    return None
+
+
+def ml_get_promotion_item_discounts(
+    access_token: Optional[str], promotion_id: str, promotion_type: str, item_id: str,
+    total_discount_pct: float,
+) -> Optional[Dict[str, float]]:
+    """Obtiene meli y seller % del ítem en la promo. Los benefits pueden ser puntos % (meli+seller=total) o proporción (meli+seller=100)."""
+    if not access_token or not promotion_id or not promotion_type or not item_id:
+        return None
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}/items",
+            params={"promotion_type": promotion_type, "item_id": item_id, "app_version": "v2"},
+            headers=headers,
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            results = data.get("results") or []
+            out = _find_item_in_promo_results(results, item_id, total_discount_pct)
+            if out:
+                return out
+            if not results:
+                for offset in range(0, 200, 50):
+                    r2 = requests.get(
+                        f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}/items",
+                        params={"promotion_type": promotion_type, "app_version": "v2", "limit": 50, "offset": offset},
+                        headers=headers,
+                        timeout=10,
+                    )
+                    if r2.status_code != 200:
+                        break
+                    data2 = r2.json()
+                    results2 = data2.get("results") or []
+                    out = _find_item_in_promo_results(results2, item_id, total_discount_pct)
+                    if out:
+                        return out
+                    total = data2.get("paging", {}).get("total", 0)
+                    if offset + len(results2) >= total or not results2:
+                        break
+        promo_resp = requests.get(
+            f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}",
+            params={"promotion_type": promotion_type, "app_version": "v2"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if promo_resp.status_code == 200:
+            promo_data = promo_resp.json()
+            benefits = promo_data.get("benefits") or {}
+            meli = benefits.get("meli_percent") or benefits.get("meli_percentage")
+            seller = benefits.get("seller_percent") or benefits.get("seller_percentage")
+            if meli is not None or seller is not None:
+                meli_f = float(meli or 0)
+                seller_f = float(seller or 0)
+                if meli_f + seller_f > 0.01:
+                    if abs((meli_f + seller_f) - total_discount_pct) < 1:
+                        return {"meli_pct": meli_f, "seller_pct": seller_f}
+                    if abs((meli_f + seller_f) - 100) < 1:
+                        return {"meli_pct": total_discount_pct * meli_f / 100, "seller_pct": total_discount_pct * seller_f / 100}
+                    return {"meli_pct": meli_f, "seller_pct": seller_f}
+                elif meli_f > 0 or seller_f > 0:
+                    if meli_f > 0 and seller_f == 0:
+                        seller_inferred = max(0, total_discount_pct - meli_f)
+                        return {"meli_pct": meli_f, "seller_pct": seller_inferred}
+                    if seller_f > 0 and meli_f == 0:
+                        meli_inferred = max(0, total_discount_pct - seller_f)
+                        return {"meli_pct": meli_inferred, "seller_pct": seller_f}
     except Exception:
         pass
     return None
@@ -3045,7 +3348,10 @@ def _mostrar_tabla_precios(
     publicaciones_catalogo_con_stock = sum(1 for i in items_loaded if i.get("tipo") == "Catalogo" and (i.get("available_quantity") or 0) > 0)
     unidades_propias_en_stock = sum(i.get("available_quantity") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_pesos_propias = sum(i.get("subtotal") or 0 for i in items_loaded if i.get("tipo") == "Propia")
-    dolar_oficial = get_setting("dolar_oficial") or 0
+    dolar_str = get_cotizador_param("dolar_oficial", user["id"]) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
+    dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
+    if dolar_oficial <= 0:
+        dolar_oficial = 1475.0
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
@@ -3529,6 +3835,7 @@ def build_tab_precios_detalle(container) -> None:
     sort_asc_ref: Dict[str, bool] = {"val": True}
     table_container_ref: Dict[str, Any] = {}
     cargar_listo_ref: Dict[str, Any] = {"listo": False, "error": None, "totales": 0, "con_stock": 0}
+    seller_id_ref: Dict[str, Any] = {"val": None}
     filtrados_actuales_ref: Dict[str, List[Dict[str, Any]]] = {"rows": []}
     calcular_labels_ref: Dict[str, Any] = {}
 
@@ -3545,14 +3852,22 @@ def build_tab_precios_detalle(container) -> None:
             timer_ref["t"].active = False
             return
         totales = cargar_listo_ref.get("totales", 0)
-        con_stock = cargar_listo_ref.get("con_stock", 0)
         content_column.clear()
         with content_column:
             with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
                 with ui.row().classes("w-full justify-around flex-wrap gap-4"):
                     with ui.column().classes("items-center"):
-                        ui.label("Publicaciones con stock").classes("text-sm text-gray-600")
-                        ui.label(str(con_stock)).classes("text-2xl font-bold text-primary")
+                        ui.label("Publicaciones sin promociones").classes("text-sm text-gray-600")
+                        lbl_sin_promo = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["sin_promo"] = lbl_sin_promo
+                    with ui.column().classes("items-center"):
+                        ui.label("Publicaciones con promociones").classes("text-sm text-gray-600")
+                        lbl_con_promo = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["con_promo"] = lbl_con_promo
+                    with ui.column().classes("items-center"):
+                        ui.label("Publicaciones con cuotas").classes("text-sm text-gray-600")
+                        lbl_con_cuotas = ui.label("—").classes("text-2xl font-bold text-primary")
+                        calcular_labels_ref["con_cuotas"] = lbl_con_cuotas
                     with ui.column().classes("items-center"):
                         ui.label("Unidades vendidas").classes("text-sm text-gray-600")
                         lbl_uds = ui.label("—").classes("text-2xl font-bold text-primary")
@@ -3769,10 +4084,20 @@ def build_tab_precios_detalle(container) -> None:
                     facturacion = sum(float(r.get("precio") or 0) * int(r.get("ventas") or 0) for r in filas)
                     margen_total = sum(float(r.get("margen_pesos") or 0) * int(r.get("ventas") or 0) for r in filas)
                     margen_pct = (margen_total / facturacion * 100) if facturacion > 0 else 0.0
+                    sin_promo = sum(1 for r in filas if r.get("price_original") is None)
+                    con_promo = sum(1 for r in filas if r.get("price_original") is not None)
+                    cuotas_val = lambda c: str(c or "x1").strip().lower()
+                    con_cuotas = sum(1 for r in filas if cuotas_val(r.get("cuotas")) not in ("x1", "1", ""))
                     for k, lbl in calcular_labels_ref.items():
                         if not lbl:
                             continue
-                        if k == "unidades":
+                        if k == "sin_promo":
+                            lbl.text = str(sin_promo)
+                        elif k == "con_promo":
+                            lbl.text = str(con_promo)
+                        elif k == "con_cuotas":
+                            lbl.text = str(con_cuotas)
+                        elif k == "unidades":
                             lbl.text = str(uds)
                         elif k == "facturacion":
                             lbl.text = fmt_moneda(facturacion)
@@ -3827,7 +4152,8 @@ def build_tab_precios_detalle(container) -> None:
                         lbl.text = "Cargando (incluye sin stock)..."
                     if ov:
                         ov.set_visibility(True)
-                    background_tasks.create(_cargar(), name="cargar_precios_detalle")
+                    client = context.client
+                    background_tasks.create(_cargar(client), name="cargar_precios_detalle")
                 else:
                     _filtrar_con_indicador()
 
@@ -3977,7 +4303,114 @@ def build_tab_precios_detalle(container) -> None:
         ("margen_costo_pct", "Gan % Cos", "center", True),
     ]
 
-    def show_row_dialog(row: Dict[str, Any]) -> None:
+    def _on_row_click(row_base: Dict[str, Any]) -> None:
+        """Fetch async sale_price+promo al clic (como antes). Si falla, usa datos pre-cargados del row."""
+        client = context.client
+
+        async def _fetch_and_show() -> None:
+            item_id = str(row_base.get("id", "")).strip()
+            row = dict(row_base)
+            if not item_id or not access_token:
+                with client:
+                    show_row_dialog_impl(row)
+                return
+            try:
+                with client:
+                    ui.notify("Cargando detalles...", color="info", timeout=1)
+                sp_data = await run.io_bound(ml_get_item_sale_price_full, access_token, item_id)
+                bodies = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, [item_id], "id,listing_type_id,attributes,sale_terms")
+                cuotas_val = str(_cuotas_desde_item(bodies[0]) if bodies and bodies[0] else row.get("cuotas") or "x1").strip().lower()
+                row["cuotas"] = cuotas_val
+                guardado = get_precios_producto(item_id, uid)
+                costo = float(guardado["costo_u"]) if guardado else 0.0
+                tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                row["costo"] = costo
+                row["tipo_iva"] = tipo_iva
+                tiene_promo = False
+                promo_ml_pct = row_base.get("promo_ml_pct")
+                promo_yo_pct = row_base.get("promo_yo_pct")
+                if sp_data and sp_data.get("amount") is not None:
+                    amt_f = float(sp_data["amount"])
+                    row["precio"] = amt_f
+                    reg = sp_data.get("regular_amount")
+                    if reg is not None and reg > 0 and abs(float(reg) - amt_f) > 0.01:
+                        reg_f = float(reg)
+                        tiene_promo = True
+                        row["price_original"] = reg_f
+                        row["promo_pct"] = ((reg_f - amt_f) / reg_f * 100)
+                        total_pct = ((reg_f - amt_f) / reg_f * 100)
+                        sid = seller_id_ref.get("val")
+                        if not sid and access_token:
+                            try:
+                                profile = await run.io_bound(ml_get_user_profile, access_token)
+                                sid = str((profile or {}).get("id") or "")
+                                if sid:
+                                    seller_id_ref["val"] = sid
+                            except Exception:
+                                pass
+                        if sid:
+                            def _fd():
+                                cid = sp_data.get("campaign_id")
+                                pid = sp_data.get("promotion_id")
+                                pt = (sp_data.get("promotion_type") or "").strip().upper()
+                                d = None
+                                if cid:
+                                    d = ml_get_promotion_item_discounts_by_campaign(
+                                        access_token, str(cid), item_id, total_pct, sid, promotion_type_hint=pt
+                                    )
+                                if d is None and pid and pt and not (str(pid or "").upper().startswith("OFFER-")):
+                                    d = ml_get_promotion_item_discounts(access_token, str(pid), pt, item_id, total_pct)
+                                if d is None:
+                                    d = ml_get_promotion_item_discounts_by_user(access_token, item_id, sid, total_pct)
+                                return d
+                            discounts = await run.io_bound(_fd)
+                            if discounts:
+                                promo_ml_pct = discounts.get("meli_pct", 0)
+                                promo_yo_pct = discounts.get("seller_pct", 0)
+                            elif promo_ml_pct is None or promo_yo_pct is None:
+                                promo_ml_pct = 0.0
+                                promo_yo_pct = total_pct
+                        elif promo_ml_pct is None or promo_yo_pct is None:
+                            promo_ml_pct = 0.0
+                            promo_yo_pct = total_pct
+                        row["promo_ml_pct"] = promo_ml_pct if promo_ml_pct is not None else 0.0
+                        row["promo_yo_pct"] = promo_yo_pct if promo_yo_pct is not None else row["promo_pct"]
+                        row["price_promo"] = reg_f * (1 - (row["promo_yo_pct"] or 0) / 100)
+                else:
+                    if row_base.get("price_original") is not None and (row_base.get("promo_yo_pct") is not None or row_base.get("promo_pct") is not None):
+                        row["price_original"] = row_base.get("price_original")
+                        row["promo_ml_pct"] = row_base.get("promo_ml_pct") if row_base.get("promo_ml_pct") is not None else 0.0
+                        row["promo_yo_pct"] = row_base.get("promo_yo_pct") if row_base.get("promo_yo_pct") is not None else row_base.get("promo_pct", 0)
+                        row["price_promo"] = row_base.get("price_promo")
+                        tiene_promo = True
+                precio_real = float(row.get("precio") or 0)
+                precio_calc = row.get("price_promo") if tiene_promo and row.get("price_promo") else precio_real
+                row["comision"] = precio_calc * ml_comision
+                row["cobrado"] = precio_calc - row["comision"]
+                iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, tipo_iva, row["comision"], costo)
+                row["iva_total"] = iva_total
+                row["iva_meli"] = iva_meli
+                row["iva_impor"] = iva_impor
+                row["deb_cred"] = precio_calc * ml_debcre
+                row["iibb"] = precio_calc * ml_iibb_per
+                row["envio"] = _envio_a_restar(precio_calc)
+                tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
+                row["costo_cuotas"] = precio_calc * tasa_cuotas if tasa_cuotas else 0.0
+                costo_pesos = costo * dolar_oficial
+                if costo_pesos <= 0:
+                    row["margen_pesos"], row["margen_costo_pct"], row["margen_venta_pct"] = 0.0, 0.0, 0.0
+                else:
+                    row["margen_pesos"] = row["cobrado"] - costo_pesos - iva_total - row["iibb"] - row["deb_cred"] - row["envio"] - row["costo_cuotas"]
+                    row["margen_costo_pct"] = (row["margen_pesos"] / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                    row["margen_venta_pct"] = (row["margen_pesos"] / precio_calc * 100) if precio_calc > 0 else 0.0
+            except Exception:
+                pass
+            with client:
+                show_row_dialog_impl(row)
+
+        background_tasks.create(_fetch_and_show(), name="fetch_row_details")
+
+    def show_row_dialog_impl(row: Dict[str, Any]) -> None:
         d = ui.dialog()
         inp_refs: Dict[str, Any] = {}
         recalc_container_ref: Dict[str, Any] = {}
@@ -3991,24 +4424,29 @@ def build_tab_precios_detalle(container) -> None:
             tipo_iva = float(tipo_iva_str) if tipo_iva_str else 0.105
             if precio < 1:
                 precio = float(row.get("precio") or 0) or 1
-            comision = precio * ml_comision
-            cobrado = precio - comision
-            deb_cred = precio * ml_debcre
-            iibb = precio * ml_iibb_per
-            iva_venta = precio * tipo_iva / (1 + tipo_iva)
-            iva_total, iva_meli, iva_impor = _calc_iva(precio, tipo_iva, comision, costo)
-            envio = _envio_a_restar(precio)
+            tiene_promo = row.get("price_original") is not None and row.get("promo_yo_pct") is not None
+            precio_calc = precio
+            if tiene_promo:
+                price_orig = float(row.get("price_original") or 0)
+                promo_yo = float(row.get("promo_yo_pct") or 0)
+                precio_calc = price_orig * (1 - promo_yo / 100)
+            comision = precio_calc * ml_comision
+            cobrado = precio_calc - comision
+            deb_cred = precio_calc * ml_debcre
+            iibb = precio_calc * ml_iibb_per
+            iva_venta = precio_calc * tipo_iva / (1 + tipo_iva)
+            iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, tipo_iva, comision, costo)
+            envio = _envio_a_restar(precio_calc)
             costo_pesos = costo * dolar_oficial
-            # Costo cuotas: 0 si x1; precio * tasa según 3x, 6x, 9x o 12x
             cuotas_val = str(row.get("cuotas") or "x1").strip().lower()
             tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
-            costo_cuotas = precio * tasa_cuotas if tasa_cuotas else 0.0
+            costo_cuotas = precio_calc * tasa_cuotas if tasa_cuotas else 0.0
             if costo_pesos <= 0:
                 margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
             else:
                 margen_pesos = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
-                margen_venta_pct = (margen_pesos / precio * 100) if precio > 0 else 0.0
+                margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
             if recalc_container_ref.get("costo_pesos_label"):
                 recalc_container_ref["costo_pesos_label"].text = fmt_moneda(costo_pesos)
             data = {"comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas, "iva_venta": iva_venta, "iva_total": iva_total,
@@ -4027,11 +4465,11 @@ def build_tab_precios_detalle(container) -> None:
             cont.clear()
             with cont:
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
-                    ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
-                    ui.label(fmt_moneda(data.get("cobrado"))).classes("text-sm font-bold text-primary")
-                with ui.row().classes("w-full justify-between py-1 gap-4"):
                     ui.label("Comisión").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
+                with ui.row().classes("w-full justify-between py-1 gap-4"):
+                    ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("cobrado"))).classes("text-sm font-bold text-primary")
                 with ui.row().classes("w-full justify-between py-1 gap-4"):
                     ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("costo_cuotas"))).classes("text-sm text-negative")
@@ -4150,6 +4588,38 @@ def build_tab_precios_detalle(container) -> None:
                             ui.label("Costo $").classes("text-sm font-medium text-gray-600")
                             costo_pesos = (float(row.get("costo") or 0) * dolar_oficial)
                             recalc_container_ref["costo_pesos_label"] = ui.label(fmt_moneda(costo_pesos)).classes("text-sm")
+                    with ui.row().classes("w-full py-2 gap-6 border-b-2 border-gray-300 flex-wrap"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Cuotas").classes("text-xs text-gray-600")
+                            cuotas_val = str(row.get("cuotas") or "x1").strip()
+                            ui.label(cuotas_val).classes("text-sm font-medium")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Promo ML").classes("text-xs text-gray-600")
+                            promo_ml = row.get("promo_ml_pct")
+                            promo_ml_txt = f"{promo_ml:.1f}%" if promo_ml is not None else "—"
+                            ui.label(promo_ml_txt).classes("text-sm font-medium")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Promo Yo %").classes("text-xs text-gray-600")
+                            promo_yo = row.get("promo_yo_pct")
+                            promo_yo_txt = f"{promo_yo:.1f}%" if promo_yo is not None else "—"
+                            ui.label(promo_yo_txt).classes("text-sm font-medium")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Promo Yo $").classes("text-xs text-gray-600")
+                            promo_yo_pct = row.get("promo_yo_pct")
+                            price_orig = row.get("price_original")
+                            promo_yo_dolares = (price_orig * (promo_yo_pct or 0) / 100) if price_orig is not None and promo_yo_pct is not None else None
+                            promo_yo_dol_txt = fmt_moneda(promo_yo_dolares) if promo_yo_dolares is not None else "—"
+                            ui.label(promo_yo_dol_txt).classes("text-sm font-medium")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Precio Original").classes("text-xs text-gray-600")
+                            price_orig = row.get("price_original")
+                            price_orig_txt = fmt_moneda(price_orig) if price_orig is not None else "—"
+                            ui.label(price_orig_txt).classes("text-sm font-medium")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Precio Promo").classes("text-xs text-gray-600")
+                            price_promo = row.get("price_promo")
+                            price_promo_txt = fmt_moneda(price_promo) if price_promo is not None else "—"
+                            ui.label(price_promo_txt).classes("text-sm font-medium")
                     recalc_container_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
                 _recalcular()
                 with ui.row().classes("w-full justify-end gap-2 mt-4"):
@@ -4186,22 +4656,28 @@ def build_tab_precios_detalle(container) -> None:
                         it["precio"] = nuevo_precio
                         it["tipo_iva"] = nuevo_tipo_iva
                         it["costo"] = nuevo_costo
-                        comision = nuevo_precio * ml_comision
-                        cobrado = nuevo_precio - comision
-                        deb_cred = nuevo_precio * ml_debcre
-                        iibb_monto = nuevo_precio * ml_iibb_per
-                        iva_total, iva_meli, iva_impor = _calc_iva(nuevo_precio, nuevo_tipo_iva, comision, nuevo_costo)
-                        envio_restar = _envio_a_restar(nuevo_precio)
+                        tiene_promo = it.get("price_original") is not None and it.get("promo_yo_pct") is not None
+                        precio_calc = nuevo_precio
+                        if tiene_promo:
+                            price_orig = float(it.get("price_original") or 0)
+                            promo_yo = float(it.get("promo_yo_pct") or 0)
+                            precio_calc = price_orig * (1 - promo_yo / 100)
+                        comision = precio_calc * ml_comision
+                        cobrado = precio_calc - comision
+                        deb_cred = precio_calc * ml_debcre
+                        iibb_monto = precio_calc * ml_iibb_per
+                        iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, nuevo_tipo_iva, comision, nuevo_costo)
+                        envio_restar = _envio_a_restar(precio_calc)
                         costo_pesos = nuevo_costo * dolar_oficial
                         cuotas_val = str(it.get("cuotas") or "x1").strip().lower()
                         tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
-                        costo_cuotas = nuevo_precio * tasa_cuotas if tasa_cuotas else 0.0
+                        costo_cuotas = precio_calc * tasa_cuotas if tasa_cuotas else 0.0
                         if costo_pesos <= 0:
                             margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
                         else:
                             margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar - costo_cuotas
                             margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
-                            margen_venta_pct = (margen_pesos / nuevo_precio * 100) if nuevo_precio > 0 else 0.0
+                            margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
                         it["comision"] = comision
                         it["costo_cuotas"] = costo_cuotas
                         it["cobrado"] = cobrado
@@ -4264,7 +4740,7 @@ def build_tab_precios_detalle(container) -> None:
                                         ui.label(label)
                     with ui.element("tbody"):
                         for r in filtrados:
-                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: show_row_dialog(r)):
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: _on_row_click(r)):
                                 for field, label, align, _ in cols:
                                     val = r.get(field)
                                     td_align = "text-center" if align == "center" else ("text-right" if align == "right" else "text-left")
@@ -4320,7 +4796,7 @@ def build_tab_precios_detalle(container) -> None:
         else:
             filtrar_y_pintar()
 
-    async def _cargar() -> None:
+    async def _cargar(client) -> None:
         if timer_ref.get("t"):
             timer_ref["t"].active = True
         include_paused = include_paused_ref.get("val", False)
@@ -4361,6 +4837,7 @@ def build_tab_precios_detalle(container) -> None:
                 return ({}, None)
             data, orders_result = await asyncio.gather(_fetch_items(), _fetch_orders())
             orders_data, seller_id = orders_result if isinstance(orders_result, tuple) else ({}, None)
+            seller_id_ref["val"] = str(seller_id) if seller_id else None
             if not isinstance(orders_data, dict):
                 orders_data = {}
         except Exception as e:
@@ -4510,6 +4987,71 @@ def build_tab_precios_detalle(container) -> None:
         ventas_por_periodo_ref["mes_actual"] = ventas_mes_actual
         ventas_por_periodo_ref["mes_anterior"] = ventas_mes_anterior
 
+        # sale_price y cuotas: cargar en segundo plano para mostrar tabla rápido
+        item_id_to_sale_price: Dict[str, Dict[str, Any]] = {}
+        item_id_to_cuotas_precios: Dict[str, str] = {}
+        item_ids_precios = [str(i.get("id", "")).strip() for i in items_ordenados if i.get("id")]
+        seller_id_precios = str(seller_id) if seller_id else None
+        if not seller_id_precios and access_token:
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id_precios = str((profile or {}).get("id") or "")
+            except Exception:
+                pass
+
+        def _fetch_sale_price_and_cuotas(token: str, ids: List[str], user_id: str) -> tuple:
+                sale_price_map: Dict[str, Dict[str, Any]] = {}
+                cuotas_map: Dict[str, str] = {}
+                max_workers = min(8, len(ids))
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures_sp = {ex.submit(ml_get_item_sale_price_full, token, iid): iid for iid in ids}
+                    for fut in as_completed(futures_sp):
+                        iid = futures_sp[fut]
+                        try:
+                            data = fut.result()
+                            if data and data.get("amount") is not None:
+                                reg_val = data.get("regular_amount")
+                                amt_val = float(data["amount"])
+                                entry: Dict[str, Any] = {"amount": amt_val, "regular_amount": float(reg_val) if reg_val is not None else None}
+                                reg_f = entry.get("regular_amount")
+                                tiene_promo = reg_f is not None and reg_f > 0 and abs(reg_f - amt_val) > 0.01
+                                if tiene_promo:
+                                    promo_id = data.get("promotion_id")
+                                    promo_type = (data.get("promotion_type") or "").strip().upper()
+                                    campaign_id = data.get("campaign_id")
+                                    total_pct_val = ((reg_f - amt_val) / reg_f * 100)
+                                    discounts = None
+                                    if campaign_id and user_id:
+                                        discounts = ml_get_promotion_item_discounts_by_campaign(
+                                            token, str(campaign_id), iid, total_pct_val, user_id,
+                                            promotion_type_hint=promo_type,
+                                        )
+                                    if discounts is None and promo_id and promo_type and not (str(promo_id or "").upper().startswith("OFFER-")):
+                                        discounts = ml_get_promotion_item_discounts(token, str(promo_id), promo_type, iid, total_pct_val)
+                                    if discounts is None and user_id:
+                                        discounts = ml_get_promotion_item_discounts_by_user(token, iid, user_id, total_pct_val)
+                                    if discounts is not None:
+                                        entry["promo_ml_pct"] = discounts.get("meli_pct", 0)
+                                        entry["promo_yo_pct"] = discounts.get("seller_pct", 0)
+                                    else:
+                                        entry["promo_ml_pct"] = 0.0
+                                        entry["promo_yo_pct"] = total_pct_val
+                                sale_price_map[iid] = entry
+                        except Exception:
+                            pass
+                attrs = "id,listing_type_id,attributes,sale_terms"
+                for i in range(0, len(ids), 20):
+                    batch = ids[i : i + 20]
+                    bodies = ml_get_items_multiget_with_attributes(token, batch, attrs)
+                    for b in (bodies or []):
+                        if b and isinstance(b, dict):
+                            iid = str(b.get("id", "") or "").strip()
+                            if iid:
+                                cuotas_map[iid] = _cuotas_desde_item(b)
+                return sale_price_map, cuotas_map
+
+        seller_id_ref["val"] = seller_id_precios
+
         # Agrupar por dedupe_key; preferir catalog_listing=false (Propia), solo usar Catálogo si no hay Propia
         grupos_por_dedupe: Dict[str, List[Dict]] = {}
         for i in items_ordenados:
@@ -4533,28 +5075,60 @@ def build_tab_precios_detalle(container) -> None:
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
             precio = float(i.get("price") or 0)
             sale_price = i.get("sale_price")
-            precio_real = float(sale_price) if sale_price is not None else precio
-            stock = int(i.get("available_quantity") or 0)
             item_id_str = str(i.get("id", ""))
+            # Promo: preferir API sale_price (como Ventas) si el item no lo trae
+            sp_data = item_id_to_sale_price.get(item_id_str) or item_id_to_sale_price.get(item_id_str.upper() or "") or item_id_to_sale_price.get(item_id_str.lower() or "")
+            if sp_data and sp_data.get("regular_amount") is not None and sp_data.get("amount") is not None:
+                reg_f = float(sp_data["regular_amount"])
+                amt_f = float(sp_data["amount"])
+                tiene_promo = reg_f > 0 and abs(reg_f - amt_f) > 0.01
+                if tiene_promo:
+                    price_original = reg_f
+                    promo_pct = ((reg_f - amt_f) / reg_f * 100)
+                    promo_ml_pct = sp_data.get("promo_ml_pct")
+                    promo_yo_pct = sp_data.get("promo_yo_pct")
+                    if promo_ml_pct is None:
+                        promo_ml_pct = 0.0
+                    if promo_yo_pct is None:
+                        promo_yo_pct = promo_pct
+                    precio_real = amt_f
+                    price_promo = reg_f * (1 - (promo_yo_pct or 0) / 100)
+                else:
+                    price_original = None
+                    price_promo = None
+                    promo_pct = None
+                    promo_ml_pct = None
+                    promo_yo_pct = None
+                    precio_real = float(sale_price) if sale_price is not None else precio
+            else:
+                precio_real = float(sale_price) if sale_price is not None else precio
+                tiene_promo = sale_price is not None and precio > 0 and abs(precio - float(sale_price or 0)) > 0.01
+                price_original = float(precio) if tiene_promo else None
+                promo_pct = ((precio - float(sale_price or 0)) / precio * 100) if tiene_promo else None
+                promo_ml_pct = 0.0 if tiene_promo else None
+                promo_yo_pct = promo_pct if tiene_promo else None
+                price_promo = (price_original * (1 - (promo_yo_pct or 0) / 100)) if tiene_promo and price_original is not None else None
+            cuotas_val = str(item_id_to_cuotas_precios.get(item_id_str) or item_id_to_cuotas_precios.get(item_id_str.upper() or "") or item_id_to_cuotas_precios.get(item_id_str.lower() or "") or _cuotas_desde_item(i) or "x1").strip().lower()
+            stock = int(i.get("available_quantity") or 0)
             guardado = get_precios_producto(item_id_str, uid)
             costo = float(guardado["costo_u"]) if guardado else 0.0
             tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
-            comision = precio_real * ml_comision
-            cobrado = precio_real - comision
-            iva_total, iva_meli, iva_impor = _calc_iva(precio_real, tipo_iva, comision, costo)
-            deb_cred = precio_real * ml_debcre
-            iibb_monto = precio_real * ml_iibb_per
-            envio_restar = _envio_a_restar(precio_real)
+            precio_calc = price_promo if tiene_promo and price_promo is not None else precio_real
+            comision = precio_calc * ml_comision
+            cobrado = precio_calc - comision
+            iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, tipo_iva, comision, costo)
+            deb_cred = precio_calc * ml_debcre
+            iibb_monto = precio_calc * ml_iibb_per
+            envio_restar = _envio_a_restar(precio_calc)
             costo_pesos = costo * dolar_oficial
-            cuotas_val = str(_cuotas_desde_item(i) or "x1").strip().lower()
             tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
-            costo_cuotas = precio_real * tasa_cuotas if tasa_cuotas else 0.0
+            costo_cuotas = precio_calc * tasa_cuotas if tasa_cuotas else 0.0
             if costo_pesos <= 0:
                 margen_pesos, margen_costo_pct, margen_venta_pct = 0.0, 0.0, 0.0
             else:
                 margen_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio_restar - costo_cuotas
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
-                margen_venta_pct = (margen_pesos / precio_real * 100) if precio_real > 0 else 0.0
+                margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
             dk_final = dedupe_key or ("id:" + item_id_str)
             ventas = sum(ventas_dict.get("id:" + str(it_g.get("id", "")), 0) for it_g in grupo_single)
             grupo_ids = [str(it_g.get("id", "")) for it_g in grupo_single if it_g.get("id")]
@@ -4568,7 +5142,12 @@ def build_tab_precios_detalle(container) -> None:
                 "dedupe_key": dk_final,
                 "grupo_ids": grupo_ids or [str(i.get("id", ""))],
                 "tipo_publicacion": _tipo_publicacion_desde_item(i),
-                "cuotas": _cuotas_desde_item(i),
+                "cuotas": cuotas_val,
+                "price_original": price_original,
+                "price_promo": price_promo,
+                "promo_pct": promo_pct,
+                "promo_ml_pct": promo_ml_pct,
+                "promo_yo_pct": promo_yo_pct,
                 "precio": precio_real,
                 "tipo_iva": tipo_iva,
                 "iva_total": iva_total,
@@ -4657,7 +5236,78 @@ def build_tab_precios_detalle(container) -> None:
         cargar_listo_ref["con_stock"] = publicaciones_con_stock
         cargar_listo_ref["listo"] = True
 
-    background_tasks.create(_cargar(), name="cargar_precios_detalle")
+        def _fetch_and_update_rows() -> None:
+            """Sync: fetchea sale_price+cuotas y actualiza items_loaded."""
+            if not item_ids_precios or not access_token or not seller_id_precios:
+                return
+            try:
+                sp_map, cuotas_map = _fetch_sale_price_and_cuotas(
+                    access_token, item_ids_precios, seller_id_precios
+                )
+                item_id_to_sale_price.update(sp_map)
+                item_id_to_cuotas_precios.update(cuotas_map)
+                for row in items_loaded:
+                    iid = str(row.get("id", "")).strip()
+                    sp_data = item_id_to_sale_price.get(iid) or item_id_to_sale_price.get(iid.upper() or "") or item_id_to_sale_price.get(iid.lower() or "")
+                    cuotas_nueva = item_id_to_cuotas_precios.get(iid) or item_id_to_cuotas_precios.get(iid.upper() or "") or item_id_to_cuotas_precios.get(iid.lower() or "") or row.get("cuotas") or "x1"
+                    if sp_data and sp_data.get("regular_amount") is not None and sp_data.get("amount") is not None:
+                        reg_f = float(sp_data["regular_amount"])
+                        amt_f = float(sp_data["amount"])
+                        tiene_promo = reg_f > 0 and abs(reg_f - amt_f) > 0.01
+                        if tiene_promo:
+                            row["price_original"] = reg_f
+                            row["promo_pct"] = ((reg_f - amt_f) / reg_f * 100)
+                            row["promo_ml_pct"] = sp_data.get("promo_ml_pct") if sp_data.get("promo_ml_pct") is not None else 0.0
+                            row["promo_yo_pct"] = sp_data.get("promo_yo_pct") if sp_data.get("promo_yo_pct") is not None else row["promo_pct"]
+                            row["price_promo"] = reg_f * (1 - (row["promo_yo_pct"] or 0) / 100)
+                            row["precio"] = amt_f
+                        else:
+                            row["price_original"] = None
+                            row["price_promo"] = None
+                            row["promo_pct"] = None
+                            row["promo_ml_pct"] = None
+                            row["promo_yo_pct"] = None
+                            row["precio"] = amt_f
+                    row["cuotas"] = str(cuotas_nueva).strip().lower()
+                    precio_calc = row.get("price_promo") if (row.get("price_original") and row.get("price_promo")) else row.get("precio", 0)
+                    costo = float(row.get("costo") or 0)
+                    tipo_iva = float(row.get("tipo_iva") or 0.105)
+                    row["comision"] = precio_calc * ml_comision
+                    row["cobrado"] = precio_calc - row["comision"]
+                    iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, tipo_iva, row["comision"], costo)
+                    row["iva_total"] = iva_total
+                    row["iva_meli"] = iva_meli
+                    row["iva_impor"] = iva_impor
+                    row["deb_cred"] = precio_calc * ml_debcre
+                    row["iibb"] = precio_calc * ml_iibb_per
+                    row["envio"] = _envio_a_restar(precio_calc)
+                    tasa_cuotas = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(row["cuotas"], 0.0)
+                    row["costo_cuotas"] = precio_calc * tasa_cuotas if tasa_cuotas else 0.0
+                    costo_pesos = costo * dolar_oficial
+                    if costo_pesos <= 0:
+                        row["margen_pesos"], row["margen_costo_pct"], row["margen_venta_pct"] = 0.0, 0.0, 0.0
+                    else:
+                        row["margen_pesos"] = row["cobrado"] - costo_pesos - iva_total - row["iibb"] - row["deb_cred"] - row["envio"] - row["costo_cuotas"]
+                        row["margen_costo_pct"] = (row["margen_pesos"] / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                        row["margen_venta_pct"] = (row["margen_pesos"] / precio_calc * 100) if precio_calc > 0 else 0.0
+            except Exception:
+                pass
+
+        async def _task_enriquecer() -> None:
+            await run.io_bound(_fetch_and_update_rows)
+            if client:
+                with client:
+                    fn = table_container_ref.get("_filtrar_fn")
+                    if fn:
+                        fn("Actualizando precios...")
+
+        background_tasks.create(_task_enriquecer(), name="enriquecer_precios")
+
+    try:
+        client = context.client
+    except RuntimeError:
+        client = None
+    background_tasks.create(_cargar(client), name="cargar_precios_detalle")
 
 
 def build_tab_busqueda() -> None:
@@ -4768,6 +5418,88 @@ def build_tab_busqueda() -> None:
             if not texto:
                 ui.notify("Ingresá un texto o ID de publicación", color="warning")
                 return
+            # Si el usuario pega una URL de la API (ej: GET https://api.mercadolibre.com/items/MLA.../sale_price?context=...)
+            if "api.mercadolibre.com" in texto.lower():
+                metodo = "GET"
+                url = texto
+                if texto.upper().startswith("GET "):
+                    metodo = "GET"
+                    url = texto[4:].strip()
+                elif texto.upper().startswith("POST "):
+                    metodo = "POST"
+                    url = texto[5:].strip()
+                if not url.startswith("http"):
+                    url = "https://" + url.lstrip("/")
+                if url.startswith("http"):
+                    results_container.clear()
+                    with results_container:
+                        ui.spinner(size="lg")
+                        ui.label(f"Consultando {metodo} {url[:80]}...").classes("text-gray-600")
+                    try:
+                        def _fetch_api() -> Dict[str, Any]:
+                            headers = {"Accept": "application/json"}
+                            if access_token:
+                                headers["Authorization"] = f"Bearer {access_token}"
+                            if metodo.upper() == "GET":
+                                r = requests.get(url, headers=headers, timeout=15)
+                            else:
+                                r = requests.request(metodo.upper(), url, headers=headers, timeout=15)
+                            try:
+                                return {"status": r.status_code, "body": r.json()}
+                            except Exception:
+                                return {"status": r.status_code, "body": r.text}
+                        resp = await run.io_bound(_fetch_api)
+                        results_container.clear()
+                        with results_container:
+                            ui.label(f"Respuesta ({resp.get('status', '—')})").classes("text-base font-semibold mb-2")
+                            body = resp.get("body")
+                            if isinstance(body, dict):
+                                json_str = json.dumps(body, indent=2, ensure_ascii=False)
+                            else:
+                                json_str = str(body)
+                            ui.html(
+                                f'<pre class="p-4 bg-grey-2 rounded overflow-auto text-sm border" style="max-height: 500px;">{html.escape(json_str)}</pre>'
+                            )
+                            def _copiar_click(datos: str):
+                                esc = json.dumps(datos)
+                                ui.run_javascript(f'''
+                                    (function() {{
+                                        var texto = {esc};
+                                        var done = function() {{ try {{ window.__copiadoOk = true; }} catch(e) {{}} }};
+                                        if (navigator.clipboard && navigator.clipboard.writeText) {{
+                                            navigator.clipboard.writeText(texto).then(done).catch(function() {{
+                                                var ta = document.createElement("textarea");
+                                                ta.value = texto;
+                                                ta.style.position = "fixed";
+                                                ta.style.left = "-9999px";
+                                                document.body.appendChild(ta);
+                                                ta.select();
+                                                ta.setSelectionRange(0, 999999);
+                                                try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                                document.body.removeChild(ta);
+                                                done();
+                                            }});
+                                        }} else {{
+                                            var ta = document.createElement("textarea");
+                                            ta.value = texto;
+                                            ta.style.position = "fixed";
+                                            ta.style.left = "-9999px";
+                                            document.body.appendChild(ta);
+                                            ta.select();
+                                            ta.setSelectionRange(0, 999999);
+                                            try {{ document.execCommand("copy"); }} catch(e) {{}}
+                                            document.body.removeChild(ta);
+                                            done();
+                                        }}
+                                    }})();
+                                ''')
+                                ui.notify("Copiado al portapapeles", type="positive")
+                            ui.button("Copiar respuesta", on_click=lambda d=json_str: _copiar_click(d), color="secondary").classes("mt-2").props("no-caps unelevated")
+                    except Exception as err:
+                        results_container.clear()
+                        with results_container:
+                            ui.label(f"Error: {err}").classes("text-negative")
+                    return
             # Si el usuario ingresa solo números, intentar primero con MLA adelante
             texto_buscar = "MLA" + texto if texto.isdigit() else texto
             texto_fallback = texto if texto.isdigit() else None  # Para reintentar sin MLA si no hay resultados
@@ -5716,7 +6448,7 @@ def build_tab_config() -> None:
     ml_creds = cur.fetchone()
     conn.close()
 
-    with ui.row().classes("w-full gap-4 items-start flex-wrap"):
+    with ui.row().classes("w-full gap-4 items-start"):
         with ui.card().classes("flex-1 min-w-0 max-w-2xl"):
             ui.label("MercadoLibre").classes("text-lg font-semibold mb-3")
             ui.label(
@@ -5790,33 +6522,147 @@ def build_tab_config() -> None:
                     ui.label("Sin cuenta vinculada").classes("text-warning font-medium")
                 ui.label("Usá el botón 'Conectar cuenta' de arriba (usa las credenciales que guardaste).").classes("text-sm text-gray-600")
 
-        # Cambiar contraseña (expandible) - al lado de MercadoLibre
-        with ui.card().classes("flex-1 min-w-0 max-w-md"):
-            with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full"):
-                inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
-                inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
-                inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
+        # Columna derecha: Contraseña + Base de datos (una debajo de la otra)
+        with ui.column().classes("flex-1 min-w-0 max-w-md gap-4"):
+            # Cambiar contraseña (colapsado con flecha)
+            with ui.card().classes("w-full"):
+                with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full").props("expand-icon-toggle"):
+                    inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
+                    inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
+                    inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
 
-                def cambiar_clave() -> None:
-                    actual = (inp_actual.value or "").strip()
-                    nueva = (inp_nueva.value or "").strip()
-                    confirmar = (inp_confirmar.value or "").strip()
-                    if not actual:
-                        ui.notify("Ingresá tu contraseña actual", color="warning")
-                        return
-                    if nueva != confirmar:
-                        ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
-                        return
-                    error = update_user_password(user["id"], actual, nueva)
-                    if error:
-                        ui.notify(error, color="negative")
-                        return
-                    ui.notify("Contraseña cambiada correctamente", color="positive")
-                    inp_actual.value = ""
-                    inp_nueva.value = ""
-                    inp_confirmar.value = ""
+                    def cambiar_clave() -> None:
+                        actual = (inp_actual.value or "").strip()
+                        nueva = (inp_nueva.value or "").strip()
+                        confirmar = (inp_confirmar.value or "").strip()
+                        if not actual:
+                            ui.notify("Ingresá tu contraseña actual", color="warning")
+                            return
+                        if nueva != confirmar:
+                            ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
+                            return
+                        error = update_user_password(user["id"], actual, nueva)
+                        if error:
+                            ui.notify(error, color="negative")
+                            return
+                        ui.notify("Contraseña cambiada correctamente", color="positive")
+                        inp_actual.value = ""
+                        inp_nueva.value = ""
+                        inp_confirmar.value = ""
 
-                ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
+                    ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
+
+            # Base de datos (debajo de contraseña)
+            with ui.card().classes("w-full") as db_card:
+                ui.label("Base de datos").classes("text-lg font-semibold mb-3")
+                ui.label(
+                    "Backup de tus datos operativos: productos (precios, IVA, costo), cotizador (parámetros, pesos, gastos, tablas), importación. "
+                    "No incluye credenciales ni contraseña."
+                ).classes("text-sm text-gray-600 mb-4")
+
+                def descargar_backup() -> None:
+                    try:
+                        content = export_user_db_data(user["id"])
+                        fd, path = tempfile.mkstemp(suffix=".json")
+                        os.write(fd, content)
+                        os.close(fd)
+                        nombre = f"backup_{user.get('username', 'user')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+                        with db_card:
+                            ui.download(path, nombre)
+                        ui.notify("Descarga iniciada", color="positive")
+                        def _cleanup() -> None:
+                            try:
+                                if path and os.path.exists(path):
+                                    os.unlink(path)
+                            except Exception:
+                                pass
+                        ui.timer(5.0, _cleanup, once=True)
+                    except Exception as ex:
+                        ui.notify(f"Error: {ex}", color="negative")
+
+                def _formatear_fecha_backup(data: dict) -> str:
+                    fd = data.get("fecha_descarga")
+                    if fd:
+                        return str(fd)
+                    ea = data.get("exported_at", "")
+                    if ea:
+                        try:
+                            d = datetime.fromisoformat(ea.replace("Z", "+00:00"))
+                            return d.strftime("%Y-%m-%d %H:%M")
+                        except Exception:
+                            pass
+                    return ea or "fecha desconocida"
+
+                async def on_upload(e) -> None:
+                    try:
+                        file_obj = getattr(e, "file", None) or (getattr(e, "files", [None])[0] if getattr(e, "files", None) else None) or getattr(e, "content", None)
+                        if file_obj is None:
+                            ui.notify("Error: no se pudo leer el archivo", color="negative")
+                            upload_component.reset()
+                            return
+                        read_result = file_obj.read()
+                        content = await read_result if asyncio.iscoroutine(read_result) else read_result
+                        if isinstance(content, str):
+                            content = content.encode("utf-8")
+                        data = json.loads(content.decode("utf-8"))
+                        if not isinstance(data, dict):
+                            ui.notify("Error: archivo inválido", color="negative")
+                            upload_component.reset()
+                            return
+                        fecha_str = _formatear_fecha_backup(data)
+                        content_bytes = bytes(content)
+
+                        def make_confirm(cb: bytes, upload_el):
+                            def confirmar_sobrescribir() -> None:
+                                dlg.close()
+                                msg = import_user_db_data(user["id"], cb)
+                                if msg == "ok":
+                                    ui.notify("Backup restaurado correctamente", color="positive")
+                                    upload_el.reset()
+                                else:
+                                    ui.notify(f"Error al restaurar: {msg}", color="negative")
+                                    upload_el.reset()
+
+                            return confirmar_sobrescribir
+
+                        with ui.dialog().props("persistent") as dlg:
+                            dlg.classes("w-full max-w-md")
+                            with ui.card().classes("w-full p-6 gap-4"):
+                                ui.label("¿Sobrescribir datos?").classes("text-lg font-semibold")
+                                ui.label(
+                                    f"¿Estás seguro que querés sobrescribir los datos actuales con el backup del {fecha_str}?"
+                                ).classes("text-gray-600")
+                                with ui.row().classes("w-full justify-end gap-2 pt-2"):
+                                    def cancelar_y_reset() -> None:
+                                        dlg.close()
+                                        upload_component.reset()
+                                    ui.button("Cancelar", on_click=cancelar_y_reset, color="secondary").props("flat")
+                                    ui.button("Confirmar", on_click=make_confirm(content_bytes, upload_component), color="negative").props("unelevated")
+                            dlg.open()
+                    except json.JSONDecodeError as ex:
+                        ui.notify(f"Error: archivo JSON inválido - {ex}", color="negative")
+                        upload_component.reset()
+                    except Exception as ex:
+                        ui.notify(f"Error: {str(ex)}", color="negative")
+                        upload_component.reset()
+
+                async def handle_multi(e) -> None:
+                    if getattr(e, "files", None) and len(e.files) > 0:
+                        class _FakeEv:
+                            file = e.files[0]
+                        await on_upload(_FakeEv())
+
+                upload_component = ui.upload(
+                    on_upload=on_upload,
+                    on_multi_upload=handle_multi,
+                    max_files=1,
+                    max_file_size=10_000_000,
+                    auto_upload=True,
+                ).props("accept=.json").style("position: absolute; width: 0; height: 0; opacity: 0; overflow: hidden; pointer-events: none")
+
+                with ui.row().classes("gap-3 items-center flex-wrap"):
+                    ui.button("Descargar backup", on_click=descargar_backup, color="primary").props("icon=download unelevated")
+                    ui.button("CARGAR BACKUP", on_click=lambda: upload_component.run_method("pickFiles"), color="secondary").props("icon=upload outline")
 
 
 # Valores por defecto del cotizador
