@@ -18,6 +18,7 @@ import os
 import subprocess
 import tempfile
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Border, Side, Alignment
@@ -31,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260302.17"
+VERSION = "1.260305.10"
 
 
 # ==========================
@@ -882,6 +883,33 @@ def ml_get_item_sale_price(access_token: Optional[str], item_id: str) -> Optiona
     return None
 
 
+def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
+    """Obtiene amount y regular_amount de GET /items/{id}/sale_price.
+    Si regular_amount existe y difiere de amount → hay promoción. Retorna {amount, regular_amount} o None."""
+    if not access_token or not str(item_id).strip():
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/sale_price",
+            params={"context": "channel_marketplace"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, dict):
+            amt = data.get("amount")
+            reg = data.get("regular_amount")
+            if amt is not None:
+                try:
+                    return {"amount": float(amt), "regular_amount": float(reg) if reg is not None else None}
+                except (TypeError, ValueError):
+                    pass
+    except Exception:
+        pass
+    return None
+
+
 def ml_get_item_prices(access_token: Optional[str], item_id: str) -> Optional[float]:
     """Obtiene precios de un ítem. API: GET /items/{id}/prices. Fallback si sale_price falla."""
     if not access_token or not str(item_id).strip():
@@ -1272,7 +1300,7 @@ def ml_get_orders(
                     if isinstance(raw[0], (int, float)):
                         for oid in raw[:page_size]:
                             try:
-                                r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers=headers, timeout=10)
+                                r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers={**headers, "x-format-new": "true"}, timeout=10)
                                 if r.status_code == 200:
                                     ob = r.json()
                                     oid_val = ob.get("id")
@@ -2122,10 +2150,11 @@ def build_tab_ventas(container) -> None:
         return
 
     ventas_raw: List[Dict[str, Any]] = []
-    all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}, "item_id_to_tipo_venta": {}, "item_id_to_cuotas": {}}
+    all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}, "item_id_to_tipo_venta": {}, "item_id_to_cuotas": {}, "item_id_to_tipo_oferta": {}, "item_id_to_promo_display": {}}
     filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
     filtro_publicacion_ref: Dict[str, str] = {"val": "todas"}
     filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
+    filtro_tipo_ref: Dict[str, str] = {"val": "todas"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
     agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
@@ -2215,6 +2244,45 @@ def build_tab_ventas(container) -> None:
             except Exception:
                 return False
 
+        def _tipo_oferta_desde_order_item(it: Dict, item_id: str, item_id_to_tipo_oferta: Dict[str, str]) -> tuple:
+            """Detecta Promo desde order_item (gross_price/discounts). Retorna (tipo, tipo_display) donde tipo_display tiene % dto y precio orig para Promo."""
+            fallback = item_id_to_tipo_oferta.get(item_id) or item_id_to_tipo_oferta.get(item_id.upper() or "") or item_id_to_tipo_oferta.get(item_id.lower() or "") or "Regular"
+            qty = int(it.get("quantity") or it.get("qty") or 0)
+            if qty == 0:
+                return (fallback, None)
+            unit_price = it.get("unit_price")
+            gross_price = it.get("gross_price")
+            if gross_price is not None and unit_price is not None:
+                try:
+                    gross_f = float(gross_price)
+                    up_f = float(unit_price)
+                    paid_total = up_f * qty
+                    if gross_f > paid_total + 0.01:
+                        pct = ((gross_f - paid_total) / gross_f * 100) if gross_f > 0 else 0
+                        orig_fmt = f"$ {gross_f:,.0f}".replace(",", ".")
+                        return ("Promo", f"{pct:.0f}% dto · {orig_fmt} orig")
+                except (TypeError, ValueError):
+                    pass
+            discounts = it.get("discounts") or []
+            if isinstance(discounts, list):
+                for d in discounts:
+                    if isinstance(d, dict):
+                        amt = d.get("amounts") or {}
+                        if isinstance(amt, dict):
+                            full = amt.get("full")
+                            if full is not None:
+                                try:
+                                    full_f = float(full)
+                                    if full_f > 0.01:
+                                        paid_total = float(unit_price or 0) * qty
+                                        orig = paid_total + full_f
+                                        pct = (full_f / orig * 100) if orig > 0 else 0
+                                        orig_fmt = f"$ {orig:,.0f}".replace(",", ".")
+                                        return ("Promo", f"{pct:.0f}% dto · {orig_fmt} orig")
+                                except (TypeError, ValueError):
+                                    pass
+            return (fallback, None)
+
         def _aplicar_filtro_fecha() -> None:
             fecha_val = filtro_fecha_ref.get("val", "mes_actual")
             if fecha_val not in ("mes_actual", "mes_anterior"):
@@ -2242,6 +2310,8 @@ def build_tab_ventas(container) -> None:
             item_id_to_catalog = all_orders_ref.get("item_id_to_catalog") or {}
             item_id_to_sku = all_orders_ref.get("item_id_to_sku") or {}
             item_id_to_cuotas = all_orders_ref.get("item_id_to_cuotas") or {}
+            item_id_to_tipo_oferta = all_orders_ref.get("item_id_to_tipo_oferta") or {}
+            item_id_to_promo_display = all_orders_ref.get("item_id_to_promo_display") or {}
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             ventas_mes = []
             for ord_item in orders_periodo:
@@ -2292,9 +2362,14 @@ def build_tab_ventas(container) -> None:
                     sku = item_id_to_sku.get(item_id, "")
                     agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
                     cuotas = item_id_to_cuotas.get(item_id) or item_id_to_cuotas.get(item_id.upper()) or item_id_to_cuotas.get(item_id.lower()) or "x1"
+                    tipo_oferta, tipo_display = _tipo_oferta_desde_order_item(it, item_id, item_id_to_tipo_oferta)
+                    if tipo_display is None and (tipo_oferta or "").lower() == "promo":
+                        tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "productos": titulo[:100], "title": titulo[:100],
-                        "tipo": tipo, "tipo_venta": tipo, "cuotas": cuotas, "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
+                        "tipo_venta": tipo, "cuotas": cuotas, "tipo": tipo_oferta, "tipo_oferta": tipo_oferta,
+                        "tipo_display": tipo_display or tipo_oferta,
+                        "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
                         "status": status_display, "status_raw": status_raw, "agrupar_key": agrupar_key, "item_id": item_id or "—",
                     })
             ventas_raw = ventas_mes
@@ -2356,6 +2431,11 @@ def build_tab_ventas(container) -> None:
             cuotas_val = str(filtro_cuotas_ref.get("val", "todas") or "todas")
             if cuotas_val in ("x1", "x3", "x6"):
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("cuotas") or "x1") == cuotas_val]
+            tipo_val = str(filtro_tipo_ref.get("val", "todas") or "todas")
+            if tipo_val == "promo":
+                ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "promo"]
+            elif tipo_val == "regular":
+                ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "regular"]
             ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
             ventas_pagada = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
             facturacion_pagada = sum(v["monto"] for v in ventas_pagada)
@@ -2423,15 +2503,19 @@ def build_tab_ventas(container) -> None:
                                 if key not in grupos:
                                     grupos[key] = {
                                         "productos": v.get("productos") or v.get("title", "—"),
-                                        "tipos": set(),
                                         "tipos_venta": set(),
+                                        "tipos_oferta": set(),
+                                        "tipos_oferta_display": set(),
                                         "cuotas": set(),
                                         "item_ids": set(),
                                         "cantidad": 0,
                                         "monto": 0.0,
                                         "dt": v.get("dt"),
                                     }
-                                grupos[key]["tipos"].add(v.get("tipo", "—"))
+                                tipo_oferta_val = v.get("tipo") or v.get("tipo_oferta") or "Regular"
+                                grupos[key]["tipos_oferta"].add(str(tipo_oferta_val))
+                                tipo_disp = v.get("tipo_display") or tipo_oferta_val
+                                grupos[key]["tipos_oferta_display"].add(str(tipo_disp))
                                 if v.get("tipo_venta") and v.get("tipo_venta") != "—":
                                     grupos[key]["tipos_venta"].add(str(v["tipo_venta"]))
                                 if v.get("cuotas"):
@@ -2458,9 +2542,11 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("ID publicación")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Tipo de venta")
+                                                ui.label("Publicación")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("Cuotas")
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                ui.label("Tipo")
                                             with ui.element("th").classes("px-2 py-2 border text-left"):
                                                 ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
@@ -2488,6 +2574,9 @@ def build_tab_ventas(container) -> None:
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                     cuotas_str = ", ".join(sorted(v.get("cuotas", set()))) or "—"
                                                     ui.label(cuotas_str).classes("text-xs")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                    tipos_oferta_str = ", ".join(sorted(v.get("tipos_oferta_display", v.get("tipos_oferta", set())))) or "—"
+                                                    ui.label(tipos_oferta_str).classes("text-xs")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
                                                     ui.label(productos_key[:80]).classes("truncate")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2513,8 +2602,9 @@ def build_tab_ventas(container) -> None:
                                             ("#", "#", "text-center"),
                                             ("dt", "Fecha", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
-                                            ("tipo_venta", "Tipo de venta", "text-center"),
+                                            ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
+                                            ("tipo", "Tipo", "text-center"),
                                             ("productos", "Producto", "text-left"),
                                             ("cantidad", "Cant.", "text-center"),
                                             ("monto", "Monto", "text-right"),
@@ -2540,6 +2630,8 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("tipo_venta", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v.get("cuotas", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                ui.label(v.get("tipo_display", v.get("tipo", v.get("tipo_oferta", "Regular"))))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
                                                 ui.label(v.get("productos", v.get("title", "—"))[:80]).classes("truncate")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -2622,9 +2714,11 @@ def build_tab_ventas(container) -> None:
             item_id_to_sku: Dict[str, str] = dict(all_orders_ref.get("item_id_to_sku") or {})
             item_id_to_tipo_venta: Dict[str, str] = dict(all_orders_ref.get("item_id_to_tipo_venta") or {})
             item_id_to_cuotas: Dict[str, str] = dict(all_orders_ref.get("item_id_to_cuotas") or {})
+            item_id_to_tipo_oferta: Dict[str, str] = dict(all_orders_ref.get("item_id_to_tipo_oferta") or {})
             ids_pendientes = [iid for iid in item_ids_to_fetch if iid not in item_id_to_catalog]
             if ids_pendientes and access_token:
                 def _fetch_catalog_info(ids: List[str]) -> List[Optional[Dict[str, Any]]]:
+                    """Multiget para catalog_listing, cuotas, SKU. tipo_oferta se obtiene por sale_price."""
                     out: List[Optional[Dict[str, Any]]] = []
                     attrs = "id,catalog_listing,catalog_product_id,listing_type_id,attributes,sale_terms"
                     for i in range(0, len(ids), 20):
@@ -2638,24 +2732,67 @@ def build_tab_ventas(container) -> None:
                         iid = str(b.get("id", "") or b.get("item_id", "")).strip()
                         if not iid:
                             continue
-                        # Catálogo = catalog_listing=True. Propia = catalog_listing=false o ausente (catalog_product_id no define tipo)
                         cl = b.get("catalog_listing")
                         is_catalog = cl is True or str(cl or "").lower() in ("true", "1")
                         item_id_to_catalog[iid] = is_catalog
                         item_id_to_tipo_venta[iid] = _tipo_base_desde_body(b)
                         item_id_to_cuotas[iid] = _cuotas_desde_item(b)
-                        # SKU (SELLER_SKU) para agrupar publicaciones propias duplicadas
-                        attrs = b.get("attributes") or []
-                        for a in attrs:
+                        attrs_inner = b.get("attributes") or []
+                        for a in attrs_inner:
                             if isinstance(a, dict) and (a.get("id") or "").upper() == "SELLER_SKU":
                                 sku_val = (a.get("value_name") or a.get("value") or "").strip()
                                 if sku_val:
                                     item_id_to_sku[iid] = sku_val
                                 break
+            # Tipo oferta: usar GET /items/{id}/sale_price (regular_amount != amount = Promo)
+            item_id_to_promo_display: Dict[str, str] = dict(all_orders_ref.get("item_id_to_promo_display") or {})
+            if item_ids_to_fetch and access_token:
+                def _fetch_tipo_oferta_batch(ids: List[str]) -> tuple:
+                    result: Dict[str, str] = {}
+                    promo_display: Dict[str, str] = {}
+                    max_workers = min(8, len(ids))
+                    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                        futures = {ex.submit(ml_get_item_sale_price_full, access_token, iid): iid for iid in ids}
+                        for fut in as_completed(futures):
+                            iid = futures[fut]
+                            try:
+                                data = fut.result()
+                                if data is not None:
+                                    amt = data.get("amount")
+                                    reg = data.get("regular_amount")
+                                    if reg is not None and amt is not None:
+                                        try:
+                                            reg_f = float(reg)
+                                            amt_f = float(amt)
+                                            if abs(reg_f - amt_f) > 0.01:
+                                                result[iid] = "Promo"
+                                                pct = ((reg_f - amt_f) / reg_f * 100) if reg_f > 0 else 0
+                                                orig_fmt = f"$ {reg_f:,.0f}".replace(",", ".")
+                                                promo_display[iid] = f"{pct:.0f}% dto · {orig_fmt} orig"
+                                            else:
+                                                result[iid] = "Regular"
+                                        except (TypeError, ValueError):
+                                            result[iid] = "Regular"
+                                    else:
+                                        result[iid] = "Regular"
+                                else:
+                                    result[iid] = "Regular"
+                            except Exception:
+                                result[iid] = "Regular"
+                    return result, promo_display
+                tipo_oferta_map, promo_display_map = await run.io_bound(_fetch_tipo_oferta_batch, list(item_ids_to_fetch))
+                for iid, val in tipo_oferta_map.items():
+                    if iid:
+                        item_id_to_tipo_oferta[iid] = val
+                for iid, disp in promo_display_map.items():
+                    if iid:
+                        item_id_to_promo_display[iid] = disp
+            all_orders_ref["item_id_to_promo_display"] = item_id_to_promo_display
             all_orders_ref["item_id_to_catalog"] = item_id_to_catalog
             all_orders_ref["item_id_to_sku"] = item_id_to_sku
             all_orders_ref["item_id_to_tipo_venta"] = item_id_to_tipo_venta
             all_orders_ref["item_id_to_cuotas"] = item_id_to_cuotas
+            all_orders_ref["item_id_to_tipo_oferta"] = item_id_to_tipo_oferta
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             dia_ini, dia_fin = (primer_dia, hoy) if fecha_val == "mes_actual" else (primer_dia_anterior, ultimo_mes) if fecha_val == "mes_anterior" else (None, None)
@@ -2710,14 +2847,19 @@ def build_tab_ventas(container) -> None:
                     sku = item_id_to_sku.get(item_id) or item_id_to_sku.get(item_id.upper()) or item_id_to_sku.get(item_id.lower()) or ""
                     agrupar_key = catalog_id or (sku if tipo == "Propia" and sku else "") or item_id or titulo
                     cuotas = item_id_to_cuotas.get(item_id) or item_id_to_cuotas.get(item_id.upper()) or item_id_to_cuotas.get(item_id.lower()) or "x1"
+                    tipo_oferta, tipo_display = _tipo_oferta_desde_order_item(it, item_id, item_id_to_tipo_oferta)
+                    if tipo_display is None and (tipo_oferta or "").lower() == "promo":
+                        tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
                         "productos": titulo[:100],
                         "title": titulo[:100],
-                        "tipo": tipo,
                         "tipo_venta": tipo,
                         "cuotas": cuotas,
+                        "tipo": tipo_oferta,
+                        "tipo_oferta": tipo_oferta,
+                        "tipo_display": tipo_display or tipo_oferta,
                         "cantidad": qty,
                         "monto": item_monto,
                         "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
@@ -2756,6 +2898,12 @@ def build_tab_ventas(container) -> None:
                     label="Cuotas",
                 ).classes("w-36").bind_value(filtro_cuotas_ref, "val")
                 filtro_cuotas.on_value_change(lambda: _pintar_tabla())
+                filtro_tipo = ui.select(
+                    {"todas": "Todas", "promo": "Promo", "regular": "Regular"},
+                    value=filtro_tipo_ref.get("val", "todas"),
+                    label="Tipo",
+                ).classes("w-36").bind_value(filtro_tipo_ref, "val")
+                filtro_tipo.on_value_change(lambda: _pintar_tabla())
                 filtro_estado = ui.select(
                     {"todas": "Todas", "pagada": "Concretada", "cancelada": "Cancelada"},
                     value=filtro_estado_ref.get("val", "pagada"),
