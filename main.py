@@ -32,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260305.17"
+VERSION = "1.260306.14"
 
 
 # ==========================
@@ -740,10 +740,11 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                         break
             if not color:
                 tit = (body.get("title") or "").lower()
-                colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor"]
+                colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor", "silver", "space gray", "space grey", "gold", "negro espacial", "midnight"]
+                equiv = {"silver": "Plateado", "space gray": "Gris", "space grey": "Gris", "gold": "Dorado", "negro espacial": "Negro", "midnight": "Negro"}
                 for c in colores:
                     if c in tit:
-                        color = c.capitalize()
+                        color = equiv.get(c, c.capitalize())
                         break
             catalog_listing = body.get("catalog_listing") is True
             # original_price existe cuando ML tiene precio promocional fijado
@@ -2058,7 +2059,10 @@ def _pintar_home_inline(
     today_local = datetime.now().date()
     primer_dia_mes = today_local.replace(day=1)
     hoy_unidades, hoy_monto = 0, 0.0
+    ayer_unidades, ayer_monto = 0, 0.0
     semana_unidades, semana_monto = 0, 0.0
+    d15_unidades, d15_monto = 0, 0.0
+    d21_unidades, d21_monto = 0, 0.0
     mes_unidades, mes_monto = 0, 0.0
     ventas_mes_actual_unid, ventas_mes_actual_monto = 0, 0.0
     por_mes: Dict[str, Any] = {}
@@ -2087,9 +2091,19 @@ def _pintar_home_inline(
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
+        ayer_local = today_local - timedelta(days=1)
+        if dt == ayer_local:
+            ayer_unidades += units
+            ayer_monto += total_amount
         if (today_local - dt).days <= 6:
             semana_unidades += units
             semana_monto += total_amount
+        if (today_local - dt).days <= 14:
+            d15_unidades += units
+            d15_monto += total_amount
+        if (today_local - dt).days <= 20:
+            d21_unidades += units
+            d21_monto += total_amount
         if (today_local - dt).days <= 30:
             mes_unidades += units
             mes_monto += total_amount
@@ -2226,30 +2240,52 @@ def _pintar_home_inline(
                             ui.label(f"Nivel: {level_label}").classes("text-base").style(f"color: {level_color}; font-weight: 600")
                         with ui.column().classes("gap-1.5 text-base"):
                             r_c = _pct_to_float(rate_claims)
-                            ui.label(f"• Reclamos: {_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS))
+                            with ui.row().classes("gap-1 items-baseline"):
+                                ui.label("• Reclamos:").classes("text-black")
+                                ui.label(f"{_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS))
                             r_m = _pct_to_float(rate_mediat)
-                            ui.label(f"• Mediaciones: {_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT))
+                            with ui.row().classes("gap-1 items-baseline"):
+                                ui.label("• Mediaciones:").classes("text-black")
+                                ui.label(f"{_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT))
                             r_k = _pct_to_float(rate_canc)
-                            ui.label(f"• Cancelaciones: {_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC))
+                            with ui.row().classes("gap-1 items-baseline"):
+                                ui.label("• Cancelaciones:").classes("text-black")
+                                ui.label(f"{_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC))
                             r_d = _pct_to_float(rate_delayed)
-                            ui.label(f"• Demora envíos: {_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED))
+                            with ui.row().classes("gap-1 items-baseline"):
+                                ui.label("• Demora envíos:").classes("text-black")
+                                ui.label(f"{_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED))
 
-                    # Ventas (Hoy, 7d, 30d)
-                    with ui.card().classes("flex-1 min-w-[240px] shrink-0 p-4 border-l-4 border-l-blue-500 overflow-hidden"):
-                        ui.label("Ventas").classes("text-base font-semibold text-blue-700 dark:text-blue-400 mb-2")
-                        with ui.row().classes("gap-2 w-full flex-nowrap"):
-                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-blue-50 dark:bg-blue-900/40"):
-                                ui.label("Hoy").classes("text-sm text-blue-600")
-                                ui.label(str(hoy_unidades)).classes("text-xl font-bold text-blue-800")
-                                ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
-                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-emerald-50 dark:bg-emerald-900/40"):
-                                ui.label("7 días").classes("text-sm text-emerald-600")
-                                ui.label(str(semana_unidades)).classes("text-xl font-bold text-emerald-800")
-                                ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
-                            with ui.column().classes("p-3 flex-1 min-w-0 rounded-lg bg-amber-50 dark:bg-amber-900/40"):
-                                ui.label("30 días").classes("text-sm text-amber-600")
-                                ui.label(str(mes_unidades)).classes("text-xl font-bold text-amber-800")
-                                ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).classes("text-sm font-medium whitespace-nowrap")
+                    # Ventas (2 filas: Hoy/Ayer/7d y 15d/21d/30d)
+                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-2 border-l-4 border-l-blue-500 overflow-hidden"):
+                        ui.label("Ventas").classes("text-sm font-semibold text-blue-700 dark:text-blue-400 mb-1")
+                        with ui.column().classes("gap-1 w-full"):
+                            with ui.row().classes("gap-1 w-full flex-nowrap"):
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-blue-50 dark:bg-blue-900/40"):
+                                    ui.label("Hoy").classes("text-xs text-blue-600")
+                                    ui.label(str(hoy_unidades)).classes("text-base font-bold text-blue-800")
+                                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-slate-50 dark:bg-slate-900/40"):
+                                    ui.label("Ayer").classes("text-xs text-slate-600")
+                                    ui.label(str(ayer_unidades)).classes("text-base font-bold text-slate-800")
+                                    ui.label(f"$ {ayer_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-emerald-50 dark:bg-emerald-900/40"):
+                                    ui.label("7 días").classes("text-xs text-emerald-600")
+                                    ui.label(str(semana_unidades)).classes("text-base font-bold text-emerald-800")
+                                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                            with ui.row().classes("gap-1 w-full flex-nowrap"):
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-teal-50 dark:bg-teal-900/40"):
+                                    ui.label("15 días").classes("text-xs text-teal-600")
+                                    ui.label(str(d15_unidades)).classes("text-base font-bold text-teal-800")
+                                    ui.label(f"$ {d15_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-cyan-50 dark:bg-cyan-900/40"):
+                                    ui.label("21 días").classes("text-xs text-cyan-600")
+                                    ui.label(str(d21_unidades)).classes("text-base font-bold text-cyan-800")
+                                    ui.label(f"$ {d21_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-amber-50 dark:bg-amber-900/40"):
+                                    ui.label("30 días").classes("text-xs text-amber-600")
+                                    ui.label(str(mes_unidades)).classes("text-base font-bold text-amber-800")
+                                    ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
 
                     # Gráfico ventas por mes (valores en millones para eje Y legible)
                     if meses_orden:
@@ -2268,9 +2304,9 @@ def _pintar_home_inline(
                                 "label": {"show": True, "position": "top", "formatter": lbl_m}
                             })
                         chart_options = {
-                            "grid": {"left": 50, "right": 25, "top": 25, "bottom": 35},
+                            "grid": {"left": 60, "right": 25, "top": 25, "bottom": 35},
                             "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 12, "interval": 0}},
-                            "yAxis": {"type": "value", "axisLabel": {"fontSize": 12}},
+                            "yAxis": {"type": "value", "name": "Millones de pesos", "axisLabel": {"fontSize": 12}},
                             "series": [{"type": "bar", "data": chart_data, "barWidth": "60%"}],
                         }
                         with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-4 border-l-4 border-l-indigo-500").style("min-height: 185px"):
@@ -2433,10 +2469,16 @@ def _pintar_home_inline(
                         ui.label(f"Ventas - {mes_actual_nom}").classes("text-base font-semibold text-violet-700 mb-2")
                         with ui.column().classes("gap-1.5 text-sm"):
                             ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            ui.label(f"Venta diaria: $ {venta_diaria:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            ui.label(f"Cantidad de días: {dias_transcurridos}").classes("text-gray-700")
+                            ui.label(f"Unidades vendidas: {ventas_mes_actual_unid}").classes("text-gray-700")
+                            ui.element("div").classes("border-t border-gray-200 my-1")
+                            ui.label(f"Ventas diarias: $ {venta_diaria:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            venta_diaria_u = ventas_mes_actual_unid / dias_transcurridos if dias_transcurridos > 0 else 0
+                            ui.label(f"Venta diaria u: {venta_diaria_u:,.1f}".replace(",", ".")).classes("text-gray-700")
                             ticket_prom = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
-                            ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("font-bold text-gray-800")
+                            ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            ui.element("div").classes("border-t border-gray-200 my-1")
+                            ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
 
 
 def build_tab_ventas(container) -> None:
@@ -2563,7 +2605,8 @@ def build_tab_ventas(container) -> None:
                     if gross_f > paid_total + 0.01:
                         pct = ((gross_f - paid_total) / gross_f * 100) if gross_f > 0 else 0
                         orig_fmt = f"$ {gross_f:,.0f}".replace(",", ".")
-                        return ("Promo", f"{pct:.0f}% dto · {orig_fmt} orig")
+                        pct_str = f"{pct:.1f}".replace(".", ",")
+                        return ("Promo", f"{orig_fmt} ({pct_str}% dto)")
                 except (TypeError, ValueError):
                     pass
             discounts = it.get("discounts") or []
@@ -2581,7 +2624,8 @@ def build_tab_ventas(container) -> None:
                                         orig = paid_total + full_f
                                         pct = (full_f / orig * 100) if orig > 0 else 0
                                         orig_fmt = f"$ {orig:,.0f}".replace(",", ".")
-                                        return ("Promo", f"{pct:.0f}% dto · {orig_fmt} orig")
+                                        pct_str = f"{pct:.1f}".replace(".", ",")
+                                        return ("Promo", f"{orig_fmt} ({pct_str}% dto)")
                                 except (TypeError, ValueError):
                                     pass
             return (fallback, None)
@@ -2740,15 +2784,6 @@ def build_tab_ventas(container) -> None:
             elif tipo_val == "regular":
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "regular"]
             ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
-            ventas_pagada = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
-            facturacion_pagada = sum(v["monto"] for v in ventas_pagada)
-            try:
-                ml_ganancia_val = float(
-                    str(get_cotizador_param("ml_ganancia_neta_venta", user["id"]) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")).replace(",", ".").strip()
-                )
-            except (ValueError, TypeError):
-                ml_ganancia_val = 0.1
-            ganancia_estimada = facturacion_pagada * ml_ganancia_val
             hoy = datetime.now().date()
             primer_dia = hoy.replace(day=1)
             ultimo_mes = primer_dia - timedelta(days=1)
@@ -2764,26 +2799,29 @@ def build_tab_ventas(container) -> None:
             header_card.clear()
             with header_card:
                 with ui.card().classes("w-full p-4 bg-grey-2"):
-                    with ui.row().classes("w-full gap-6 flex-wrap"):
+                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
                         with ui.column().classes("gap-0"):
-                            ui.label("Total de ventas").classes("text-xs text-gray-600")
+                            ui.label("Total Ventas $").classes("text-xs text-gray-600")
+                            ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total Ventas U").classes("text-xs text-gray-600")
                             ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
                         with ui.column().classes("gap-0"):
                             ui.label("Total de días").classes("text-xs text-gray-600")
                             ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
-                            ui.label("Ventas diarias").classes("text-xs text-gray-600")
+                            ui.label("Ventas Diarias U").classes("text-xs text-gray-600")
+                            ventas_diarias_u = total_unidades_ok / dias_total if dias_total > 0 else 0
+                            ui.label(f"{ventas_diarias_u:,.1f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Ventas Diarias $").classes("text-xs text-gray-600")
                             ventas_diarias = total_monto_ok / dias_total if dias_total > 0 else 0
                             ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                         with ui.column().classes("gap-0"):
-                            ui.label("Total en $").classes("text-xs text-gray-600")
-                            ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
                             ui.label("Ticket promedio").classes("text-xs text-gray-600")
                             ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Ganancia estimada").classes("text-xs text-gray-600")
-                            ui.label(f"$ {ganancia_estimada:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
                             ui.label("Ganancia Neta Calculada").classes("text-xs text-gray-600")
                             ui.label(f"$ {ganancia_neta_ref.get('val', 0):,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
@@ -2850,13 +2888,13 @@ def build_tab_ventas(container) -> None:
                                                 ui.label("Cuotas")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("Tipo")
-                                            with ui.element("th").classes("px-2 py-2 border text-left"):
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.button("Cant.", on_click=lambda: _on_sort_ventas("cantidad")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                             with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.label("Margen")
-                                            with ui.element("th").classes("px-2 py-2 border text-left"):
+                                            with ui.element("th").classes("px-2 py-2 border text-center"):
                                                 ui.button("Monto total", on_click=lambda: _on_sort_ventas("monto")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                     with ui.element("tbody"):
                                         for idx, v in enumerate(filas, 1):
@@ -2908,9 +2946,9 @@ def build_tab_ventas(container) -> None:
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
                                             ("tipo", "Tipo", "text-center"),
-                                            ("productos", "Producto", "text-left"),
+                                            ("productos", "Producto", "text-center"),
                                             ("cantidad", "Cant.", "text-center"),
-                                            ("monto", "Monto", "text-right"),
+                                            ("monto", "Monto", "text-center"),
                                             ("status", "Estado", "text-center"),
                                         ]
                                         for col_key, h, align in cols_ventas:
@@ -3071,7 +3109,8 @@ def build_tab_ventas(container) -> None:
                                                 result[iid] = "Promo"
                                                 pct = ((reg_f - amt_f) / reg_f * 100) if reg_f > 0 else 0
                                                 orig_fmt = f"$ {reg_f:,.0f}".replace(",", ".")
-                                                promo_display[iid] = f"{pct:.0f}% dto · {orig_fmt} orig"
+                                                pct_str = f"{pct:.1f}".replace(".", ",")
+                                                promo_display[iid] = f"{orig_fmt} ({pct_str}% dto)"
                                             else:
                                                 result[iid] = "Regular"
                                         except (TypeError, ValueError):
@@ -3304,8 +3343,43 @@ def _mostrar_tabla_precios(
             ui.label("No tienes publicaciones en MercadoLibre o aún no se han cargado.").classes("text-gray-500")
         return
 
-    items_loaded = []
+    # Grupos de duplicados conocidos: solo fusionar estos (mismo producto en distintas cuotas/promos).
+    DUPLICATE_GROUPS = [
+        ["MLA2815562106", "MLA1674890445", "MLA2957178650"],
+        ["MLA2896534310", "MLA2896560238"],
+        ["MLA1674709457", "MLA1674787133", "MLA1658462387"],
+    ]
+    id_to_group: Dict[str, int] = {}
+    for gidx, grupo in enumerate(DUPLICATE_GROUPS):
+        for iid in grupo:
+            id_to_group[str(iid).strip().upper()] = gidx
+            id_to_group[str(iid).strip()] = gidx
+
+    grupos_merged: Dict[int, List[Dict[str, Any]]] = {}
+    items_sueltos: List[Dict[str, Any]] = []
     for i in items:
+        iid = str(i.get("id") or "").strip()
+        gidx = id_to_group.get(iid) or id_to_group.get(iid.upper())
+        if gidx is not None:
+            grupos_merged.setdefault(gidx, []).append(i)
+        else:
+            items_sueltos.append(i)
+
+    items_dedup: List[Dict[str, Any]] = list(items_sueltos)
+    for gidx, grupo in grupos_merged.items():
+        if len(grupo) == 1:
+            items_dedup.append(grupo[0])
+            continue
+        total_stock = sum(int(x.get("available_quantity") or 0) for x in grupo)
+        total_sold = sum(int(x.get("sold_quantity") or 0) for x in grupo)
+        principal = max(grupo, key=lambda x: int(x.get("available_quantity") or 0))
+        fusionado = dict(principal)
+        fusionado["available_quantity"] = total_stock
+        fusionado["sold_quantity"] = total_sold
+        items_dedup.append(fusionado)
+
+    items_loaded = []
+    for i in items_dedup:
         precio = i.get("price") or 0
         sale_price = i.get("sale_price")
         precio_real = float(sale_price) if sale_price is not None else precio
@@ -6670,7 +6744,7 @@ COTIZADOR_DEFAULTS = {
     "dolar_oficial": "1475", "dolar_blue": "1450", "dolar_sistema": "1500", "dolar_despacho": "1475",
     "kilo": "60", "iva_105": "0.105", "iva_21": "0.21", "iibb_lhs": "0.03",
     "ml_comision": "0.15", "ml_debcre": "0.006", "ml_sirtac": "0.008", "ml_envios": "5823",
-    "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_cobrado": "0.836",
+    "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_comision_fija_menor": "2800", "ml_cobrado": "0.836",
     "ml_3cuotas": "1.12149", "ml_6cuotas": "1.21067",
     "ml_ganancia_neta_venta": "0.1000",
     "cuotas_3x": "0.094", "cuotas_6x": "0.151", "cuotas_9x": "0.207", "cuotas_12x": "0.259",
@@ -7288,8 +7362,10 @@ def build_tab_datos() -> None:
             with ui.card().classes("p-4 w-fit min-w-[220px]"):
                 ui.label("Mercadolibre").classes("text-lg font-semibold mb-3")
                 for label, key in [
-                    ("ML - Comisión", "ml_comision"), ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
-                    ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"), ("ML - Cobrado", "ml_cobrado"),
+                    ("ML - Comisión", "ml_comision"), ("Comision Fija (menor)", "ml_comision_fija_menor"),
+                    ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
+                    ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"),
+                    ("ML - Cobrado", "ml_cobrado"),
                     ("Ganancia Neta sobre Venta", "ml_ganancia_neta_venta"),
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
@@ -7341,7 +7417,7 @@ def build_tab_datos() -> None:
                         inputs_china[key] = ui.input(value=val_disp).classes("flex-1 max-w-[100px]").props("dense")
 
         def guardar_params() -> None:
-            dolar_keys = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho"}
+            dolar_keys = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho", "ml_comision_fija_menor"}
             usd_keys = {"kilo", "valor_kg_miami", "almacenaje_dias_kg_miami", "valor_kg_china", "almacenaje_dias_kg_china"}
             for key, inp in {**inputs_params, **inputs_cuotas, **inputs_miami, **inputs_china}.items():
                 val = str(inp.value or "").strip()
