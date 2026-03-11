@@ -32,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260306.14"
+VERSION = "1.260311.08"
 
 
 # ==========================
@@ -2032,7 +2032,14 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             orders_data: Dict[str, Any] = {}
             items_data: Dict[str, Any] = {"results": []}
             if seller_id:
-                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
+                limit_str = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
+                try:
+                    limit_ordenes = int(limit_str)
+                    if limit_ordenes not in (300, 500, 1000, 2000, 3000, 4000, 5000):
+                        limit_ordenes = 1000
+                except (ValueError, TypeError):
+                    limit_ordenes = 1000
+                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit_ordenes, 0)
             try:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
@@ -2479,6 +2486,10 @@ def _pintar_home_inline(
                             ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("text-gray-700")
                             ui.element("div").classes("border-t border-gray-200 my-1")
                             ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
+                            dolar_str = (get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")) if user_id else "1475"
+                            dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
+                            venta_estimada_mes_usd = (venta_estimada_mes / dolar_oficial) if dolar_oficial > 0 else 0
+                            ui.label(f"Venta estimada mensual: u$ {venta_estimada_mes_usd:,.0f}".replace(",", ".")).classes("text-gray-700")
 
 
 def build_tab_ventas(container) -> None:
@@ -6511,8 +6522,6 @@ def build_tab_config() -> None:
     if not user:
         return
 
-    ui.label("Configuración").classes("text-2xl font-semibold mb-6")
-
     # MercadoLibre + Estado de la cuenta (tarjeta combinada)
     app_creds = get_ml_app_credentials(user["id"])
     default_redirect = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
@@ -6527,14 +6536,15 @@ def build_tab_config() -> None:
             ui.label("MercadoLibre").classes("text-lg font-semibold mb-3")
             ui.label(
                 "Paso 1: Ingresá App ID y Client Secret de tu app en MercadoLibre Developers.\n"
-                "Paso 2: Redirect URI debe coincidir EXACTAMENTE con el configurado en tu app (ej: https://tu-ngrok.ngrok-free.dev/ml/callback).\n"
+                "Paso 2: Redirect URI debe coincidir EXACTAMENTE con el configurado en tu app.\n"
                 "Paso 3: Guardar credenciales. Paso 4: Conectar cuenta.\n"
                 "Para cambiar de cuenta ML: Desvincular → ingresar otras credenciales → Guardar → Conectar."
             ).classes("text-sm text-gray-600 mb-3 whitespace-pre-line")
 
-            inp_client_id = ui.input("App ID (client_id)", value=app_creds["client_id"] if app_creds else "").classes("w-full max-w-md").props("type=text")
-            inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full max-w-md").props("type=password password-toggle")
-            inp_redirect = ui.input("Redirect URI (EXACTO como en MercadoLibre Developers)", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full max-w-md")
+            with ui.expansion("App ID, Client Secret y Redirect URI", icon="key").classes("w-full").props("expand-icon-toggle"):
+                inp_client_id = ui.input("App ID (client_id)", value=app_creds["client_id"] if app_creds else "").classes("w-full max-w-md").props("type=text")
+                inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full max-w-md").props("type=password password-toggle")
+                inp_redirect = ui.input("Redirect URI (EXACTO como en MercadoLibre Developers)", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full max-w-md")
 
             def guardar_app_ml() -> None:
                 cid = (inp_client_id.value or "").strip()
@@ -6596,8 +6606,23 @@ def build_tab_config() -> None:
                     ui.label("Sin cuenta vinculada").classes("text-warning font-medium")
                 ui.label("Usá el botón 'Conectar cuenta' de arriba (usa las credenciales que guardaste).").classes("text-sm text-gray-600")
 
-        # Columna derecha: Contraseña + Base de datos (una debajo de la otra)
+        # Columna derecha: Estadísticas + Contraseña + Base de datos (una debajo de la otra)
         with ui.column().classes("flex-1 min-w-0 max-w-md gap-4"):
+            # Estadísticas: cantidad de ventas a cargar
+            with ui.card().classes("w-full"):
+                ui.label("Estadísticas").classes("text-lg font-semibold mb-3")
+                ui.label("Cantidad de ventas (órdenes) a cargar en Estadísticas. Más ventas = más datos pero carga más lento.").classes("text-sm text-gray-600 mb-2")
+                limit_actual = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
+                opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000"}
+                sel_ventas = ui.select(opts_ventas, value=limit_actual, label="Ventas a cargar").classes("w-full max-w-[200px]")
+                def guardar_limit_ventas() -> None:
+                    val = str(sel_ventas.value or "1000").strip()
+                    if val not in opts_ventas:
+                        val = "1000"
+                    set_cotizador_param("estadisticas_limit_ordenes", val, user["id"])
+                    ui.notify("Guardado", color="positive")
+                ui.button("Guardar", on_click=guardar_limit_ventas, color="primary").classes("mt-2")
+
             # Cambiar contraseña (colapsado con flecha)
             with ui.card().classes("w-full"):
                 with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full").props("expand-icon-toggle"):
