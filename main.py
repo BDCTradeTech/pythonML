@@ -32,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "2.260312.15"
+VERSION = "2.260312.18"
 
 
 # ==========================
@@ -6090,11 +6090,12 @@ def build_tab_compras(container) -> None:
                                             amt_str = f"{float(amt):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                         except (TypeError, ValueError):
                                             amt_str = str(amt)
+                                        qty_display = "" if desc == "Total" else str(qty)
                                         with ui.element("tr").classes("border-t"):
                                             with ui.element("td").classes("px-2 py-1"):
                                                 ui.label(str(desc)[:80])
                                             with ui.element("td").classes("px-2 py-1 text-right"):
-                                                ui.label(str(qty))
+                                                ui.label(qty_display)
                                             with ui.element("td").classes("px-2 py-1 text-right"):
                                                 ui.label(f"u$ {amt_str}")
 
