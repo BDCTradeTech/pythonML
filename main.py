@@ -2533,7 +2533,7 @@ def show_main_layout(container) -> None:
                 precios_detalle_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_compras):
-                build_tab_compras()
+                compras_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_busqueda):
                 build_tab_busqueda()
@@ -2558,10 +2558,14 @@ def show_main_layout(container) -> None:
         ventas_cargado = [False]
         estadisticas_cargado = [False]
         balance_cargado = [False]
+        compras_cargado = [False]
 
         def on_tab_change(e) -> None:
             val = getattr(e, "value", None)
-            if val == "Productos" and not precios_cargado[0]:
+            if val == "Compras" and not compras_cargado[0]:
+                compras_cargado[0] = True
+                build_tab_compras(compras_container)
+            elif val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
             elif val == "Precios" and not precios_detalle_cargado[0]:
@@ -5990,7 +5994,7 @@ def build_tab_precios_detalle(container) -> None:
     background_tasks.create(_cargar(client), name="cargar_precios_detalle")
 
 
-def build_tab_compras() -> None:
+def build_tab_compras(container) -> None:
     """Pestaña Compras: conexión a QuickBooks para mostrar Invoices del cliente."""
     user = require_login()
     if not user:
@@ -5999,7 +6003,7 @@ def build_tab_compras() -> None:
     qb_creds = get_qb_app_credentials(user["id"])
     qb_tokens = get_qb_tokens(user["id"])
 
-    with ui.column().classes("w-full gap-4"):
+    with container:
         if not qb_creds:
             ui.label(
                 "Configurá QuickBooks en Configuración (Client ID, Client Secret, Redirect URI) y conectá tu cuenta."
@@ -6038,7 +6042,8 @@ def build_tab_compras() -> None:
             dlg = ui.dialog()
             with dlg:
                 with ui.card().classes("p-6 min-w-[650px] max-w-[90vw] max-h-[70vh] overflow-hidden flex flex-col"):
-                    ui.label("Detalle de la factura").classes("text-lg font-semibold mb-3 shrink-0")
+                    ui.label("Detalle de la factura").classes("text-lg font-semibold shrink-0")
+                    ui.separator().classes("mb-3")
                     cont = ui.column().classes("gap-2 overflow-y-auto min-h-0 flex-1")
 
             async def _cargar_y_mostrar() -> None:
@@ -6070,20 +6075,18 @@ def build_tab_compras() -> None:
                             bal_fmt = f"{float(bal):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if bal is not None else "—"
                         except (TypeError, ValueError):
                             bal_fmt = str(bal) or "—"
-                        cust_ref = inv_obj.get("CustomerRef", {}) or {}
-                        cust_name = cust_ref.get("name", inv.get("customer", "—")) if isinstance(cust_ref, dict) else str(cust_ref)
                         with ui.element("table").classes("w-full text-sm"):
                             for lbl, val in [
                                 ("Nº Doc", doc), ("Fecha", txn), ("Vencimiento", due),
                                 ("Total", f"u$ {total_fmt}" if total_fmt != "—" else "—"),
                                 ("Saldo", f"u$ {bal_fmt}" if bal_fmt != "—" else "—"),
-                                ("Cliente", cust_name),
                             ]:
                                 with ui.element("tr"):
                                     with ui.element("td").classes("font-semibold pr-4 py-1"):
                                         ui.label(lbl)
                                     with ui.element("td").classes("py-1"):
                                         ui.label(str(val))
+                        ui.separator().classes("my-2")
                         lines = inv_obj.get("Line") or []
                         if isinstance(lines, dict):
                             lines = [lines]
@@ -6139,7 +6142,7 @@ def build_tab_compras() -> None:
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
-                        ui.button("Cerrar", on_click=dlg.close).props("dense no-caps")
+                        ui.button("Cerrar invoice", on_click=dlg.close).props("dense no-caps")
                         ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
 
             dlg.open()
@@ -6275,6 +6278,12 @@ def build_tab_compras() -> None:
                 header_card.clear()
                 with header_card:
                     ui.label(f"Error al cargar facturas: {err_inv}").classes("text-negative p-4")
+                    if "403" in str(err_inv) and ("3100" in str(err_inv) or "AuthorizationFailed" in str(err_inv)):
+                        ui.label(
+                            "Sugerencia: este error suele indicar que la conexión con QuickBooks perdió autorización. "
+                            "Andá a Configuración → QuickBooks, hacé clic en 'Desvincular cuenta' y luego en 'Conectar cuenta' para volver a autorizar. "
+                            "Verificá que las credenciales (Client ID, Secret) correspondan al mismo entorno (Sandbox o Producción) que la empresa conectada."
+                        ).classes("text-sm text-gray-700 mt-2 p-3 bg-gray-100 rounded")
                 return
             invoices, overdue_total = inv_result
             open_balance = ""
@@ -7519,8 +7528,17 @@ def build_tab_config() -> None:
                     with ui.expansion("Credenciales QB", icon="account_balance").classes("w-full").props("expand-icon-toggle dense"):
                         inp_qb_cid = ui.input("Client ID", value=qb_app_creds["client_id"] if qb_app_creds else "").classes("w-full").props("type=text dense")
                         inp_qb_csec = ui.input("Client Secret", value=qb_app_creds["client_secret"] if qb_app_creds else "").classes("w-full").props("type=password password-toggle dense")
-                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("w-full").props("dense")
-                        ui.label("Debe coincidir EXACTAMENTE con developer.intuit.com → Keys. Con ngrok: agregá QB_REDIRECT_URI en .env").classes("text-xs text-gray-500 mt-1")
+                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("flex-1").props("dense")
+                        async def _usar_url_actual_qb():
+                            try:
+                                origin = await ui.run_javascript("window.location.origin")
+                                if origin:
+                                    inp_qb_redir.value = f"{origin}/qb/callback"
+                                    ui.notify(f"Redirect URI: {inp_qb_redir.value}", color="positive")
+                            except Exception:
+                                ui.notify("No se pudo detectar la URL actual", color="warning")
+                        ui.button("Usar URL actual", on_click=_usar_url_actual_qb, color="secondary").props("dense no-caps flat")
+                        ui.label("Debe coincidir EXACTAMENTE con developer.intuit.com → Keys. Si accedés por IP (ej. http://157.230.88.160:8083), usá esa URL + /qb/callback.").classes("text-xs text-gray-500 mt-1")
 
                     def guardar_qb_creds() -> None:
                         cid = (inp_qb_cid.value or "").strip()
@@ -8629,6 +8647,18 @@ def build_tab_datos() -> None:
 # ==========================
 
 
+def _get_base_url(request: Request) -> str:
+    """Obtiene la URL base del request (para redirect_uri). Soporta proxy con X-Forwarded-*."""
+    forwarded_proto = request.headers.get("X-Forwarded-Proto")
+    forwarded_host = request.headers.get("X-Forwarded-Host")
+    if forwarded_host:
+        scheme = (forwarded_proto or "https").rstrip("/")
+        return f"{scheme}://{forwarded_host.split(',')[0].strip()}"
+    if request.url:
+        return str(request.base_url).rstrip("/")
+    return "http://localhost:8083"
+
+
 async def _ml_callback_redirect(request: Request) -> RedirectResponse:
     """Ruta HTTP directa: redirige a / con el code para que la página principal procese el OAuth."""
     code = request.query_params.get("code")
@@ -8653,7 +8683,8 @@ app.add_api_route("/ml/callback", _ml_callback_redirect, methods=["GET"])
 
 
 async def _qb_callback_redirect(request: Request) -> RedirectResponse:
-    """Callback OAuth de QuickBooks: redirige a / con el code para procesar el token."""
+    """Callback OAuth de QuickBooks: redirige a / con el code para procesar el token. Usa URL absoluta para mantener el host (IP o ngrok)."""
+    base = _get_base_url(request)
     code = request.query_params.get("code")
     realm_id = request.query_params.get("realmId")
     state = request.query_params.get("state")
@@ -8661,17 +8692,17 @@ async def _qb_callback_redirect(request: Request) -> RedirectResponse:
     error_desc = request.query_params.get("error_description", "")
     if error_param:
         from urllib.parse import quote
-        return RedirectResponse(url=f"/?qb_oauth_error={error_param}&qb_oauth_error_desc={quote(error_desc[:300])}", status_code=302)
+        return RedirectResponse(url=f"{base}/?qb_oauth_error={error_param}&qb_oauth_error_desc={quote(error_desc[:300])}", status_code=302)
     if code:
         params = f"qb_oauth_code={code}"
         if realm_id:
             params += f"&qb_realm_id={realm_id}"
         if state:
             params += f"&qb_state={state}"
-        return RedirectResponse(url=f"/?{params}", status_code=302)
+        return RedirectResponse(url=f"{base}/?{params}", status_code=302)
     from urllib.parse import quote
     url_recibida = str(request.url) if request.url else ""
-    return RedirectResponse(url=f"/?qb_oauth_error=no_code&qb_oauth_error_desc={quote(url_recibida[:200])}", status_code=302)
+    return RedirectResponse(url=f"{base}/?qb_oauth_error=no_code&qb_oauth_error_desc={quote(url_recibida[:200])}", status_code=302)
 
 
 app.add_api_route("/qb/callback", _qb_callback_redirect, methods=["GET"])
@@ -8820,13 +8851,8 @@ def index(request: Request) -> None:  # type: ignore[override]
             return
         client_id = qb_app_creds["client_id"]
         client_secret = qb_app_creds["client_secret"]
-        redirect_uri = (qb_app_creds.get("redirect_uri") or "").strip() or os.getenv("QB_REDIRECT_URI")
-        if not redirect_uri and qb_app_creds.get("redirect_uri"):
-            redirect_uri = qb_app_creds["redirect_uri"]
-        ml_redir = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
-        if not redirect_uri:
-            redirect_uri = ml_redir.replace("/ml/callback", "/qb/callback") if "/ml/callback" in ml_redir else "http://localhost:8083/qb/callback"
-        redirect_uri = redirect_uri.strip()
+        base_url = _get_base_url(request)
+        redirect_uri = base_url.rstrip("/") + "/qb/callback"
         import base64
         auth_str = f"{client_id}:{client_secret}"
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
@@ -8952,7 +8978,7 @@ def main() -> None:
     port = int(os.getenv("PORT", 8083))
     # En Render/cloud: PORT lo define la plataforma, no iniciar ngrok
     es_produccion = "PORT" in os.environ or os.getenv("RENDER") == "true"
-    if not es_produccion and os.getenv("NGROK_AUTO_START", "1").strip().lower() in ("1", "true", "yes"):
+    if not es_produccion and os.getenv("NGROK_AUTO_START", "0").strip().lower() in ("1", "true", "yes"):
         print("Iniciando ngrok...")
         _iniciar_ngrok(port)
     # host 0.0.0.0 necesario para que Render/cloud pueda acceder al servicio
