@@ -6002,7 +6002,10 @@ def build_tab_compras(container) -> None:
             dlg = ui.dialog()
             with dlg:
                 with ui.card().classes("p-6 min-w-[650px] max-w-[90vw] max-h-[70vh] overflow-hidden flex flex-col"):
-                    ui.label("Detalle de la factura").classes("text-lg font-semibold shrink-0")
+                    with ui.row().classes("items-center gap-2 shrink-0"):
+                        ui.label("Detalle de la factura").classes("text-lg font-semibold")
+                        ui.label("Invoice nro").classes("text-base text-gray-600")
+                        ui.label(str(inv.get("doc", "—"))).classes("text-base font-medium")
                     ui.separator().classes("mb-3")
                     cont = ui.column().classes("gap-2 overflow-y-auto min-h-0 flex-1")
 
@@ -6035,14 +6038,28 @@ def build_tab_compras(container) -> None:
                             bal_fmt = f"{float(bal):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if bal is not None else "—"
                         except (TypeError, ValueError):
                             bal_fmt = str(bal) or "—"
-                        with ui.element("table").classes("w-full text-sm"):
+                        _label_w = "w-28"
+                        with ui.element("table").classes("w-full text-sm table-fixed"):
+                            with ui.element("colgroup"):
+                                ui.element("col").classes(_label_w)
+                                ui.element("col")
+                            for lbl, val in [("Fecha", txn), ("Vencimiento", due)]:
+                                with ui.element("tr"):
+                                    with ui.element("td").classes(f"font-semibold pr-4 py-1 {_label_w}"):
+                                        ui.label(lbl)
+                                    with ui.element("td").classes("py-1"):
+                                        ui.label(str(val))
+                        ui.element("div").classes("border-t border-gray-300 my-2")
+                        with ui.element("table").classes("w-full text-sm table-fixed"):
+                            with ui.element("colgroup"):
+                                ui.element("col").classes(_label_w)
+                                ui.element("col")
                             for lbl, val in [
-                                ("Nº Doc", doc), ("Fecha", txn), ("Vencimiento", due),
                                 ("Total", f"u$ {total_fmt}" if total_fmt != "—" else "—"),
                                 ("Saldo", f"u$ {bal_fmt}" if bal_fmt != "—" else "—"),
                             ]:
                                 with ui.element("tr"):
-                                    with ui.element("td").classes("font-semibold pr-4 py-1"):
+                                    with ui.element("td").classes(f"font-semibold pr-4 py-1 {_label_w}"):
                                         ui.label(lbl)
                                     with ui.element("td").classes("py-1"):
                                         ui.label(str(val))
@@ -6102,7 +6119,7 @@ def build_tab_compras(container) -> None:
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
-                        ui.button("Cerrar invoice", on_click=dlg.close).props("dense no-caps")
+                        ui.button("Cerrar popup", on_click=dlg.close).props("dense no-caps")
                         ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
 
             dlg.open()
@@ -7488,7 +7505,7 @@ def build_tab_config() -> None:
                     with ui.expansion("Credenciales QB", icon="account_balance").classes("w-full").props("expand-icon-toggle dense"):
                         inp_qb_cid = ui.input("Client ID", value=qb_app_creds["client_id"] if qb_app_creds else "").classes("w-full").props("type=text dense")
                         inp_qb_csec = ui.input("Client Secret", value=qb_app_creds["client_secret"] if qb_app_creds else "").classes("w-full").props("type=password password-toggle dense")
-                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("flex-1").props("dense")
+                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("w-full").props("dense")
                         async def _usar_url_actual_qb():
                             try:
                                 origin = await ui.run_javascript("window.location.origin")
