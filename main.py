@@ -32,7 +32,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "1.260311.08"
+VERSION = "2.260312.15"
 
 
 # ==========================
@@ -73,6 +73,67 @@ def init_db() -> None:
             redirect_uri TEXT,
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
+        """
+    )
+
+    # Credenciales de la app QuickBooks (Client ID, Client Secret, Redirect URI) — OAuth 2.0
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qb_app_credentials (
+            user_id INTEGER PRIMARY KEY,
+            client_id TEXT NOT NULL,
+            client_secret TEXT NOT NULL,
+            redirect_uri TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # Tokens OAuth de QuickBooks (access_token, refresh_token, expires_at, realm_id)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qb_tokens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            access_token TEXT,
+            refresh_token TEXT,
+            expires_at TEXT,
+            realm_id TEXT,
+            raw_data TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # Cliente QuickBooks por usuario (para multi-tenant: cada usuario = un Customer en QB)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_qb_customer (
+            user_id INTEGER PRIMARY KEY,
+            qb_customer_id TEXT NOT NULL,
+            qb_customer_name TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # Clientes QuickBooks preasignados por email (no editables por el usuario)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS qb_customer_preasignado (
+            email TEXT PRIMARY KEY,
+            qb_customer_id TEXT NOT NULL,
+            qb_customer_name TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO qb_customer_preasignado (email, qb_customer_id, qb_customer_name)
+        VALUES
+            ('diegolas@gmail.com', '101', 'NorthTechnology'),
+            ('info@dsmax.com.ar', '136', 'DSMAX TECH'),
+            ('diegog@exxa.com.ar', '5', 'Exxa Store')
         """
     )
 
@@ -224,6 +285,525 @@ def set_ml_app_credentials(user_id: int, client_id: str, client_secret: str, red
         conn.commit()
     finally:
         conn.close()
+
+
+def get_qb_app_credentials(user_id: int) -> Optional[Dict[str, str]]:
+    """Obtiene las credenciales de la app QuickBooks (client_id, client_secret, redirect_uri)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT client_id, client_secret, redirect_uri FROM qb_app_credentials WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if row and row["client_id"] and row["client_secret"]:
+            return {
+                "client_id": row["client_id"],
+                "client_secret": row["client_secret"],
+                "redirect_uri": (row["redirect_uri"] or "").strip() or None,
+            }
+        return None
+    finally:
+        conn.close()
+
+
+def set_qb_app_credentials(user_id: int, client_id: str, client_secret: str, redirect_uri: Optional[str] = None) -> None:
+    """Guarda las credenciales de la app QuickBooks."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO qb_app_credentials (user_id, client_id, client_secret, redirect_uri) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET client_id=?, client_secret=?, redirect_uri=?",
+            (user_id, client_id.strip(), client_secret.strip(), redirect_uri or "", client_id.strip(), client_secret.strip(), redirect_uri or ""),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_qb_tokens(user_id: int) -> Optional[Any]:
+    """Obtiene los tokens OAuth de QuickBooks del usuario (access_token, refresh_token, expires_at, realm_id)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT access_token, refresh_token, expires_at, realm_id FROM qb_tokens WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return dict(row) if row and row["access_token"] else None
+    finally:
+        conn.close()
+
+
+def get_user_qb_customer(user_id: int) -> Optional[Dict[str, str]]:
+    """Obtiene el Cliente QuickBooks preasignado al usuario por email (qb_customer_id, qb_customer_name)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+        user_row = cur.fetchone()
+        if not user_row:
+            return None
+        username = user_row["username"]
+        if not username:
+            return None
+        email = (username or "").strip().lower()
+        cur.execute(
+            "SELECT qb_customer_id, qb_customer_name FROM qb_customer_preasignado WHERE LOWER(TRIM(email)) = ?",
+            (email,),
+        )
+        row = cur.fetchone()
+        if row and row["qb_customer_id"]:
+            return {"id": row["qb_customer_id"], "name": row["qb_customer_name"] or row["qb_customer_id"]}
+        return None
+    finally:
+        conn.close()
+
+
+def set_user_qb_customer(user_id: int, qb_customer_id: str, qb_customer_name: Optional[str] = None) -> None:
+    """Asigna el Cliente QuickBooks al usuario (para filtrar datos por cliente)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO user_qb_customer (user_id, qb_customer_id, qb_customer_name) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET qb_customer_id=?, qb_customer_name=?",
+            (user_id, qb_customer_id, qb_customer_name or qb_customer_id, qb_customer_id, qb_customer_name or qb_customer_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str]]:
+    """
+    Obtiene la lista de Customers de QuickBooks.
+    Devuelve (lista, None) si OK, o ([], mensaje_error) si falla.
+    """
+    import base64
+    from urllib.parse import quote
+
+    qb_creds = get_qb_app_credentials(user_id)
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_creds or not qb_tokens:
+        return [], "Credenciales o tokens de QuickBooks no configurados"
+    if not qb_tokens.get("realm_id"):
+        return [], "Falta realm_id. Volvé a Conectar cuenta en Configuración."
+
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    refresh_token = qb_tokens.get("refresh_token")
+    expires_at = qb_tokens.get("expires_at")
+
+    # Refrescar token si está por vencer (menos de 5 min)
+    needs_refresh = False
+    if expires_at:
+        try:
+            from datetime import datetime as dt
+            exp = dt.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if exp.tzinfo:
+                from datetime import timezone
+                now = dt.now(timezone.utc)
+            else:
+                now = dt.utcnow()
+            if (exp - now).total_seconds() < 300:
+                needs_refresh = True
+        except Exception:
+            needs_refresh = True
+    elif refresh_token:
+        needs_refresh = True
+
+    if needs_refresh and refresh_token and qb_creds:
+        auth_str = f"{qb_creds['client_id']}:{qb_creds['client_secret']}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        try:
+            resp = requests.post(
+                "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Authorization": f"Basic {auth_b64}",
+                },
+                timeout=15,
+            )
+            if resp.ok:
+                data = resp.json()
+                new_token = data.get("access_token")
+                new_refresh = data.get("refresh_token") or refresh_token
+                new_expires = data.get("expires_in")
+                expires_at_new = None
+                if isinstance(new_expires, (int, float)):
+                    from datetime import datetime as dt, timedelta
+                    expires_at_new = (dt.utcnow() + timedelta(seconds=int(new_expires))).isoformat()
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE qb_tokens SET access_token=?, refresh_token=?, expires_at=?, raw_data=? WHERE user_id=?",
+                        (new_token, new_refresh, expires_at_new, json.dumps(data, ensure_ascii=False), user_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                access_token = new_token
+        except Exception:
+            pass
+
+    # Sandbox vs Producción: prioridad a preferencia del usuario, luego QB_SANDBOX
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (
+        (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes")
+        if qb_sandbox_param is not None
+        else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    )
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    _demo_customers = [
+        {"id": "DEMO1", "name": "Cliente demo 1 (sandbox)"},
+        {"id": "DEMO2", "name": "Cliente demo 2 (sandbox)"},
+        {"id": "DEMO3", "name": "Cliente demo 3 (sandbox)"},
+    ]
+
+    def _sandbox_fallback():
+        """En sandbox, si falla la API, devolver clientes de demostración."""
+        if use_sandbox:
+            return _demo_customers, None
+        return [], None
+
+    query = "SELECT Id, DisplayName FROM Customer MAXRESULTS 1000"
+    url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query)}"
+    try:
+        r = requests.get(
+            url,
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        text = (r.text or "").strip()
+        if not text:
+            cust, _ = _sandbox_fallback()
+            return (cust, None) if cust else ([], "La API respondió vacío. Probá cambiar Sandbox ↔ Producción o reconectar la cuenta.")
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError) as je:
+            cust, _ = _sandbox_fallback()
+            if cust:
+                return cust, None
+            preview = text[:300] if len(text) > 300 else text
+            return [], f"La API no devolvió JSON válido. Probá desactivar Sandbox (o reconectar la cuenta). Preview: {preview!r}"
+        customers = []
+        raw_customers = data.get("QueryResponse", {}).get("Customer") or []
+        if isinstance(raw_customers, dict):
+            raw_customers = [raw_customers]
+        for qbo in raw_customers:
+            cid = str(qbo.get("Id", ""))
+            name = (qbo.get("DisplayName") or qbo.get("FullyQualifiedName") or cid).strip()
+            if cid:
+                customers.append({"id": cid, "name": name or cid})
+        if use_sandbox and not customers:
+            return _demo_customers, None
+        return sorted(customers, key=lambda c: (c["name"].lower(), c["id"])), None
+    except Exception as e:
+        err_msg = str(e)
+        try:
+            if hasattr(e, "response") and e.response is not None:
+                resp = e.response
+                body = getattr(resp, "text", "") or ""
+                if body:
+                    err_msg = body[:300] if len(body) > 300 else body
+                sc = getattr(resp, "status_code", None)
+                if sc is not None:
+                    err_msg = f"HTTP {sc}: {err_msg}"
+        except Exception:
+            pass
+        if "Expecting value" in err_msg or "line 1 column 1" in err_msg:
+            err_msg = "La API respondió vacío o no-JSON. Probá desactivar Sandbox, o reconectar la cuenta (Desvincular → Conectar)."
+        if use_sandbox:
+            return _demo_customers, None
+        if "3100" in err_msg or "ApplicationAuthorizationFailed" in err_msg:
+            err_msg = "Producción no autorizada (error 3100). Usá Sandbox si estás probando, o completá la autorización de la app en developer.intuit.com."
+        return [], err_msg
+
+
+def _qb_raw_query(user_id: int, query_sql: str) -> tuple[Optional[dict], Optional[str]]:
+    """
+    Ejecuta una consulta SQL contra la API de QuickBooks.
+    Retorna (data_json, None) si OK, o (None, mensaje_error) si falla.
+    """
+    import base64
+    from urllib.parse import quote
+
+    qb_creds = get_qb_app_credentials(user_id)
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_creds or not qb_tokens:
+        return None, "Credenciales o tokens de QuickBooks no configurados"
+    if not qb_tokens.get("realm_id"):
+        return None, "Falta realm_id. Volvé a Conectar cuenta en Configuración."
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    refresh_token = qb_tokens.get("refresh_token")
+    expires_at = qb_tokens.get("expires_at")
+    needs_refresh = False
+    if expires_at:
+        try:
+            from datetime import datetime as dt
+            exp = dt.fromisoformat(expires_at.replace("Z", "+00:00"))
+            if exp.tzinfo:
+                from datetime import timezone
+                now = dt.now(timezone.utc)
+            else:
+                now = dt.utcnow()
+            if (exp - now).total_seconds() < 300:
+                needs_refresh = True
+        except Exception:
+            needs_refresh = True
+    elif refresh_token:
+        needs_refresh = True
+    if needs_refresh and refresh_token and qb_creds:
+        auth_str = f"{qb_creds['client_id']}:{qb_creds['client_secret']}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        try:
+            resp = requests.post(
+                "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
+                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {auth_b64}"},
+                timeout=15,
+            )
+            if resp.ok:
+                data = resp.json()
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        "UPDATE qb_tokens SET access_token=?, refresh_token=?, expires_at=?, raw_data=? WHERE user_id=?",
+                        (data.get("access_token"), data.get("refresh_token") or refresh_token, None, json.dumps(data, ensure_ascii=False), user_id),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                access_token = data.get("access_token")
+        except Exception:
+            pass
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query_sql)}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        text = (r.text or "").strip()
+        if not text:
+            return None, "La API respondió vacío."
+        data = json.loads(text)
+        return data, None
+    except Exception as e:
+        err = str(e)
+        if hasattr(e, "response") and e.response is not None:
+            body = getattr(e.response, "text", "") or ""
+            if body:
+                err = body[:250] if len(body) > 250 else body
+            sc = getattr(e.response, "status_code", None)
+            if sc is not None:
+                err = f"HTTP {sc}: {err}"
+        return None, err
+
+
+def fetch_qb_company_info(user_id: int) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Obtiene la información de la empresa en QuickBooks."""
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    # CompanyInfo usa un endpoint distinto
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/companyinfo/{realm_id}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        ci = data.get("CompanyInfo", {})
+        return ci, None
+    except Exception as e:
+        return None, str(e)
+
+
+def fetch_qb_vendors(user_id: int) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Obtiene la lista de Vendors (proveedores) de QuickBooks."""
+    data, err = _qb_raw_query(user_id, "SELECT Id, DisplayName FROM Vendor MAXRESULTS 500")
+    if err:
+        return [], err
+    raw = data.get("QueryResponse", {}).get("Vendor") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    vendors = []
+    for v in raw:
+        vid = str(v.get("Id", ""))
+        name = (v.get("DisplayName") or v.get("FullyQualifiedName") or vid).strip()
+        if vid:
+            vendors.append({"id": vid, "name": name or vid})
+    return sorted(vendors, key=lambda x: (x["name"].lower(), x["id"])), None
+
+
+def fetch_qb_bills(user_id: int) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Obtiene Bills (facturas de compra a proveedores) de QuickBooks."""
+    data, err = _qb_raw_query(user_id, "SELECT Id, DocNumber, TxnDate, DueDate, Balance, VendorRef FROM Bill MAXRESULTS 100")
+    if err:
+        return [], err
+    raw = data.get("QueryResponse", {}).get("Bill") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    bills = []
+    for b in raw:
+        vid = ""
+        vname = ""
+        vr = b.get("VendorRef") or {}
+        if isinstance(vr, dict):
+            vid = str(vr.get("value", ""))
+            vname = str(vr.get("name", "")).strip()
+        bid = str(b.get("Id", ""))
+        doc = str(b.get("DocNumber", "")).strip()
+        txn = str(b.get("TxnDate", ""))[:10] if b.get("TxnDate") else ""
+        due = str(b.get("DueDate", ""))[:10] if b.get("DueDate") else ""
+        bal = b.get("Balance")
+        if bal is not None:
+            try:
+                bal = f"{float(bal):,.2f}"
+            except (TypeError, ValueError):
+                bal = str(bal)
+        else:
+            bal = ""
+        bills.append({"id": bid, "doc": doc, "vendor": vname or vid, "txn_date": txn, "due_date": due, "balance": bal})
+    return bills, None
+
+
+def fetch_qb_customer_detail(user_id: int, customer_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Obtiene el detalle de un Customer (Balance, etc.) por ID."""
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/customer/{customer_id}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("Customer", {}), None
+    except Exception as e:
+        return None, str(e)
+
+
+def fetch_qb_invoice_detail(user_id: int, invoice_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Obtiene el detalle completo de una Invoice por ID."""
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("Invoice", {}), None
+    except Exception as e:
+        return None, str(e)
+
+
+def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes], Optional[str]]:
+    """Descarga una Invoice como PDF. Retorna (pdf_bytes, None) o (None, mensaje_error)."""
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}/pdf"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/pdf"}, timeout=30)
+        r.raise_for_status()
+        return r.content, None
+    except Exception as e:
+        return None, str(e)
+
+
+def fetch_qb_invoices(user_id: int, customer_id: str) -> tuple[tuple[List[Dict[str, Any]], float], Optional[str]]:
+    """Obtiene Invoices (facturas de venta) de un Customer. Retorna (invoices, overdue_total), err."""
+    data, err = _qb_raw_query(
+        user_id,
+        f"SELECT Id, DocNumber, TxnDate, DueDate, TotalAmt, Balance, CustomerRef FROM Invoice WHERE CustomerRef = '{customer_id}' MAXRESULTS 200",
+    )
+    if err:
+        return ([], 0.0), err
+    raw = data.get("QueryResponse", {}).get("Invoice") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    invoices = []
+    overdue_total = 0.0
+    from datetime import datetime
+    today = datetime.now().strftime("%Y-%m-%d")
+    for inv in raw:
+        iid = str(inv.get("Id", ""))
+        doc = str(inv.get("DocNumber", "")).strip()
+        txn = str(inv.get("TxnDate", ""))[:10] if inv.get("TxnDate") else ""
+        due = str(inv.get("DueDate", ""))[:10] if inv.get("DueDate") else ""
+        total = inv.get("TotalAmt")
+        bal = inv.get("Balance")
+        try:
+            total_str = f"{float(total):,.2f}" if total is not None else ""
+        except (TypeError, ValueError):
+            total_str = str(total) if total is not None else ""
+        try:
+            bal_str = f"{float(bal):,.2f}" if bal is not None else ""
+        except (TypeError, ValueError):
+            bal_str = str(bal) if bal is not None else ""
+        if bal is None:
+            bal_str = ""
+            bal = 0
+        is_overdue = due and due < today and bal is not None and float(bal) != 0
+        if is_overdue:
+            try:
+                overdue_total += float(bal)
+            except (TypeError, ValueError):
+                pass
+        status = "Pagada" if (bal is not None and float(bal) == 0) else ("Vencida" if is_overdue else "Abierta")
+        try:
+            inv_bal = float(bal) if bal is not None else 0.0
+        except (TypeError, ValueError):
+            inv_bal = 0.0
+        invoices.append({"id": iid, "doc": doc, "txn_date": txn, "due_date": due, "tipo": "Factura", "amount": bal_str, "amount_num": inv_bal, "balance": inv_bal, "status": status})
+    return (invoices, overdue_total), None
+
+
+def fetch_qb_invoice_detail(user_id: int, invoice_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Obtiene el detalle completo de una Invoice por ID (incluye Line items)."""
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
+    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
+    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        return r.json().get("Invoice"), None
+    except Exception as e:
+        return None, str(e)
 
 
 def get_setting(key: str) -> Optional[float]:
@@ -1905,6 +2485,7 @@ def show_main_layout(container) -> None:
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
                 tab_precios_detalle = ui.tab("Precios")
+                tab_compras = ui.tab("Compras")
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
@@ -1912,15 +2493,26 @@ def show_main_layout(container) -> None:
                 tab_balance = ui.tab("Balance")
                 tab_config = ui.tab("Configuración")
             with ui.row().classes("items-center gap-4"):
-                ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
-                ui.label(user['username'])
-
-                def logout() -> None:
-                    set_current_user(None)
-                    ui.notify("Sesión cerrada", color="positive")
-                    show_login_screen(container)
-
-                ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat")
+                # Semáforos ML y BDC arriba de la versión
+                ml_linked = bool(get_ml_access_token(user["id"]))
+                qb_tokens = get_qb_tokens(user["id"])
+                qb_linked = bool(qb_tokens and qb_tokens.get("access_token"))
+                with ui.column().classes("items-center gap-1"):
+                    with ui.row().classes("items-center gap-2 justify-center"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
+                            ui.label("ML").classes("text-xs text-gray-600")
+                        with ui.row().classes("items-center gap-1"):
+                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if qb_linked else '#ef4444'}")
+                            ui.label("BDC").classes("text-xs text-gray-600")
+                    ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
+                with ui.column().classes("items-end gap-0"):
+                    ui.label(user["username"]).classes("text-sm font-medium")
+                    def logout() -> None:
+                        set_current_user(None)
+                        ui.notify("Sesión cerrada", color="positive")
+                        show_login_screen(container)
+                    ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
 
         tab_panels = ui.tab_panels(tabs, value=tab_home).classes("w-full")
 
@@ -1939,6 +2531,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_precios_detalle):
                 precios_detalle_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_compras):
+                build_tab_compras()
 
             with ui.tab_panel(tab_busqueda):
                 build_tab_busqueda()
@@ -5395,6 +5990,315 @@ def build_tab_precios_detalle(container) -> None:
     background_tasks.create(_cargar(client), name="cargar_precios_detalle")
 
 
+def build_tab_compras() -> None:
+    """Pestaña Compras: conexión a QuickBooks para mostrar Invoices del cliente."""
+    user = require_login()
+    if not user:
+        return
+
+    qb_creds = get_qb_app_credentials(user["id"])
+    qb_tokens = get_qb_tokens(user["id"])
+
+    with ui.column().classes("w-full gap-4"):
+        if not qb_creds:
+            ui.label(
+                "Configurá QuickBooks en Configuración (Client ID, Client Secret, Redirect URI) y conectá tu cuenta."
+            ).classes("text-gray-600")
+            return
+
+        if not qb_tokens:
+            ui.label(
+                "Credenciales configuradas. Andá a Configuración → QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
+            ).classes("text-warning")
+            return
+
+        header_card = ui.column().classes("w-full mb-2")
+        filtro_row = ui.row().classes("w-full mb-2 items-center gap-4")
+        result_area = ui.column().classes("w-full gap-2")
+
+        with result_area:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando compras...").classes("text-xl text-gray-700")
+
+        invoices_ref: Dict[str, List[Dict[str, Any]]] = {"data": []}
+        header_data_ref: Dict[str, Any] = {}
+        sort_col_compras: Dict[str, str] = {"val": "txn_date"}
+        sort_asc_compras: Dict[str, bool] = {"val": False}
+
+        def _fmt_fecha(s: str) -> str:
+            """Convierte YYYY-MM-DD a dd-mm-yyyy."""
+            if not s or len(str(s)) < 10:
+                return str(s) if s else "—"
+            p = str(s)[:10].split("-")
+            return f"{p[2]}-{p[1]}-{p[0]}" if len(p) == 3 else str(s)
+
+        def _mostrar_detalle_invoice(inv: Dict[str, Any]) -> None:
+            """Abre un popup con el detalle de la factura, cargando desde QuickBooks."""
+            dlg = ui.dialog()
+            with dlg:
+                with ui.card().classes("p-6 min-w-[650px] max-w-[90vw] max-h-[70vh] overflow-hidden flex flex-col"):
+                    ui.label("Detalle de la factura").classes("text-lg font-semibold mb-3 shrink-0")
+                    cont = ui.column().classes("gap-2 overflow-y-auto min-h-0 flex-1")
+
+            async def _cargar_y_mostrar() -> None:
+                with cont:
+                    ui.spinner(size="md")
+                    ui.label("Cargando detalle...").classes("text-gray-600")
+                detail, err = await run.io_bound(fetch_qb_invoice_detail, user["id"], inv.get("id", ""))
+                cont.clear()
+                with cont:
+                    if err:
+                        ui.label(f"Error: {err}").classes("text-negative")
+                    else:
+                        inv_obj = detail or {}
+                        def _fmt_dd_mm_aaaa(s: str) -> str:
+                            if not s or len(str(s)) < 10:
+                                return str(s) if s else "—"
+                            parts = str(s)[:10].split("-")
+                            return f"{parts[2]}-{parts[1]}-{parts[0]}" if len(parts) == 3 else str(s)
+                        doc = inv_obj.get("DocNumber", inv.get("doc", "—"))
+                        txn = _fmt_dd_mm_aaaa(str(inv_obj.get("TxnDate", inv.get("txn_date", ""))))
+                        due = _fmt_dd_mm_aaaa(str(inv_obj.get("DueDate", inv.get("due_date", ""))))
+                        total = inv_obj.get("TotalAmt", inv.get("amount_num"))
+                        bal = inv_obj.get("Balance", inv.get("balance"))
+                        try:
+                            total_fmt = f"{float(total):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if total is not None else "—"
+                        except (TypeError, ValueError):
+                            total_fmt = str(total) or "—"
+                        try:
+                            bal_fmt = f"{float(bal):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") if bal is not None else "—"
+                        except (TypeError, ValueError):
+                            bal_fmt = str(bal) or "—"
+                        cust_ref = inv_obj.get("CustomerRef", {}) or {}
+                        cust_name = cust_ref.get("name", inv.get("customer", "—")) if isinstance(cust_ref, dict) else str(cust_ref)
+                        with ui.element("table").classes("w-full text-sm"):
+                            for lbl, val in [
+                                ("Nº Doc", doc), ("Fecha", txn), ("Vencimiento", due),
+                                ("Total", f"u$ {total_fmt}" if total_fmt != "—" else "—"),
+                                ("Saldo", f"u$ {bal_fmt}" if bal_fmt != "—" else "—"),
+                                ("Cliente", cust_name),
+                            ]:
+                                with ui.element("tr"):
+                                    with ui.element("td").classes("font-semibold pr-4 py-1"):
+                                        ui.label(lbl)
+                                    with ui.element("td").classes("py-1"):
+                                        ui.label(str(val))
+                        lines = inv_obj.get("Line") or []
+                        if isinstance(lines, dict):
+                            lines = [lines]
+                        if lines:
+                            ui.label("Ítems").classes("font-semibold mt-3 mb-1")
+                            with ui.element("table").classes("w-full text-sm border"):
+                                with ui.element("thead"):
+                                    with ui.element("tr").classes("bg-gray-100"):
+                                        with ui.element("th").classes("px-2 py-1 text-left"):
+                                            ui.label("Descripción")
+                                        with ui.element("th").classes("px-2 py-1 text-right"):
+                                            ui.label("Cant.")
+                                        with ui.element("th").classes("px-2 py-1 text-right"):
+                                            ui.label("Importe")
+                                with ui.element("tbody"):
+                                    for idx, lin in enumerate(lines):
+                                        sales = lin.get("SalesItemLineDetail") or {}
+                                        desc = lin.get("Description", sales.get("ItemRef", {}).get("name", "—") if isinstance(sales, dict) else "—")
+                                        if idx == len(lines) - 1 and (str(desc).strip() in ("-", "—", "")):
+                                            desc = "Total"
+                                        qty = sales.get("Qty", 1) if isinstance(sales, dict) else 1
+                                        amt = lin.get("Amount", 0)
+                                        try:
+                                            amt_str = f"{float(amt):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                        except (TypeError, ValueError):
+                                            amt_str = str(amt)
+                                        with ui.element("tr").classes("border-t"):
+                                            with ui.element("td").classes("px-2 py-1"):
+                                                ui.label(str(desc)[:80])
+                                            with ui.element("td").classes("px-2 py-1 text-right"):
+                                                ui.label(str(qty))
+                                            with ui.element("td").classes("px-2 py-1 text-right"):
+                                                ui.label(f"u$ {amt_str}")
+
+                    with ui.row().classes("mt-3 gap-2"):
+                        def _descargar_pdf() -> None:
+                            pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
+                            if err:
+                                ui.notify(f"Error al descargar PDF: {err}", color="negative")
+                                return
+                            if not pdf_bytes:
+                                ui.notify("No se pudo obtener el PDF", color="warning")
+                                return
+                            doc_num = inv.get("doc", "invoice")
+                            try:
+                                fd, path = tempfile.mkstemp(suffix=".pdf")
+                                os.write(fd, pdf_bytes)
+                                os.close(fd)
+                                nombre = f"invoice_{doc_num}.pdf"
+                                with dlg:
+                                    ui.download(path, nombre)
+                                ui.notify("Descarga iniciada", color="positive")
+                            except Exception as ex:
+                                ui.notify(f"Error: {ex}", color="negative")
+
+                        ui.button("Cerrar", on_click=dlg.close).props("dense no-caps")
+                        ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
+
+            dlg.open()
+            background_tasks.create(_cargar_y_mostrar(), name="invoice_detail")
+
+        def _pintar_compras() -> None:
+            header_card.clear()
+            filtro_row.clear()
+            result_area.clear()
+            invs = invoices_ref.get("data", [])
+            filtro_val = filtro_status_ref.get("val", "Abierta+Vencida")
+            if filtro_val == "Abierta+Vencida":
+                invs = [i for i in invs if (i.get("status") or "").lower() in ("abierta", "vencida")]
+            elif filtro_val != "Todas":
+                invs = [i for i in invs if (i.get("status") or "").lower() == filtro_val.lower()]
+            sc = sort_col_compras.get("val", "txn_date")
+            asc = sort_asc_compras.get("val", False)
+
+            def _sort_key(x: Dict, col: str):
+                v = x.get(col) or ""
+                if col in ("amount", "amount_num"):
+                    n = x.get("amount_num")
+                    try:
+                        return float(n) if n is not None else 0
+                    except (ValueError, TypeError):
+                        return 0
+                return str(v).lower()
+
+            invs_sorted = sorted(invs, key=lambda x: _sort_key(x, sc), reverse=not asc)
+            total_importe = sum(i.get("amount_num", 0) for i in invs_sorted)
+            total_fmt = f"{total_importe:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            header_data_ref["total_importe"] = f"u$ {total_fmt}"
+
+            with header_card:
+                if not header_data_ref:
+                    ui.label("Cargando...").classes("text-gray-600")
+                    return
+                cust_name = header_data_ref.get("cust_name", "—")
+                open_balance = header_data_ref.get("open_balance", "—")
+                overdue = header_data_ref.get("overdue", "0.00")
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Cliente").classes("text-base font-semibold text-gray-800")
+                            ui.label(cust_name).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Saldo abierto").classes("text-base font-semibold text-gray-800")
+                            ui.label(open_balance).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Pago vencido").classes("text-base font-semibold text-gray-800")
+                            ui.label(overdue).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Importe seleccionado").classes("text-base font-semibold text-gray-800")
+                            ui.label(header_data_ref.get("total_importe", "u$ 0,00")).classes("text-sm text-gray-600")
+            with filtro_row:
+                filtro_status_val = filtro_status_ref.get("val", "Abierta+Vencida")
+                ui.label("Status:").classes("text-sm font-semibold text-gray-800")
+                filtro_status = ui.select(
+                    {"Abierta+Vencida": "Abierta+Vencida", "Todas": "Todas", "Abierta": "Abierta", "Vencida": "Vencida", "Pagada": "Pagada"},
+                    value=filtro_status_val,
+                    label="",
+                ).classes("w-44").props("dense outlined")
+                def _on_filtro_change(e):
+                    val = getattr(e, "args", None) or getattr(e, "value", None)
+                    filtro_status_ref["val"] = str(val) if val is not None else "Abierta+Vencida"
+                    _pintar_compras()
+                filtro_status.on_value_change(_on_filtro_change)
+
+            with result_area:
+                def _on_sort(c: str) -> None:
+                    if sort_col_compras.get("val") == c:
+                        sort_asc_compras["val"] = not sort_asc_compras.get("val", False)
+                    else:
+                        sort_col_compras["val"] = c
+                        sort_asc_compras["val"] = False
+                    _pintar_compras()
+
+                if not invs_sorted:
+                    ui.label("No hay facturas." if not invs else "No hay facturas con ese Status.").classes("text-gray-500")
+                else:
+                    with ui.element("div").classes("w-full overflow-x-auto"):
+                        with ui.element("table").classes("w-full border-collapse text-sm"):
+                            with ui.element("thead"):
+                                with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                    cols = [("#", "#"), ("txn_date", "Fecha"), ("tipo", "Tipo"), ("doc", "Nº"), ("customer", "Cliente"), ("amount", "Importe"), ("status", "Status")]
+                                    for col_key, h in cols:
+                                        with ui.element("th").classes("px-2 py-2 border text-center"):
+                                            if col_key == "#":
+                                                ui.label(h)
+                                            else:
+                                                ui.button(h, on_click=lambda c=col_key: _on_sort(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                            with ui.element("tbody"):
+                                for idx, inv in enumerate(invs_sorted, 1):
+                                    row_el = ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer")
+                                    row_el.on("click", lambda inv=inv: _mostrar_detalle_invoice(inv))
+                                    with row_el:
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(str(idx))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(_fmt_fecha(inv.get("txn_date", "—")))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(inv.get("tipo", "Factura"))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(inv.get("doc", "—"))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(inv.get("customer", "—"))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
+                                            amt_num = inv.get("amount_num", 0) or 0
+                                            amt_str = f"{float(amt_num):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                            ui.label(f"u$ {amt_str}")
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            ui.label(inv.get("status", "—"))
+
+        filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
+
+        def _cargar_compras() -> None:
+            qb_cust = get_user_qb_customer(user["id"])
+            cust_id = qb_cust["id"] if qb_cust else None
+            cust_name = qb_cust["name"] if qb_cust else None
+            if not cust_id:
+                header_data_ref.clear()
+                header_card.clear()
+                with header_card:
+                    ui.label("⚠️ Seleccioná tu cliente en Configuración → QuickBooks → 'Soy el cliente'.").classes("text-warning p-4")
+                return
+            cust_detail, _ = fetch_qb_customer_detail(user["id"], cust_id)
+            inv_result, err_inv = fetch_qb_invoices(user["id"], cust_id)
+            if err_inv:
+                header_data_ref.clear()
+                header_card.clear()
+                with header_card:
+                    ui.label(f"Error al cargar facturas: {err_inv}").classes("text-negative p-4")
+                return
+            invoices, overdue_total = inv_result
+            open_balance = ""
+            if cust_detail:
+                bal = cust_detail.get("Balance")
+                if bal is not None:
+                    try:
+                        open_balance = f"{float(bal):,.2f}"
+                    except (TypeError, ValueError):
+                        open_balance = str(bal)
+            overdue = f"{overdue_total:,.2f}" if overdue_total else "0.00"
+            qb_cust_display = (cust_detail.get("DisplayName") or cust_detail.get("FullyQualifiedName") or cust_detail.get("CompanyName") or "").strip() if cust_detail else ""
+            header_data_ref["cust_name"] = qb_cust_display or cust_name or cust_id
+            header_data_ref["open_balance"] = open_balance or "—"
+            header_data_ref["overdue"] = overdue
+            invoices_ref["data"] = [
+                {"id": inv.get("id", ""), "txn_date": inv.get("txn_date", ""), "due_date": inv.get("due_date", ""), "tipo": inv.get("tipo", "Factura"), "doc": inv.get("doc", ""), "customer": cust_name or cust_id, "amount": inv.get("amount", ""), "amount_num": inv.get("amount_num", 0), "balance": inv.get("balance", 0), "status": inv.get("status", "")}
+                for inv in invoices
+            ]
+            _pintar_compras()
+
+        ui.timer(0.3, _cargar_compras, once=True)
+
+
 def build_tab_busqueda() -> None:
     """Pestaña Búsqueda: texto + botón, resultados en tabla (nombre, precio, vendedor, stock, tipo)."""
     user = require_login()
@@ -6531,57 +7435,15 @@ def build_tab_config() -> None:
     ml_creds = cur.fetchone()
     conn.close()
 
-    with ui.row().classes("w-full gap-4 items-start"):
-        with ui.card().classes("flex-1 min-w-0 max-w-2xl"):
-            ui.label("MercadoLibre").classes("text-lg font-semibold mb-3")
-            ui.label(
-                "Paso 1: Ingresá App ID y Client Secret de tu app en MercadoLibre Developers.\n"
-                "Paso 2: Redirect URI debe coincidir EXACTAMENTE con el configurado en tu app.\n"
-                "Paso 3: Guardar credenciales. Paso 4: Conectar cuenta.\n"
-                "Para cambiar de cuenta ML: Desvincular → ingresar otras credenciales → Guardar → Conectar."
-            ).classes("text-sm text-gray-600 mb-3 whitespace-pre-line")
-
-            with ui.expansion("App ID, Client Secret y Redirect URI", icon="key").classes("w-full").props("expand-icon-toggle"):
-                inp_client_id = ui.input("App ID (client_id)", value=app_creds["client_id"] if app_creds else "").classes("w-full max-w-md").props("type=text")
-                inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full max-w-md").props("type=password password-toggle")
-                inp_redirect = ui.input("Redirect URI (EXACTO como en MercadoLibre Developers)", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full max-w-md")
-
-            def guardar_app_ml() -> None:
-                cid = (inp_client_id.value or "").strip()
-                csec = (inp_client_secret.value or "").strip()
-                redir = (inp_redirect.value or "").strip() or default_redirect
-                if not cid or not csec:
-                    ui.notify("Ingresá App ID y Client Secret", color="warning")
-                    return
-                set_ml_app_credentials(user["id"], cid, csec, redir or None)
-                ui.notify("Credenciales guardadas correctamente", color="positive")
-
-            def conectar_ml() -> None:
-                cid = (inp_client_id.value or "").strip()
-                csec = (inp_client_secret.value or "").strip()
-                redir = (inp_redirect.value or "").strip() or default_redirect
-                if not cid or not csec:
-                    ui.notify("Ingresá App ID y Client Secret y guardá antes de conectar", color="warning")
-                    return
-                set_ml_app_credentials(user["id"], cid, csec, redir or None)
-                from urllib.parse import quote
-                scope = quote("offline_access read write")
-                auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={cid}&redirect_uri={quote(redir)}&scope={scope}"
-                ui.navigate.to(auth_url)
-
-            with ui.row().classes("gap-2 mt-2"):
-                ui.button("Guardar credenciales", on_click=guardar_app_ml, color="primary")
-                ui.button("Conectar cuenta", on_click=conectar_ml, color="secondary")
-
-            # Estado de la cuenta (dentro de la misma tarjeta)
-            ui.separator().classes("my-4")
-            ui.label("Estado de la cuenta").classes("text-base font-semibold mb-2")
-            if ml_creds:
-                with ui.row().classes("items-center gap-3 mb-2 flex-wrap"):
-                    ui.icon("check_circle", color="positive", size="sm")
-                    ui.label("Cuenta vinculada").classes("text-positive font-medium")
-
-                    def desvincular_ml() -> None:
+    # Layout: [ ML | QB ] misma fila, mismo ancho. [ Est | Contraseña | BD ] columna angosta
+    _card_class = "w-full p-3 overflow-auto"
+    with ui.column().classes("w-full gap-4 p-4"):
+        ui.label("Configuración").classes("text-xl font-bold text-gray-800 mb-2")
+        with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+            # 1. MercadoLibre — mismo ancho que QB (ancho fijo para igualar)
+            with ui.column().classes("w-[400px] flex-shrink-0"):
+                with ui.card().classes(_card_class):
+                    def _desvincular_ml_impl() -> None:
                         conn = get_connection()
                         try:
                             cur = conn.cursor()
@@ -6589,179 +7451,307 @@ def build_tab_config() -> None:
                             conn.commit()
                         finally:
                             conn.close()
-                        ui.notify("Cuenta desvinculada. Podés conectar otra cuenta.", color="positive")
+                        ui.notify("Cuenta desvinculada", color="positive")
                         ui.navigate.reload()
 
-                    ui.button("Desvincular cuenta", on_click=desvincular_ml, color="secondary")
+                    ui.label("MercadoLibre").classes("text-base font-semibold mb-2")
+                    ui.label("App ID, Client Secret, Redirect → Guardar → Conectar").classes("text-xs text-gray-600 mb-1")
+                    with ui.expansion("Credenciales", icon="key").classes("w-full").props("expand-icon-toggle dense"):
+                        inp_client_id = ui.input("App ID", value=app_creds["client_id"] if app_creds else "").classes("w-full").props("type=text dense")
+                        inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full").props("type=password password-toggle dense")
+                        inp_redirect = ui.input("Redirect URI", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full").props("dense")
 
-                if ml_creds["expires_at"]:
-                    try:
-                        exp = ml_creds["expires_at"][:19].replace("T", " ")
-                        ui.label(f"Token vence: {exp}").classes("text-sm text-gray-600")
-                    except Exception:
-                        ui.label(f"Token vence: {ml_creds['expires_at']}").classes("text-sm text-gray-600")
-            else:
-                with ui.row().classes("items-center gap-3 mb-2"):
-                    ui.icon("warning", color="warning", size="sm")
-                    ui.label("Sin cuenta vinculada").classes("text-warning font-medium")
-                ui.label("Usá el botón 'Conectar cuenta' de arriba (usa las credenciales que guardaste).").classes("text-sm text-gray-600")
-
-        # Columna derecha: Estadísticas + Contraseña + Base de datos (una debajo de la otra)
-        with ui.column().classes("flex-1 min-w-0 max-w-md gap-4"):
-            # Estadísticas: cantidad de ventas a cargar
-            with ui.card().classes("w-full"):
-                ui.label("Estadísticas").classes("text-lg font-semibold mb-3")
-                ui.label("Cantidad de ventas (órdenes) a cargar en Estadísticas. Más ventas = más datos pero carga más lento.").classes("text-sm text-gray-600 mb-2")
-                limit_actual = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
-                opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000"}
-                sel_ventas = ui.select(opts_ventas, value=limit_actual, label="Ventas a cargar").classes("w-full max-w-[200px]")
-                def guardar_limit_ventas() -> None:
-                    val = str(sel_ventas.value or "1000").strip()
-                    if val not in opts_ventas:
-                        val = "1000"
-                    set_cotizador_param("estadisticas_limit_ordenes", val, user["id"])
-                    ui.notify("Guardado", color="positive")
-                ui.button("Guardar", on_click=guardar_limit_ventas, color="primary").classes("mt-2")
-
-            # Cambiar contraseña (colapsado con flecha)
-            with ui.card().classes("w-full"):
-                with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full").props("expand-icon-toggle"):
-                    inp_actual = ui.input("Contraseña actual").classes("w-full max-w-md").props("type=password password-toggle")
-                    inp_nueva = ui.input("Nueva contraseña (mín. 4 caracteres)").classes("w-full max-w-md").props("type=password password-toggle")
-                    inp_confirmar = ui.input("Confirmar nueva contraseña").classes("w-full max-w-md").props("type=password password-toggle")
-
-                    def cambiar_clave() -> None:
-                        actual = (inp_actual.value or "").strip()
-                        nueva = (inp_nueva.value or "").strip()
-                        confirmar = (inp_confirmar.value or "").strip()
-                        if not actual:
-                            ui.notify("Ingresá tu contraseña actual", color="warning")
+                    def guardar_app_ml() -> None:
+                        cid = (inp_client_id.value or "").strip()
+                        csec = (inp_client_secret.value or "").strip()
+                        redir = (inp_redirect.value or "").strip() or default_redirect
+                        if not cid or not csec:
+                            ui.notify("Ingresá App ID y Client Secret", color="warning")
                             return
-                        if nueva != confirmar:
-                            ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
+                        set_ml_app_credentials(user["id"], cid, csec, redir or None)
+                        ui.notify("Credenciales guardadas correctamente", color="positive")
+
+                    def conectar_ml() -> None:
+                        cid = (inp_client_id.value or "").strip()
+                        csec = (inp_client_secret.value or "").strip()
+                        redir = (inp_redirect.value or "").strip() or default_redirect
+                        if not cid or not csec:
+                            ui.notify("Ingresá App ID y Client Secret y guardá antes de conectar", color="warning")
                             return
-                        error = update_user_password(user["id"], actual, nueva)
-                        if error:
-                            ui.notify(error, color="negative")
-                            return
-                        ui.notify("Contraseña cambiada correctamente", color="positive")
-                        inp_actual.value = ""
-                        inp_nueva.value = ""
-                        inp_confirmar.value = ""
+                        set_ml_app_credentials(user["id"], cid, csec, redir or None)
+                        from urllib.parse import quote
+                        scope = quote("offline_access read write")
+                        auth_url = f"https://auth.mercadolibre.com.ar/authorization?response_type=code&client_id={cid}&redirect_uri={quote(redir)}&scope={scope}"
+                        ui.navigate.to(auth_url)
 
-                    ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-2")
+                    with ui.row().classes("gap-2 mt-2"):
+                        ui.button("Guardar credenciales", on_click=guardar_app_ml, color="primary").props("dense no-caps")
+                        if ml_creds:
+                            ui.button("Desvincular cuenta", on_click=_desvincular_ml_impl, color="secondary").props("dense no-caps")
+                        else:
+                            ui.button("Conectar cuenta", on_click=conectar_ml, color="secondary").props("dense no-caps")
 
-            # Base de datos (debajo de contraseña)
-            with ui.card().classes("w-full") as db_card:
-                ui.label("Base de datos").classes("text-lg font-semibold mb-3")
-                ui.label(
-                    "Backup de tus datos operativos: productos (precios, IVA, costo), cotizador (parámetros, pesos, gastos, tablas), importación. "
-                    "No incluye credenciales ni contraseña."
-                ).classes("text-sm text-gray-600 mb-4")
-
-                def descargar_backup() -> None:
-                    try:
-                        content = export_user_db_data(user["id"])
-                        fd, path = tempfile.mkstemp(suffix=".json")
-                        os.write(fd, content)
-                        os.close(fd)
-                        nombre = f"backup_{user.get('username', 'user')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
-                        with db_card:
-                            ui.download(path, nombre)
-                        ui.notify("Descarga iniciada", color="positive")
-                        def _cleanup() -> None:
+                    ui.separator().classes("my-2")
+                    ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    if ml_creds:
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon("check_circle", color="positive", size="sm")
+                            ui.label("Vinculada").classes("text-positive text-sm")
+                        if ml_creds["expires_at"]:
                             try:
-                                if path and os.path.exists(path):
-                                    os.unlink(path)
+                                exp = ml_creds["expires_at"][:19].replace("T", " ")
+                                ui.label(f"Token vence: {exp}").classes("text-xs text-gray-600")
                             except Exception:
                                 pass
-                        ui.timer(5.0, _cleanup, once=True)
-                    except Exception as ex:
-                        ui.notify(f"Error: {ex}", color="negative")
+                    else:
+                        ui.label("Sin vincular").classes("text-warning text-sm")
 
-                def _formatear_fecha_backup(data: dict) -> str:
-                    fd = data.get("fecha_descarga")
-                    if fd:
-                        return str(fd)
-                    ea = data.get("exported_at", "")
-                    if ea:
+            # 2. QuickBooks — un poco más largo que ML para igualar tamaño
+            with ui.column().classes("w-[420px] flex-shrink-0"):
+                with ui.card().classes(_card_class):
+                    ui.label("QuickBooks").classes("text-base font-semibold mb-2")
+                    ui.label("Client ID, Secret, Redirect → Guardar credenciales → Conectar cuenta").classes("text-xs text-gray-600 mb-1")
+                    qb_app_creds = get_qb_app_credentials(user["id"])
+                    ml_redir = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
+                    default_qb_redirect = os.getenv("QB_REDIRECT_URI") or (
+                        ml_redir.replace("/ml/callback", "/qb/callback") if "/ml/callback" in ml_redir else "http://localhost:8083/qb/callback"
+                    )
+                    with ui.expansion("Credenciales QB", icon="account_balance").classes("w-full").props("expand-icon-toggle dense"):
+                        inp_qb_cid = ui.input("Client ID", value=qb_app_creds["client_id"] if qb_app_creds else "").classes("w-full").props("type=text dense")
+                        inp_qb_csec = ui.input("Client Secret", value=qb_app_creds["client_secret"] if qb_app_creds else "").classes("w-full").props("type=password password-toggle dense")
+                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("w-full").props("dense")
+                        ui.label("Debe coincidir EXACTAMENTE con developer.intuit.com → Keys. Con ngrok: agregá QB_REDIRECT_URI en .env").classes("text-xs text-gray-500 mt-1")
+
+                    def guardar_qb_creds() -> None:
+                        cid = (inp_qb_cid.value or "").strip()
+                        csec = (inp_qb_csec.value or "").strip()
+                        redir = (inp_qb_redir.value or "").strip() or default_qb_redirect
+                        if not cid or not csec:
+                            ui.notify("Ingresá Client ID y Client Secret", color="warning")
+                            return
+                        set_qb_app_credentials(user["id"], cid, csec, redir or None)
+                        ui.notify("Credenciales guardadas", color="positive")
+
+                    def conectar_qb() -> None:
+                        cid = (inp_qb_cid.value or "").strip()
+                        csec = (inp_qb_csec.value or "").strip()
+                        redir = (inp_qb_redir.value or "").strip() or default_qb_redirect
+                        if not cid or not csec:
+                            ui.notify("Guardá credenciales antes de conectar", color="warning")
+                            return
+                        set_qb_app_credentials(user["id"], cid, csec, redir or None)
+                        from urllib.parse import quote
+                        scope = quote("com.intuit.quickbooks.accounting")
+                        state = f"qb_{user['id']}"
+                        # Intuit: redirect_uri debe coincidir EXACTAMENTE con developer.intuit.com (Keys)
+                        # Probar codificación mínima (preserva :/) por si Intuit la prefiere
+                        redir_encoded = quote(redir, safe=':/')
+                        auth_url = f"https://appcenter.intuit.com/connect/oauth2?response_type=code&client_id={cid}&redirect_uri={redir_encoded}&scope={scope}&state={quote(state)}"
+                        ui.navigate.to(auth_url)
+
+                    conn = get_connection()
+                    cur = conn.cursor()
+                    cur.execute("SELECT * FROM qb_tokens WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user["id"],))
+                    qb_tokens = cur.fetchone()
+                    conn.close()
+
+                    def desvincular_qb() -> None:
+                        conn = get_connection()
                         try:
-                            d = datetime.fromisoformat(ea.replace("Z", "+00:00"))
-                            return d.strftime("%Y-%m-%d %H:%M")
-                        except Exception:
-                            pass
-                    return ea or "fecha desconocida"
+                            cur = conn.cursor()
+                            cur.execute("DELETE FROM qb_tokens WHERE user_id = ?", (user["id"],))
+                            conn.commit()
+                        finally:
+                            conn.close()
+                        ui.notify("QuickBooks desvinculado", color="positive")
+                        ui.navigate.reload()
 
-                async def on_upload(e) -> None:
-                    try:
-                        file_obj = getattr(e, "file", None) or (getattr(e, "files", [None])[0] if getattr(e, "files", None) else None) or getattr(e, "content", None)
-                        if file_obj is None:
-                            ui.notify("Error: no se pudo leer el archivo", color="negative")
+                    with ui.row().classes("gap-1 mt-1"):
+                        ui.button("Guardar credenciales", on_click=guardar_qb_creds, color="primary").props("dense no-caps")
+                        if qb_tokens and qb_tokens["access_token"]:
+                            ui.button("Desvincular cuenta", on_click=desvincular_qb, color="secondary").props("dense no-caps")
+                        else:
+                            ui.button("Conectar cuenta", on_click=conectar_qb, color="secondary").props("dense no-caps")
+
+                    ui.separator().classes("my-2")
+                    ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    if qb_tokens and qb_tokens["access_token"]:
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon("check_circle", color="positive", size="xs")
+                            ui.label("Vinculada").classes("text-positive text-sm")
+                        if qb_tokens["expires_at"]:
+                            try:
+                                exp = qb_tokens["expires_at"][:19].replace("T", " ")
+                                ui.label(f"Token vence: {exp}").classes("text-xs text-gray-600")
+                            except Exception:
+                                pass
+                        ui.separator().classes("my-2")
+                        ui.label("Soy el cliente (en QuickBooks):").classes("text-xs font-semibold mb-1")
+                        qb_cust = get_user_qb_customer(user["id"])
+                        cust_id = qb_cust.get("id", "") if qb_cust else ""
+                        cust_name = "—"
+                        if qb_cust and cust_id:
+                            cust_detail, _ = fetch_qb_customer_detail(user["id"], cust_id)
+                            cust_name = (cust_detail.get("DisplayName") or cust_detail.get("FullyQualifiedName") or cust_detail.get("CompanyName") or "").strip() if cust_detail else (qb_cust.get("name") or "—")
+                            if not cust_name:
+                                cust_name = qb_cust.get("name", "—")
+                        cust_nombre = f"{cust_name} (id {cust_id})" if cust_id else "—"
+                        ui.label(cust_nombre).classes("text-sm text-gray-800")
+                    else:
+                        ui.label("Sin vincular").classes("text-warning text-sm")
+
+            # 3. Estadísticas, Contraseña, Base de datos — apiladas, mismo ancho que ML y QB
+            with ui.column().classes("w-[420px] flex-shrink-0 gap-3"):
+                with ui.card().classes(_card_class):
+                    ui.label("Estadísticas").classes("text-sm font-semibold mb-1")
+                    ui.label("Ventas a cargar (órdenes)").classes("text-xs text-gray-600 mb-1")
+                    ui.label("Cantidad máxima de órdenes de MercadoLibre a traer en cada actualización. Más órdenes = datos más completos, pero la carga puede tardar más.").classes("text-xs text-gray-500 mb-1")
+                    limit_actual = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
+                    opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000"}
+                    sel_ventas = ui.select(opts_ventas, value=limit_actual, label="").classes("w-full").props("dense")
+
+                    def guardar_limit_ventas() -> None:
+                        val = str(sel_ventas.value or "1000").strip()
+                        if val not in opts_ventas:
+                            val = "1000"
+                        set_cotizador_param("estadisticas_limit_ordenes", val, user["id"])
+                        ui.notify("Guardado", color="positive")
+                    ui.button("Guardar", on_click=guardar_limit_ventas, color="primary").classes("mt-1").props("dense no-caps")
+
+                # Cambiar contraseña (debajo de Estadísticas)
+                with ui.card().classes(_card_class):
+                    with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full").props("expand-icon-toggle dense"):
+                        inp_actual = ui.input("Contraseña actual").classes("w-full").props("type=password password-toggle dense")
+                        inp_nueva = ui.input("Nueva contraseña (mín. 4)").classes("w-full").props("type=password password-toggle dense")
+                        inp_confirmar = ui.input("Confirmar nueva").classes("w-full").props("type=password password-toggle dense")
+
+                        def cambiar_clave() -> None:
+                            actual = (inp_actual.value or "").strip()
+                            nueva = (inp_nueva.value or "").strip()
+                            confirmar = (inp_confirmar.value or "").strip()
+                            if not actual:
+                                ui.notify("Ingresá tu contraseña actual", color="warning")
+                                return
+                            if nueva != confirmar:
+                                ui.notify("La nueva contraseña y la confirmación no coinciden", color="negative")
+                                return
+                            error = update_user_password(user["id"], actual, nueva)
+                            if error:
+                                ui.notify(error, color="negative")
+                                return
+                            ui.notify("Contraseña cambiada correctamente", color="positive")
+                            inp_actual.value = ""
+                            inp_nueva.value = ""
+                            inp_confirmar.value = ""
+
+                        ui.button("Cambiar contraseña", on_click=cambiar_clave, color="primary").classes("mt-1").props("dense no-caps")
+
+                # Base de datos
+                with ui.card().classes(_card_class) as db_card:
+                    ui.label("Base de datos").classes("text-sm font-semibold mb-1")
+                    ui.label("Backup: productos, cotizador, importación. Sin credenciales.").classes("text-xs text-gray-600 mb-2")
+
+                    def descargar_backup() -> None:
+                        try:
+                            content = export_user_db_data(user["id"])
+                            fd, path = tempfile.mkstemp(suffix=".json")
+                            os.write(fd, content)
+                            os.close(fd)
+                            nombre = f"backup_{user.get('username', 'user')}_{datetime.now().strftime('%Y%m%d_%H%M')}.json"
+                            with db_card:
+                                ui.download(path, nombre)
+                            ui.notify("Descarga iniciada", color="positive")
+                            def _cleanup() -> None:
+                                try:
+                                    if path and os.path.exists(path):
+                                        os.unlink(path)
+                                except Exception:
+                                    pass
+                            ui.timer(5.0, _cleanup, once=True)
+                        except Exception as ex:
+                            ui.notify(f"Error: {ex}", color="negative")
+
+                    def _formatear_fecha_backup(data: dict) -> str:
+                        fd = data.get("fecha_descarga")
+                        if fd:
+                            return str(fd)
+                        ea = data.get("exported_at", "")
+                        if ea:
+                            try:
+                                d = datetime.fromisoformat(ea.replace("Z", "+00:00"))
+                                return d.strftime("%Y-%m-%d %H:%M")
+                            except Exception:
+                                pass
+                        return ea or "fecha desconocida"
+
+                    async def on_upload(e) -> None:
+                        try:
+                            file_obj = getattr(e, "file", None) or (getattr(e, "files", [None])[0] if getattr(e, "files", None) else None) or getattr(e, "content", None)
+                            if file_obj is None:
+                                ui.notify("Error: no se pudo leer el archivo", color="negative")
+                                upload_component.reset()
+                                return
+                            read_result = file_obj.read()
+                            content = await read_result if asyncio.iscoroutine(read_result) else read_result
+                            if isinstance(content, str):
+                                content = content.encode("utf-8")
+                            data = json.loads(content.decode("utf-8"))
+                            if not isinstance(data, dict):
+                                ui.notify("Error: archivo inválido", color="negative")
+                                upload_component.reset()
+                                return
+                            fecha_str = _formatear_fecha_backup(data)
+                            content_bytes = bytes(content)
+
+                            def make_confirm(cb: bytes, upload_el):
+                                def confirmar_sobrescribir() -> None:
+                                    dlg.close()
+                                    msg = import_user_db_data(user["id"], cb)
+                                    if msg == "ok":
+                                        ui.notify("Backup restaurado correctamente", color="positive")
+                                        upload_el.reset()
+                                    else:
+                                        ui.notify(f"Error al restaurar: {msg}", color="negative")
+                                        upload_el.reset()
+                                return confirmar_sobrescribir
+
+                            with ui.dialog().props("persistent") as dlg:
+                                dlg.classes("w-full max-w-md")
+                                with ui.card().classes("w-full p-6 gap-4"):
+                                    ui.label("¿Sobrescribir datos?").classes("text-lg font-semibold")
+                                    ui.label(
+                                        f"¿Estás seguro que querés sobrescribir los datos actuales con el backup del {fecha_str}?"
+                                    ).classes("text-gray-600")
+                                    with ui.row().classes("w-full justify-end gap-2 pt-2"):
+                                        def cancelar_y_reset() -> None:
+                                            dlg.close()
+                                            upload_component.reset()
+                                        ui.button("Cancelar", on_click=cancelar_y_reset, color="secondary").props("flat")
+                                        ui.button("Confirmar", on_click=make_confirm(content_bytes, upload_component), color="negative").props("unelevated")
+                                dlg.open()
+                        except json.JSONDecodeError as ex:
+                            ui.notify(f"Error: archivo JSON inválido - {ex}", color="negative")
                             upload_component.reset()
-                            return
-                        read_result = file_obj.read()
-                        content = await read_result if asyncio.iscoroutine(read_result) else read_result
-                        if isinstance(content, str):
-                            content = content.encode("utf-8")
-                        data = json.loads(content.decode("utf-8"))
-                        if not isinstance(data, dict):
-                            ui.notify("Error: archivo inválido", color="negative")
+                        except Exception as ex:
+                            ui.notify(f"Error: {str(ex)}", color="negative")
                             upload_component.reset()
-                            return
-                        fecha_str = _formatear_fecha_backup(data)
-                        content_bytes = bytes(content)
 
-                        def make_confirm(cb: bytes, upload_el):
-                            def confirmar_sobrescribir() -> None:
-                                dlg.close()
-                                msg = import_user_db_data(user["id"], cb)
-                                if msg == "ok":
-                                    ui.notify("Backup restaurado correctamente", color="positive")
-                                    upload_el.reset()
-                                else:
-                                    ui.notify(f"Error al restaurar: {msg}", color="negative")
-                                    upload_el.reset()
+                    def handle_multi(e) -> None:
+                        if getattr(e, "files", None) and len(e.files) > 0:
+                            class _FakeEv:
+                                file = e.files[0]
+                            import asyncio
+                            asyncio.create_task(on_upload(_FakeEv()))
 
-                            return confirmar_sobrescribir
-
-                        with ui.dialog().props("persistent") as dlg:
-                            dlg.classes("w-full max-w-md")
-                            with ui.card().classes("w-full p-6 gap-4"):
-                                ui.label("¿Sobrescribir datos?").classes("text-lg font-semibold")
-                                ui.label(
-                                    f"¿Estás seguro que querés sobrescribir los datos actuales con el backup del {fecha_str}?"
-                                ).classes("text-gray-600")
-                                with ui.row().classes("w-full justify-end gap-2 pt-2"):
-                                    def cancelar_y_reset() -> None:
-                                        dlg.close()
-                                        upload_component.reset()
-                                    ui.button("Cancelar", on_click=cancelar_y_reset, color="secondary").props("flat")
-                                    ui.button("Confirmar", on_click=make_confirm(content_bytes, upload_component), color="negative").props("unelevated")
-                            dlg.open()
-                    except json.JSONDecodeError as ex:
-                        ui.notify(f"Error: archivo JSON inválido - {ex}", color="negative")
-                        upload_component.reset()
-                    except Exception as ex:
-                        ui.notify(f"Error: {str(ex)}", color="negative")
-                        upload_component.reset()
-
-                async def handle_multi(e) -> None:
-                    if getattr(e, "files", None) and len(e.files) > 0:
-                        class _FakeEv:
-                            file = e.files[0]
-                        await on_upload(_FakeEv())
-
-                upload_component = ui.upload(
-                    on_upload=on_upload,
-                    on_multi_upload=handle_multi,
-                    max_files=1,
-                    max_file_size=10_000_000,
-                    auto_upload=True,
-                ).props("accept=.json").style("position: absolute; width: 0; height: 0; opacity: 0; overflow: hidden; pointer-events: none")
-
-                with ui.row().classes("gap-3 items-center flex-wrap"):
-                    ui.button("Descargar backup", on_click=descargar_backup, color="primary").props("icon=download unelevated")
-                    ui.button("CARGAR BACKUP", on_click=lambda: upload_component.run_method("pickFiles"), color="secondary").props("icon=upload outline")
+                    upload_component = ui.upload(
+                        on_upload=on_upload,
+                        max_files=1,
+                        max_file_size=10_000_000,
+                        auto_upload=True,
+                    ).props("accept=.json").classes("hidden")
+                    with ui.row().classes("gap-3 items-center w-full"):
+                        ui.button("Descargar backup", on_click=descargar_backup, color="primary").classes("flex-1").props("icon=download unelevated no-caps")
+                        ui.button("Cargar backup", on_click=lambda: upload_component.run_method("pickFiles"), color="secondary").classes("flex-1").props("icon=upload outline no-caps")
 
 
 # Valores por defecto del cotizador
@@ -7662,6 +8652,31 @@ async def _ml_callback_redirect(request: Request) -> RedirectResponse:
 app.add_api_route("/ml/callback", _ml_callback_redirect, methods=["GET"])
 
 
+async def _qb_callback_redirect(request: Request) -> RedirectResponse:
+    """Callback OAuth de QuickBooks: redirige a / con el code para procesar el token."""
+    code = request.query_params.get("code")
+    realm_id = request.query_params.get("realmId")
+    state = request.query_params.get("state")
+    error_param = request.query_params.get("error")
+    error_desc = request.query_params.get("error_description", "")
+    if error_param:
+        from urllib.parse import quote
+        return RedirectResponse(url=f"/?qb_oauth_error={error_param}&qb_oauth_error_desc={quote(error_desc[:300])}", status_code=302)
+    if code:
+        params = f"qb_oauth_code={code}"
+        if realm_id:
+            params += f"&qb_realm_id={realm_id}"
+        if state:
+            params += f"&qb_state={state}"
+        return RedirectResponse(url=f"/?{params}", status_code=302)
+    from urllib.parse import quote
+    url_recibida = str(request.url) if request.url else ""
+    return RedirectResponse(url=f"/?qb_oauth_error=no_code&qb_oauth_error_desc={quote(url_recibida[:200])}", status_code=302)
+
+
+app.add_api_route("/qb/callback", _qb_callback_redirect, methods=["GET"])
+
+
 # ==========================
 # ARRANQUE DE LA APP
 # ==========================
@@ -7671,9 +8686,21 @@ app.add_api_route("/ml/callback", _ml_callback_redirect, methods=["GET"])
 def index(request: Request) -> None:  # type: ignore[override]
     root = ui.column().classes("w-full")
 
-    # Procesar callback de OAuth (cuando MercadoLibre redirige a /?ml_oauth_code=xxx)
+    # Procesar callback de OAuth
     ml_code = request.query_params.get("ml_oauth_code")
     ml_error = request.query_params.get("ml_oauth_error")
+    qb_oauth_code = request.query_params.get("qb_oauth_code")
+    qb_oauth_error = request.query_params.get("qb_oauth_error")
+    qb_realm_id = request.query_params.get("qb_realm_id", "")
+    if qb_oauth_error:
+        with root:
+            ui.label(f"❌ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
+            if request.query_params.get("qb_oauth_error_desc"):
+                from urllib.parse import unquote
+                desc = unquote(request.query_params.get("qb_oauth_error_desc", ""))
+                ui.label(f"Detalle: {desc}").classes("text-sm text-gray-600 mb-2")
+            ui.link("Volver al inicio", "/").classes("text-primary")
+        return
     if ml_error:
         with root:
             ui.label(f"❌ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
@@ -7738,12 +8765,17 @@ def index(request: Request) -> None:  # type: ignore[override]
             with root:
                 ui.label(f"❌ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
-                ui.label(
+                causas = (
                     "Posibles causas:\n"
                     "• redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
                     "• Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
                     "• El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
-                ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
+                )
+                if "invalid" in err_msg.lower() or "validating grant" in err_msg.lower():
+                    causas += (
+                        "\n\n⚠️ ¿Intentabas conectar QuickBooks? Si es así, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
+                    )
+                ui.label(causas).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
                 ui.link("Volver a Configuración", "/").classes("text-primary")
             return
         except Exception as e:
@@ -7771,6 +8803,95 @@ def index(request: Request) -> None:  # type: ignore[override]
         conn.commit()
         conn.close()
         # Redirigir a / sin el code para limpiar la URL (el usuario verá el panel y una notificación)
+        return RedirectResponse(url="/", status_code=302)
+
+    if qb_oauth_code:
+        user = get_current_user()
+        if not user:
+            with root:
+                ui.label("Debes iniciar sesión en BDC systems antes de vincular QuickBooks.").classes("text-lg mb-4")
+                ui.link("Ir a inicio de sesión", "/").classes("text-primary")
+            return
+        qb_app_creds = get_qb_app_credentials(user["id"])
+        if not qb_app_creds:
+            with root:
+                ui.label("❌ Configurá Client ID y Client Secret de QuickBooks en Configuración antes de conectar.").classes("text-negative mb-4")
+                ui.link("Volver a Configuración", "/").classes("text-primary")
+            return
+        client_id = qb_app_creds["client_id"]
+        client_secret = qb_app_creds["client_secret"]
+        redirect_uri = (qb_app_creds.get("redirect_uri") or "").strip() or os.getenv("QB_REDIRECT_URI")
+        if not redirect_uri and qb_app_creds.get("redirect_uri"):
+            redirect_uri = qb_app_creds["redirect_uri"]
+        ml_redir = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
+        if not redirect_uri:
+            redirect_uri = ml_redir.replace("/ml/callback", "/qb/callback") if "/ml/callback" in ml_redir else "http://localhost:8083/qb/callback"
+        redirect_uri = redirect_uri.strip()
+        import base64
+        auth_str = f"{client_id}:{client_secret}"
+        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+        try:
+            resp = requests.post(
+                "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+                data={
+                    "grant_type": "authorization_code",
+                    "code": qb_oauth_code,
+                    "redirect_uri": redirect_uri,
+                },
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Authorization": f"Basic {auth_b64}",
+                },
+                timeout=15,
+            )
+            resp.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            resp_err = getattr(e, "response", None)
+            err_msg = str(e)
+            try:
+                if resp_err is not None:
+                    err_body = resp_err.json()
+                    err_msg = err_body.get("error_description") or err_body.get("message") or err_body.get("error") or str(err_body)
+            except Exception:
+                if resp_err is not None and resp_err.text:
+                    err_msg = resp_err.text[:500]
+            with root:
+                ui.label("❌ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
+                ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
+                ui.label(
+                    "Posibles causas:\n"
+                    "• Redirect URI: en developer.intuit.com → Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
+                    "• NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
+                    "• El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
+                ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
+                ui.link("Volver a Configuración", "/").classes("text-primary")
+            return
+        except Exception as e:
+            with root:
+                ui.label(f"❌ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
+                ui.link("Volver al inicio", "/").classes("text-primary")
+            return
+        data = resp.json()
+        access_token = data.get("access_token")
+        refresh_token = data.get("refresh_token")
+        expires_in = data.get("expires_in")
+        if not access_token:
+            with root:
+                ui.label(f"❌ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
+            return
+        expires_at = None
+        if isinstance(expires_in, (int, float)):
+            expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+        conn = get_connection()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM qb_tokens WHERE user_id = ?", (user["id"],))
+        cur.execute(
+            "INSERT INTO qb_tokens (user_id, access_token, refresh_token, expires_at, realm_id, raw_data) VALUES (?, ?, ?, ?, ?, ?)",
+            (user["id"], access_token, refresh_token, expires_at, qb_realm_id or None, json.dumps(data, ensure_ascii=False)),
+        )
+        conn.commit()
+        conn.close()
         return RedirectResponse(url="/", status_code=302)
 
     user = get_current_user()
