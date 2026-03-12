@@ -451,26 +451,7 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
         except Exception:
             pass
 
-    # Sandbox vs Producción: prioridad a preferencia del usuario, luego QB_SANDBOX
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (
-        (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes")
-        if qb_sandbox_param is not None
-        else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    )
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
-    _demo_customers = [
-        {"id": "DEMO1", "name": "Cliente demo 1 (sandbox)"},
-        {"id": "DEMO2", "name": "Cliente demo 2 (sandbox)"},
-        {"id": "DEMO3", "name": "Cliente demo 3 (sandbox)"},
-    ]
-
-    def _sandbox_fallback():
-        """En sandbox, si falla la API, devolver clientes de demostración."""
-        if use_sandbox:
-            return _demo_customers, None
-        return [], None
-
+    base_url = "https://quickbooks.api.intuit.com"
     query = "SELECT Id, DisplayName FROM Customer MAXRESULTS 1000"
     url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query)}"
     try:
@@ -482,16 +463,12 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
         r.raise_for_status()
         text = (r.text or "").strip()
         if not text:
-            cust, _ = _sandbox_fallback()
-            return (cust, None) if cust else ([], "La API respondió vacío. Probá cambiar Sandbox ↔ Producción o reconectar la cuenta.")
+            return [], "La API respondió vacío. Probá reconectar la cuenta (Desvincular → Conectar)."
         try:
             data = json.loads(text)
-        except (json.JSONDecodeError, ValueError) as je:
-            cust, _ = _sandbox_fallback()
-            if cust:
-                return cust, None
+        except (json.JSONDecodeError, ValueError):
             preview = text[:300] if len(text) > 300 else text
-            return [], f"La API no devolvió JSON válido. Probá desactivar Sandbox (o reconectar la cuenta). Preview: {preview!r}"
+            return [], f"La API no devolvió JSON válido. Probá reconectar la cuenta. Preview: {preview!r}"
         customers = []
         raw_customers = data.get("QueryResponse", {}).get("Customer") or []
         if isinstance(raw_customers, dict):
@@ -501,8 +478,6 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
             name = (qbo.get("DisplayName") or qbo.get("FullyQualifiedName") or cid).strip()
             if cid:
                 customers.append({"id": cid, "name": name or cid})
-        if use_sandbox and not customers:
-            return _demo_customers, None
         return sorted(customers, key=lambda c: (c["name"].lower(), c["id"])), None
     except Exception as e:
         err_msg = str(e)
@@ -518,11 +493,9 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
         except Exception:
             pass
         if "Expecting value" in err_msg or "line 1 column 1" in err_msg:
-            err_msg = "La API respondió vacío o no-JSON. Probá desactivar Sandbox, o reconectar la cuenta (Desvincular → Conectar)."
-        if use_sandbox:
-            return _demo_customers, None
+            err_msg = "La API respondió vacío o no-JSON. Probá reconectar la cuenta (Desvincular → Conectar)."
         if "3100" in err_msg or "ApplicationAuthorizationFailed" in err_msg:
-            err_msg = "Producción no autorizada (error 3100). Usá Sandbox si estás probando, o completá la autorización de la app en developer.intuit.com."
+            err_msg = "Autorización fallida (error 3100). Completá la autorización de la app en developer.intuit.com o reconectá la cuenta."
         return [], err_msg
 
 
@@ -585,9 +558,7 @@ def _qb_raw_query(user_id: int, query_sql: str) -> tuple[Optional[dict], Optiona
                 access_token = data.get("access_token")
         except Exception:
             pass
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query_sql)}"
     try:
         r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
@@ -614,10 +585,7 @@ def fetch_qb_company_info(user_id: int) -> tuple[Optional[Dict[str, Any]], Optio
     qb_tokens = get_qb_tokens(user_id)
     if not qb_tokens or not qb_tokens.get("realm_id"):
         return None, "Sin tokens o realm_id"
-    # CompanyInfo usa un endpoint distinto
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     realm_id = qb_tokens["realm_id"]
     access_token = qb_tokens["access_token"]
     url = f"{base_url}/v3/company/{realm_id}/companyinfo/{realm_id}"
@@ -685,9 +653,7 @@ def fetch_qb_customer_detail(user_id: int, customer_id: str) -> tuple[Optional[D
     qb_tokens = get_qb_tokens(user_id)
     if not qb_tokens or not qb_tokens.get("realm_id"):
         return None, "Sin tokens o realm_id"
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     realm_id = qb_tokens["realm_id"]
     access_token = qb_tokens["access_token"]
     url = f"{base_url}/v3/company/{realm_id}/customer/{customer_id}"
@@ -705,9 +671,7 @@ def fetch_qb_invoice_detail(user_id: int, invoice_id: str) -> tuple[Optional[Dic
     qb_tokens = get_qb_tokens(user_id)
     if not qb_tokens or not qb_tokens.get("realm_id"):
         return None, "Sin tokens o realm_id"
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     realm_id = qb_tokens["realm_id"]
     access_token = qb_tokens["access_token"]
     url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}"
@@ -725,9 +689,7 @@ def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes]
     qb_tokens = get_qb_tokens(user_id)
     if not qb_tokens or not qb_tokens.get("realm_id"):
         return None, "Sin tokens o realm_id"
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     realm_id = qb_tokens["realm_id"]
     access_token = qb_tokens["access_token"]
     url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}/pdf"
@@ -792,9 +754,7 @@ def fetch_qb_invoice_detail(user_id: int, invoice_id: str) -> tuple[Optional[Dic
     qb_tokens = get_qb_tokens(user_id)
     if not qb_tokens or not qb_tokens.get("realm_id"):
         return None, "Sin tokens o realm_id"
-    qb_sandbox_param = get_cotizador_param("qb_sandbox", user_id)
-    use_sandbox = (qb_sandbox_param or "").strip().lower() in ("1", "true", "yes") if qb_sandbox_param is not None else os.getenv("QB_SANDBOX", "").strip().lower() in ("1", "true", "yes")
-    base_url = "https://sandbox-quickbooks.api.intuit.com" if use_sandbox else "https://quickbooks.api.intuit.com"
+    base_url = "https://quickbooks.api.intuit.com"
     realm_id = qb_tokens["realm_id"]
     access_token = qb_tokens["access_token"]
     url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}"
@@ -6280,10 +6240,10 @@ def build_tab_compras(container) -> None:
                     ui.label(f"Error al cargar facturas: {err_inv}").classes("text-negative p-4")
                     if "403" in str(err_inv) and ("3100" in str(err_inv) or "AuthorizationFailed" in str(err_inv)):
                         ui.label(
-                            "Sugerencia: este error suele indicar que la conexión con QuickBooks perdió autorización. "
-                            "Andá a Configuración → QuickBooks, hacé clic en 'Desvincular cuenta' y luego en 'Conectar cuenta' para volver a autorizar. "
-                            "Verificá que las credenciales (Client ID, Secret) correspondan al mismo entorno (Sandbox o Producción) que la empresa conectada."
-                        ).classes("text-sm text-gray-700 mt-2 p-3 bg-gray-100 rounded")
+                            "Sugerencia (error 403/3100):\n"
+                            "• Verificá que las credenciales (Client ID, Secret) sean de Producción en developer.intuit.com y que la app esté autorizada.\n"
+                            "• Desvincular → Conectar cuenta para obtener nuevos tokens."
+                        ).classes("text-sm text-gray-700 mt-2 p-3 bg-gray-100 rounded whitespace-pre-line")
                 return
             invoices, overdue_total = inv_result
             open_balance = ""
