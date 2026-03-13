@@ -2474,7 +2474,23 @@ def show_main_layout(container) -> None:
                         show_login_screen(container)
                     ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
 
-        tab_panels = ui.tab_panels(tabs, value=tab_home).classes("w-full")
+        # Restaurar último tab visitado (evita volver siempre a Home tras reconexión WebSocket)
+        tab_map = {
+            "Home": tab_home,
+            "Estadísticas": tab_estadisticas,
+            "Ventas": tab_ventas,
+            "Productos": tab_precios,
+            "Precios": tab_precios_detalle,
+            "Compras": tab_compras,
+            "Búsqueda": tab_busqueda,
+            "Importacion": tab_importacion,
+            "Datos": tab_datos,
+            "Pesos": tab_pesos,
+            "Balance": tab_balance,
+            "Configuración": tab_config,
+        }
+        tab_inicial = app.storage.user.get("last_tab", "Home")
+        tab_panels = ui.tab_panels(tabs, value=tab_map.get(tab_inicial, tab_home)).classes("w-full")
 
         with tab_panels:
             with ui.tab_panel(tab_home):
@@ -2522,6 +2538,8 @@ def show_main_layout(container) -> None:
 
         def on_tab_change(e) -> None:
             val = getattr(e, "value", None)
+            if val:
+                app.storage.user["last_tab"] = val
             if val == "Compras" and not compras_cargado[0]:
                 compras_cargado[0] = True
                 build_tab_compras(compras_container)
@@ -4778,10 +4796,7 @@ def build_tab_precios_detalle(container) -> None:
                     ov.set_visibility(True)
 
                 def _pintar_despues() -> None:
-                    filtrar_y_pintar()
-                    _aplicar_calcular()
-                    if ov:
-                        ov.set_visibility(False)
+                    filtrar_y_pintar(ov=ov)
                 ui.timer(0.15, _pintar_despues, once=True)
             table_container_ref["_filtrar_fn"] = _filtrar_con_indicador
 
@@ -4830,8 +4845,7 @@ def build_tab_precios_detalle(container) -> None:
             with content_column:
                 ui.label("No hay publicaciones en MercadoLibre.").classes("text-gray-500")
         else:
-            filtrar_y_pintar()
-            _aplicar_calcular()
+            filtrar_y_pintar()  # Ya incluye actualizar totales al terminar
         timer_ref["t"].active = False
 
     timer_ref: Dict[str, Any] = {}
@@ -5344,7 +5358,9 @@ def build_tab_precios_detalle(container) -> None:
 
         background_tasks.create(_actualizar(), name="guardar_precio_popup")
 
-    def filtrar_y_pintar() -> None:
+    RENDER_CHUNK_SIZE = 25  # Evita bloquear event loop: ceder cada N filas para mantener WebSocket vivo
+
+    async def _filtrar_y_pintar_async() -> None:
         filtrados = list(items_loaded)
         stock_val = filtro_stock_ref.get("val", "con_stock")
         periodo = filtro_fecha_ref.get("val", "mes_actual")
@@ -5383,7 +5399,9 @@ def build_tab_precios_detalle(container) -> None:
                                     else:
                                         ui.label(label)
                     with ui.element("tbody"):
-                        for r in filtrados:
+                        for i, r in enumerate(filtrados):
+                            if i > 0 and i % RENDER_CHUNK_SIZE == 0:
+                                await asyncio.sleep(0)  # Ceder event loop para mantener WebSocket vivo (evita "connection lost")
                             with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer").on("click", lambda e, r=r: _on_row_click(r)):
                                 for field, label, align, _ in cols:
                                     val = r.get(field)
@@ -5427,6 +5445,17 @@ def build_tab_precios_detalle(container) -> None:
         fn_calcular = calcular_labels_ref.get("_calcular_fn")
         if callable(fn_calcular):
             fn_calcular()
+
+    def filtrar_y_pintar(ov=None) -> None:
+        """Pinta la tabla en background. ov=overlay para ocultarlo al terminar. Evita bloqueo del event loop."""
+        async def _do() -> None:
+            await _filtrar_y_pintar_async()
+            fn = calcular_labels_ref.get("_calcular_fn")
+            if callable(fn):
+                fn()
+            if ov:
+                ov.set_visibility(False)
+        background_tasks.create(_do(), name="filtrar_precios_pintar")
 
     def _on_sort_click(col: str) -> None:
         if sort_col_ref.get("val") == col:
@@ -8966,6 +8995,8 @@ def main() -> None:
         host="0.0.0.0" if es_produccion else "127.0.0.1",
         port=port,
         storage_secret=os.getenv("STORAGE_SECRET", "cambia-esta-clave"),
+        reconnect_timeout=120,  # Evita "Connection lost" durante carga pesada (Precios con muchos productos)
+        message_history_length=2000,  # Más mensajes al reconectar para restaurar UI
     )
 
 
