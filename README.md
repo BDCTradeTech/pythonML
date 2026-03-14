@@ -40,6 +40,21 @@ python main.py
 
 Luego abre el navegador en `http://localhost:8080/`.
 
+### Configuración para enviar emails
+
+El registro de usuarios y el reinicio de contraseña desde Admin envían emails. Para que funcione, configurá estas variables en tu archivo `.env`:
+
+| Variable | Descripción | Ejemplo |
+|----------|-------------|---------|
+| `SMTP_HOST` | Servidor SMTP | `smtp.gmail.com` |
+| `SMTP_PORT` | Puerto (normalmente 587) | `587` |
+| `SMTP_USER` | Usuario para autenticación | `tu-email@gmail.com` |
+| `SMTP_PASS` | Contraseña (en Gmail: contraseña de aplicación) | `xxxxxxxx` |
+| `SMTP_FROM` | Dirección "De" en los emails | `noreply@tudominio.com` |
+| `SMTP_USE_TLS` | Usar TLS (true/false) | `true` |
+
+**Ejemplo para Gmail**: creá una [contraseña de aplicación](https://support.google.com/accounts/answer/185833) y usala en `SMTP_PASS`.
+
 ### Próximos pasos
 
 - Conectar realmente el login con la **API de MercadoLibre** (OAuth2).
