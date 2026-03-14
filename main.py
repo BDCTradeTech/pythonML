@@ -15,8 +15,13 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import os
+import secrets
+import ssl
+import smtplib
 import subprocess
 import tempfile
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -32,7 +37,24 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "2.260312.18"
+VERSION = "2.260313.19"
+
+# Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
+TAB_KEYS = [
+    ("home", "Home"),
+    ("estadisticas", "Estadísticas"),
+    ("ventas", "Ventas"),
+    ("productos", "Productos"),
+    ("precios", "Precios"),
+    ("compras", "Compras"),
+    ("busqueda", "Búsqueda"),
+    ("importacion", "Importacion"),
+    ("datos", "Datos"),
+    ("pesos", "Pesos"),
+    ("balance", "Balance"),
+    ("configuracion", "Configuración"),
+    ("admin", "Admin"),
+]
 
 
 # ==========================
@@ -62,6 +84,11 @@ def init_db() -> None:
         )
         """
     )
+    # Migración: agregar columna email si no existe
+    cur.execute("PRAGMA table_info(users)")
+    user_cols = [r[1] for r in cur.fetchall()]
+    if "email" not in user_cols:
+        cur.execute("ALTER TABLE users ADD COLUMN email TEXT")
 
     # Credenciales de la App de MercadoLibre por usuario (cada usuario puede tener su propia app)
     cur.execute(
@@ -247,6 +274,30 @@ def init_db() -> None:
         )
         """
     )
+
+    # Permisos por pestaña por usuario (Admin)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_tab_permissions (
+            user_id INTEGER NOT NULL,
+            tab_key TEXT NOT NULL,
+            can_access INTEGER NOT NULL DEFAULT 1,
+            PRIMARY KEY (user_id, tab_key),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # Migración: dar permisos por defecto a usuarios existentes (admin solo para user_id=1)
+    cur.execute("SELECT id FROM users ORDER BY id")
+    for row in cur.fetchall():
+        uid = row["id"]
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "compras", "busqueda", "importacion", "datos", "pesos", "balance", "configuracion", "admin"):
+            can = 1 if tab_key != "admin" or uid == 1 else 0
+            cur.execute(
+                "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
+                (uid, tab_key, can),
+            )
 
     conn.commit()
     conn.close()
@@ -885,6 +936,55 @@ def list_users_excluding(user_id: int) -> List[Dict[str, Any]]:
         conn.close()
 
 
+def get_all_users() -> List[Dict[str, Any]]:
+    """Lista todos los usuarios. Devuelve [{id, username}, ...]."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, username FROM users ORDER BY username")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_user_tab_permissions(user_id: int) -> Dict[str, bool]:
+    """Devuelve {tab_key: can_access} para el usuario. Si no hay fila, default True salvo admin=False."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT tab_key, can_access FROM user_tab_permissions WHERE user_id = ?", (user_id,))
+        rows = cur.fetchall()
+        result: Dict[str, bool] = {}
+        for r in rows:
+            result[str(r["tab_key"])] = bool(r["can_access"])
+        for tab_key, _ in TAB_KEYS:
+            if tab_key not in result:
+                result[tab_key] = True if tab_key != "admin" else False
+        return result
+    finally:
+        conn.close()
+
+
+def set_user_tab_permission(user_id: int, tab_key: str, can_access: bool) -> None:
+    """Actualiza o inserta permiso de pestaña para un usuario."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?) ON CONFLICT(user_id, tab_key) DO UPDATE SET can_access=?",
+            (user_id, tab_key, 1 if can_access else 0, 1 if can_access else 0),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def user_can_access_tab(user_id: int, tab_key: str) -> bool:
+    """Devuelve si el usuario puede acceder a la pestaña."""
+    perms = get_user_tab_permissions(user_id)
+    return perms.get(tab_key, True if tab_key != "admin" else False)
+
+
 def copy_cotizador_datos(from_user_id: int, to_user_id: int) -> int:
     """Copia todos los datos del cotizador de un usuario a otro. Devuelve cantidad de claves copiadas."""
     conn = get_connection()
@@ -1024,16 +1124,110 @@ def hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
 
-def create_user(username: str, password: str) -> Optional[str]:
-    """Crea un usuario. Devuelve mensaje de error o None si fue bien."""
+
+
+def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
+    """Envía un email vía SMTP. Devuelve None si OK, mensaje de error si falla.
+    Variables: SMTP_HOST, SMTP_PORT (465=SSL, 587=STARTTLS), SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_FROM_NAME"""
+    host = os.getenv("SMTP_HOST", "").strip()
+    if not host:
+        return "SMTP no configurado: falta SMTP_HOST en .env"
+    port = int(os.getenv("SMTP_PORT", "465"))
+    user = os.getenv("SMTP_USER", "").strip()
+    password_env = os.getenv("SMTP_PASS", "").strip().replace(" ", "")
+    from_addr_raw = (os.getenv("SMTP_FROM", "") or user).strip() or user
+    from_name = (os.getenv("SMTP_FROM_NAME", "") or "BDC systems").strip()
+    from_header = f"{from_name} <{from_addr_raw}>" if from_name else from_addr_raw
+
+    if not user or not password_env:
+        return "SMTP no configurado: falta SMTP_USER o SMTP_PASS en .env"
+
     try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = from_header
+        msg["To"] = to_email
+        msg.attach(MIMEText(body_plain, "plain", "utf-8"))
+
+        ctx = ssl.create_default_context()
+        envelope_from = user  # El servidor SMTP usa el usuario autenticado como remitente
+        if port == 465:
+            with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
+                smtp.login(user, password_env)
+                smtp.sendmail(envelope_from, to_email, msg.as_string())
+        else:
+            with smtplib.SMTP(host, port, timeout=30) as smtp:
+                smtp.starttls(context=ctx)
+                smtp.login(user, password_env)
+                smtp.sendmail(envelope_from, to_email, msg.as_string())
+        return None
+    except Exception as e:
+        return f"Error al enviar email: {str(e)}"
+
+
+def get_user_email(user_id: int) -> Optional[str]:
+    """Obtiene el email del usuario. Si no tiene, intenta usar username si parece email."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT email, username FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        email = (row["email"] or "").strip() if row["email"] else ""
+        if email:
+            return email
+        uname = (row["username"] or "").strip()
+        return uname if "@" in uname else None
+    finally:
+        conn.close()
+
+
+def create_user(email: str) -> Optional[str]:
+    """Crea un usuario usando el email como usuario. Genera contraseña aleatoria y envía email. Devuelve mensaje de error o None si fue bien."""
+    email_clean = (email or "").strip().lower()
+    if not email_clean or "@" not in email_clean:
+        return "Ingresá un email válido."
+    try:
+        new_password = secrets.token_urlsafe(8)
         conn = get_connection()
         cur = conn.cursor()
+        cur.execute("SELECT id FROM users ORDER BY id LIMIT 1")
+        first_user = cur.fetchone()
+        is_first = first_user is None
+
         cur.execute(
-            "INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)",
-            (username, hash_password(password), datetime.utcnow().isoformat()),
+            "INSERT INTO users (username, password_hash, created_at, email) VALUES (?, ?, ?, ?)",
+            (email_clean, hash_password(new_password), datetime.utcnow().isoformat(), email_clean),
         )
         conn.commit()
+        uid = cur.lastrowid
+        if uid:
+            for tab_key, _ in TAB_KEYS:
+                can = 1 if (tab_key != "admin" or is_first) else 0
+                cur.execute(
+                    "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
+                    (uid, tab_key, can),
+                )
+            conn.commit()
+
+        # Enviar email con contraseña provisoria
+        body = f"""Hola,
+
+Te registraste en BDC systems. Tu contraseña provisoria es: {new_password}
+
+Usuario (email): {email_clean}
+
+Por favor iniciá sesión con tu email y contraseña provisoria, y cambiá tu contraseña en Configuración > Cambiar contraseña.
+"""
+        err = send_email(
+            email_clean,
+            "BDC systems - Tu contraseña provisoria",
+            body,
+        )
+        if err:
+            # Usuario creado pero email no enviado - avisar
+            return f"Usuario creado, pero no se pudo enviar el email: {err}. Tu contraseña provisoria es: {new_password}"
         return None
     except sqlite3.IntegrityError:
         return "El usuario ya existe."
@@ -1073,6 +1267,78 @@ def update_user_password(user_id: int, current_password: str, new_password: str)
         cur.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_clean), user_id))
         conn.commit()
         return None
+    finally:
+        conn.close()
+
+
+def admin_reset_user_password(target_user_id: int) -> tuple[Optional[str], bool, Optional[str]]:
+    """Genera una nueva contraseña temporal, la guarda y la envía por email al usuario.
+    Devuelve (mensaje_error, email_enviado, email_destino). Si error no es None, no se hizo el reinicio."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,))
+        row = cur.fetchone()
+        if not row:
+            return ("Usuario no encontrado.", False, None)
+        to_email = get_user_email(target_user_id)
+        if not to_email:
+            return ("El usuario no tiene email registrado.", False, None)
+
+        new_password = secrets.token_urlsafe(8)
+
+        cur.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), target_user_id))
+        conn.commit()
+
+        body = f"""Hola,
+
+Un administrador reinició tu contraseña en BDC systems.
+
+Usuario: {row['username']}
+Nueva contraseña: {new_password}
+
+Por favor iniciá sesión y cambiá tu contraseña en Configuración > Cambiar contraseña.
+"""
+        err = send_email(to_email, "BDC systems - Tu nueva contraseña", body)
+        if err is None:
+            return (None, True, to_email)
+        return (f"Contraseña actualizada, pero no se pudo enviar el email: {err}", False, to_email)
+    finally:
+        conn.close()
+
+
+def delete_user_and_all_data(target_user_id: int) -> Optional[str]:
+    """Elimina un usuario y todos sus datos asociados. Devuelve mensaje de error o None si OK."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE id = ?", (target_user_id,))
+        if not cur.fetchone():
+            return "Usuario no encontrado."
+        # Borrar en orden: tablas que referencian user_id
+        tables = [
+            "ml_credentials",
+            "qb_tokens",
+            "ml_app_credentials",
+            "qb_app_credentials",
+            "user_qb_customer",
+            "queries",
+            "cotizador_datos",
+            "precios_producto",
+            "importacion_filas",
+            "user_tab_permissions",
+        ]
+        for t in tables:
+            try:
+                cur.execute(f"DELETE FROM {t} WHERE user_id = ?", (target_user_id,))
+            except sqlite3.OperationalError:
+                pass  # tabla puede no existir
+        cur.execute("DELETE FROM users WHERE id = ?", (target_user_id,))
+        conn.commit()
+        return None
+    except Exception as e:
+        conn.rollback()
+        return str(e)
     finally:
         conn.close()
 
@@ -2414,14 +2680,31 @@ def show_login_screen(container) -> None:
                             show_main_layout(container)
 
                         def on_register() -> None:
-                            if not username.value or not password.value:
-                                ui.notify("Completa usuario y contraseña", color="negative")
-                                return
-                            error = create_user(username.value, password.value)
-                            if error:
-                                ui.notify(error, color="negative")
-                                return
-                            ui.notify("Usuario creado, ahora puedes iniciar sesión", color="positive")
+                            with ui.dialog() as dlg:
+                                dlg.props("persistent")
+                                with ui.card().classes("p-4 min-w-[320px]"):
+                                    ui.label("Registrarse").classes("text-lg font-bold")
+                                    reg_email = ui.input("Email").classes("w-full").props("type=email")
+
+                                    def _submit_reg() -> None:
+                                        e = (reg_email.value or "").strip()
+                                        if not e or "@" not in e:
+                                            ui.notify("Ingresá un email válido", color="negative")
+                                            return
+                                        error = create_user(e)
+                                        if error:
+                                            ui.notify(error, color="negative")
+                                            return
+                                        dlg.close()
+                                        ui.notify(
+                                            "Te enviamos un email con tu contraseña provisoria. Iniciá sesión y cambiá tu contraseña en Configuración.",
+                                            color="positive",
+                                        )
+
+                                    with ui.row().classes("mt-3 gap-2 justify-end"):
+                                        ui.button("Cancelar", on_click=dlg.close)
+                                        ui.button("Registrarme", on_click=_submit_reg, color="primary")
+                            dlg.open()
 
                         ui.button("Entrar", on_click=on_login, color="primary")
                         ui.button("Registrarme", on_click=on_register, color="secondary")
@@ -2437,8 +2720,13 @@ def show_main_layout(container) -> None:
         return
 
     with container:
-        # Barra gris con menús de navegación (Home, Mis productos, Configuración) y usuario
-        with ui.row().classes("w-full items-center justify-between q-pa-md bg-grey-2"):
+        perms = get_user_tab_permissions(user["id"])
+        ml_linked = bool(get_ml_access_token(user["id"]))
+        qb_tokens = get_qb_tokens(user["id"])
+        qb_linked = bool(qb_tokens and qb_tokens.get("access_token"))
+
+        # Tabs ocultos (solo para binding con tab_panels)
+        with ui.element("div").classes("hidden"):
             with ui.tabs() as tabs:
                 tab_home = ui.tab("Home")
                 tab_estadisticas = ui.tab("Estadísticas")
@@ -2452,29 +2740,8 @@ def show_main_layout(container) -> None:
                 tab_pesos = ui.tab("Pesos")
                 tab_balance = ui.tab("Balance")
                 tab_config = ui.tab("Configuración")
-            with ui.row().classes("items-center gap-4"):
-                # Semáforos ML y BDC arriba de la versión
-                ml_linked = bool(get_ml_access_token(user["id"]))
-                qb_tokens = get_qb_tokens(user["id"])
-                qb_linked = bool(qb_tokens and qb_tokens.get("access_token"))
-                with ui.column().classes("items-center gap-1"):
-                    with ui.row().classes("items-center gap-2 justify-center"):
-                        with ui.row().classes("items-center gap-1"):
-                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
-                            ui.label("ML").classes("text-xs text-gray-600")
-                        with ui.row().classes("items-center gap-1"):
-                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if qb_linked else '#ef4444'}")
-                            ui.label("BDC").classes("text-xs text-gray-600")
-                    ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
-                with ui.column().classes("items-end gap-0"):
-                    ui.label(user["username"]).classes("text-sm font-medium")
-                    def logout() -> None:
-                        set_current_user(None)
-                        ui.notify("Sesión cerrada", color="positive")
-                        show_login_screen(container)
-                    ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
+                tab_admin = ui.tab("Admin")
 
-        # Restaurar último tab visitado (evita volver siempre a Home tras reconexión WebSocket)
         tab_map = {
             "Home": tab_home,
             "Estadísticas": tab_estadisticas,
@@ -2488,8 +2755,144 @@ def show_main_layout(container) -> None:
             "Pesos": tab_pesos,
             "Balance": tab_balance,
             "Configuración": tab_config,
+            "Admin": tab_admin,
         }
-        tab_inicial = app.storage.user.get("last_tab", "Home")
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Compras": "compras", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+
+        # Lazy-load state
+        precios_cargado = [False]
+        precios_detalle_cargado = [False]
+        ventas_cargado = [False]
+        estadisticas_cargado = [False]
+        balance_cargado = [False]
+        compras_cargado = [False]
+        admin_cargado = [False]
+
+        def _lazy_load(val: str) -> None:
+            if val == "Compras" and not compras_cargado[0]:
+                compras_cargado[0] = True
+                build_tab_compras(compras_container)
+            elif val == "Productos" and not precios_cargado[0]:
+                precios_cargado[0] = True
+                build_tab_precios(precios_container)
+            elif val == "Precios" and not precios_detalle_cargado[0]:
+                precios_detalle_cargado[0] = True
+                build_tab_precios_detalle(precios_detalle_container)
+            elif val == "Ventas" and not ventas_cargado[0]:
+                ventas_cargado[0] = True
+                build_tab_ventas(ventas_container)
+            elif val == "Estadísticas" and not estadisticas_cargado[0]:
+                estadisticas_cargado[0] = True
+                build_tab_estadisticas(estadisticas_container)
+            elif val == "Balance" and not balance_cargado[0]:
+                balance_cargado[0] = True
+                build_tab_balance(balance_container)
+            elif val == "Admin" and not admin_cargado[0]:
+                admin_cargado[0] = True
+                build_tab_admin(admin_container)
+
+        # Siempre arrancar en Home
+        tab_inicial = "Home"
+
+        def _go(lbl: str):
+            def f():
+                tab_panels.value = tab_map[lbl]
+                app.storage.user["last_tab"] = lbl
+                _lazy_load(lbl)
+            return f
+
+        # Barra gris: navegación principal + secundaria | semáforos, versión, usuario
+        # Menús secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
+        # Se cierran al seleccionar una opción o al hacer clic fuera (Quasar).
+        _open_menus: List[Any] = []  # Referencias a menús abiertos para cerrar otros al abrir uno nuevo
+
+        def _open_and_close_others(menu_obj: Any) -> None:
+            for m in _open_menus:
+                if m is not menu_obj:
+                    try:
+                        m.close()
+                    except Exception:
+                        pass
+            _open_menus.clear()
+            _open_menus.append(menu_obj)
+            menu_obj.open()
+
+        with ui.row().classes("w-full items-center q-pa-md bg-grey-2 gap-2 flex-wrap"):
+            with ui.row().classes("items-center gap-1 shrink-0"):
+                _nav_font = "text-lg font-medium"
+                if perms.get("home", True):
+                    ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
+                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                if any(perms.get(k, True) for _, _, k in ml_subs):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
+                        with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as ml_menu:
+                                for lbl_display, lbl_map, key in ml_subs:
+                                    if perms.get(key, True):
+                                        def _ml_click(l=lbl_map):
+                                            _lazy_load(l)
+                                            tab_panels.value = tab_map[l]
+                                            app.storage.user["last_tab"] = l
+                                        ui.menu_item(lbl_display, _ml_click)
+                if perms.get("compras", True):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
+                        with ui.button("COMPRAS").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as compras_menu:
+                                def _compras_click():
+                                    _lazy_load("Compras")
+                                    tab_panels.value = tab_compras
+                                    app.storage.user["last_tab"] = "Compras"
+                                ui.menu_item("COMPRAS", _compras_click)
+                if perms.get("importacion", True) or perms.get("pesos", True):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
+                        with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as comex_menu:
+                                if perms.get("importacion", True):
+                                    def _imp_click():
+                                        _lazy_load("Importacion")
+                                        tab_panels.value = tab_importacion
+                                        app.storage.user["last_tab"] = "Importacion"
+                                    ui.menu_item("IMPORTACION", _imp_click)
+                                if perms.get("pesos", True):
+                                    def _pesos_click():
+                                        _lazy_load("Pesos")
+                                        tab_panels.value = tab_pesos
+                                        app.storage.user["last_tab"] = "Pesos"
+                                    ui.menu_item("PESOS", _pesos_click)
+                if perms.get("datos", True) or perms.get("configuracion", True):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(config_menu)):
+                        with ui.button("CONFIG").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as config_menu:
+                                if perms.get("datos", True):
+                                    def _datos_click():
+                                        _lazy_load("Datos")
+                                        tab_panels.value = tab_datos
+                                        app.storage.user["last_tab"] = "Datos"
+                                    ui.menu_item("DATOS", _datos_click)
+                                if perms.get("configuracion", True):
+                                    def _config_click():
+                                        _lazy_load("Configuración")
+                                        tab_panels.value = tab_config
+                                        app.storage.user["last_tab"] = "Configuración"
+                                    ui.menu_item("CONFIGURACIÓN", _config_click)
+                if perms.get("admin", False):
+                    ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
+            ui.space()
+            with ui.row().classes("items-center gap-3 shrink-0"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
+                    ui.label("ML").classes("text-xs text-gray-600")
+                with ui.row().classes("items-center gap-2"):
+                    ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if qb_linked else '#ef4444'}")
+                    ui.label("BDC").classes("text-xs text-gray-600")
+                ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
+                ui.label(user["username"]).classes("text-sm font-medium")
+                def logout() -> None:
+                    set_current_user(None)
+                    ui.notify("Sesión cerrada", color="positive")
+                    show_login_screen(container)
+                ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
+
         tab_panels = ui.tab_panels(tabs, value=tab_map.get(tab_inicial, tab_home)).classes("w-full")
 
         with tab_panels:
@@ -2529,12 +2932,8 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_config):
                 build_tab_config()
 
-        precios_cargado = [False]
-        precios_detalle_cargado = [False]
-        ventas_cargado = [False]
-        estadisticas_cargado = [False]
-        balance_cargado = [False]
-        compras_cargado = [False]
+            with ui.tab_panel(tab_admin):
+                admin_container = ui.column().classes("w-full")
 
         def on_tab_change(e) -> None:
             val = getattr(e, "value", None)
@@ -2558,6 +2957,9 @@ def show_main_layout(container) -> None:
             elif val == "Balance" and not balance_cargado[0]:
                 balance_cargado[0] = True
                 build_tab_balance(balance_container)
+            elif val == "Admin" and not admin_cargado[0]:
+                admin_cargado[0] = True
+                build_tab_admin(admin_container)
 
         tab_panels.on_value_change(on_tab_change)
 
@@ -7435,6 +7837,104 @@ def build_tab_balance(container) -> None:
             ui.button("Guardar tabla", on_click=guardar, color="secondary")
 
     background_tasks.create(_cargar_y_pintar(), name="cargar_balance")
+
+
+def build_tab_admin(container) -> None:
+    """Pestaña Admin: tabla de usuarios con permisos por pestaña y estado ML/BDC."""
+    container.clear()
+    user = require_login()
+    if not user:
+        return
+    if not user_can_access_tab(user["id"], "admin"):
+        with container:
+            ui.label("No tenés permiso para acceder a Admin.").classes("text-negative")
+        return
+
+    users_list = get_all_users()
+    with container:
+        with ui.column().classes("w-full gap-4 p-4"):
+            with ui.card().classes("w-full p-4 bg-grey-2"):
+                with ui.element("div").classes("w-full overflow-x-auto"):
+                    with ui.element("table").classes("border-collapse text-sm").style("width: 100%; min-width: 100%"):
+                        with ui.element("thead"):
+                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                                with ui.element("th").classes("px-3 py-2 border text-left"):
+                                    ui.label("Usuario")
+                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px;"):
+                                    ui.label("Borrar")
+                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 90px;"):
+                                    ui.label("Password")
+                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 60px;"):
+                                    ui.label("ML")
+                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 60px;"):
+                                    ui.label("BDC")
+                                for _tab_key, label in TAB_KEYS:
+                                    with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 70px;"):
+                                        ui.label(label)
+                        with ui.element("tbody"):
+                            for u in users_list:
+                                uid = u["id"]
+                                uname = u.get("username", "")
+                                ml_linked = bool(get_ml_access_token(uid))
+                                qb_tokens = get_qb_tokens(uid)
+                                bdc_linked = bool(qb_tokens and qb_tokens.get("access_token"))
+                                perms = get_user_tab_permissions(uid)
+                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                    with ui.element("td").classes("px-3 py-1 border-b border-gray-100 font-medium"):
+                                        ui.label(uname)
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                        def _do_delete(target_uid: int, target_uname: str):
+                                            with ui.dialog() as dlg:
+                                                dlg.props("persistent")
+                                                with ui.card().classes("p-4 min-w-[300px]"):
+                                                    ui.label("¿Estás seguro que querés borrarlo?").classes("text-lg font-bold")
+                                                    ui.label(f"Se borrará el usuario {target_uname} y todos sus datos.").classes("text-sm text-gray-600 mt-1")
+                                                    with ui.row().classes("mt-3 gap-2 justify-end"):
+                                                        ui.button("Cancelar", on_click=dlg.close)
+                                                        def _confirm():
+                                                            if target_uid == user["id"]:
+                                                                ui.notify("No podés borrarte a vos mismo.", color="negative")
+                                                                dlg.close()
+                                                                return
+                                                            err = delete_user_and_all_data(target_uid)
+                                                            dlg.close()
+                                                            if err:
+                                                                ui.notify(err, color="negative")
+                                                            else:
+                                                                ui.notify("Usuario borrado correctamente", color="positive")
+                                                                build_tab_admin(container)
+                                                        ui.button("Borrar", on_click=_confirm, color="negative").props("flat")
+                                            dlg.open()
+                                        ui.button("Borrar", on_click=lambda uid_inner=uid, uname_inner=uname: _do_delete(uid_inner, uname_inner)).props("flat dense").classes("text-xs text-red-600")
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                        def _do_reset(target_uid: int):
+                                            err, email_sent, dest_email = admin_reset_user_password(target_uid)
+                                            if err:
+                                                ui.notify(err, color="negative")
+                                            elif email_sent and dest_email:
+                                                ui.notify(f"Enviamos un email con la nueva contraseña a {dest_email}", color="positive")
+                                            else:
+                                                ui.notify("Contraseña actualizada, pero no se pudo enviar el email.", color="warning")
+                                        ui.button("Reiniciar", on_click=lambda uid_inner=uid: _do_reset(uid_inner)).props("flat dense").classes("text-xs")
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                        with ui.row().classes("items-center justify-center gap-1"):
+                                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
+                                            ui.label("Vinculado" if ml_linked else "No").classes("text-xs")
+                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                        with ui.row().classes("items-center justify-center gap-1"):
+                                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if bdc_linked else '#ef4444'}")
+                                            ui.label("Vinculado" if bdc_linked else "No").classes("text-xs")
+                                    for tab_key, _label in TAB_KEYS:
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            val = perms.get(tab_key, True if tab_key != "admin" else False)
+                                            chk = ui.checkbox(value=val).classes("justify-center")
+
+                                            def _on_toggle(uid_inner: int, tk: str, evt: Any) -> None:
+                                                set_user_tab_permission(uid_inner, tk, bool(getattr(evt, "value", evt)))
+                                                ui.notify("Permiso actualizado", color="positive")
+
+                                            chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
+            ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
 
 
 def build_tab_config() -> None:
