@@ -40,18 +40,22 @@ DB_PATH = Path(__file__).with_name("app.db")
 VERSION = "2.260313.19"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
+# compras_lista (Compras) se quitó de la tabla de permisos.
 TAB_KEYS = [
     ("home", "Home"),
     ("estadisticas", "Estadísticas"),
     ("ventas", "Ventas"),
     ("productos", "Productos"),
     ("precios", "Precios"),
-    ("compras", "Compras"),
-    ("busqueda", "Búsqueda"),
-    ("importacion", "Importacion"),
-    ("datos", "Datos"),
-    ("pesos", "Pesos"),
+    ("busqueda", "Busquedas"),
     ("balance", "Balance"),
+    ("compras", "Invoices"),
+    ("stock", "Stock"),
+    ("compras_lista", "Compras"),
+    ("pedidos", "Pedidos"),
+    ("importacion", "Importacion"),
+    ("pesos", "Pesos"),
+    ("datos", "Datos"),
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
 ]
@@ -158,10 +162,13 @@ def init_db() -> None:
         """
         INSERT OR IGNORE INTO qb_customer_preasignado (email, qb_customer_id, qb_customer_name)
         VALUES
-            ('diegolas@gmail.com', '101', 'NorthTechnology'),
+            ('diegolas@gmail.com', '101', 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)'),
             ('info@dsmax.com.ar', '136', 'DSMAX TECH'),
             ('diegog@exxa.com.ar', '5', 'Exxa Store')
         """
+    )
+    cur.execute(
+        "UPDATE qb_customer_preasignado SET qb_customer_name = 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)' WHERE qb_customer_id = '101'"
     )
 
     # Credenciales de MercadoLibre asociadas al usuario (tokens OAuth)
@@ -275,6 +282,104 @@ def init_db() -> None:
         """
     )
 
+    # Lista de compras a cotizar (marca, producto, cantidad, precio_sugerido, estado, usuario_qb)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compras_lista (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            marca TEXT,
+            producto TEXT,
+            cantidad TEXT,
+            precio_sugerido TEXT,
+            estado TEXT NOT NULL DEFAULT 'Cotizar',
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    try:
+        cur.execute("ALTER TABLE compras_lista ADD COLUMN usuario_qb TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Marcas (catálogo global para Compras)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS marcas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+
+    # Lista de pedidos (similar a compras + cliente)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pedidos_lista (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            marca TEXT,
+            producto TEXT,
+            cantidad TEXT,
+            precio_sugerido TEXT,
+            estado TEXT NOT NULL DEFAULT 'Cotizar',
+            cliente TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # Lista de compras a cotizar
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS compras_lista (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            marca TEXT,
+            producto TEXT,
+            cantidad TEXT,
+            precio_sugerido TEXT,
+            estado TEXT NOT NULL DEFAULT 'Cotizar',
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    try:
+        cur.execute("ALTER TABLE compras_lista ADD COLUMN usuario_qb TEXT")
+    except sqlite3.OperationalError:
+        pass
+
+    # Marcas (catálogo global para Compras)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS marcas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+
+    # Lista de pedidos (similar a compras + cliente)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pedidos_lista (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            fecha TEXT NOT NULL,
+            marca TEXT,
+            producto TEXT,
+            cantidad TEXT,
+            precio_sugerido TEXT,
+            estado TEXT NOT NULL DEFAULT 'Cotizar',
+            cliente TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     # Permisos por pestaña por usuario (Admin)
     cur.execute(
         """
@@ -292,7 +397,7 @@ def init_db() -> None:
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "compras", "busqueda", "importacion", "datos", "pesos", "balance", "configuracion", "admin"):
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
             can = 1 if tab_key != "admin" or uid == 1 else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
@@ -389,18 +494,19 @@ def get_qb_tokens(user_id: int) -> Optional[Any]:
 
 
 def get_user_qb_customer(user_id: int) -> Optional[Dict[str, str]]:
-    """Obtiene el Cliente QuickBooks preasignado al usuario por email (qb_customer_id, qb_customer_name)."""
+    """Obtiene el Cliente QuickBooks: primero user_qb_customer (Config), sino qb_customer_preasignado por email."""
     conn = get_connection()
     try:
         cur = conn.cursor()
+        cur.execute("SELECT qb_customer_id, qb_customer_name FROM user_qb_customer WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        if row and row["qb_customer_id"]:
+            return {"id": row["qb_customer_id"], "name": row["qb_customer_name"] or row["qb_customer_id"]}
         cur.execute("SELECT username FROM users WHERE id = ?", (user_id,))
         user_row = cur.fetchone()
-        if not user_row:
+        if not user_row or not user_row["username"]:
             return None
-        username = user_row["username"]
-        if not username:
-            return None
-        email = (username or "").strip().lower()
+        email = (user_row["username"] or "").strip().lower()
         cur.execute(
             "SELECT qb_customer_id, qb_customer_name FROM qb_customer_preasignado WHERE LOWER(TRIM(email)) = ?",
             (email,),
@@ -610,7 +716,7 @@ def _qb_raw_query(user_id: int, query_sql: str) -> tuple[Optional[dict], Optiona
         except Exception:
             pass
     base_url = "https://quickbooks.api.intuit.com"
-    url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query_sql)}"
+    url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query_sql)}&minorversion=65"
     try:
         r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
         r.raise_for_status()
@@ -697,6 +803,36 @@ def fetch_qb_bills(user_id: int) -> tuple[List[Dict[str, Any]], Optional[str]]:
             bal = ""
         bills.append({"id": bid, "doc": doc, "vendor": vname or vid, "txn_date": txn, "due_date": due, "balance": bal})
     return bills, None
+
+
+def fetch_qb_items(user_id: int) -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Obtiene Items (productos/inventario) de QuickBooks con stock, usando Description (Sales), Sku y UnitPrice."""
+    data, err = _qb_raw_query(
+        user_id,
+        "SELECT * FROM Item MAXRESULTS 1000"
+    )
+    if err:
+        return [], err
+    raw = data.get("QueryResponse", {}).get("Item") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    items = []
+    for it in raw:
+        iid = str(it.get("Id", ""))
+        sales_desc = (it.get("Description") or it.get("Name") or "").strip()
+        qty = it.get("QtyOnHand")
+        try:
+            qty_num = int(float(qty)) if qty is not None else 0
+        except (TypeError, ValueError):
+            qty_num = 0
+        sku = str(it.get("Sku") or it.get("SKU") or "").strip()
+        try:
+            unit_price = float(it.get("UnitPrice") or 0)
+        except (TypeError, ValueError):
+            unit_price = 0.0
+        if iid:
+            items.append({"id": iid, "producto": sales_desc or "—", "qty": qty_num, "sku": sku, "sales_price": unit_price})
+    return sorted(items, key=lambda x: (x["producto"].lower(), x["id"])), None
 
 
 def fetch_qb_customer_detail(user_id: int, customer_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -983,6 +1119,226 @@ def user_can_access_tab(user_id: int, tab_key: str) -> bool:
     """Devuelve si el usuario puede acceder a la pestaña."""
     perms = get_user_tab_permissions(user_id)
     return perms.get(tab_key, True if tab_key != "admin" else False)
+
+
+def get_compras_lista(user_id: int) -> List[Dict[str, Any]]:
+    """Obtiene la lista de compras del usuario."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_compras_lista_all() -> List[Dict[str, Any]]:
+    """Obtiene la lista de compras de TODOS los usuarios (para Pedidos consolidado)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista ORDER BY id DESC",
+            (),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_compras_lista_row(row_id: int, user_id: int) -> Optional[Dict[str, Any]]:
+    """Obtiene una fila de compras_lista por id."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE id = ? AND user_id = ?",
+            (row_id, user_id),
+        )
+        r = cur.fetchone()
+        return dict(r) if r else None
+    finally:
+        conn.close()
+
+
+def insert_compras_lista(user_id: int, fecha: str, marca: str = "", producto: str = "", cantidad: str = "", precio_sugerido: str = "", estado: str = "Cotizar", usuario_qb: str = "") -> int:
+    """Inserta una fila en compras_lista. Devuelve el id insertado."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO compras_lista (user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, fecha, marca or "", producto or "", str(cantidad or ""), str(precio_sugerido or ""), estado or "Cotizar", usuario_qb or ""),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_compras_lista_row(row_id: int, user_id: int, **kwargs) -> None:
+    """Actualiza una fila de compras_lista."""
+    if not kwargs:
+        return
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            if k in ("fecha", "marca", "producto", "cantidad", "precio_sugerido", "estado", "usuario_qb"):
+                sets.append(f"{k} = ?")
+                vals.append(str(v or "") if k != "estado" else (str(v) if v is not None else "Cotizar"))
+        if sets:
+            vals.append(row_id)
+            vals.append(user_id)
+            cur.execute(
+                f"UPDATE compras_lista SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
+                vals,
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_compras_lista_row(row_id: int, user_id: int) -> None:
+    """Elimina una fila de compras_lista."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM compras_lista WHERE id = ? AND user_id = ?", (row_id, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_pedidos_lista(user_id: int) -> List[Dict[str, Any]]:
+    """Obtiene la lista de pedidos del usuario."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, fecha, marca, producto, cantidad, precio_sugerido, estado, cliente FROM pedidos_lista WHERE user_id = ? ORDER BY id",
+            (user_id,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_pedidos_lista(user_id: int, fecha: str, marca: str = "", producto: str = "", cantidad: str = "", precio_sugerido: str = "", estado: str = "Cotizar", cliente: str = "") -> int:
+    """Inserta una fila en pedidos_lista."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO pedidos_lista (user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, cliente) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, fecha, marca or "", producto or "", str(cantidad or ""), str(precio_sugerido or ""), estado or "Cotizar", cliente or ""),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def update_pedidos_lista_row(row_id: int, user_id: int, **kwargs) -> None:
+    """Actualiza una fila de pedidos_lista."""
+    if not kwargs:
+        return
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        sets = []
+        vals = []
+        for k, v in kwargs.items():
+            if k in ("fecha", "marca", "producto", "cantidad", "precio_sugerido", "estado", "cliente"):
+                sets.append(f"{k} = ?")
+                vals.append(str(v or "") if k != "estado" else (str(v) if v is not None else "Cotizar"))
+        if sets:
+            vals.append(row_id)
+            vals.append(user_id)
+            cur.execute(
+                f"UPDATE pedidos_lista SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
+                vals,
+            )
+            conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_pedidos_lista_row(row_id: int, user_id: int) -> None:
+    """Elimina una fila de pedidos_lista."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM pedidos_lista WHERE id = ? AND user_id = ?", (row_id, user_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_marcas() -> List[Dict[str, Any]]:
+    """Obtiene todas las marcas (id, nombre)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, nombre FROM marcas ORDER BY nombre")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_marca(nombre: str) -> Optional[str]:
+    """Inserta una marca. Devuelve None si OK, mensaje de error si falla."""
+    nombre_clean = (nombre or "").strip()
+    if not nombre_clean:
+        return "El nombre no puede estar vacío"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO marcas (nombre) VALUES (?)", (nombre_clean,))
+        conn.commit()
+        return None
+    except sqlite3.IntegrityError:
+        return "Ya existe una marca con ese nombre"
+    finally:
+        conn.close()
+
+
+def update_marca(marca_id: int, nombre: str) -> Optional[str]:
+    """Actualiza una marca. Devuelve None si OK, mensaje de error si falla."""
+    nombre_clean = (nombre or "").strip()
+    if not nombre_clean:
+        return "El nombre no puede estar vacío"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE marcas SET nombre = ? WHERE id = ?", (nombre_clean, marca_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return "Marca no encontrada"
+        return None
+    except sqlite3.IntegrityError:
+        return "Ya existe una marca con ese nombre"
+    finally:
+        conn.close()
+
+
+def delete_marca(marca_id: int) -> Optional[str]:
+    """Elimina una marca. Devuelve None si OK, mensaje de error si falla."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM marcas WHERE id = ?", (marca_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return "Marca no encontrada"
+        return None
+    finally:
+        conn.close()
 
 
 def copy_cotizador_datos(from_user_id: int, to_user_id: int) -> int:
@@ -2733,7 +3089,10 @@ def show_main_layout(container) -> None:
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
                 tab_precios_detalle = ui.tab("Precios")
-                tab_compras = ui.tab("Compras")
+                tab_compras = ui.tab("Invoices")
+                tab_stock = ui.tab("Stock")
+                tab_compras_lista = ui.tab("Compras")
+                tab_pedidos = ui.tab("Pedidos")
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
@@ -2748,7 +3107,10 @@ def show_main_layout(container) -> None:
             "Ventas": tab_ventas,
             "Productos": tab_precios,
             "Precios": tab_precios_detalle,
-            "Compras": tab_compras,
+            "Invoices": tab_compras,
+            "Stock": tab_stock,
+            "Compras": tab_compras_lista,
+            "Pedidos": tab_pedidos,
             "Búsqueda": tab_busqueda,
             "Importacion": tab_importacion,
             "Datos": tab_datos,
@@ -2757,7 +3119,7 @@ def show_main_layout(container) -> None:
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Compras": "compras", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -2766,12 +3128,24 @@ def show_main_layout(container) -> None:
         estadisticas_cargado = [False]
         balance_cargado = [False]
         compras_cargado = [False]
+        stock_cargado = [False]
+        compras_lista_cargado = [False]
+        pedidos_cargado = [False]
         admin_cargado = [False]
 
         def _lazy_load(val: str) -> None:
-            if val == "Compras" and not compras_cargado[0]:
+            if val == "Invoices" and not compras_cargado[0]:
                 compras_cargado[0] = True
                 build_tab_compras(compras_container)
+            elif val == "Stock" and not stock_cargado[0]:
+                stock_cargado[0] = True
+                build_tab_stock(stock_container)
+            elif val == "Compras" and not compras_lista_cargado[0]:
+                compras_lista_cargado[0] = True
+                build_tab_compras_lista(compras_lista_container)
+            elif val == "Pedidos" and not pedidos_cargado[0]:
+                pedidos_cargado[0] = True
+                build_tab_pedidos(pedidos_container)
             elif val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
@@ -2834,15 +3208,34 @@ def show_main_layout(container) -> None:
                                             tab_panels.value = tab_map[l]
                                             app.storage.user["last_tab"] = l
                                         ui.menu_item(lbl_display, _ml_click)
-                if perms.get("compras", True):
+                if perms.get("compras", True) or perms.get("stock", True) or perms.get("compras_lista", True) or perms.get("pedidos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
-                        with ui.button("COMPRAS").props("flat dense no-caps").classes(_nav_font):
+                        with ui.button("BDC").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as compras_menu:
-                                def _compras_click():
-                                    _lazy_load("Compras")
-                                    tab_panels.value = tab_compras
-                                    app.storage.user["last_tab"] = "Compras"
-                                ui.menu_item("COMPRAS", _compras_click)
+                                if perms.get("compras", True):
+                                    def _compras_click():
+                                        _lazy_load("Invoices")
+                                        tab_panels.value = tab_compras
+                                        app.storage.user["last_tab"] = "Invoices"
+                                    ui.menu_item("INVOICES", _compras_click)
+                                if perms.get("stock", True):
+                                    def _stock_click():
+                                        _lazy_load("Stock")
+                                        tab_panels.value = tab_stock
+                                        app.storage.user["last_tab"] = "Stock"
+                                    ui.menu_item("STOCK", _stock_click)
+                                if perms.get("compras_lista", True):
+                                    def _compras_lista_click():
+                                        _lazy_load("Compras")
+                                        tab_panels.value = tab_compras_lista
+                                        app.storage.user["last_tab"] = "Compras"
+                                    ui.menu_item("COMPRAS", _compras_lista_click)
+                                if perms.get("pedidos", True):
+                                    def _pedidos_click():
+                                        _lazy_load("Pedidos")
+                                        tab_panels.value = tab_pedidos
+                                        app.storage.user["last_tab"] = "Pedidos"
+                                    ui.menu_item("PEDIDOS", _pedidos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -2914,6 +3307,15 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_compras):
                 compras_container = ui.column().classes("w-full")
 
+            with ui.tab_panel(tab_stock):
+                stock_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_compras_lista):
+                compras_lista_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_pedidos):
+                pedidos_container = ui.column().classes("w-full")
+
             with ui.tab_panel(tab_busqueda):
                 build_tab_busqueda()
 
@@ -2939,9 +3341,18 @@ def show_main_layout(container) -> None:
             val = getattr(e, "value", None)
             if val:
                 app.storage.user["last_tab"] = val
-            if val == "Compras" and not compras_cargado[0]:
+            if val == "Invoices" and not compras_cargado[0]:
                 compras_cargado[0] = True
                 build_tab_compras(compras_container)
+            elif val == "Stock" and not stock_cargado[0]:
+                stock_cargado[0] = True
+                build_tab_stock(stock_container)
+            elif val == "Compras" and not compras_lista_cargado[0]:
+                compras_lista_cargado[0] = True
+                build_tab_compras_lista(compras_lista_container)
+            elif val == "Pedidos" and not pedidos_cargado[0]:
+                pedidos_cargado[0] = True
+                build_tab_pedidos(pedidos_container)
             elif val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
@@ -3815,6 +4226,8 @@ def build_tab_ventas(container) -> None:
                         with ui.column().classes("gap-0"):
                             ui.label("Ganancia Neta Calculada").classes("text-xs text-gray-600")
                             ui.label(f"$ {ganancia_neta_ref.get('val', 0):,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
@@ -4245,7 +4658,6 @@ def build_tab_ventas(container) -> None:
                 btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
                 _update_btn_agrupar()
                 ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
-                ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps")
 
         _cargar_ventas()
 
@@ -6385,8 +6797,598 @@ def build_tab_precios_detalle(container) -> None:
     background_tasks.create(_cargar(client), name="cargar_precios_detalle")
 
 
+def _fmt_fecha_compras(s: str) -> str:
+    """Formato fecha: 'Lunes 16-03-26 09:30' (dia dd-mm-aa hora:minutos)."""
+    if not s or not str(s).strip():
+        return "—"
+    s = str(s).strip()
+    try:
+        if " " in s:
+            parts = s.split(" ", 1)
+            date_str, time_str = parts[0], parts[1][:5] if len(parts) > 1 else ""
+        else:
+            date_str, time_str = s[:10], ""
+        p = date_str.split("-")
+        if len(p) >= 3:
+            y, m, d = int(p[0]), int(p[1]), int(p[2])
+            dt_obj = datetime(y, m, d)
+            dia_nombre = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][dt_obj.weekday()]
+            dd = f"{d:02d}-{m:02d}-{y % 100:02d}"
+            if time_str:
+                return f"{dia_nombre} {dd} {time_str}"
+            return f"{dia_nombre} {dd}"
+        return s
+    except Exception:
+        return str(s)
+
+
+def _fmt_precio_compras(val: str) -> str:
+    """Formatea precio para pantalla: punto -> coma (ej: 1234.56 -> 1234,56)."""
+    if not val:
+        return ""
+    s = str(val).strip()
+    return s.replace(".", ",")
+
+
+def _parse_precio_compras_input(s: str) -> str:
+    """Parsea precio: acepta coma o punto como decimal, normaliza a punto para BD."""
+    if not s or not str(s).strip():
+        return ""
+    s = str(s).strip().replace(",", ".")
+    # Dejar solo dígitos y un punto
+    parts = s.split(".")
+    if len(parts) > 2:
+        s = parts[0] + "." + "".join(parts[1:])
+    return s
+
+
+def _parse_fecha_compras_input(s: str) -> str:
+    """Parsea 'Lun 16-03-26 09:30' o '16-03-26 09:30' a 'YYYY-MM-DD HH:MM'."""
+    if not s or not str(s).strip():
+        return ""
+    s = str(s).strip()
+    import re
+    # Buscar dd-mm-yy (o yy) y opcional hh:mm
+    m = re.search(r"(\d{1,2})-(\d{1,2})-(\d{2,4})\s*(\d{1,2}:\d{2})?", s)
+    if m:
+        d, m_val, y = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        y_full = 2000 + y if y < 100 else y
+        time_part = m.group(4) or "00:00"
+        return f"{y_full:04d}-{m_val:02d}-{d:02d} {time_part}"
+    # Si ya está en YYYY-MM-DD
+    if re.match(r"\d{4}-\d{2}-\d{2}", s):
+        return s[:16] if len(s) > 10 else (s + " 00:00")
+    return s
+
+
+def _solo_numeros(val: str) -> str:
+    """Filtra a solo dígitos (cantidad entera)."""
+    if not val:
+        return ""
+    return "".join(c for c in str(val) if c.isdigit())
+
+
+def _sort_key_compras(row: Dict[str, Any], col: str) -> Any:
+    """Clave de ordenación para filas de compras_lista."""
+    if col == "fecha":
+        raw = row.get("fecha") or ""
+        try:
+            if " " in raw:
+                ds, ts = raw.split(" ", 1)
+                return ds + (ts[:5] if ts else "")
+            return raw[:10] + " 00:00"
+        except Exception:
+            return ""
+    if col in ("cantidad", "precio_sugerido"):
+        try:
+            return float(row.get(col) or 0)
+        except (ValueError, TypeError):
+            return 0.0
+    return (row.get(col) or "").lower()
+
+
+def build_tab_compras_lista(container) -> None:
+    """Pestaña Compras Lista: tabla editable de compras a cotizar (marca, producto, cantidad, estado, usuario_qb)."""
+    user = require_login()
+    if not user:
+        return
+
+    container.clear()
+    marcas_list = get_marcas()
+    qb_cust = get_user_qb_customer(user["id"])
+    cliente_default = (qb_cust or {}).get("name", "")
+
+    with container:
+        filtro_estado_ref: Dict[str, str] = {"val": "Todas"}
+        sort_col_ref: List[str] = [""]
+        sort_asc_ref: List[bool] = [True]
+        # Filtro arriba de tabla (solo), tabla, botón debajo
+        compras_header = ui.column().classes("w-full mb-2")
+        filtro_row = ui.column().classes("w-full mb-2")
+        tabla_container = ui.column().classes("w-full gap-2")
+        boton_row = ui.row().classes("w-full mt-2 items-center")
+
+        user_id_ref: List[int] = [user["id"]]
+        tbody_el = None  # se asignará al crear la tabla
+
+        def _filtrar_cantidad_on_input(inp) -> None:
+            """Solo permite dígitos en cantidad."""
+            if hasattr(inp, "value"):
+                actual = getattr(inp, "value", "") or ""
+                filtrado = _solo_numeros(actual)
+                if filtrado != actual:
+                    inp.value = filtrado
+
+        def _filtrar_precio_on_input(inp) -> None:
+            """Solo permite dígitos, punto y coma en precio; muestra coma como decimal."""
+            if not hasattr(inp, "value"):
+                return
+            s = getattr(inp, "value", "") or ""
+            s = "".join(c for c in str(s) if c.isdigit() or c in ".,")
+            # Máximo un separador decimal; mantener primera parte entera y primera decimal
+            if s.count(".") + s.count(",") > 1:
+                parts = s.replace(",", ".").split(".")
+                s = parts[0] + "," + (parts[1] if len(parts) > 1 else "")
+            s = s.replace(".", ",")
+            if s != (getattr(inp, "value", "") or ""):
+                inp.value = s
+
+        def _refrescar_tabla() -> None:
+            """Limpia tbody y pinta todas las filas filtradas."""
+            uid = user_id_ref[0]
+            rows = get_compras_lista(uid)
+            filtro_val = filtro_estado_ref.get("val", "Todas")
+            if filtro_val and filtro_val != "Todas":
+                if filtro_val == "No hay":
+                    filtrados = [r for r in rows if (r.get("estado") or "") == ""]
+                elif filtro_val == "Cotizar":
+                    filtrados = [r for r in rows if r.get("estado") == "Cotizar"]
+                elif filtro_val == "Buscando":
+                    filtrados = [r for r in rows if r.get("estado") == "Buscando"]
+                elif filtro_val == "Comprado":
+                    filtrados = [r for r in rows if r.get("estado") == "Comprado"]
+                else:
+                    filtrados = rows
+            else:
+                filtrados = rows
+            filtrados = sorted(filtrados, key=lambda r: _sort_key_compras(r, sort_col_ref[0] or "fecha"), reverse=not sort_asc_ref[0])
+            n_pedidos = len(filtrados)
+            total_cotizar = 0.0
+            for r in filtrados:
+                try:
+                    cant = float(str(r.get("cantidad") or "0").replace(",", ".")) if r.get("cantidad") else 0
+                except (ValueError, TypeError):
+                    cant = 0
+                try:
+                    precio = float(str(r.get("precio_sugerido") or "0").replace(",", ".")) if r.get("precio_sugerido") else 0
+                except (ValueError, TypeError):
+                    precio = 0
+                total_cotizar += cant * precio
+            compras_header.clear()
+            with compras_header:
+                ui.label("Compras").classes("text-xl font-semibold mb-2")
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Cantidad de pedidos").classes("text-xs text-gray-600")
+                            ui.label(str(n_pedidos)).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total a cotizar").classes("text-xs text-gray-600")
+                            _ts = f"{total_cotizar:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            ui.label(f"$ {_ts}").classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        ui.button("Refrescar", on_click=_refrescar_tabla).props("flat dense no-caps icon=refresh").classes("text-gray-800 hover:bg-gray-200 rounded px-3")
+            tbody_el.clear()
+            with tbody_el:
+                for r in filtrados:
+                    _crear_fila_tr(r, uid)
+
+        def _guardar_campo(evt, row_id: int, uid: int, kw: Dict) -> None:
+            for k, inp in kw.items():
+                v = (getattr(inp, "value", "") or "").strip() if hasattr(inp, "value") else ""
+                if k == "fecha":
+                    v = _parse_fecha_compras_input(v)
+                elif k == "cantidad":
+                    v = _solo_numeros(v)
+                elif k == "precio_sugerido":
+                    v = _parse_precio_compras_input(v)
+                update_compras_lista_row(row_id, uid, **{k: v})
+            ui.notify("Guardado", color="positive")
+            # No refrescar al guardar un campo: evita borrar el producto al pasar a cantidad/precio
+
+        def _guardar_marca(e, row_id: int, uid: int) -> None:
+            v = getattr(e, "value", "") or ""
+            if not v or v == "(Otras)":
+                v = ""
+            update_compras_lista_row(row_id, uid, marca=str(v))
+            ui.notify("Marca actualizada", color="positive")
+            # No refrescar: evita borrar datos de la fila
+
+        def _borrar_fila(row_id: int, uid: int) -> None:
+            delete_compras_lista_row(row_id, uid)
+            ui.notify("Fila eliminada", color="positive")
+            _refrescar_tabla()
+
+        def _on_filtro(e) -> None:
+            v = getattr(e, "value", None)
+            filtro_estado_ref["val"] = v if v is not None and v != "" else ("Todas" if v == "" else "Cotizar")
+            _refrescar_tabla()
+
+        def _agregar_fila() -> None:
+            u = require_login()
+            if not u:
+                ui.notify("Debe iniciar sesión", color="negative")
+                return
+            qb = get_user_qb_customer(u["id"])
+            cli = (qb or {}).get("name", "")
+            now = datetime.now()
+            fecha_str = now.strftime("%Y-%m-%d %H:%M")
+            new_id = insert_compras_lista(u["id"], fecha_str, estado="Cotizar", usuario_qb=cli)
+            new_row = get_compras_lista_row(new_id, u["id"])
+            filtro_estado_ref["val"] = "Cotizar"
+            if filtro_select_ref[0] is not None:
+                filtro_select_ref[0].value = "Cotizar"
+            _refrescar_tabla()
+            ui.notify("Fila agregada", color="positive")
+
+        filtro_select_ref: List = [None]
+        with filtro_row:
+            filtro_select_ref[0] = ui.select(
+                {"Todas": "Todas", "Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Buscando", "Comprado": "Comprado"},
+                value=filtro_estado_ref.get("val", "Cotizar"),
+                label="Estado",
+                on_change=lambda e: _on_filtro(e),
+            ).classes("w-40").props("dense")
+        with boton_row:
+            ui.button("Agregar fila", on_click=_agregar_fila, color="primary").props("dense no-caps")
+
+        def _crear_fila_tr(r: Dict, uid: int) -> None:
+            """Crea una fila (tr) en el tbody actual."""
+            rid = r["id"]
+            user_id_row = r.get("user_id", uid)
+            with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                with ui.element("td").classes("px-2 py-1 border"):
+                    fecha_val = _fmt_fecha_compras(r.get("fecha", "")) if r.get("fecha") else ""
+                    inp_f = ui.input(value=fecha_val).classes("w-36").props("dense")
+                    inp_f.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"fecha": inp_f}: _guardar_campo(evt, row_id, uid, kw))
+                    inp_f.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"fecha": inp_f}: _guardar_campo(evt, row_id, uid, kw))
+                with ui.element("td").classes("px-2 py-1 border"):
+                    marcas_opts = {m["nombre"]: m["nombre"] for m in marcas_list}
+                    marca_actual = r.get("marca", "") or ""
+                    if marca_actual and marca_actual not in marcas_opts:
+                        marcas_opts = {marca_actual: marca_actual, **marcas_opts}
+                    marcas_opts = {"": "(Otras)", **marcas_opts}
+                    ui.select(marcas_opts, value=marca_actual or None, on_change=lambda e, row_id=rid, uid=user_id_row: _guardar_marca(e, row_id, uid)).classes("w-28").props("dense")
+                with ui.element("td").classes("px-2 py-1 border"):
+                    inp_p = ui.input(value=r.get("producto", "")).classes("w-56").props("dense")
+                    inp_p.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"producto": inp_p}: _guardar_campo(evt, row_id, uid, kw))
+                    inp_p.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"producto": inp_p}: _guardar_campo(evt, row_id, uid, kw))
+                with ui.element("td").classes("px-2 py-1 border text-center"):
+                    cant_val = _solo_numeros(str(r.get("cantidad", "") or ""))
+                    inp_c = ui.input(value=cant_val).classes("w-16").props("dense inputmode=numeric")
+                    inp_c.on("input", lambda e, inp=inp_c: _filtrar_cantidad_on_input(inp))
+                    inp_c.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"cantidad": inp_c}: _guardar_campo(evt, row_id, uid, kw))
+                    inp_c.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"cantidad": inp_c}: _guardar_campo(evt, row_id, uid, kw))
+                with ui.element("td").classes("px-2 py-1 border text-right"):
+                    precio_val = _fmt_precio_compras(str(r.get("precio_sugerido", "") or ""))
+                    with ui.row().classes("items-center justify-end gap-1"):
+                        ui.label("u$").classes("text-gray-600 text-sm")
+                        inp_ps = ui.input(value=precio_val).classes("w-20").props("dense")
+                    inp_ps.on("input", lambda e, inp=inp_ps: _filtrar_precio_on_input(inp))
+                    inp_ps.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"precio_sugerido": inp_ps}: _guardar_campo(evt, row_id, uid, kw))
+                    inp_ps.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"precio_sugerido": inp_ps}: _guardar_campo(evt, row_id, uid, kw))
+                with ui.element("td").classes("px-2 py-1 border"):
+                    _est_display = {"": "No hay", "Buscando": "Cotizando"}.get(r.get("estado") or "", r.get("estado") or "Cotizar")
+                    ui.label(_est_display).classes("text-sm")
+                with ui.element("td").classes("px-2 py-1 border"):
+                    ui.button("Borrar", on_click=lambda row_id=rid, uid=user_id_row: _borrar_fila(row_id, uid)).props("flat dense no-caps").classes("text-negative")
+
+        def _on_filtro(e) -> None:
+            filtro_estado_ref["val"] = getattr(e, "value", "Cotizar") or "Cotizar"
+            _refrescar_tabla()
+
+        def _agregar_fila() -> None:
+            u = require_login()
+            if not u:
+                ui.notify("Debe iniciar sesión", color="negative")
+                return
+            qb = get_user_qb_customer(u["id"])
+            cli = (qb or {}).get("name", "")
+            now = datetime.now()
+            fecha_str = now.strftime("%Y-%m-%d %H:%M")
+            new_id = insert_compras_lista(u["id"], fecha_str, estado="Cotizar", usuario_qb=cli)
+            new_row = get_compras_lista_row(new_id, u["id"])
+            if new_row and filtro_estado_ref.get("val") == "Cotizar":
+                with tbody_el:
+                    _crear_fila_tr(new_row, u["id"])
+            ui.notify("Fila agregada", color="positive")
+
+        def _th_classes(col_key: str) -> str:
+            base = "px-2 py-1 border cursor-pointer hover:bg-primary/80"
+            if col_key == "precio_sugerido":
+                return f"{base} text-right"
+            return f"{base} text-center"
+
+        with tabla_container:
+            with ui.element("table").classes("w-full border-collapse text-sm"):
+                with ui.element("thead"):
+                    with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
+                        for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("", "Borrar")]:
+                            th = ui.element("th").classes(_th_classes(col_key))
+                            if col_key:
+                                th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar_tabla()))
+                            with th:
+                                ui.label(h)
+                with ui.element("tbody") as tbody_el:
+                    pass
+
+        _refrescar_tabla()
+
+
+def build_tab_pedidos(container) -> None:
+    """Pestaña Pedidos: vista consolidada de compras de todos los clientes (usuario_qb = Cliente QB)."""
+    user = require_login()
+    if not user:
+        return
+
+    is_admin = user_can_access_tab(user["id"], "admin")
+    qb_cust = get_user_qb_customer(user["id"])
+    mi_cliente_qb = (qb_cust or {}).get("name", "")
+
+    with container:
+        filtro_estado_ref: Dict[str, str] = {"val": "Cotizar+Buscando"}
+        filtro_cliente_ref: Dict[str, str] = {"val": ""}
+        sort_col_ref: List[str] = [""]
+        sort_asc_ref: List[bool] = [True]
+        tabla_container = ui.column().classes("w-full gap-2")
+
+        def _refrescar() -> None:
+            tabla_container.clear()
+            with tabla_container:
+                rows = get_compras_lista_all()
+                est_val = filtro_estado_ref.get("val", "Cotizar+Buscando")
+                if est_val:
+                    if est_val == "No hay":
+                        rows = [r for r in rows if (r.get("estado") or "") == ""]
+                    elif est_val == "Cotizar":
+                        rows = [r for r in rows if r.get("estado") == "Cotizar"]
+                    elif est_val == "Cotizar+Buscando":
+                        rows = [r for r in rows if r.get("estado") in ("Cotizar", "Buscando")]
+                    elif est_val == "Buscando":  # en UI se muestra como "Cotizando"
+                        rows = [r for r in rows if r.get("estado") == "Buscando"]
+                    elif est_val == "Comprado":
+                        rows = [r for r in rows if r.get("estado") == "Comprado"]
+                clientes = sorted(set(r.get("usuario_qb") or "" for r in rows if r.get("usuario_qb")))
+                cli_val = filtro_cliente_ref.get("val", "")
+                if cli_val:
+                    rows = [r for r in rows if (r.get("usuario_qb") or "") == cli_val]
+
+                items_qb, _ = fetch_qb_items(user["id"])
+                product_to_sku: Dict[str, str] = {}
+                for it in (items_qb or []):
+                    prod_key = (it.get("producto") or "").strip().lower()
+                    if prod_key:
+                        sku_val = (it.get("sku") or "").strip()
+                        product_to_sku[prod_key] = sku_val if sku_val else "—"
+                for r in rows:
+                    prod = (r.get("producto") or "").strip().lower()
+                    sku_val = product_to_sku.get(prod, "—")
+                    r["sku"] = sku_val
+
+                rows = sorted(rows, key=lambda r: _sort_key_compras(r, sort_col_ref[0] or "fecha"), reverse=not sort_asc_ref[0])
+
+                n_pedidos = len(rows)
+                total_cotizar = 0.0
+                for r in rows:
+                    try:
+                        cant = float(str(r.get("cantidad") or "0").replace(",", ".")) if r.get("cantidad") else 0
+                    except (ValueError, TypeError):
+                        cant = 0
+                    try:
+                        precio = float(str(r.get("precio_sugerido") or "0").replace(",", ".")) if r.get("precio_sugerido") else 0
+                    except (ValueError, TypeError):
+                        precio = 0
+                    total_cotizar += cant * precio
+
+                ui.label("Pedidos").classes("text-xl font-semibold mb-2")
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Cantidad de pedidos").classes("text-xs text-gray-600")
+                            ui.label(str(n_pedidos)).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Total a cotizar").classes("text-xs text-gray-600")
+                            total_str = f"{total_cotizar:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            ui.label(f"$ {total_str}").classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        ui.button("Refrescar", on_click=_refrescar).props("flat dense no-caps icon=refresh").classes("text-gray-800 hover:bg-gray-200 rounded px-3")
+
+                with ui.row().classes("w-full gap-2 mb-2 items-center"):
+                    ui.select(
+                        {"": "Todos", "Cotizar": "Cotizar", "Cotizar+Buscando": "Cotizar+Buscando", "No hay": "No hay", "Buscando": "Cotizando", "Comprado": "Comprado"},
+                        value=filtro_estado_ref.get("val", "Cotizar+Buscando"),
+                        label="Estado",
+                        on_change=lambda e: (_refrescar_assign(e, filtro_estado_ref, "val") or _refrescar()),
+                    ).classes("w-36").props("dense")
+                    ui.select(
+                        {"": "Todos", **{c: c or "(sin cliente)" for c in clientes if c}},
+                        value=filtro_cliente_ref.get("val", ""),
+                        label="Cliente",
+                        on_change=lambda e: (_refrescar_assign(e, filtro_cliente_ref, "val") or _refrescar()),
+                    ).classes("w-72").props("dense")
+
+                def _refrescar_assign(e, d: Dict, k: str) -> None:
+                    d[k] = getattr(e, "value", "") or ""
+
+                with ui.element("table").classes("w-full border-collapse text-sm"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                            for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("usuario_qb", "Cliente")]:
+                                th = ui.element("th").classes("px-2 py-1 border text-left cursor-pointer hover:bg-primary/80")
+                                th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar()))
+                                with th:
+                                    ui.label(h)
+                    with ui.element("tbody"):
+                        for r in rows:
+                            with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(_fmt_fecha_compras(r.get("fecha", "")))
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(r.get("marca", "—"))
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(r.get("producto", "—"))
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    _sku = r.get("sku") or ""
+                                    ui.label(_sku if _sku else "—")
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(str(r.get("cantidad", "—")))
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(str(r.get("precio_sugerido", "—")))
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    _est_opts = {"Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Cotizando", "Comprado": "Comprado"}
+                                    _est_db = r.get("estado") or ""
+                                    _est_actual = "No hay" if _est_db == "" else (_est_db if _est_db in _est_opts else _est_db)
+                                    if _est_actual and _est_actual not in _est_opts:
+                                        _est_opts[_est_actual] = _est_actual
+                                    def _on_estado_pedido(e, rid, uid):
+                                        v = getattr(e, "value", "") or ""
+                                        estado_guardar = "" if v == "No hay" else v
+                                        update_compras_lista_row(rid, uid, estado=estado_guardar)
+                                        ui.notify("Estado actualizado", color="positive")
+                                        _refrescar()
+                                    ui.select(_est_opts, value=_est_actual, on_change=lambda e, rid=r["id"], uid=r.get("user_id") or user["id"]: _on_estado_pedido(e, rid, uid)).classes("w-28").props("dense")
+                                with ui.element("td").classes("px-2 py-1 border"):
+                                    ui.label(r.get("usuario_qb", "—"))
+
+        _refrescar()
+
+
+def build_tab_stock(container) -> None:
+    """Pestaña Stock: inventario de QuickBooks (Items con QtyOnHand > 0)."""
+    user = require_login()
+    if not user:
+        return
+
+    qb_creds = get_qb_app_credentials(user["id"])
+    qb_tokens = get_qb_tokens(user["id"])
+
+    with container:
+        if not qb_creds:
+            ui.label(
+                "Configurá QuickBooks en Configuración (Client ID, Client Secret, Redirect URI) y conectá tu cuenta."
+            ).classes("text-gray-600")
+            return
+
+        if not qb_tokens:
+            ui.label(
+                "Credenciales configuradas. Andá a Configuración → QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
+            ).classes("text-warning")
+            return
+
+        header_card = ui.column().classes("w-full mb-2")
+        result_area = ui.column().classes("w-full gap-2")
+        items_ref: List[Dict[str, Any]] = []
+        sort_col_ref: Dict[str, str] = {"val": "producto"}
+        sort_asc_ref: Dict[str, bool] = {"val": True}
+
+        with result_area:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando stock de QuickBooks...").classes("text-xl text-gray-700")
+
+        def _sort_key_stock(row: Dict[str, Any], col: str) -> Any:
+            if col == "id":
+                return str(row.get("id", "")).lower()
+            if col == "producto":
+                return str(row.get("producto", "")).lower()
+            if col == "sku":
+                return str(row.get("sku", "")).lower()
+            if col == "sales_price":
+                return row.get("sales_price", 0)
+            if col == "qty":
+                return row.get("qty", 0)
+            return ""
+
+        def _on_sort_stock(col: str) -> None:
+            if sort_col_ref.get("val") == col:
+                sort_asc_ref["val"] = not sort_asc_ref.get("val", True)
+            else:
+                sort_col_ref["val"] = col
+                sort_asc_ref["val"] = True
+            _pintar_tabla()
+
+        def _pintar_tabla() -> None:
+            items = items_ref
+            sort_col = sort_col_ref.get("val", "producto")
+            asc = sort_asc_ref.get("val", True)
+            items_sorted = sorted(items, key=lambda x: _sort_key_stock(x, sort_col), reverse=not asc)
+            n_skus = len(items)
+            total_qty = sum(i.get("qty", 0) for i in items)
+            stock_valorizado = sum((i.get("qty", 0) or 0) * (i.get("sales_price", 0) or 0) for i in items)
+            header_card.clear()
+            with header_card:
+                ui.label("Stock").classes("text-xl font-semibold mb-2")
+                with ui.card().classes("w-full p-4 bg-grey-2"):
+                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
+                        with ui.column().classes("gap-0"):
+                            ui.label("Diferentes SKUs").classes("text-xs text-gray-600")
+                            ui.label(str(n_skus)).classes("text-lg font-bold text-primary")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Stock valorizado").classes("text-xs text-gray-600")
+                            _sv_fmt = f"$ {stock_valorizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                            ui.label(_sv_fmt).classes("text-lg font-bold text-primary")
+            result_area.clear()
+            with result_area:
+                with ui.element("table").classes("w-full border-collapse text-sm"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
+                            for col_key, h in [("id", "ID"), ("producto", "Producto"), ("sku", "SKU"), ("sales_price", "Precio venta"), ("qty", "Cantidad")]:
+                                th = ui.element("th").classes("px-3 py-2 border cursor-pointer hover:bg-primary/80")
+                                th.on("click", lambda c=col_key: _on_sort_stock(c))
+                                with th:
+                                    ui.label(h)
+                    with ui.element("tbody"):
+                        for it in items_sorted:
+                            with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                                with ui.element("td").classes("px-3 py-1 border"):
+                                    ui.label(str(it.get("id", "—")))
+                                with ui.element("td").classes("px-3 py-1 border"):
+                                    ui.label(str(it.get("producto", "—")))
+                                with ui.element("td").classes("px-3 py-1 border"):
+                                    _sku_val = (it.get("sku") or "").strip()
+                                    ui.label(_sku_val if _sku_val else "—")
+                                with ui.element("td").classes("px-3 py-1 border text-right"):
+                                    _sp = it.get("sales_price") or 0
+                                    ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+                                with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
+                                    ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
+
+        def _cargar() -> None:
+            items, err = fetch_qb_items(user["id"])
+            if err:
+                result_area.clear()
+                with result_area:
+                    ui.label(f"Error: {err}").classes("text-negative")
+                return
+            items_ref[:] = [i for i in (items or []) if (i.get("qty") or 0) > 0]
+            if not items_ref:
+                result_area.clear()
+                with result_area:
+                    ui.label("No hay items con stock en QuickBooks.").classes("text-gray-500")
+                return
+            _pintar_tabla()
+
+        async def _cargar_async() -> None:
+            await run.io_bound(_cargar)
+
+        background_tasks.create(_cargar_async(), name="cargar_stock_qb")
+
+
 def build_tab_compras(container) -> None:
-    """Pestaña Compras: conexión a QuickBooks para mostrar Invoices del cliente."""
+    """Pestaña Invoices: conexión a QuickBooks para mostrar Invoices del cliente."""
     user = require_login()
     if not user:
         return
@@ -6414,7 +7416,7 @@ def build_tab_compras(container) -> None:
         with result_area:
             with ui.card().classes("w-full p-8 items-center gap-4"):
                 ui.spinner(size="xl")
-                ui.label("Cargando compras...").classes("text-xl text-gray-700")
+                ui.label("Cargando invoices...").classes("text-xl text-gray-700")
 
         invoices_ref: Dict[str, List[Dict[str, Any]]] = {"data": []}
         header_data_ref: Dict[str, Any] = {}
@@ -7853,6 +8855,7 @@ def build_tab_admin(container) -> None:
     users_list = get_all_users()
     with container:
         with ui.column().classes("w-full gap-4 p-4"):
+            # Tarjeta Permisos (usuarios y acceso por pestaña)
             with ui.card().classes("w-full p-4 bg-grey-2"):
                 with ui.element("div").classes("w-full overflow-x-auto"):
                     with ui.element("table").classes("border-collapse text-sm").style("width: 100%; min-width: 100%"):
@@ -7935,6 +8938,76 @@ def build_tab_admin(container) -> None:
 
                                             chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
             ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
+
+            # Tarjeta Marcas (catálogo global para Compras) — debajo de Permisos, ancho reducido
+            with ui.column().classes("max-w-xl"):
+                marcas_table_container = ui.column().classes("w-full gap-2")
+
+                def _row_marca(m: Dict) -> None:
+                    mid = m["id"]
+                    nombre_actual = m.get("nombre", "")
+                    with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                        with ui.element("td").classes("px-3 py-1 border-b border-gray-100"):
+                            inp = ui.input(value=nombre_actual).classes("w-full").props("dense")
+                            def _on_enter(mid_inner=mid, inp_ref_inner=inp):
+                                nuevo = (inp_ref_inner.value or "").strip()
+                                if nuevo and nuevo != nombre_actual:
+                                    err = update_marca(mid_inner, nuevo)
+                                    if err:
+                                        ui.notify(err, color="negative")
+                                    else:
+                                        ui.notify("Marca actualizada", color="positive")
+                                        _refresh_marcas()
+                            inp.on("keydown.enter", _on_enter)
+                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                            def _do_delete_marca(mid_inner: int):
+                                err = delete_marca(mid_inner)
+                                if err:
+                                    ui.notify(err, color="negative")
+                                else:
+                                    ui.notify("Marca eliminada", color="positive")
+                                    _refresh_marcas()
+                            ui.button("Borrar", on_click=lambda mid_inner=mid: _do_delete_marca(mid_inner)).props("flat dense").classes("text-xs text-red-600")
+
+                def _refresh_marcas() -> None:
+                    marcas_table_container.clear()
+                    with marcas_table_container:
+                        marcas_data = get_marcas()
+
+                        with ui.card().classes("w-full p-4 bg-grey-2"):
+                            with ui.expansion(
+                                "Ver todas las marcas",
+                                icon="",
+                            ).classes("w-full mb-2").props("expand-icon-toggle dense"):
+                                with ui.element("table").classes("border-collapse text-sm w-full").style("width: 100%; min-width: 300px"):
+                                    with ui.element("thead"):
+                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                            with ui.element("th").classes("px-3 py-2 border text-left"):
+                                                ui.label("Nombre")
+                                            with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px"):
+                                                ui.label("Eliminar")
+                                    with ui.element("tbody"):
+                                        for m in marcas_data:
+                                            _row_marca(m)
+                            with ui.row().classes("gap-2 items-center mt-2"):
+                                inp_nueva = ui.input(placeholder="Nueva marca").props("dense")
+
+                                def _agregar():
+                                    nombre = (inp_nueva.value or "").strip()
+                                    if not nombre:
+                                        ui.notify("Ingresá un nombre", color="warning")
+                                        return
+                                    err = insert_marca(nombre)
+                                    if err:
+                                        ui.notify(err, color="negative")
+                                    else:
+                                        inp_nueva.value = ""
+                                        ui.notify("Marca agregada", color="positive")
+                                        _refresh_marcas()
+
+                                ui.button("Agregar marca", on_click=_agregar, color="primary").props("dense no-caps")
+
+                _refresh_marcas()
 
 
 def build_tab_config() -> None:
