@@ -7834,6 +7834,21 @@ def build_tab_compras(container) -> None:
             total_fmt = f"{total_importe:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
             header_data_ref["total_importe"] = f"u$ {total_fmt}"
 
+            # Calcular días por invoice (para métricas de deuda)
+            today_date = datetime.now().date()
+            dias_list: List[int] = []
+            for inv in invs_sorted:
+                txn = inv.get("txn_date", "") or ""
+                try:
+                    if len(str(txn)) >= 10:
+                        dt = datetime.strptime(str(txn)[:10], "%Y-%m-%d").date()
+                        dias_list.append((today_date - dt).days)
+                except (ValueError, TypeError):
+                    pass
+            deuda_promedio_dias = f"{sum(dias_list) / len(dias_list):.1f}" if dias_list else "—"
+            deuda_mas_antigua = str(max(dias_list)) if dias_list else "—"
+            cantidad_ordenes = len(invs_sorted)
+
             with header_card:
                 if not header_data_ref:
                     ui.label("Cargando...").classes("text-gray-600")
@@ -7854,6 +7869,18 @@ def build_tab_compras(container) -> None:
                         with ui.column().classes("gap-0"):
                             ui.label("Importe seleccionado").classes("text-base font-semibold text-gray-800")
                             ui.label(header_data_ref.get("total_importe", "u$ 0,00")).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Deuda promedio días").classes("text-base font-semibold text-gray-800")
+                            ui.label(deuda_promedio_dias).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Deuda más antigua").classes("text-base font-semibold text-gray-800")
+                            ui.label(deuda_mas_antigua).classes("text-sm text-gray-600")
+                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
+                        with ui.column().classes("gap-0"):
+                            ui.label("Cantidad de órdenes").classes("text-base font-semibold text-gray-800")
+                            ui.label(str(cantidad_ordenes)).classes("text-sm text-gray-600")
             with filtro_row:
                 filtro_status_val = filtro_status_ref.get("val", "Abierta+Vencida")
                 ui.label("Status:").classes("text-sm font-semibold text-gray-800")
