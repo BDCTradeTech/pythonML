@@ -55,6 +55,20 @@ El registro de usuarios y el reinicio de contraseña desde Admin envían emails.
 
 **Ejemplo para Gmail**: creá una [contraseña de aplicación](https://support.google.com/accounts/answer/185833) y usala en `SMTP_PASS`.
 
+#### Emails en producción (servidor/VPS)
+
+Si el email funciona en local pero no online:
+
+1. **Verificá que `.env` exista en el servidor** — `.env` no se sube con git. Creálo en el servidor (copiá desde tu máquina o usá `.env.example` como plantilla) y asegurate de tener todas las variables SMTP.
+
+2. **Gmail suele bloquear conexiones desde IPs de datacenter** — Si usás Gmail y falla en el servidor, considerá usar un servicio de email transaccional:
+   - [SendGrid](https://sendgrid.com) (SMTP_HOST=smtp.sendgrid.net, puerto 587)
+   - [Mailgun](https://mailgun.com) (SMTP_HOST=smtp.mailgun.org)
+   - [Amazon SES](https://aws.amazon.com/ses/)
+   - [Resend](https://resend.com)
+
+3. **Puertos bloqueados** — Algunos proveedores bloquean SMTP saliente. Probá el puerto 587 (STARTTLS) en lugar de 465 (SSL).
+
 ### Próximos pasos
 
 - Conectar realmente el login con la **API de MercadoLibre** (OAuth2).
