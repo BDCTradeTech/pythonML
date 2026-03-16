@@ -1,6 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+
+# Polyfill asyncio.to_thread para Python 3.8 (agregado en 3.9). Evita AttributeError en Históricos y otras búsquedas.
+if not hasattr(asyncio, "to_thread"):
+    def _to_thread_compat(fn, *args, **kwargs):
+        import functools
+        loop = asyncio.get_running_loop()
+        return loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
+    asyncio.to_thread = lambda fn, *args, **kwargs: _to_thread_compat(fn, *args, **kwargs)
+
 import hashlib
 import logging
 
@@ -54,6 +63,7 @@ TAB_KEYS = [
     ("stock", "Stock"),
     ("compras_lista", "Compras"),
     ("pedidos", "Pedidos"),
+    ("historicos", "Históricos"),
     ("importacion", "Importacion"),
     ("pesos", "Pesos"),
     ("datos", "Datos"),
@@ -893,6 +903,199 @@ def fetch_qb_items(user_id: int) -> tuple[List[Dict[str, Any]], Optional[str]]:
         if iid:
             items.append({"id": iid, "producto": sales_desc or "—", "qty": qty_num, "sku": sku, "sales_price": unit_price})
     return sorted(items, key=lambda x: (x["producto"].lower(), x["id"])), None
+
+
+def fetch_qb_items_search(user_id: int, search_text: str) -> tuple[List[Dict[str, Any]], Optional[str], int]:
+    """Busca Items (productos) en QuickBooks por texto. Obtiene todos los items con paginación y filtra en Python
+    donde el texto buscado está contenido (case-insensitive) en Name, Sku o Sales Description.
+    Retorna (items, err, total_revisados)."""
+    search_clean = (search_text or "").strip()
+    if not search_clean:
+        return [], None, 0
+    term_lower = search_clean.lower()
+    # QB limita 1000 por query; paginamos para traer más items (máx 10 páginas = 10000 items)
+    all_raw: List[dict] = []
+    start = 1
+    batch = 1000
+    max_pages = 10
+    for _ in range(max_pages):
+        query = f"SELECT * FROM Item STARTPOSITION {start} MAXRESULTS {batch}"
+        data, err = _qb_raw_query(user_id, query)
+        if err:
+            if start == 1:
+                return [], err, 0
+            break
+        raw = data.get("QueryResponse", {}).get("Item") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not raw:
+            break
+        all_raw.extend(raw)
+        if len(raw) < batch:
+            break
+        start += batch
+    total_revisados = len(all_raw)
+    items: List[Dict[str, Any]] = []
+    for it in all_raw:
+        iid = str(it.get("Id", ""))
+        if not iid:
+            continue
+        name = (it.get("DisplayName") or it.get("Name") or "").strip()
+        fqn = str(it.get("FullyQualifiedName") or "").strip()
+        sku = str(it.get("Sku") or it.get("SKU") or "").strip()
+        # Sales description: top-level Description, SalesAndPurchase (Inventory) o SalesOrPurchase (Service/NonInventory)
+        desc = str(it.get("Description") or "").strip()
+        for nested in (it.get("SalesAndPurchase") or {}, it.get("SalesOrPurchase") or {}):
+            if isinstance(nested, dict):
+                desc = desc or str(nested.get("Description") or nested.get("SalesDesc") or nested.get("SalesOrPurchaseDesc") or "").strip()
+        # Coincidencia por contenido (no exacta): term está contenido en Name, SKU o Sales Description
+        name_ok = term_lower in (name or "").lower() or term_lower in (fqn or "").lower()
+        sku_ok = term_lower in (sku or "").lower()
+        desc_ok = term_lower in (desc or "").lower()
+        if name_ok or sku_ok or desc_ok:
+            # producto = Sales Description (desc); fallback a name si no hay desc
+            producto = desc or name or "—"
+            items.append({"id": iid, "name": name or "—", "producto": producto, "sku": sku})
+    return items[:100], None, total_revisados  # Máximo 100 resultados
+
+
+def fetch_qb_item_history(user_id: int, item_id: str, sku: str = "") -> tuple[List[Dict[str, Any]], Optional[str]]:
+    """Obtiene el historial de sales price y cost de un Item de QuickBooks.
+    Busca en Invoices (ventas), Bills (compras) y compras_lista (cotizaciones por SKU).
+    Retorna lista de {tipo, fecha, doc, precio, cantidad, total} ordenada por fecha desc."""
+    result: List[Dict[str, Any]] = []
+    item_id_str = str(item_id or "").strip()
+    sku_clean = (sku or "").strip()
+
+    # 1. Invoices (ventas) - líneas con SalesItemLineDetail donde ItemRef = item_id
+    inv_start = 1
+    for _ in range(5):
+        data, err = _qb_raw_query(
+            user_id,
+            f"SELECT Id, DocNumber, TxnDate, CustomerRef, Line FROM Invoice STARTPOSITION {inv_start} MAXRESULTS 100",
+        )
+        if err:
+            break
+        raw = data.get("QueryResponse", {}).get("Invoice") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not raw:
+            break
+        for inv in raw:
+            doc = str(inv.get("DocNumber", "")).strip()
+            txn = str(inv.get("TxnDate", ""))[:10] if inv.get("TxnDate") else ""
+            cust_ref = inv.get("CustomerRef") or {}
+            cliente = str(cust_ref.get("name", "") if isinstance(cust_ref, dict) else "").strip() or "—"
+            lines = inv.get("Line") or []
+            if isinstance(lines, dict):
+                lines = [lines]
+            for ln in lines:
+                detail = ln.get("SalesItemLineDetail") or {}
+                if not isinstance(detail, dict):
+                    continue
+                ref = detail.get("ItemRef") or {}
+                ref_val = str(ref.get("value", "") if isinstance(ref, dict) else "").strip()
+                if ref_val != item_id_str:
+                    continue
+                try:
+                    precio = float(detail.get("UnitPrice") or ln.get("Amount") or 0)
+                except (TypeError, ValueError):
+                    precio = 0.0
+                try:
+                    qty = float(detail.get("Qty") or 1)
+                except (TypeError, ValueError):
+                    qty = 1.0
+                amt = ln.get("Amount")
+                try:
+                    total = float(amt) if amt is not None else precio * qty
+                except (TypeError, ValueError):
+                    total = precio * qty
+                inv_id = str(inv.get("Id", "")).strip()
+                result.append({"tipo": "Venta", "fecha": txn, "doc": doc or "—", "precio": precio, "cliente": cliente, "qb_id": inv_id, "qb_tipo": "invoice"})
+        if len(raw) < 100:
+            break
+        inv_start += 100
+
+    # 2. Bills (compras)
+    bill_start = 1
+    for _ in range(5):
+        data, err = _qb_raw_query(
+            user_id,
+            f"SELECT Id, DocNumber, TxnDate, VendorRef, Line FROM Bill STARTPOSITION {bill_start} MAXRESULTS 100",
+        )
+        if err:
+            break
+        raw = data.get("QueryResponse", {}).get("Bill") or []
+        if isinstance(raw, dict):
+            raw = [raw]
+        if not raw:
+            break
+        for bill in raw:
+            doc = str(bill.get("DocNumber", "")).strip()
+            txn = str(bill.get("TxnDate", ""))[:10] if bill.get("TxnDate") else ""
+            vend_ref = bill.get("VendorRef") or {}
+            cliente = str(vend_ref.get("name", "") if isinstance(vend_ref, dict) else "").strip() or "—"
+            lines = bill.get("Line") or []
+            if isinstance(lines, dict):
+                lines = [lines]
+            for ln in lines:
+                detail = ln.get("ItemBasedExpenseLineDetail") or ln.get("PurchaseItemLineDetail") or {}
+                if not isinstance(detail, dict):
+                    continue
+                ref = detail.get("ItemRef") or {}
+                ref_val = str(ref.get("value", "") if isinstance(ref, dict) else "").strip()
+                if ref_val != item_id_str:
+                    continue
+                try:
+                    precio = float(detail.get("UnitPrice") or ln.get("Amount") or 0)
+                except (TypeError, ValueError):
+                    precio = 0.0
+                try:
+                    qty = float(detail.get("Qty") or 1)
+                except (TypeError, ValueError):
+                    qty = 1.0
+                amt = ln.get("Amount")
+                try:
+                    total = float(amt) if amt is not None else precio * qty
+                except (TypeError, ValueError):
+                    total = precio * qty
+                bill_id = str(bill.get("Id", "")).strip()
+                result.append({"tipo": "Compra", "fecha": txn, "doc": doc or "—", "precio": precio, "cliente": cliente, "qb_id": bill_id, "qb_tipo": "bill"})
+        if len(raw) < 100:
+            break
+        bill_start += 100
+
+    # 3. compras_lista (cotizaciones) por SKU
+    if sku_clean:
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT fecha, producto, sku, cantidad, precio_sugerido, usuario_qb FROM compras_lista WHERE user_id = ? AND (sku = ? OR sku LIKE ?)",
+                (user_id, sku_clean, f"%{sku_clean}%"),
+            )
+            for row in cur.fetchall():
+                r = dict(row)
+                try:
+                    precio = float(str(r.get("precio_sugerido") or "0").replace(",", "."))
+                except (TypeError, ValueError):
+                    precio = 0.0
+                cliente = str(r.get("usuario_qb") or "").strip() or "—"
+                result.append({
+                    "tipo": "Cotización",
+                    "fecha": str(r.get("fecha") or "")[:10],
+                    "doc": str(r.get("producto") or "")[:50] or "—",
+                    "precio": precio,
+                    "cliente": cliente,
+                    "qb_id": "",
+                    "qb_tipo": "",
+                })
+        finally:
+            conn.close()
+
+    # Ordenar por fecha desc
+    result.sort(key=lambda x: (x.get("fecha") or ""), reverse=True)
+    return result[:200], None  # Máx 200 registros
 
 
 def fetch_qb_customer_detail(user_id: int, customer_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
@@ -3276,6 +3479,7 @@ def show_main_layout(container) -> None:
                 tab_stock = ui.tab("Stock")
                 tab_compras_lista = ui.tab("Compras")
                 tab_pedidos = ui.tab("Pedidos")
+                tab_historicos = ui.tab("Históricos")
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
@@ -3294,6 +3498,7 @@ def show_main_layout(container) -> None:
             "Stock": tab_stock,
             "Compras": tab_compras_lista,
             "Pedidos": tab_pedidos,
+            "Históricos": tab_historicos,
             "Búsqueda": tab_busqueda,
             "Importacion": tab_importacion,
             "Datos": tab_datos,
@@ -3302,7 +3507,7 @@ def show_main_layout(container) -> None:
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -3314,6 +3519,7 @@ def show_main_layout(container) -> None:
         stock_cargado = [False]
         compras_lista_cargado = [False]
         pedidos_cargado = [False]
+        historicos_cargado = [False]
         admin_cargado = [False]
 
         def _lazy_load(val: str) -> None:
@@ -3344,6 +3550,9 @@ def show_main_layout(container) -> None:
             elif val == "Balance" and not balance_cargado[0]:
                 balance_cargado[0] = True
                 build_tab_balance(balance_container)
+            elif val == "Históricos" and not historicos_cargado[0]:
+                historicos_cargado[0] = True
+                build_tab_historicos(historicos_container)
             elif val == "Admin" and not admin_cargado[0]:
                 admin_cargado[0] = True
                 build_tab_admin(admin_container)
@@ -3391,7 +3600,7 @@ def show_main_layout(container) -> None:
                                             tab_panels.value = tab_map[l]
                                             app.storage.user["last_tab"] = l
                                         ui.menu_item(lbl_display, _ml_click)
-                if perms.get("compras", True) or perms.get("stock", True) or perms.get("compras_lista", True) or perms.get("pedidos", True):
+                if perms.get("compras", True) or perms.get("stock", True) or perms.get("compras_lista", True) or perms.get("pedidos", True) or perms.get("historicos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
                         with ui.button("BDC").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as compras_menu:
@@ -3419,6 +3628,12 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_pedidos
                                         app.storage.user["last_tab"] = "Pedidos"
                                     ui.menu_item("PEDIDOS", _pedidos_click)
+                                if perms.get("historicos", True):
+                                    def _historicos_click():
+                                        _lazy_load("Históricos")
+                                        tab_panels.value = tab_historicos
+                                        app.storage.user["last_tab"] = "Históricos"
+                                    ui.menu_item("HISTÓRICOS", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -3499,6 +3714,9 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_pedidos):
                 pedidos_container = ui.column().classes("w-full")
 
+            with ui.tab_panel(tab_historicos):
+                historicos_container = ui.column().classes("w-full")
+
             with ui.tab_panel(tab_busqueda):
                 build_tab_busqueda()
 
@@ -3551,6 +3769,9 @@ def show_main_layout(container) -> None:
             elif val == "Balance" and not balance_cargado[0]:
                 balance_cargado[0] = True
                 build_tab_balance(balance_container)
+            elif val == tab_historicos and not historicos_cargado[0]:
+                historicos_cargado[0] = True
+                build_tab_historicos(historicos_container)
             elif val == "Admin" and not admin_cargado[0]:
                 admin_cargado[0] = True
                 build_tab_admin(admin_container)
@@ -7516,6 +7737,152 @@ def build_tab_pedidos(container) -> None:
         _refrescar()
 
 
+def build_tab_historicos(container) -> None:
+    """Pestaña Históricos: buscador de productos en QuickBooks. Escribís una palabra y debajo se muestran todos los productos que la contienen."""
+    user = require_login()
+    if not user:
+        return
+
+    qb_tokens = get_qb_tokens(user["id"])
+    if not qb_tokens or not qb_tokens.get("access_token"):
+        with container:
+            ui.label("Conectá QuickBooks en Configuración para usar el buscador de productos.").classes("text-gray-600")
+        return
+
+    with container:
+        ui.label("Históricos").classes("text-xl font-semibold mb-4")
+        with ui.row().classes("w-full gap-2 items-center"):
+            search_input = ui.input("Buscar", placeholder="Escribí una palabra para buscar en QuickBooks...").classes("w-96 max-w-full").props("dense outlined clearable")
+            ui.button("Buscar", on_click=lambda: _do_search(), color="primary").props("dense no-caps")
+        results_container = ui.column().classes("w-full mt-4")
+
+        def _do_search() -> None:
+            txt = (search_input.value or "").strip()
+            results_container.clear()
+            with results_container:
+                if not txt:
+                    ui.label("Escribí al menos un carácter para buscar.").classes("text-gray-500 text-sm")
+                    return
+                ui.spinner(size="lg")
+                ui.label("Buscando...").classes("text-gray-600")
+
+            async def _buscar_async() -> None:
+                # run.io_bound evita bloquear el event loop y es compatible con Python 3.8
+                items, err, total_revisados = await run.io_bound(
+                    fetch_qb_items_search, user["id"], txt
+                )
+                results_container.clear()
+                with results_container:
+                    if err:
+                        ui.label(f"Error: {err}").classes("text-negative text-sm")
+                        return
+                    if not items:
+                        msg = "No se encontraron productos."
+                        if total_revisados > 0:
+                            msg += f" (Se buscó en {total_revisados} productos de QuickBooks: Name, SKU y Sales Description)"
+                        ui.label(msg).classes("text-gray-500 text-sm")
+                        return
+                    ui.label(f"Se encontraron {len(items)} productos").classes("text-sm font-medium text-gray-700 mb-2")
+                    with ui.element("div").classes("w-full overflow-x-auto"):
+                        with ui.element("table").classes("w-full border-collapse text-sm"):
+                            with ui.element("thead"):
+                                with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                    with ui.element("th").classes("px-2 py-2 border text-left"):
+                                        ui.label("ID")
+                                    with ui.element("th").classes("px-2 py-2 border text-left"):
+                                        ui.label("Productos")
+                                    with ui.element("th").classes("px-2 py-2 border text-left"):
+                                        ui.label("SKU")
+                                    with ui.element("th").classes("px-2 py-2 border text-center min-w-[90px]"):
+                                        ui.label("Buscar")
+                            with ui.element("tbody"):
+                                for it in items:
+                                    with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                                        with ui.element("td").classes("px-2 py-1 border"):
+                                            ui.label(str(it.get("id", "—")))
+                                        with ui.element("td").classes("px-2 py-1 border"):
+                                            ui.label(it.get("producto", it.get("name", "—")))
+                                        with ui.element("td").classes("px-2 py-1 border"):
+                                            ui.label(it.get("sku") or "—")
+                                        with ui.element("td").classes("px-2 py-1 border text-center"):
+                                            _uid, _iid = user["id"], it.get("id", "")
+                                            _prod, _sku = it.get("producto", it.get("name", "—")), (it.get("sku") or "").strip()
+
+                                            def _abrir_historial(uid, iid, prod, sku):
+                                                d = ui.dialog().props("persistent")
+                                                with d:
+                                                    with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
+                                                        cont = ui.column().classes("w-full gap-2 flex-1 min-h-0")
+                                                        with cont:
+                                                            ui.spinner(size="lg")
+                                                            ui.label("Buscando historial...").classes("text-gray-600")
+                                                d.open()
+
+                                                async def _cargar(uid=uid, iid=iid, prod=prod, sku=sku, cont=cont, dialog=d):
+                                                    hist, err = await run.io_bound(fetch_qb_item_history, uid, iid, sku)
+                                                    cont.clear()
+                                                    with cont:
+                                                        with ui.row().classes("w-full gap-4 mb-4 border-b-2 border-gray-300 pb-3"):
+                                                            with ui.column().classes("flex-1 min-w-0 gap-1"):
+                                                                ui.label(str(prod)[:80] + ("..." if len(str(prod)) > 80 else "")).classes("text-base font-bold")
+                                                                ui.label(f"ID: {iid}").classes("text-sm font-mono text-gray-600")
+                                                        if err:
+                                                            ui.label(f"Error: {err}").classes("text-negative")
+                                                            return
+                                                        if not hist:
+                                                            ui.label("No se encontraron ventas, compras ni cotizaciones.").classes("text-gray-500")
+                                                            return
+                                                        with ui.element("div").classes("w-full overflow-x-auto overflow-y-auto").style("max-height: 320px"):
+                                                            with ui.element("table").classes("w-full border-collapse text-sm"):
+                                                                with ui.element("thead"):
+                                                                    with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                                                                        for hdr in ["Tipo", "Fecha", "Invoice", "P. venta u$"]:
+                                                                            with ui.element("th").classes("px-2 py-1 border"):
+                                                                                ui.label(hdr)
+                                                                with ui.element("tbody"):
+                                                                    for h in hist:
+                                                                        with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                                                                            with ui.element("td").classes("px-2 py-1 border"):
+                                                                                ui.label(h.get("tipo", "—"))
+                                                                            with ui.element("td").classes("px-2 py-1 border"):
+                                                                                ui.label(h.get("fecha", "—"))
+                                                                            with ui.element("td").classes("px-2 py-1 border"):
+                                                                                doc_txt = str(h.get("doc", "—"))[:40]
+                                                                                qb_id = h.get("qb_id") or ""
+                                                                                qb_tipo = h.get("qb_tipo") or ""
+                                                                                if qb_tipo == "invoice" and qb_id:
+                                                                                    async def _descargar_invoice(uid=uid, inv_id=qb_id, doc=doc_txt):
+                                                                                        pdf_bytes, err = await run.io_bound(fetch_qb_invoice_pdf, uid, inv_id)
+                                                                                        if err:
+                                                                                            ui.notify(f"Error: {err}", color="negative")
+                                                                                            return
+                                                                                        import tempfile
+                                                                                        with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                                                                                            f.write(pdf_bytes)
+                                                                                            path = f.name
+                                                                                        nombre = f"invoice_{doc}.pdf".replace(" ", "_")[:60]
+                                                                                        ui.download(path, nombre)
+                                                                                        ui.notify("Descarga iniciada", color="positive")
+                                                                                    ui.button(doc_txt, on_click=_descargar_invoice).props("flat dense no-caps").classes("text-primary underline hover:no-underline cursor-pointer p-0 min-w-0 font-normal")
+                                                                                else:
+                                                                                    ui.label(doc_txt)
+                                                                            _p = h.get("precio", 0)
+                                                                            _tipo = h.get("tipo", "")
+                                                                            _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                                                            with ui.element("td").classes("px-2 py-1 border text-right"):
+                                                                                ui.label(_p_fmt if _tipo == "Venta" else "—")
+                                                        with ui.row().classes("w-full justify-end mt-4"):
+                                                            ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
+
+                                                background_tasks.create(_cargar(), name="historicos_historial")
+
+                                            ui.button("Buscar", on_click=lambda uid=_uid, iid=_iid, prod=_prod, sku=_sku: _abrir_historial(uid, iid, prod, sku)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
+
+            background_tasks.create(_buscar_async(), name="historicos_search")
+
+        search_input.on("keydown.enter", lambda: _do_search())
+
+
 def build_tab_stock(container) -> None:
     """Pestaña Stock: inventario de QuickBooks (Items con QtyOnHand > 0)."""
     user = require_login()
@@ -7596,9 +7963,10 @@ def build_tab_stock(container) -> None:
                 with ui.element("table").classes("w-full border-collapse text-sm"):
                     with ui.element("thead"):
                         with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
-                            for col_key, h in [("id", "ID"), ("producto", "Producto"), ("sku", "SKU"), ("sales_price", "Precio venta"), ("qty", "Cantidad")]:
+                            for col_key, h in [("id", "ID"), ("producto", "Producto"), ("sku", "SKU"), ("sales_price", "Precio venta"), ("qty", "Cantidad"), ("buscar", "Buscar")]:
                                 th = ui.element("th").classes("px-3 py-2 border cursor-pointer hover:bg-primary/80")
-                                th.on("click", lambda c=col_key: _on_sort_stock(c))
+                                if col_key != "buscar":
+                                    th.on("click", lambda c=col_key: _on_sort_stock(c))
                                 with th:
                                     ui.label(h)
                     with ui.element("tbody"):
@@ -7616,6 +7984,75 @@ def build_tab_stock(container) -> None:
                                     ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                                 with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
                                     ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
+                                with ui.element("td").classes("px-3 py-1 border text-center"):
+                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip()):
+                                        dialog = ui.dialog().props("persistent")
+                                        with dialog:
+                                            with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
+                                                hist_container = ui.column().classes("w-full gap-2 flex-1 min-h-0")
+                                                with hist_container:
+                                                    ui.spinner(size="lg")
+                                                    ui.label("Buscando historial...").classes("text-gray-600")
+                                        dialog.open()
+
+                                        async def _cargar_y_mostrar():
+                                            hist, err = await run.io_bound(fetch_qb_item_history, uid, iid, sku_val)
+                                            hist_container.clear()
+                                            with hist_container:
+                                                with ui.row().classes("w-full gap-4 mb-4 border-b-2 border-gray-300 pb-3"):
+                                                    with ui.column().classes("flex-1 min-w-0 gap-1"):
+                                                        ui.label(str(prod)[:80] + ("..." if len(str(prod)) > 80 else "")).classes("text-base font-bold")
+                                                        ui.label(f"ID: {iid}").classes("text-sm font-mono text-gray-600")
+                                                if err:
+                                                    ui.label(f"Error: {err}").classes("text-negative")
+                                                    return
+                                                if not hist:
+                                                    ui.label("No se encontraron ventas, compras ni cotizaciones para este producto.").classes("text-gray-500")
+                                                    return
+                                                with ui.element("div").classes("w-full overflow-x-auto overflow-y-auto").style("max-height: 320px"):
+                                                    with ui.element("table").classes("w-full border-collapse text-sm"):
+                                                        with ui.element("thead"):
+                                                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                                                                for hdr in ["Tipo", "Fecha", "Invoice", "P. venta u$"]:
+                                                                    with ui.element("th").classes("px-2 py-1 border"):
+                                                                        ui.label(hdr)
+                                                        with ui.element("tbody"):
+                                                            for h in hist:
+                                                                with ui.element("tr").classes("border-t hover:bg-gray-50"):
+                                                                    with ui.element("td").classes("px-2 py-1 border"):
+                                                                        ui.label(h.get("tipo", "—"))
+                                                                    with ui.element("td").classes("px-2 py-1 border"):
+                                                                        ui.label(h.get("fecha", "—"))
+                                                                    with ui.element("td").classes("px-2 py-1 border"):
+                                                                        doc_txt = str(h.get("doc", "—"))[:40]
+                                                                        qb_id = h.get("qb_id") or ""
+                                                                        qb_tipo = h.get("qb_tipo") or ""
+                                                                        if qb_tipo == "invoice" and qb_id:
+                                                                            async def _descargar_inv(uid=uid, inv_id=qb_id, doc=doc_txt):
+                                                                                pdf_bytes, err = await run.io_bound(fetch_qb_invoice_pdf, uid, inv_id)
+                                                                                if err:
+                                                                                    ui.notify(f"Error: {err}", color="negative")
+                                                                                    return
+                                                                                import tempfile
+                                                                                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                                                                                    f.write(pdf_bytes)
+                                                                                    path = f.name
+                                                                                nombre = f"invoice_{doc}.pdf".replace(" ", "_")[:60]
+                                                                                ui.download(path, nombre)
+                                                                                ui.notify("Descarga iniciada", color="positive")
+                                                                            ui.button(doc_txt, on_click=_descargar_inv).props("flat dense no-caps").classes("text-primary underline hover:no-underline cursor-pointer p-0 min-w-0 font-normal")
+                                                                        else:
+                                                                            ui.label(doc_txt)
+                                                                    _p = h.get("precio", 0)
+                                                                    _tipo = h.get("tipo", "")
+                                                                    _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                                                    with ui.element("td").classes("px-2 py-1 border text-right"):
+                                                                        ui.label(_p_fmt if _tipo == "Venta" else "—")
+                                                with ui.row().classes("w-full justify-end mt-4"):
+                                                    ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
+
+                                        background_tasks.create(_cargar_y_mostrar(), name="stock_historial")
+                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
 
         def _cargar() -> None:
             items, err = fetch_qb_items(user["id"])
@@ -8073,7 +8510,7 @@ def build_tab_compras(container) -> None:
                 inv["importe_factura"] = ex.get("importe_factura") or ""
                 est = ex.get("estado") or ""
                 status_low = (inv.get("status") or "").lower()
-                if status_low in ("vencida", "pagada"):
+                if status_low == "pagada":
                     inv["estado"] = est if est else "Recibida"
                     if not est:
                         upsert_invoice_extra(user["id"], qid, estado="Recibida")
@@ -9222,26 +9659,26 @@ def build_tab_admin(container) -> None:
 
     users_list = get_all_users()
     with container:
-        with ui.column().classes("w-full gap-4 p-4"):
+        with ui.column().classes("w-full gap-2 p-2"):
             # Tarjeta Permisos (usuarios y acceso por pestaña)
-            with ui.card().classes("w-full p-4 bg-grey-2"):
+            with ui.card().classes("w-full p-2 bg-grey-2"):
                 with ui.element("div").classes("w-full overflow-x-auto"):
-                    with ui.element("table").classes("border-collapse text-sm").style("width: 100%; min-width: 100%"):
+                    with ui.element("table").classes("border-collapse text-xs").style("width: 100%; min-width: 100%"):
                         with ui.element("thead"):
                             with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
-                                with ui.element("th").classes("px-3 py-2 border text-left"):
+                                with ui.element("th").classes("px-2 py-1 border text-left"):
                                     ui.label("Usuario")
-                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px;"):
+                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 52px"):
                                     ui.label("Borrar")
-                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 90px;"):
-                                    ui.label("Password")
-                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 60px;"):
+                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 58px"):
+                                    ui.label("Pass")
+                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 42px"):
                                     ui.label("ML")
-                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 60px;"):
+                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 42px"):
                                     ui.label("BDC")
                                 for _tab_key, label in TAB_KEYS:
-                                    with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 70px;"):
-                                        ui.label(label)
+                                    with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 48px"):
+                                        ui.label(label[:8] if len(label) > 8 else label)
                         with ui.element("tbody"):
                             for u in users_list:
                                 uid = u["id"]
@@ -9251,9 +9688,9 @@ def build_tab_admin(container) -> None:
                                 bdc_linked = bool(qb_tokens and qb_tokens.get("access_token"))
                                 perms = get_user_tab_permissions(uid)
                                 with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                    with ui.element("td").classes("px-3 py-1 border-b border-gray-100 font-medium"):
+                                    with ui.element("td").classes("px-2 py-0.5 border-b border-gray-100 font-medium"):
                                         ui.label(uname)
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                    with ui.element("td").classes("px-1 py-0.5 border-b border-gray-100 text-center"):
                                         def _do_delete(target_uid: int, target_uname: str):
                                             with ui.dialog() as dlg:
                                                 dlg.props("persistent")
@@ -9301,11 +9738,11 @@ def build_tab_admin(container) -> None:
                                     with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                         with ui.row().classes("items-center justify-center gap-1"):
                                             ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
-                                            ui.label("Vinculado" if ml_linked else "No").classes("text-xs")
+                                            ui.label("Sí" if ml_linked else "No").classes("text-xs")
                                     with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                         with ui.row().classes("items-center justify-center gap-1"):
                                             ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if bdc_linked else '#ef4444'}")
-                                            ui.label("Vinculado" if bdc_linked else "No").classes("text-xs")
+                                            ui.label("Sí" if bdc_linked else "No").classes("text-xs")
                                     for tab_key, _label in TAB_KEYS:
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             val = perms.get(tab_key, True if tab_key != "admin" else False)
@@ -9656,7 +10093,7 @@ def build_tab_config() -> None:
                     ui.label("Ventas a cargar (órdenes)").classes("text-xs text-gray-600 mb-1")
                     ui.label("Cantidad máxima de órdenes de MercadoLibre a traer en cada actualización. Más órdenes = datos más completos, pero la carga puede tardar más.").classes("text-xs text-gray-500 mb-1")
                     limit_actual = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
-                    opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000"}
+                    opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000", "7500": "7500", "10000": "10000"}
                     sel_ventas = ui.select(opts_ventas, value=limit_actual, label="").classes("w-full").props("dense")
 
                     def guardar_limit_ventas() -> None:
