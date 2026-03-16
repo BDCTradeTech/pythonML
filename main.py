@@ -38,7 +38,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "2.260313.19"
+VERSION = "2.260316.15"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1702,11 +1702,11 @@ def get_user_email(user_id: int) -> Optional[str]:
         conn.close()
 
 
-def create_user(email: str) -> Optional[str]:
-    """Crea un usuario usando el email como usuario. Genera contraseña aleatoria y envía email. Devuelve mensaje de error o None si fue bien."""
+def create_user(email: str) -> tuple[Optional[str], Optional[str]]:
+    """Crea un usuario. Devuelve (mensaje_error, contraseña_si_email_falló). Si OK, (None, None)."""
     email_clean = (email or "").strip().lower()
     if not email_clean or "@" not in email_clean:
-        return "Ingresá un email válido."
+        return ("Ingresá un email válido.", None)
     try:
         new_password = secrets.token_urlsafe(8)
         conn = get_connection()
@@ -1745,11 +1745,10 @@ Por favor iniciá sesión con tu email y contraseña provisoria, y cambiá tu co
             body,
         )
         if err:
-            # Usuario creado pero email no enviado - avisar
-            return f"Usuario creado, pero no se pudo enviar el email: {err}. Tu contraseña provisoria es: {new_password}"
-        return None
+            return (f"No se pudo enviar el email: {err}", new_password)
+        return (None, None)
     except sqlite3.IntegrityError:
-        return "El usuario ya existe."
+        return ("El usuario ya existe.", None)
     finally:
         conn.close()
 
@@ -3211,9 +3210,22 @@ def show_login_screen(container) -> None:
                                         if not e or "@" not in e:
                                             ui.notify("Ingresá un email válido", color="negative")
                                             return
-                                        error = create_user(e)
-                                        if error:
-                                            ui.notify(error, color="negative")
+                                        err, new_pwd = create_user(e)
+                                        if err:
+                                            if new_pwd:
+                                                dlg.close()
+                                                with ui.dialog() as popup:
+                                                    popup.props("persistent")
+                                                    with ui.card().classes("p-6 min-w-[400px]"):
+                                                        ui.label("Error al enviar el email").classes("text-lg font-semibold text-warning")
+                                                        ui.label(err).classes("text-sm text-gray-600 mt-2")
+                                                        ui.label("Tu contraseña provisoria (copiala para iniciar sesión):").classes("text-sm font-medium mt-4")
+                                                        with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
+                                                            ui.label(new_pwd)
+                                                        ui.button("Cerrar popup", on_click=popup.close).props("flat color=primary").classes("mt-4")
+                                                popup.open()
+                                            else:
+                                                ui.notify(err, color="negative")
                                             return
                                         dlg.close()
                                         ui.notify(
@@ -3544,15 +3556,66 @@ def show_main_layout(container) -> None:
 # ==========================
 
 
+# Mapeo tab_key -> (label visible, descripción para Home). Usado para mostrar solo lo que el usuario puede hacer.
+TAB_DESCRIPTIONS: Dict[str, str] = {
+    "estadisticas": "ver reputación en MercadoLibre, ventas hoy/ayer/semana/mes.",
+    "ventas": "gestión de ventas y órdenes.",
+    "productos": "catálogo de productos.",
+    "precios": "gestión de precios.",
+    "busqueda": "buscar productos en el catálogo.",
+    "balance": "gastos, ingresos y resultados.",
+    "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
+    "stock": "inventario de QuickBooks (Items con cantidad disponible).",
+    "compras_lista": "cargar y gestionar compras a cotizar (marca, producto, SKU, cantidad, precio).",
+    "pedidos": "ver consolidado de compras de todos los clientes.",
+    "importacion": "cargar datos desde archivos.",
+    "pesos": "cotización del dólar.",
+    "datos": "configuración de marcas, despachantes y otros datos.",
+    "configuracion": "vincular MercadoLibre, QuickBooks y configurar email.",
+    "admin": "gestión de usuarios y permisos (solo administradores).",
+}
+
+LABEL_BY_TAB: Dict[str, str] = {
+    "estadisticas": "Estadísticas",
+    "ventas": "Ventas",
+    "productos": "Productos",
+    "precios": "Precios",
+    "busqueda": "Búsqueda",
+    "balance": "Balance",
+    "compras": "Invoices",
+    "stock": "Stock",
+    "compras_lista": "Compras",
+    "pedidos": "Pedidos",
+    "importacion": "Importación",
+    "pesos": "Pesos",
+    "datos": "Datos",
+    "configuracion": "Configuración",
+    "admin": "Admin",
+}
+
+
 def build_tab_home_welcome(container) -> None:
-    """Pestaña Home: bienvenida."""
+    """Pestaña Home: bienvenida. Muestra qué puede hacer según permisos del usuario."""
     user = require_login()
     if not user:
         return
+    perms = get_user_tab_permissions(user["id"])
+    lineas: List[str] = []
+    for tab_key, _ in TAB_KEYS:
+        if tab_key == "home":
+            continue
+        if perms.get(tab_key, False):
+            label = LABEL_BY_TAB.get(tab_key, tab_key)
+            desc = TAB_DESCRIPTIONS.get(tab_key, "")
+            if desc:
+                lineas.append(f"• {label}: {desc}")
+    texto = "\n".join(lineas) if lineas else "No tenés permisos asignados. Contactá al administrador."
     with container:
         ui.label("Bienvenido").classes("text-3xl font-bold text-primary mb-4")
         ui.label(f"Hola, {user.get('username', 'Usuario')}").classes("text-xl text-gray-700 mb-2")
-        ui.label("Usá las pestañas para navegar: Estadísticas, Ventas, Productos, y más.").classes("text-gray-600 mb-4")
+        with ui.column().classes("text-gray-600 mb-4 gap-2 max-w-2xl"):
+            ui.label("¿Qué podés hacer en el sistema?").classes("text-base font-semibold text-gray-700")
+            ui.label(texto).classes("text-sm whitespace-pre-line")
 
 
 def build_tab_estadisticas(estadisticas_container) -> None:
@@ -3969,22 +4032,46 @@ def _pintar_home_inline(
                     unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
                     marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
                     marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
-                    top3_stock = sorted(propias, key=lambda x: int(x.get("available_quantity") or 0), reverse=True)[:3]
+                    def _orden_fecha(o):
+                        ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
+                        return ds[:10] if ds else ""
+
+                    ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:5]
 
                     with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-3 border-l-4 border-l-amber-500"):
                         ui.label("Stock").classes("text-base font-semibold text-amber-700 mb-1")
-                        ui.label(f"Publicaciones: {publicaciones_propias_con_stock}").classes("text-sm text-gray-700")
-                        ui.label(f"Unidades: {unidades_propias_en_stock:,.0f}".replace(",", ".")).classes("text-sm text-gray-700")
-                        ui.label(f"Marcas: {marcas_distintas}").classes("text-sm text-gray-700")
-                        if top3_stock:
-                            ui.label("Top 3 stock").classes("text-sm font-semibold text-amber-600 mt-1 mb-0.5")
-                            for p in top3_stock:
-                                tit_raw = p.get("title") or "—"
-                                tit = (tit_raw[:32] + "…") if len(tit_raw) > 32 else tit_raw
-                                qty = int(p.get("available_quantity") or 0)
+                        with ui.row().classes("w-full gap-3 flex-wrap text-sm text-gray-700"):
+                            ui.label(f"Publicaciones: {publicaciones_propias_con_stock}")
+                            ui.label(f"Unidades: {unidades_propias_en_stock:,.0f}".replace(",", "."))
+                            ui.label(f"Marcas: {marcas_distintas}")
+                        if ultimas_5_ventas:
+                            ui.label("Últimas 5 ventas").classes("text-sm font-semibold text-amber-600 mt-1 mb-0.5")
+                            for v in ultimas_5_ventas:
+                                ds_raw = v.get("date_closed") or v.get("date_created") or v.get("date_last_updated") or ""
+                                try:
+                                    if "T" in ds_raw:
+                                        dt = datetime.strptime(ds_raw[:19], "%Y-%m-%dT%H:%M:%S")
+                                    elif " " in ds_raw:
+                                        dt = datetime.strptime(ds_raw[:16], "%Y-%m-%d %H:%M")
+                                    elif len(ds_raw) >= 10:
+                                        dt = datetime.strptime(ds_raw[:10], "%Y-%m-%d")
+                                    else:
+                                        dt = None
+                                    fecha_fmt = f"{dt.day:02d}-{dt.month:02d} {dt.hour:02d}:{dt.minute:02d}" if dt else "—"
+                                except Exception:
+                                    fecha_fmt = ds_raw[:16] if ds_raw else "—"
+                                items_v = v.get("order_items") or v.get("items") or []
+                                uds = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_v if isinstance(it, dict))
+                                if uds == 0:
+                                    total = v.get("total_amount") or v.get("paid_amount") or 0
+                                    uds = 1 if float(total or 0) > 0 else 0
+                                primer_item = items_v[0] if items_v else {}
+                                obj = primer_item.get("item") or primer_item
+                                tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
+                                tit = (tit[:32] + "…") if len(str(tit)) > 32 else str(tit)
                                 with ui.row().classes("w-full items-center gap-1 overflow-hidden py-0.5"):
                                     ui.label(f"• {tit}").classes("text-sm text-gray-700 truncate flex-1 min-w-0")
-                                    ui.label(f"({qty})").classes("text-sm text-gray-700 shrink-0")
+                                    ui.label(f"cant: {uds} · {fecha_fmt}").classes("text-sm text-gray-600 shrink-0")
 
                     # Unidades Vendidas Semanales (gráfico de barras, últimos 7 días)
                     dias_orden = sorted(ventas_por_dia.keys())[-7:]
@@ -7275,14 +7362,14 @@ def build_tab_compras_lista(container) -> None:
         def _th_classes(col_key: str) -> str:
             base = "px-2 py-1 border cursor-pointer hover:bg-primary/80"
             if col_key == "precio_sugerido":
-                return f"{base} text-right"
+                return f"{base} text-center"
             return f"{base} text-center"
 
         with tabla_container:
             with ui.element("table").classes("w-full border-collapse text-sm"):
                 with ui.element("thead"):
                     with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
-                        for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("", "Borrar")]:
+                        for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cantidad"), ("precio_sugerido", "Precio sugerido"), ("estado", "Estado"), ("", "Borrar")]:
                             th = ui.element("th").classes(_th_classes(col_key))
                             if col_key:
                                 th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar_tabla()))
@@ -7380,28 +7467,29 @@ def build_tab_pedidos(container) -> None:
 
                 with ui.element("table").classes("w-full border-collapse text-sm"):
                     with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                            for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("usuario_qb", "Cliente")]:
-                                th = ui.element("th").classes("px-2 py-1 border text-left cursor-pointer hover:bg-primary/80")
+                        with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
+                            for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cantidad"), ("precio_sugerido", "Precio sugerido"), ("estado", "Estado"), ("usuario_qb", "Cliente")]:
+                                th = ui.element("th").classes("px-2 py-1 border text-center cursor-pointer hover:bg-primary/80")
                                 th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar()))
                                 with th:
                                     ui.label(h)
                     with ui.element("tbody"):
                         for r in rows:
                             with ui.element("tr").classes("border-t hover:bg-gray-50"):
-                                with ui.element("td").classes("px-2 py-1 border"):
+                                with ui.element("td").classes("px-2 py-1 border text-center"):
                                     ui.label(_fmt_fecha_compras(r.get("fecha", "")))
-                                with ui.element("td").classes("px-2 py-1 border"):
+                                with ui.element("td").classes("px-2 py-1 border text-center"):
                                     ui.label(r.get("marca", "—"))
-                                with ui.element("td").classes("px-2 py-1 border"):
+                                with ui.element("td").classes("px-2 py-1 border text-center"):
                                     ui.label(r.get("producto", "—"))
-                                with ui.element("td").classes("px-2 py-1 border"):
+                                with ui.element("td").classes("px-2 py-1 border text-center"):
                                     _sku = r.get("sku") or ""
                                     ui.label(_sku if _sku else "—")
-                                with ui.element("td").classes("px-2 py-1 border"):
+                                with ui.element("td").classes("px-2 py-1 border text-center"):
                                     ui.label(str(r.get("cantidad", "—")))
-                                with ui.element("td").classes("px-2 py-1 border"):
-                                    ui.label(str(r.get("precio_sugerido", "—")))
+                                with ui.element("td").classes("px-2 py-1 border text-right"):
+                                    _ps = r.get("precio_sugerido") or "—"
+                                    ui.label(f"u$ {_ps}" if _ps != "—" else "—")
                                 with ui.element("td").classes("px-2 py-1 border"):
                                     _est_opts = {"Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Cotizando", "Comprado": "Comprado"}
                                     _est_db = r.get("estado") or ""
@@ -7817,10 +7905,10 @@ def build_tab_compras(container) -> None:
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
                                     estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
-                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
+                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
                                     for col_key, h in cols:
                                         with ui.element("th").classes("px-2 py-2 border text-center"):
-                                            if col_key == "numero":
+                                            if col_key in ("numero", "dias"):
                                                 ui.label(h)
                                             else:
                                                 ui.button(h, on_click=lambda c=col_key: _on_sort(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
@@ -7832,6 +7920,16 @@ def build_tab_compras(container) -> None:
                                             ui.label(str(idx))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(_fmt_fecha(inv.get("txn_date", "—")))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            txn = inv.get("txn_date", "") or ""
+                                            try:
+                                                dt = datetime.strptime(str(txn)[:10], "%Y-%m-%d").date() if len(str(txn)) >= 10 else None
+                                                dias = (datetime.now().date() - dt).days if dt else None
+                                            except (ValueError, TypeError):
+                                                dias = None
+                                            dias_val = str(dias) if dias is not None else "—"
+                                            dias_cls = "text-red-600 font-semibold" if dias is not None and dias > 30 else "text-gray-900"
+                                            ui.label(dias_val).classes(dias_cls)
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(inv.get("tipo", "Factura"))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -7909,12 +8007,15 @@ def build_tab_compras(container) -> None:
             invoices, overdue_total = inv_result
             open_balance = ""
             if cust_detail:
-                bal = cust_detail.get("Balance")
+                bal = cust_detail.get("Balance") or cust_detail.get("BalanceWithJobs")
                 if bal is not None:
                     try:
                         open_balance = f"{float(bal):,.2f}"
                     except (TypeError, ValueError):
                         open_balance = str(bal)
+            if not open_balance and invoices:
+                total_bal = sum(float(inv.get("balance", 0) or 0) for inv in invoices)
+                open_balance = f"{total_bal:,.2f}"
             overdue = f"{overdue_total:,.2f}" if overdue_total else "0.00"
             qb_cust_display = (cust_detail.get("DisplayName") or cust_detail.get("FullyQualifiedName") or cust_detail.get("CompanyName") or "").strip() if cust_detail else ""
             header_data_ref["cust_name"] = qb_cust_display or cust_name or cust_id
