@@ -302,6 +302,10 @@ def init_db() -> None:
         cur.execute("ALTER TABLE compras_lista ADD COLUMN usuario_qb TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        cur.execute("ALTER TABLE compras_lista ADD COLUMN sku TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Marcas (catálogo global para Compras)
     cur.execute(
@@ -312,6 +316,20 @@ def init_db() -> None:
         )
         """
     )
+
+    # Despachantes (catálogo global)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS despachantes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    cur.execute("SELECT COUNT(*) FROM despachantes")
+    if cur.fetchone()[0] == 0:
+        for nombre in ["LHS", "NC Supplies", "Sixtar", "Rosario"]:
+            cur.execute("INSERT INTO despachantes (nombre) VALUES (?)", (nombre,))
 
     # Lista de pedidos (similar a compras + cliente)
     cur.execute(
@@ -351,6 +369,10 @@ def init_db() -> None:
         cur.execute("ALTER TABLE compras_lista ADD COLUMN usuario_qb TEXT")
     except sqlite3.OperationalError:
         pass
+    try:
+        cur.execute("ALTER TABLE compras_lista ADD COLUMN sku TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Marcas (catálogo global para Compras)
     cur.execute(
@@ -361,6 +383,20 @@ def init_db() -> None:
         )
         """
     )
+
+    # Despachantes (catálogo global)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS despachantes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL UNIQUE
+        )
+        """
+    )
+    cur.execute("SELECT COUNT(*) FROM despachantes")
+    if cur.fetchone()[0] == 0:
+        for nombre in ["LHS", "NC Supplies", "Sixtar", "Rosario"]:
+            cur.execute("INSERT INTO despachantes (nombre) VALUES (?)", (nombre,))
 
     # Lista de pedidos (similar a compras + cliente)
     cur.execute(
@@ -388,6 +424,22 @@ def init_db() -> None:
             tab_key TEXT NOT NULL,
             can_access INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (user_id, tab_key),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
+    # invoice_extra: datos adicionales por invoice de QB (courier, guía, importe factura, estado)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS invoice_extra (
+            user_id INTEGER NOT NULL,
+            qb_invoice_id TEXT NOT NULL,
+            courier TEXT,
+            guia TEXT,
+            importe_factura TEXT,
+            estado TEXT,
+            PRIMARY KEY (user_id, qb_invoice_id),
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """
@@ -1127,7 +1179,7 @@ def get_compras_lista(user_id: int) -> List[Dict[str, Any]]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE user_id = ? ORDER BY id",
+            "SELECT id, user_id, fecha, marca, producto, sku, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE user_id = ? ORDER BY id",
             (user_id,),
         )
         return [dict(r) for r in cur.fetchall()]
@@ -1141,7 +1193,7 @@ def get_compras_lista_all() -> List[Dict[str, Any]]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista ORDER BY id DESC",
+            "SELECT id, user_id, fecha, marca, producto, sku, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista ORDER BY id DESC",
             (),
         )
         return [dict(r) for r in cur.fetchall()]
@@ -1155,7 +1207,7 @@ def get_compras_lista_row(row_id: int, user_id: int) -> Optional[Dict[str, Any]]
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE id = ? AND user_id = ?",
+            "SELECT id, user_id, fecha, marca, producto, sku, cantidad, precio_sugerido, estado, usuario_qb FROM compras_lista WHERE id = ? AND user_id = ?",
             (row_id, user_id),
         )
         r = cur.fetchone()
@@ -1164,14 +1216,14 @@ def get_compras_lista_row(row_id: int, user_id: int) -> Optional[Dict[str, Any]]
         conn.close()
 
 
-def insert_compras_lista(user_id: int, fecha: str, marca: str = "", producto: str = "", cantidad: str = "", precio_sugerido: str = "", estado: str = "Cotizar", usuario_qb: str = "") -> int:
+def insert_compras_lista(user_id: int, fecha: str, marca: str = "", producto: str = "", sku: str = "", cantidad: str = "", precio_sugerido: str = "", estado: str = "Cotizar", usuario_qb: str = "") -> int:
     """Inserta una fila en compras_lista. Devuelve el id insertado."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO compras_lista (user_id, fecha, marca, producto, cantidad, precio_sugerido, estado, usuario_qb) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (user_id, fecha, marca or "", producto or "", str(cantidad or ""), str(precio_sugerido or ""), estado or "Cotizar", usuario_qb or ""),
+            "INSERT INTO compras_lista (user_id, fecha, marca, producto, sku, cantidad, precio_sugerido, estado, usuario_qb) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (user_id, fecha, marca or "", producto or "", sku or "", str(cantidad or ""), str(precio_sugerido or ""), estado or "Cotizar", usuario_qb or ""),
         )
         conn.commit()
         return cur.lastrowid
@@ -1189,7 +1241,7 @@ def update_compras_lista_row(row_id: int, user_id: int, **kwargs) -> None:
         sets = []
         vals = []
         for k, v in kwargs.items():
-            if k in ("fecha", "marca", "producto", "cantidad", "precio_sugerido", "estado", "usuario_qb"):
+            if k in ("fecha", "marca", "producto", "sku", "cantidad", "precio_sugerido", "estado", "usuario_qb"):
                 sets.append(f"{k} = ?")
                 vals.append(str(v or "") if k != "estado" else (str(v) if v is not None else "Cotizar"))
         if sets:
@@ -1341,6 +1393,107 @@ def delete_marca(marca_id: int) -> Optional[str]:
         conn.close()
 
 
+def get_despachantes() -> List[Dict[str, Any]]:
+    """Obtiene todos los despachantes (id, nombre)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, nombre FROM despachantes ORDER BY nombre")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_despachante(nombre: str) -> Optional[str]:
+    """Inserta un despachante. Devuelve None si OK, mensaje de error si falla."""
+    nombre_clean = (nombre or "").strip()
+    if not nombre_clean:
+        return "El nombre no puede estar vacío"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO despachantes (nombre) VALUES (?)", (nombre_clean,))
+        conn.commit()
+        return None
+    except sqlite3.IntegrityError:
+        return "Ya existe un despachante con ese nombre"
+    finally:
+        conn.close()
+
+
+def update_despachante(despachante_id: int, nombre: str) -> Optional[str]:
+    """Actualiza un despachante. Devuelve None si OK, mensaje de error si falla."""
+    nombre_clean = (nombre or "").strip()
+    if not nombre_clean:
+        return "El nombre no puede estar vacío"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE despachantes SET nombre = ? WHERE id = ?", (nombre_clean, despachante_id))
+        conn.commit()
+        if cur.rowcount == 0:
+            return "Despachante no encontrado"
+        return None
+    except sqlite3.IntegrityError:
+        return "Ya existe un despachante con ese nombre"
+    finally:
+        conn.close()
+
+
+def delete_despachante(despachante_id: int) -> Optional[str]:
+    """Elimina un despachante. Devuelve None si OK, mensaje de error si falla."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM despachantes WHERE id = ?", (despachante_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            return "Despachante no encontrado"
+        return None
+    finally:
+        conn.close()
+
+
+def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, estado}}."""
+    if not qb_invoice_ids:
+        return {}
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join("?" * len(qb_invoice_ids))
+        cur.execute(
+            f"SELECT qb_invoice_id, courier, guia, importe_factura, estado FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
+            [user_id] + list(qb_invoice_ids),
+        )
+        return {str(r["qb_invoice_id"]): dict(r) for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
+    """Inserta o actualiza fila en invoice_extra. Merge con valores actuales para actualizaciones parciales."""
+    allowed = {"courier", "guia", "importe_factura", "estado"}
+    kv = {k: str(v or "") if v is not None else "" for k, v in kwargs.items() if k in allowed}
+    if not kv:
+        return
+    extras = get_invoice_extras(user_id, [qb_invoice_id])
+    current = extras.get(qb_invoice_id, {})
+    merged = {**{k: (current.get(k) or "") for k in allowed}, **kv}
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, estado)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, estado=excluded.estado""",
+            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["estado"]),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def copy_cotizador_datos(from_user_id: int, to_user_id: int) -> int:
     """Copia todos los datos del cotizador de un usuario a otro. Devuelve cantidad de claves copiadas."""
     conn = get_connection()
@@ -1487,7 +1640,7 @@ def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
     Variables: SMTP_HOST, SMTP_PORT (465=SSL, 587=STARTTLS), SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_FROM_NAME"""
     host = os.getenv("SMTP_HOST", "").strip()
     if not host:
-        return "SMTP no configurado: falta SMTP_HOST en .env"
+        return "SMTP no configurado: falta SMTP_HOST en .env. Copiá .env.example a .env y completá las variables (ver README)."
     port = int(os.getenv("SMTP_PORT", "465"))
     user = os.getenv("SMTP_USER", "").strip()
     password_env = os.getenv("SMTP_PASS", "").strip().replace(" ", "")
@@ -1496,7 +1649,7 @@ def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
     from_header = f"{from_name} <{from_addr_raw}>" if from_name else from_addr_raw
 
     if not user or not password_env:
-        return "SMTP no configurado: falta SMTP_USER o SMTP_PASS en .env"
+        return "SMTP no configurado: falta SMTP_USER o SMTP_PASS en .env. Copiá .env.example a .env y completá las variables."
 
     try:
         msg = MIMEMultipart("alternative")
@@ -7064,6 +7217,10 @@ def build_tab_compras_lista(container) -> None:
                     inp_p = ui.input(value=r.get("producto", "")).classes("w-56").props("dense")
                     inp_p.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"producto": inp_p}: _guardar_campo(evt, row_id, uid, kw))
                     inp_p.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"producto": inp_p}: _guardar_campo(evt, row_id, uid, kw))
+                with ui.element("td").classes("px-2 py-1 border"):
+                    inp_s = ui.input(value=r.get("sku", "")).classes("w-36").props("dense")
+                    inp_s.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"sku": inp_s}: _guardar_campo(evt, row_id, uid, kw))
+                    inp_s.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"sku": inp_s}: _guardar_campo(evt, row_id, uid, kw))
                 with ui.element("td").classes("px-2 py-1 border text-center"):
                     cant_val = _solo_numeros(str(r.get("cantidad", "") or ""))
                     inp_c = ui.input(value=cant_val).classes("w-16").props("dense inputmode=numeric")
@@ -7114,7 +7271,7 @@ def build_tab_compras_lista(container) -> None:
             with ui.element("table").classes("w-full border-collapse text-sm"):
                 with ui.element("thead"):
                     with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
-                        for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("", "Borrar")]:
+                        for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cant."), ("precio_sugerido", "Precio sug."), ("estado", "Estado"), ("", "Borrar")]:
                             th = ui.element("th").classes(_th_classes(col_key))
                             if col_key:
                                 th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar_tabla()))
@@ -7163,18 +7320,6 @@ def build_tab_pedidos(container) -> None:
                 cli_val = filtro_cliente_ref.get("val", "")
                 if cli_val:
                     rows = [r for r in rows if (r.get("usuario_qb") or "") == cli_val]
-
-                items_qb, _ = fetch_qb_items(user["id"])
-                product_to_sku: Dict[str, str] = {}
-                for it in (items_qb or []):
-                    prod_key = (it.get("producto") or "").strip().lower()
-                    if prod_key:
-                        sku_val = (it.get("sku") or "").strip()
-                        product_to_sku[prod_key] = sku_val if sku_val else "—"
-                for r in rows:
-                    prod = (r.get("producto") or "").strip().lower()
-                    sku_val = product_to_sku.get(prod, "—")
-                    r["sku"] = sku_val
 
                 rows = sorted(rows, key=lambda r: _sort_key_compras(r, sort_col_ref[0] or "fecha"), reverse=not sort_asc_ref[0])
 
@@ -7569,6 +7714,9 @@ def build_tab_compras(container) -> None:
                 invs = [i for i in invs if (i.get("status") or "").lower() in ("abierta", "vencida")]
             elif filtro_val != "Todas":
                 invs = [i for i in invs if (i.get("status") or "").lower() == filtro_val.lower()]
+            filtro_estado_val = filtro_estado_ref.get("val", "Todos")
+            if filtro_estado_val != "Todos":
+                invs = [i for i in invs if (i.get("estado") or "En USA") == filtro_estado_val]
             sc = sort_col_compras.get("val", "txn_date")
             asc = sort_asc_compras.get("val", False)
 
@@ -7591,15 +7739,11 @@ def build_tab_compras(container) -> None:
                 if not header_data_ref:
                     ui.label("Cargando...").classes("text-gray-600")
                     return
-                cust_name = header_data_ref.get("cust_name", "—")
+                ui.label("Invoices").classes("text-xl font-semibold text-gray-800 mb-2")
                 open_balance = header_data_ref.get("open_balance", "—")
                 overdue = header_data_ref.get("overdue", "0.00")
                 with ui.card().classes("w-full p-4 bg-grey-2"):
                     with ui.row().classes("w-full gap-6 flex-wrap items-center"):
-                        with ui.column().classes("gap-0"):
-                            ui.label("Cliente").classes("text-base font-semibold text-gray-800")
-                            ui.label(cust_name).classes("text-sm text-gray-600")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
                             ui.label("Saldo abierto").classes("text-base font-semibold text-gray-800")
                             ui.label(open_balance).classes("text-sm text-gray-600")
@@ -7624,6 +7768,17 @@ def build_tab_compras(container) -> None:
                     filtro_status_ref["val"] = str(val) if val is not None else "Abierta+Vencida"
                     _pintar_compras()
                 filtro_status.on_value_change(_on_filtro_change)
+                ui.label("Estado:").classes("text-sm font-semibold text-gray-800 ml-4")
+                filtro_estado = ui.select(
+                    {"Todos": "Todos", "En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"},
+                    value=filtro_estado_ref.get("val", "Todos"),
+                    label="",
+                ).classes("w-40").props("dense outlined")
+                def _on_filtro_estado_change(e):
+                    val = getattr(e, "args", None) or getattr(e, "value", None)
+                    filtro_estado_ref["val"] = str(val) if val is not None else "Todos"
+                    _pintar_compras()
+                filtro_estado.on_value_change(_on_filtro_estado_change)
 
             with result_area:
                 def _on_sort(c: str) -> None:
@@ -7634,6 +7789,15 @@ def build_tab_compras(container) -> None:
                         sort_asc_compras["val"] = False
                     _pintar_compras()
 
+                def _save_inv_extra(inv: Dict, **kwargs) -> None:
+                    qid = inv.get("id", "")
+                    if not qid:
+                        return
+                    upsert_invoice_extra(user["id"], qid, **kwargs)
+                    for k, v in kwargs.items():
+                        inv[k] = str(v) if v is not None else ""
+                    ui.notify("Guardado", color="positive")
+
                 if not invs_sorted:
                     ui.label("No hay facturas." if not invs else "No hay facturas con ese Status.").classes("text-gray-500")
                 else:
@@ -7641,17 +7805,17 @@ def build_tab_compras(container) -> None:
                         with ui.element("table").classes("w-full border-collapse text-sm"):
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                    cols = [("#", "#"), ("txn_date", "Fecha"), ("tipo", "Tipo"), ("doc", "Nº"), ("customer", "Cliente"), ("amount", "Importe"), ("status", "Status")]
+                                    estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
+                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
                                     for col_key, h in cols:
                                         with ui.element("th").classes("px-2 py-2 border text-center"):
-                                            if col_key == "#":
+                                            if col_key == "numero":
                                                 ui.label(h)
                                             else:
                                                 ui.button(h, on_click=lambda c=col_key: _on_sort(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                             with ui.element("tbody"):
                                 for idx, inv in enumerate(invs_sorted, 1):
-                                    row_el = ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50 cursor-pointer")
-                                    row_el.on("click", lambda inv=inv: _mostrar_detalle_invoice(inv))
+                                    row_el = ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50")
                                     with row_el:
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(str(idx))
@@ -7660,9 +7824,43 @@ def build_tab_compras(container) -> None:
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(inv.get("tipo", "Factura"))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                            ui.label(inv.get("doc", "—"))
+                                            with ui.row().classes("gap-1 items-center"):
+                                                ui.label(inv.get("doc", "—"))
+                                                ui.button("Ver", on_click=lambda inv=inv: _mostrar_detalle_invoice(inv)).props("flat dense size=sm")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                            ui.label(inv.get("customer", "—"))
+                                            inp_guia = ui.input(value=inv.get("guia", "")).classes("w-24").props("dense")
+                                            inp_guia.on("blur", lambda evt, inv=inv, inp=inp_guia: _save_inv_extra(inv, guia=inp.value))
+                                            inp_guia.on("keydown.enter", lambda evt, inv=inv, inp=inp_guia: _save_inv_extra(inv, guia=inp.value))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            def _fmt_importe_factura(val):
+                                                if not val:
+                                                    return ""
+                                                try:
+                                                    s = str(val).replace(" ", "")
+                                                    if "," in s:
+                                                        s = s.replace(".", "").replace(",", ".")
+                                                    n = float(s)
+                                                    return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                                except (ValueError, TypeError):
+                                                    return str(val)
+                                            def _parse_imp(s):
+                                                if not s:
+                                                    return ""
+                                                return str(s).replace(".", "").replace(",", ".").strip()
+                                            _imp_val = _fmt_importe_factura(inv.get("importe_factura", ""))
+                                            with ui.row().classes("items-center justify-center gap-0.5"):
+                                                ui.label("$").classes("text-gray-600 text-sm")
+                                                inp_imp = ui.input(value=_imp_val).classes("w-28").props("dense")
+                                            inp_imp.on("blur", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
+                                            inp_imp.on("keydown.enter", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.row().classes("justify-center w-full"):
+                                                est_display = inv.get("estado", "") or "En USA"
+                                                status_low = (inv.get("status") or "").lower()
+                                                if status_low in ("vencida", "pagada"):
+                                                    ui.select(estado_opts, value="Recibida").classes("w-28").props("dense readonly")
+                                                else:
+                                                    ui.select(estado_opts, value=est_display or "En USA", on_change=lambda e, inv=inv: _save_inv_extra(inv, estado=e.value)).classes("w-28").props("dense")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
                                             amt_num = inv.get("amount_num", 0) or 0
                                             amt_str = f"{float(amt_num):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -7671,6 +7869,7 @@ def build_tab_compras(container) -> None:
                                             ui.label(inv.get("status", "—"))
 
         filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
+        filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
 
         def _cargar_compras() -> None:
             qb_cust = get_user_qb_customer(user["id"])
@@ -7710,10 +7909,27 @@ def build_tab_compras(container) -> None:
             header_data_ref["cust_name"] = qb_cust_display or cust_name or cust_id
             header_data_ref["open_balance"] = open_balance or "—"
             header_data_ref["overdue"] = overdue
-            invoices_ref["data"] = [
-                {"id": inv.get("id", ""), "txn_date": inv.get("txn_date", ""), "due_date": inv.get("due_date", ""), "tipo": inv.get("tipo", "Factura"), "doc": inv.get("doc", ""), "customer": cust_name or cust_id, "amount": inv.get("amount", ""), "amount_num": inv.get("amount_num", 0), "balance": inv.get("balance", 0), "status": inv.get("status", "")}
+            inv_list = [
+                {"id": inv.get("id", ""), "txn_date": inv.get("txn_date", ""), "due_date": inv.get("due_date", ""), "tipo": inv.get("tipo", "Factura"), "doc": inv.get("doc", ""), "amount": inv.get("amount", ""), "amount_num": inv.get("amount_num", 0), "balance": inv.get("balance", 0), "status": inv.get("status", "")}
                 for inv in invoices
             ]
+            qb_ids = [inv["id"] for inv in inv_list if inv.get("id")]
+            extras = get_invoice_extras(user["id"], qb_ids) if qb_ids else {}
+            for inv in inv_list:
+                qid = inv.get("id", "")
+                ex = extras.get(qid, {})
+                inv["guia"] = ex.get("guia") or ""
+                inv["importe_factura"] = ex.get("importe_factura") or ""
+                est = ex.get("estado") or ""
+                status_low = (inv.get("status") or "").lower()
+                if status_low in ("vencida", "pagada"):
+                    inv["estado"] = "Recibida"
+                    upsert_invoice_extra(user["id"], qid, estado="Recibida")
+                else:
+                    inv["estado"] = est if est else "En USA"
+                    if not est:
+                        upsert_invoice_extra(user["id"], qid, estado="En USA")
+            invoices_ref["data"] = inv_list
             _pintar_compras()
 
         ui.timer(0.3, _cargar_compras, once=True)
@@ -8939,75 +9155,147 @@ def build_tab_admin(container) -> None:
                                             chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
             ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
 
-            # Tarjeta Marcas (catálogo global para Compras) — debajo de Permisos, ancho reducido
-            with ui.column().classes("max-w-xl"):
-                marcas_table_container = ui.column().classes("w-full gap-2")
+            # Tarjetas Marcas y Despachantes lado a lado
+            with ui.row().classes("w-full gap-6 flex-wrap"):
+                # Tarjeta Marcas (catálogo global para Compras)
+                with ui.column().classes("max-w-xl"):
+                    marcas_table_container = ui.column().classes("w-full gap-2")
 
-                def _row_marca(m: Dict) -> None:
-                    mid = m["id"]
-                    nombre_actual = m.get("nombre", "")
-                    with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                        with ui.element("td").classes("px-3 py-1 border-b border-gray-100"):
-                            inp = ui.input(value=nombre_actual).classes("w-full").props("dense")
-                            def _on_enter(mid_inner=mid, inp_ref_inner=inp):
-                                nuevo = (inp_ref_inner.value or "").strip()
-                                if nuevo and nuevo != nombre_actual:
-                                    err = update_marca(mid_inner, nuevo)
+                    def _row_marca(m: Dict) -> None:
+                        mid = m["id"]
+                        nombre_actual = m.get("nombre", "")
+                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                            with ui.element("td").classes("px-3 py-1 border-b border-gray-100"):
+                                inp = ui.input(value=nombre_actual).classes("w-full").props("dense")
+                                def _on_enter(mid_inner=mid, inp_ref_inner=inp):
+                                    nuevo = (inp_ref_inner.value or "").strip()
+                                    if nuevo and nuevo != nombre_actual:
+                                        err = update_marca(mid_inner, nuevo)
+                                        if err:
+                                            ui.notify(err, color="negative")
+                                        else:
+                                            ui.notify("Marca actualizada", color="positive")
+                                            _refresh_marcas()
+                                inp.on("keydown.enter", _on_enter)
+                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                def _do_delete_marca(mid_inner: int):
+                                    err = delete_marca(mid_inner)
                                     if err:
                                         ui.notify(err, color="negative")
                                     else:
-                                        ui.notify("Marca actualizada", color="positive")
-                                        _refresh_marcas()
-                            inp.on("keydown.enter", _on_enter)
-                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                            def _do_delete_marca(mid_inner: int):
-                                err = delete_marca(mid_inner)
-                                if err:
-                                    ui.notify(err, color="negative")
-                                else:
-                                    ui.notify("Marca eliminada", color="positive")
+                                        ui.notify("Marca eliminada", color="positive")
                                     _refresh_marcas()
-                            ui.button("Borrar", on_click=lambda mid_inner=mid: _do_delete_marca(mid_inner)).props("flat dense").classes("text-xs text-red-600")
+                                ui.button("Borrar", on_click=lambda mid_inner=mid: _do_delete_marca(mid_inner)).props("flat dense").classes("text-xs text-red-600")
 
-                def _refresh_marcas() -> None:
-                    marcas_table_container.clear()
-                    with marcas_table_container:
-                        marcas_data = get_marcas()
+                    def _refresh_marcas() -> None:
+                        marcas_table_container.clear()
+                        with marcas_table_container:
+                            marcas_data = get_marcas()
 
-                        with ui.card().classes("w-full p-4 bg-grey-2"):
-                            with ui.expansion(
-                                "Ver todas las marcas",
-                                icon="",
-                            ).classes("w-full mb-2").props("expand-icon-toggle dense"):
-                                with ui.element("table").classes("border-collapse text-sm w-full").style("width: 100%; min-width: 300px"):
-                                    with ui.element("thead"):
-                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                            with ui.element("th").classes("px-3 py-2 border text-left"):
-                                                ui.label("Nombre")
-                                            with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px"):
-                                                ui.label("Eliminar")
-                                    with ui.element("tbody"):
-                                        for m in marcas_data:
-                                            _row_marca(m)
-                            with ui.row().classes("gap-2 items-center mt-2"):
-                                inp_nueva = ui.input(placeholder="Nueva marca").props("dense")
+                            with ui.card().classes("w-full p-4 bg-grey-2"):
+                                with ui.expansion(
+                                    "Ver todas las marcas",
+                                    icon="",
+                                ).classes("w-full mb-2").props("expand-icon-toggle dense"):
+                                    with ui.element("table").classes("border-collapse text-sm w-full").style("width: 100%; min-width: 300px"):
+                                        with ui.element("thead"):
+                                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                                with ui.element("th").classes("px-3 py-2 border text-left"):
+                                                    ui.label("Nombre")
+                                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px"):
+                                                    ui.label("Eliminar")
+                                        with ui.element("tbody"):
+                                            for m in marcas_data:
+                                                _row_marca(m)
+                                with ui.row().classes("gap-2 items-center mt-2"):
+                                    inp_nueva = ui.input(placeholder="Nueva marca").props("dense")
 
-                                def _agregar():
-                                    nombre = (inp_nueva.value or "").strip()
-                                    if not nombre:
-                                        ui.notify("Ingresá un nombre", color="warning")
-                                        return
-                                    err = insert_marca(nombre)
+                                    def _agregar():
+                                        nombre = (inp_nueva.value or "").strip()
+                                        if not nombre:
+                                            ui.notify("Ingresá un nombre", color="warning")
+                                            return
+                                        err = insert_marca(nombre)
+                                        if err:
+                                            ui.notify(err, color="negative")
+                                        else:
+                                            inp_nueva.value = ""
+                                            ui.notify("Marca agregada", color="positive")
+                                            _refresh_marcas()
+
+                                    ui.button("Agregar marca", on_click=_agregar, color="primary").props("dense no-caps")
+
+                    _refresh_marcas()
+
+                # Tarjeta Despachantes
+                with ui.column().classes("max-w-xl"):
+                    despachantes_table_container = ui.column().classes("w-full gap-2")
+
+                    def _row_despachante(d: Dict) -> None:
+                        did = d["id"]
+                        nombre_actual = d.get("nombre", "")
+                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                            with ui.element("td").classes("px-3 py-1 border-b border-gray-100"):
+                                inp = ui.input(value=nombre_actual).classes("w-full").props("dense")
+                                def _on_enter(did_inner=did, inp_ref_inner=inp):
+                                    nuevo = (inp_ref_inner.value or "").strip()
+                                    if nuevo and nuevo != nombre_actual:
+                                        err = update_despachante(did_inner, nuevo)
+                                        if err:
+                                            ui.notify(err, color="negative")
+                                        else:
+                                            ui.notify("Despachante actualizado", color="positive")
+                                            _refresh_despachantes()
+                                inp.on("keydown.enter", _on_enter)
+                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                def _do_delete_despachante(did_inner: int):
+                                    err = delete_despachante(did_inner)
                                     if err:
                                         ui.notify(err, color="negative")
                                     else:
-                                        inp_nueva.value = ""
-                                        ui.notify("Marca agregada", color="positive")
-                                        _refresh_marcas()
+                                        ui.notify("Despachante eliminado", color="positive")
+                                        _refresh_despachantes()
+                                ui.button("Borrar", on_click=lambda did_inner=did: _do_delete_despachante(did_inner)).props("flat dense").classes("text-xs text-red-600")
 
-                                ui.button("Agregar marca", on_click=_agregar, color="primary").props("dense no-caps")
+                    def _refresh_despachantes() -> None:
+                        despachantes_table_container.clear()
+                        with despachantes_table_container:
+                            despachantes_data = get_despachantes()
 
-                _refresh_marcas()
+                            with ui.card().classes("w-full p-4 bg-grey-2"):
+                                with ui.expansion(
+                                    "Ver todos los despachantes",
+                                    icon="",
+                                ).classes("w-full mb-2").props("expand-icon-toggle dense"):
+                                    with ui.element("table").classes("border-collapse text-sm w-full").style("width: 100%; min-width: 300px"):
+                                        with ui.element("thead"):
+                                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                                with ui.element("th").classes("px-3 py-2 border text-left"):
+                                                    ui.label("Nombre")
+                                                with ui.element("th").classes("px-2 py-2 border text-center").style("min-width: 80px"):
+                                                    ui.label("Eliminar")
+                                        with ui.element("tbody"):
+                                            for d in despachantes_data:
+                                                _row_despachante(d)
+                                with ui.row().classes("gap-2 items-center mt-2"):
+                                    inp_nuevo = ui.input(placeholder="Nuevo despachante").props("dense")
+
+                                    def _agregar_desp():
+                                        nombre = (inp_nuevo.value or "").strip()
+                                        if not nombre:
+                                            ui.notify("Ingresá un nombre", color="warning")
+                                            return
+                                        err = insert_despachante(nombre)
+                                        if err:
+                                            ui.notify(err, color="negative")
+                                        else:
+                                            inp_nuevo.value = ""
+                                            ui.notify("Despachante agregado", color="positive")
+                                            _refresh_despachantes()
+
+                                    ui.button("Agregar despachante", on_click=_agregar_desp, color="primary").props("dense no-caps")
+
+                    _refresh_despachantes()
 
 
 def build_tab_config() -> None:
@@ -10552,7 +10840,9 @@ def _arreglar_storage_nicegui() -> None:
 
 
 def main() -> None:
-    load_dotenv()
+    # Cargar .env desde el directorio del script (importante cuando se ejecuta como servicio o desde otro CWD)
+    env_path = Path(__file__).parent / ".env"
+    load_dotenv(env_path)
     init_db()
     _arreglar_storage_nicegui()
     port = int(os.getenv("PORT", 8083))
