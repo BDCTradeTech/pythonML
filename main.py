@@ -1660,16 +1660,25 @@ def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
         msg.attach(MIMEText(body_plain, "plain", "utf-8"))
 
         ctx = ssl.create_default_context()
-        envelope_from = user  # El servidor SMTP usa el usuario autenticado como remitente
-        if port == 465:
-            with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
-                smtp.login(user, password_env)
-                smtp.sendmail(envelope_from, to_email, msg.as_string())
-        else:
-            with smtplib.SMTP(host, port, timeout=30) as smtp:
-                smtp.starttls(context=ctx)
-                smtp.login(user, password_env)
-                smtp.sendmail(envelope_from, to_email, msg.as_string())
+        envelope_from = user
+        _orig_getaddrinfo = socket.getaddrinfo
+
+        def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+            return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+        socket.getaddrinfo = _ipv4_getaddrinfo
+        try:
+            if port == 465:
+                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
+                    smtp.login(user, password_env)
+                    smtp.sendmail(envelope_from, to_email, msg.as_string())
+            else:
+                with smtplib.SMTP(host, port, timeout=30) as smtp:
+                    smtp.starttls(context=ctx)
+                    smtp.login(user, password_env)
+                    smtp.sendmail(envelope_from, to_email, msg.as_string())
+        finally:
+            socket.getaddrinfo = _orig_getaddrinfo
         return None
     except Exception as e:
         return f"Error al enviar email: {str(e)}"
@@ -1781,19 +1790,20 @@ def update_user_password(user_id: int, current_password: str, new_password: str)
         conn.close()
 
 
-def admin_reset_user_password(target_user_id: int) -> tuple[Optional[str], bool, Optional[str]]:
+def admin_reset_user_password(target_user_id: int) -> tuple[Optional[str], bool, Optional[str], Optional[str]]:
     """Genera una nueva contraseña temporal, la guarda y la envía por email al usuario.
-    Devuelve (mensaje_error, email_enviado, email_destino). Si error no es None, no se hizo el reinicio."""
+    Devuelve (mensaje_error, email_enviado, email_destino, nueva_contraseña).
+    La contraseña se devuelve solo cuando el email falla, para mostrarla en un popup."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute("SELECT id, username FROM users WHERE id = ?", (target_user_id,))
         row = cur.fetchone()
         if not row:
-            return ("Usuario no encontrado.", False, None)
+            return ("Usuario no encontrado.", False, None, None)
         to_email = get_user_email(target_user_id)
         if not to_email:
-            return ("El usuario no tiene email registrado.", False, None)
+            return ("El usuario no tiene email registrado.", False, None, None)
 
         new_password = secrets.token_urlsafe(8)
 
@@ -1811,8 +1821,8 @@ Por favor iniciá sesión y cambiá tu contraseña en Configuración > Cambiar c
 """
         err = send_email(to_email, "BDC systems - Tu nueva contraseña", body)
         if err is None:
-            return (None, True, to_email)
-        return (f"Contraseña actualizada, pero no se pudo enviar el email: {err}", False, to_email)
+            return (None, True, to_email, None)
+        return (f"No se pudo enviar el email: {err}", False, to_email, new_password)
     finally:
         conn.close()
 
@@ -9128,11 +9138,22 @@ def build_tab_admin(container) -> None:
                                         ui.button("Borrar", on_click=lambda uid_inner=uid, uname_inner=uname: _do_delete(uid_inner, uname_inner)).props("flat dense").classes("text-xs text-red-600")
                                     with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                         def _do_reset(target_uid: int):
-                                            err, email_sent, dest_email = admin_reset_user_password(target_uid)
-                                            if err:
+                                            err, email_sent, dest_email, new_pwd = admin_reset_user_password(target_uid)
+                                            if err and not new_pwd:
                                                 ui.notify(err, color="negative")
                                             elif email_sent and dest_email:
                                                 ui.notify(f"Enviamos un email con la nueva contraseña a {dest_email}", color="positive")
+                                            elif new_pwd:
+                                                with ui.dialog() as dlg:
+                                                    dlg.props("persistent")
+                                                    with ui.card().classes("p-6 min-w-[400px]"):
+                                                        ui.label("No se pudo enviar el email").classes("text-lg font-semibold text-warning")
+                                                        ui.label(err or "Contraseña actualizada, pero el correo no llegó.").classes("text-sm text-gray-600 mt-2")
+                                                        ui.label("Nueva contraseña generada (copiala y entregala al usuario):").classes("text-sm font-medium mt-4")
+                                                        with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
+                                                            ui.label(new_pwd)
+                                                        ui.button("Cerrar popup", on_click=dlg.close).props("flat color=primary").classes("mt-4")
+                                                dlg.open()
                                             else:
                                                 ui.notify("Contraseña actualizada, pero no se pudo enviar el email.", color="warning")
                                         ui.button("Reiniciar", on_click=lambda uid_inner=uid: _do_reset(uid_inner)).props("flat dense").classes("text-xs")
