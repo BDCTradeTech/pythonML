@@ -430,7 +430,7 @@ def init_db() -> None:
         """
     )
 
-    # invoice_extra: datos adicionales por invoice de QB (courier, guía, importe factura, estado)
+    # invoice_extra: datos adicionales por invoice de QB (courier, guía, importe factura, estado, despachante)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS invoice_extra (
@@ -440,11 +440,18 @@ def init_db() -> None:
             guia TEXT,
             importe_factura TEXT,
             estado TEXT,
+            despachante TEXT,
             PRIMARY KEY (user_id, qb_invoice_id),
             FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """
     )
+
+    # Migración: agregar columna despachante a invoice_extra si no existe (tablas antiguas)
+    cur.execute("PRAGMA table_info(invoice_extra)")
+    inv_extra_cols = [r[1] for r in cur.fetchall()]
+    if "despachante" not in inv_extra_cols:
+        cur.execute("ALTER TABLE invoice_extra ADD COLUMN despachante TEXT")
 
     # Migración: dar permisos por defecto a usuarios existentes (admin solo para user_id=1)
     cur.execute("SELECT id FROM users ORDER BY id")
@@ -1456,7 +1463,7 @@ def delete_despachante(despachante_id: int) -> Optional[str]:
 
 
 def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, estado}}."""
+    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, estado, despachante}}."""
     if not qb_invoice_ids:
         return {}
     conn = get_connection()
@@ -1464,7 +1471,7 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
         cur = conn.cursor()
         placeholders = ",".join("?" * len(qb_invoice_ids))
         cur.execute(
-            f"SELECT qb_invoice_id, courier, guia, importe_factura, estado FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
+            f"SELECT qb_invoice_id, courier, guia, importe_factura, estado, despachante FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
             [user_id] + list(qb_invoice_ids),
         )
         return {str(r["qb_invoice_id"]): dict(r) for r in cur.fetchall()}
@@ -1474,7 +1481,7 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
 
 def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
     """Inserta o actualiza fila en invoice_extra. Merge con valores actuales para actualizaciones parciales."""
-    allowed = {"courier", "guia", "importe_factura", "estado"}
+    allowed = {"courier", "guia", "importe_factura", "estado", "despachante"}
     kv = {k: str(v or "") if v is not None else "" for k, v in kwargs.items() if k in allowed}
     if not kv:
         return
@@ -1485,10 +1492,10 @@ def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, estado)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, estado=excluded.estado""",
-            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["estado"]),
+            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, estado, despachante)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, estado=excluded.estado, despachante=excluded.despachante""",
+            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["estado"], merged["despachante"]),
         )
         conn.commit()
     finally:
@@ -7334,7 +7341,7 @@ def build_tab_compras_lista(container) -> None:
                     inp_ps.on("keydown.enter", lambda evt, row_id=rid, uid=user_id_row, kw={"precio_sugerido": inp_ps}: _guardar_campo(evt, row_id, uid, kw))
                     inp_ps.on("blur", lambda evt, row_id=rid, uid=user_id_row, kw={"precio_sugerido": inp_ps}: _guardar_campo(evt, row_id, uid, kw))
                 with ui.element("td").classes("px-2 py-1 border"):
-                    _est_display = {"": "No hay", "Buscando": "Cotizando"}.get(r.get("estado") or "", r.get("estado") or "Cotizar")
+                    _est_display = {"": "No hay", "Buscando": "Buscando"}.get(r.get("estado") or "", r.get("estado") or "Cotizar")
                     ui.label(_est_display).classes("text-sm")
                 with ui.element("td").classes("px-2 py-1 border"):
                     ui.button("Borrar", on_click=lambda row_id=rid, uid=user_id_row: _borrar_fila(row_id, uid)).props("flat dense no-caps").classes("text-negative")
@@ -7410,7 +7417,7 @@ def build_tab_pedidos(container) -> None:
                         rows = [r for r in rows if r.get("estado") == "Cotizar"]
                     elif est_val == "Cotizar+Buscando":
                         rows = [r for r in rows if r.get("estado") in ("Cotizar", "Buscando")]
-                    elif est_val == "Buscando":  # en UI se muestra como "Cotizando"
+                    elif est_val == "Buscando":
                         rows = [r for r in rows if r.get("estado") == "Buscando"]
                     elif est_val == "Comprado":
                         rows = [r for r in rows if r.get("estado") == "Comprado"]
@@ -7450,7 +7457,7 @@ def build_tab_pedidos(container) -> None:
 
                 with ui.row().classes("w-full gap-2 mb-2 items-center"):
                     ui.select(
-                        {"": "Todos", "Cotizar": "Cotizar", "Cotizar+Buscando": "Cotizar+Buscando", "No hay": "No hay", "Buscando": "Cotizando", "Comprado": "Comprado"},
+                        {"": "Todos", "Cotizar": "Cotizar", "Cotizar+Buscando": "Cotizar+Buscando", "No hay": "No hay", "Buscando": "Buscando", "Comprado": "Comprado"},
                         value=filtro_estado_ref.get("val", "Cotizar+Buscando"),
                         label="Estado",
                         on_change=lambda e: (_refrescar_assign(e, filtro_estado_ref, "val") or _refrescar()),
@@ -7491,7 +7498,7 @@ def build_tab_pedidos(container) -> None:
                                     _ps = r.get("precio_sugerido") or "—"
                                     ui.label(f"u$ {_ps}" if _ps != "—" else "—")
                                 with ui.element("td").classes("px-2 py-1 border"):
-                                    _est_opts = {"Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Cotizando", "Comprado": "Comprado"}
+                                    _est_opts = {"Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Buscando", "Comprado": "Comprado"}
                                     _est_db = r.get("estado") or ""
                                     _est_actual = "No hay" if _est_db == "" else (_est_db if _est_db in _est_opts else _est_db)
                                     if _est_actual and _est_actual not in _est_opts:
@@ -7859,15 +7866,15 @@ def build_tab_compras(container) -> None:
                 with ui.card().classes("w-full p-4 bg-grey-2"):
                     with ui.row().classes("w-full gap-6 flex-wrap items-center"):
                         with ui.column().classes("gap-0"):
-                            ui.label("Saldo abierto").classes("text-base font-semibold text-gray-800")
+                            ui.label("Total Deuda").classes("text-base font-semibold text-gray-800")
                             ui.label(open_balance).classes("text-sm text-gray-600")
                         ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
-                            ui.label("Pago vencido").classes("text-base font-semibold text-gray-800")
+                            ui.label("Deuda Vencida").classes("text-base font-semibold text-gray-800")
                             ui.label(overdue).classes("text-sm text-gray-600")
                         ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
-                            ui.label("Importe seleccionado").classes("text-base font-semibold text-gray-800")
+                            ui.label("Deuda Seleccionada").classes("text-base font-semibold text-gray-800")
                             ui.label(header_data_ref.get("total_importe", "u$ 0,00")).classes("text-sm text-gray-600")
                         ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
@@ -7879,7 +7886,7 @@ def build_tab_compras(container) -> None:
                             ui.label(deuda_mas_antigua).classes("text-sm text-gray-600")
                         ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         with ui.column().classes("gap-0"):
-                            ui.label("Cantidad de órdenes").classes("text-base font-semibold text-gray-800")
+                            ui.label("Órdenes Impagas").classes("text-base font-semibold text-gray-800")
                             ui.label(str(cantidad_ordenes)).classes("text-sm text-gray-600")
             with filtro_row:
                 filtro_status_val = filtro_status_ref.get("val", "Abierta+Vencida")
@@ -7932,7 +7939,7 @@ def build_tab_compras(container) -> None:
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
                                     estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
-                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
+                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("despachante", "Despachante"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
                                     for col_key, h in cols:
                                         with ui.element("th").classes("px-2 py-2 border text-center"):
                                             if col_key in ("numero", "dias"):
@@ -7964,9 +7971,17 @@ def build_tab_compras(container) -> None:
                                                 ui.label(inv.get("doc", "—"))
                                                 ui.button("Ver", on_click=lambda inv=inv: _mostrar_detalle_invoice(inv)).props("flat dense size=sm")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                            inp_guia = ui.input(value=inv.get("guia", "")).classes("w-24").props("dense")
+                                            inp_guia = ui.input(value=inv.get("guia", "")).classes("w-40").props("dense")
                                             inp_guia.on("blur", lambda evt, inv=inv, inp=inp_guia: _save_inv_extra(inv, guia=inp.value))
                                             inp_guia.on("keydown.enter", lambda evt, inv=inv, inp=inp_guia: _save_inv_extra(inv, guia=inp.value))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            despachantes_list = get_despachantes()
+                                            desp_opts = {"": "(otro)"}
+                                            desp_opts.update({d["nombre"]: d["nombre"] for d in despachantes_list})
+                                            desp_actual = inv.get("despachante", "") or ""
+                                            if desp_actual and desp_actual not in desp_opts:
+                                                desp_opts[desp_actual] = desp_actual
+                                            ui.select(desp_opts, value=desp_actual or None, on_change=lambda e, inv=inv: _save_inv_extra(inv, despachante=e.value or "")).classes("w-40").props("dense")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             def _fmt_importe_factura(val):
                                                 if not val:
@@ -7992,11 +8007,7 @@ def build_tab_compras(container) -> None:
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             with ui.row().classes("justify-center w-full"):
                                                 est_display = inv.get("estado", "") or "En USA"
-                                                status_low = (inv.get("status") or "").lower()
-                                                if status_low in ("vencida", "pagada"):
-                                                    ui.select(estado_opts, value="Recibida").classes("w-28").props("dense readonly")
-                                                else:
-                                                    ui.select(estado_opts, value=est_display or "En USA", on_change=lambda e, inv=inv: _save_inv_extra(inv, estado=e.value)).classes("w-28").props("dense")
+                                                ui.select(estado_opts, value=est_display or "En USA", on_change=lambda e, inv=inv: _save_inv_extra(inv, estado=e.value)).classes("w-28").props("dense")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
                                             amt_num = inv.get("amount_num", 0) or 0
                                             amt_str = f"{float(amt_num):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -8058,12 +8069,14 @@ def build_tab_compras(container) -> None:
                 qid = inv.get("id", "")
                 ex = extras.get(qid, {})
                 inv["guia"] = ex.get("guia") or ""
+                inv["despachante"] = ex.get("despachante") or ""
                 inv["importe_factura"] = ex.get("importe_factura") or ""
                 est = ex.get("estado") or ""
                 status_low = (inv.get("status") or "").lower()
                 if status_low in ("vencida", "pagada"):
-                    inv["estado"] = "Recibida"
-                    upsert_invoice_extra(user["id"], qid, estado="Recibida")
+                    inv["estado"] = est if est else "Recibida"
+                    if not est:
+                        upsert_invoice_extra(user["id"], qid, estado="Recibida")
                 else:
                     inv["estado"] = est if est else "En USA"
                     if not est:
