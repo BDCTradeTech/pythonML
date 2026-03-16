@@ -462,6 +462,8 @@ def init_db() -> None:
     inv_extra_cols = [r[1] for r in cur.fetchall()]
     if "despachante" not in inv_extra_cols:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN despachante TEXT")
+    if "pa" not in inv_extra_cols:
+        cur.execute("ALTER TABLE invoice_extra ADD COLUMN pa TEXT")
 
     # Migración: dar permisos por defecto a usuarios existentes (admin solo para user_id=1)
     cur.execute("SELECT id FROM users ORDER BY id")
@@ -1666,7 +1668,7 @@ def delete_despachante(despachante_id: int) -> Optional[str]:
 
 
 def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, estado, despachante}}."""
+    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, pa, estado, despachante}}."""
     if not qb_invoice_ids:
         return {}
     conn = get_connection()
@@ -1674,7 +1676,7 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
         cur = conn.cursor()
         placeholders = ",".join("?" * len(qb_invoice_ids))
         cur.execute(
-            f"SELECT qb_invoice_id, courier, guia, importe_factura, estado, despachante FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
+            f"SELECT qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
             [user_id] + list(qb_invoice_ids),
         )
         return {str(r["qb_invoice_id"]): dict(r) for r in cur.fetchall()}
@@ -1684,7 +1686,7 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
 
 def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
     """Inserta o actualiza fila en invoice_extra. Merge con valores actuales para actualizaciones parciales."""
-    allowed = {"courier", "guia", "importe_factura", "estado", "despachante"}
+    allowed = {"courier", "guia", "importe_factura", "pa", "estado", "despachante"}
     kv = {k: str(v or "") if v is not None else "" for k, v in kwargs.items() if k in allowed}
     if not kv:
         return
@@ -1695,10 +1697,10 @@ def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, estado, despachante)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, estado=excluded.estado, despachante=excluded.despachante""",
-            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["estado"], merged["despachante"]),
+            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, pa=excluded.pa, estado=excluded.estado, despachante=excluded.despachante""",
+            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["pa"], merged["estado"], merged["despachante"]),
         )
         conn.commit()
     finally:
@@ -8376,7 +8378,7 @@ def build_tab_compras(container) -> None:
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
                                     estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
-                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("despachante", "Despachante"), ("importe_factura", "Importe factura"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
+                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("despachante", "Despachante"), ("importe_factura", "Importe factura"), ("pa", "PA"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
                                     for col_key, h in cols:
                                         with ui.element("th").classes("px-2 py-2 border text-center"):
                                             if col_key in ("numero", "dias"):
@@ -8441,6 +8443,28 @@ def build_tab_compras(container) -> None:
                                                 inp_imp = ui.input(value=_imp_val).classes("w-28").props("dense")
                                             inp_imp.on("blur", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
                                             inp_imp.on("keydown.enter", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            def _fmt_pa(val):
+                                                if not val:
+                                                    return ""
+                                                try:
+                                                    s = str(val).replace(" ", "")
+                                                    if "," in s:
+                                                        s = s.replace(".", "").replace(",", ".")
+                                                    n = float(s)
+                                                    return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                                except (ValueError, TypeError):
+                                                    return str(val)
+                                            def _parse_pa(s):
+                                                if not s:
+                                                    return ""
+                                                return str(s).replace(".", "").replace(",", ".").strip()
+                                            _pa_val = _fmt_pa(inv.get("pa", ""))
+                                            with ui.row().classes("items-center justify-center gap-0.5"):
+                                                ui.label("u$").classes("text-gray-600 text-sm")
+                                                inp_pa = ui.input(value=_pa_val, placeholder="u$").classes("w-24").props("dense")
+                                            inp_pa.on("blur", lambda evt, inv=inv, inp=inp_pa: _save_inv_extra(inv, pa=_parse_pa(inp.value)))
+                                            inp_pa.on("keydown.enter", lambda evt, inv=inv, inp=inp_pa: _save_inv_extra(inv, pa=_parse_pa(inp.value)))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             with ui.row().classes("justify-center w-full"):
                                                 est_display = inv.get("estado", "") or "En USA"
@@ -8508,6 +8532,7 @@ def build_tab_compras(container) -> None:
                 inv["guia"] = ex.get("guia") or ""
                 inv["despachante"] = ex.get("despachante") or ""
                 inv["importe_factura"] = ex.get("importe_factura") or ""
+                inv["pa"] = ex.get("pa") or ""
                 est = ex.get("estado") or ""
                 status_low = (inv.get("status") or "").lower()
                 if status_low == "pagada":
