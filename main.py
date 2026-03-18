@@ -176,11 +176,14 @@ def init_db() -> None:
             ('diegolas@gmail.com', '101', 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)'),
             ('info@dsmax.com.ar', '136', 'DSMAX TECH'),
             ('diegog@exxa.com.ar', '5', 'Exxa Store'),
-            ('sanjustocentrocomputacion@gmail.com', '0', 'SAN JUSTO CENTRO COMPUTACION SRL 30-71777663-8')
+            ('sanjustocentrocomputacion@gmail.com', '55', 'SAN JUSTO CENTRO COMPUTACION SRL 30-71777663-8')
         """
     )
     cur.execute(
         "UPDATE qb_customer_preasignado SET qb_customer_name = 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)' WHERE qb_customer_id = '101'"
+    )
+    cur.execute(
+        "UPDATE qb_customer_preasignado SET qb_customer_id = '55' WHERE LOWER(TRIM(email)) = 'sanjustocentrocomputacion@gmail.com'"
     )
 
     # Usuario sanjustocentrocomputacion: crear si no existe (contraseña provisoria Temp1234)
