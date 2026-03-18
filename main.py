@@ -175,12 +175,27 @@ def init_db() -> None:
         VALUES
             ('diegolas@gmail.com', '101', 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)'),
             ('info@dsmax.com.ar', '136', 'DSMAX TECH'),
-            ('diegog@exxa.com.ar', '5', 'Exxa Store')
+            ('diegog@exxa.com.ar', '5', 'Exxa Store'),
+            ('sanjustocentrocomputacion@gmail.com', '0', 'SAN JUSTO CENTRO COMPUTACION SRL 30-71777663-8')
         """
     )
     cur.execute(
         "UPDATE qb_customer_preasignado SET qb_customer_name = 'CAMINIZA SRL CUIT 33-71851985-9 (id 101)' WHERE qb_customer_id = '101'"
     )
+
+    # Usuario sanjustocentrocomputacion: crear si no existe (contraseña provisoria Temp1234)
+    _pw_temp = hashlib.sha256("Temp1234".encode("utf-8")).hexdigest()
+    cur.execute(
+        """INSERT OR IGNORE INTO users (username, password_hash, created_at, email) VALUES (?, ?, ?, ?)""",
+        ("sanjustocentrocomputacion@gmail.com", _pw_temp, datetime.utcnow().isoformat(), "sanjustocentrocomputacion@gmail.com"),
+    )
+    cur.execute("SELECT id FROM users WHERE username = ?", ("sanjustocentrocomputacion@gmail.com",))
+    _sanjusto_row = cur.fetchone()
+    if _sanjusto_row:
+        _uid = _sanjusto_row["id"]
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
+            can = 1 if tab_key != "admin" else 0
+            cur.execute("INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)", (_uid, tab_key, can))
 
     # Credenciales de MercadoLibre asociadas al usuario (tokens OAuth)
     cur.execute(
@@ -10454,7 +10469,7 @@ def _calc_courier_row(
     ml_3cuotas = params.get("ml_3cuotas", 1.12149)
     ml_6cuotas = params.get("ml_6cuotas", 1.21067)
     ml_comision = params.get("ml_comision", 0.15)
-    ml_sirtac = params.get("ml_sirtac", 0.008)
+    ml_debcre = params.get("ml_debcre", 0.006)
     iva_21 = params.get("iva_21", 0.21)
     ml_envios_val = params.get("ml_envios", 5823)
     ml_envios = ml_envios_val if ml_envios_val > 100 else 5823  # ML - Envíos: monto fijo en pesos
@@ -10469,7 +10484,7 @@ def _calc_courier_row(
     iva_meli = comi_ml - (comi_ml / 1.21) if venta_ml > 0 else 0
     iva_venta = venta_ml - (venta_ml / (iva_rate + 1)) if venta_ml > 0 else 0
     iva_total = iva_venta - iva_meli - iva_impor
-    deb_cred = venta_ml * ml_sirtac if venta_ml > 0 else 0
+    deb_cred = venta_ml * ml_debcre if venta_ml > 0 else 0
     iibb_per = venta_ml * ml_iibb_per if venta_ml > 0 else 0
     envio = ml_envios
     costo_vta = (((venta_ml - cobrado_ml) + (iva_total if iva_total > 0 else 0) + deb_cred + iibb_per + envio) / venta_ml) if venta_ml > 0 else 0
@@ -10592,16 +10607,16 @@ def build_tab_importacion() -> None:
         importacion_rows.sort(key=lambda r: _parse_sort_val(r.get(col), col), reverse=rev)
         repintar()
 
-    with ui.column().classes("w-full gap-2 p-2"):
+    with ui.column().classes("w-full gap-2 p-2 flex flex-col"):
         ui.label("Importación - Cotizador Courier").classes("text-xl font-semibold")
 
         cols_input = ["productos", "origen", "impuestos", "fob", "qty", "peso_unitario", "extras", "trafo", "cambio_pa", "venta_ml"]
-        headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Trafo", "Cam.PA", "Venta ML"]
+        cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "comi_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "deb_cred", "iibb_per", "envio", "costo_vta", "margen", "margen_vta", "margen_costo"]
+        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA LHS", "IIBB", "Courier", "Total", "Traída", "Costo$ s/iva", "Costo u$ s/iva", "3ctas", "6ctas", "MarkUp", "Cobrado", "Comision", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "Cos Vta", "Margen$", "MargVta", "MargCos"]
+        headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Trafo", "Cam.PA", "Venta"]
 
         opciones_origen = [r.get("origen", "") for r in origen_data if r.get("origen")]
         opciones_impuestos = [r.get("posicion", "") for r in posicion_data if r.get("posicion")]
-        cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "comi_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "deb_cred", "iibb_per", "envio", "costo_vta", "margen", "margen_vta", "margen_costo"]
-        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA LHS", "IIBB", "Courier", "Total", "Traída", "Costo$", "Costo u$", "3ctas", "6ctas", "MarkUp", "CobrML", "ComiML", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "CstoVta", "Margen$", "MargVta", "MargCos"]
         cols_ocultas = ["derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "cuotas3", "cuotas6", "iva_impor", "iva_meli", "iva_venta"]
         cols_input_ocultas = ["extras", "trafo"]
         vista_completa = [False]
@@ -10616,10 +10631,55 @@ def build_tab_importacion() -> None:
                 return True
             return vista_completa[0] or col not in cols_ocultas
 
+        def _fmt_imp_usd(val: Any, decimals: int = 2) -> str:
+            """Formato u$ con punto miles. decimals=2 para FOB, 0 para Cam.PA."""
+            if val is None or str(val).strip() == "": return ""
+            try:
+                s = str(val).replace("u$", "").replace("$", "").strip()
+                if "," in s:
+                    s = s.replace(".", "").replace(",", ".")
+                n = float(s) if s else 0
+                fmt = f"{n:,.{decimals}f}" if decimals else f"{int(n):,}"
+                return "u$ " + fmt.replace(",", "X").replace(".", ",").replace("X", ".")
+            except (TypeError, ValueError):
+                return str(val)
+
+        def _fmt_imp_pesos(val: Any, decimals: int = 0) -> str:
+            """Formato $ con punto miles, sin decimales para Venta."""
+            if val is None or str(val).strip() == "": return ""
+            try:
+                s = str(val).replace("u$", "").replace("$", "").strip()
+                if "," in s:
+                    s = s.replace(".", "").replace(",", ".")
+                n = float(s) if s else 0
+                fmt = f"{int(n):,}"
+                return "$ " + fmt.replace(",", ".")
+            except (TypeError, ValueError):
+                return str(val)
+
+        def _parse_imp_prefixed(v: Any) -> str:
+            """Parsea 'u$ 1.234,56', '$ 64.990' o '$ 10.000' a '1234.56' o '64990'."""
+            if v is None or v == "": return ""
+            s = str(v).replace("u$", "").replace("$", "").strip()
+            if not s: return ""
+            if "," in s:
+                s = s.replace(".", "").replace(",", ".")
+            elif "." in s:
+                parts = s.split(".")
+                if len(parts) == 2 and len(parts[1]) == 3:
+                    s = s.replace(".", "")
+                elif len(parts) > 2:
+                    s = s.replace(".", "")
+            try:
+                n = float(s)
+                return str(int(n)) if n == int(n) else f"{n:.2f}"
+            except (TypeError, ValueError):
+                return str(v).strip()
+
         def aplicar_estilo_fob_ml(inp: Any, es_fob: bool = False) -> None:
             """Actualiza negrita y rojo según si el input tiene valor (al cargar/editar)."""
             v = (inp.value or "").strip()
-            base = "min-w-[42px]" if es_fob else "min-w-[50px]"
+            base = "min-w-[52px] text-right" if es_fob else "min-w-[60px] text-right"
             if v:
                 inp.classes(replace=base + " font-bold text-red-600")
                 inp.style("font-weight: bold; color: rgb(220, 38, 38);")
@@ -10635,26 +10695,46 @@ def build_tab_importacion() -> None:
             with table_container:
                 with ui.element("table").classes("w-full border-collapse text-xs").style("table-layout: auto; white-space: nowrap;"):
                     with ui.element("thead"):
-                        with ui.element("tr").classes("bg-blue-100 dark:bg-blue-900"):
+                        with ui.element("tr"):
                             for j, (c, h) in enumerate(zip(all_cols, all_headers)):
-                                th_cls = "font-semibold px-1 py-1 text-center border border-gray-300 whitespace-nowrap text-xs cursor-pointer hover:bg-blue-200"
+                                if j < 10:
+                                    bg = "bg-sky-100 dark:bg-sky-800"
+                                elif j < 27:
+                                    bg = "bg-teal-100 dark:bg-teal-800"
+                                elif j < 40:
+                                    bg = "bg-sky-100 dark:bg-sky-800"
+                                else:
+                                    bg = "bg-teal-100 dark:bg-teal-800"
+                                th_cls = f"font-semibold px-1 py-1 text-center border border-gray-300 whitespace-nowrap text-xs cursor-pointer {bg}"
                                 if not col_visible(c):
                                     th_cls += " hidden"
                                 th = ui.element("th").classes(th_cls)
                                 th.on("click", lambda col=c: toggle_sort_importacion(col))
                                 with th:
                                     ui.label(h)
-                            with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs").style("min-width: 48px;"):
+                            with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs bg-slate-100 dark:bg-slate-700").style("min-width: 48px;"):
                                 ui.label("Ordenar")
-                            with ui.element("th").classes("font-semibold px-1 py-1 border border-gray-300").style("min-width: 40px;"):
+                            with ui.element("th").classes("font-semibold px-1 py-1 border border-gray-300 bg-slate-100 dark:bg-slate-700").style("min-width: 40px;"):
                                 ui.label("×")
                     with ui.element("tbody"):
                         for i, r in enumerate(importacion_rows):
                             r_in: Dict[str, Any] = {}
                             with ui.element("tr"):
                                 for c in cols_input:
-                                    val = str(r.get(c, ""))
+                                    raw_val = r.get(c, "")
+                                    if c == "fob":
+                                        val = _fmt_imp_usd(raw_val, decimals=2)
+                                    elif c == "cambio_pa":
+                                        val = _fmt_imp_usd(raw_val, decimals=0)
+                                    elif c == "venta_ml":
+                                        val = _fmt_imp_pesos(raw_val)
+                                    else:
+                                        val = str(raw_val)
                                     td_cls = "p-0.5 border border-gray-200 min-w-0"
+                                    if c in ("fob", "cambio_pa", "venta_ml"):
+                                        td_cls += " text-right"
+                                    elif c in ("qty", "peso_unitario"):
+                                        td_cls += " text-center"
                                     if not col_visible(c):
                                         td_cls += " hidden"
                                     with ui.element("td").classes(td_cls):
@@ -10667,18 +10747,20 @@ def build_tab_importacion() -> None:
                                         elif c == "productos":
                                             inp = ui.input(value=val).classes("min-w-[130px]").props("dense")
                                         elif c == "fob":
-                                            inp_cls = "min-w-[42px]"
+                                            inp_cls = "min-w-[52px] text-right"
                                             if val:
                                                 inp_cls += " font-bold text-red-600"
                                             inp = ui.input(value=val).classes(inp_cls).props("dense")
                                             inp.on_value_change(lambda inp_ref=inp: aplicar_estilo_fob_ml(inp_ref, es_fob=True))
                                             aplicar_estilo_fob_ml(inp, es_fob=True)
-                                        elif c in ("qty", "peso_unitario", "cambio_pa"):
-                                            inp = ui.input(value=val).classes("min-w-[40px]").props("dense")
+                                        elif c in ("qty", "peso_unitario"):
+                                            inp = ui.input(value=val).classes("min-w-[40px]").props("dense").style("text-align: center")
+                                        elif c == "cambio_pa":
+                                            inp = ui.input(value=val).classes("min-w-[52px] text-right").props("dense")
                                         elif c in ("extras", "trafo"):
                                             inp = ui.input(value=val).classes("min-w-[55px]").props("dense")
                                         elif c == "venta_ml":
-                                            inp_cls = "min-w-[50px]"
+                                            inp_cls = "min-w-[60px] text-right"
                                             if val:
                                                 inp_cls += " font-bold text-red-600"
                                             inp = ui.input(value=val).classes(inp_cls).props("dense")
@@ -10735,7 +10817,10 @@ def build_tab_importacion() -> None:
                 row_data = {}
                 for c in cols_input:
                     v = r_in[c].value
-                    row_data[c] = v if v is not None else ""
+                    if c in ("fob", "cambio_pa", "venta_ml"):
+                        row_data[c] = _parse_imp_prefixed(v) if v else ""
+                    else:
+                        row_data[c] = v if v is not None else ""
                 row_data["posicion"] = str(row_data.get("impuestos", "")).strip() or origen_posicion_actual.get(str(row_data.get("origen", "")).strip(), "Cambio PA")
                 try:
                     calc = _calc_courier_row(row_data, params_actual, posicion_by_name_actual, courier_by_origen_actual, origen_posicion_actual)
@@ -10754,12 +10839,6 @@ def build_tab_importacion() -> None:
             importacion_rows.append(row)
             recalcular()
 
-        if not importacion_rows:
-            add_row()
-        else:
-            repintar()
-            recalcular()
-
         def sync_inputs_to_rows() -> None:
             """Copia los valores actuales de los inputs a importacion_rows antes de repintar."""
             for i, r_in in enumerate(input_rows_ref):
@@ -10767,7 +10846,10 @@ def build_tab_importacion() -> None:
                     for c in cols_input:
                         if c in r_in:
                             v = r_in[c].value
-                            importacion_rows[i][c] = str(v) if v is not None else ""
+                            if c in ("fob", "cambio_pa", "venta_ml"):
+                                importacion_rows[i][c] = _parse_imp_prefixed(v)
+                            else:
+                                importacion_rows[i][c] = str(v) if v is not None else ""
 
         def toggle_vista() -> None:
             sync_inputs_to_rows()
@@ -10787,7 +10869,13 @@ def build_tab_importacion() -> None:
             except Exception as e:
                 ui.notify(f"Error al guardar: {e}", color="negative")
 
-        with ui.row().classes("gap-2"):
+        if not importacion_rows:
+            add_row()
+        else:
+            repintar()
+            recalcular()
+
+        with ui.row().classes("gap-2 order-first"):
             ui.button("Calcular", on_click=recalcular, color="secondary")
             ui.button("Agregar Fila", on_click=add_row, color="primary")
             btn_vista = ui.button("Completo", on_click=toggle_vista, color="secondary")
