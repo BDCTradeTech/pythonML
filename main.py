@@ -8267,6 +8267,112 @@ def build_tab_compras(container) -> None:
             dlg.open()
             background_tasks.create(_cargar_y_mostrar(), name="invoice_detail")
 
+        def _generar_excel_invoices() -> tuple[Optional[str], Optional[str], Optional[str]]:
+            """Genera el Excel en un hilo. Retorna (path, nombre_archivo, None) si OK, o (None, None, error_msg)."""
+            try:
+                invs = invoices_ref.get("data", [])
+                filtro_val = filtro_status_ref.get("val", "Abierta+Vencida")
+                if filtro_val == "Abierta+Vencida":
+                    invs = [i for i in invs if (i.get("status") or "").lower() in ("abierta", "vencida")]
+                elif filtro_val != "Todas":
+                    invs = [i for i in invs if (i.get("status") or "").lower() == filtro_val.lower()]
+                if filtro_estado_ref.get("val", "Todos") != "Todos":
+                    invs = [i for i in invs if (i.get("estado") or "En USA") == filtro_estado_ref["val"]]
+                sc = sort_col_compras.get("val", "txn_date")
+                asc = sort_asc_compras.get("val", False)
+
+                def _sk(x: Dict, col: str):
+                    v = x.get(col) or ""
+                    if col in ("amount", "amount_num"):
+                        try:
+                            return float(x.get("amount_num") or 0)
+                        except (ValueError, TypeError):
+                            return 0
+                    return str(v).lower()
+
+                invs_exp = sorted(invs, key=lambda x: _sk(x, sc), reverse=not asc)
+                if not invs_exp:
+                    return (None, None, "No hay invoices para exportar")
+                cust_name = (header_data_ref.get("cust_name") or "Cliente").replace("/", "-").replace("\\", "-")[:50]
+                ahora = datetime.now()
+                nombre_archivo = f"{cust_name}-{ahora.year:04d}-{ahora.month:02d}-{ahora.day:02d}-{ahora.hour:02d}{ahora.minute:02d}.xlsx"
+                sheet_name = f"Invoices {ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"[:31]
+
+                wb = Workbook()
+                ws = wb.active
+                ws.title = sheet_name
+                black_fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+                white_fill = PatternFill(start_color="FFFFFF", end_color="FFFFFF", fill_type="solid")
+                header_font = Font(color="FFFFFF", bold=True)
+                thin_side = Side(border_style="thin")
+                all_borders = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+                headers = ["Fecha", "Días", "Invoice", "Importe", "Status"]
+                for col, h in enumerate(headers, 1):
+                    c = ws.cell(row=1, column=col, value=h)
+                    c.fill = black_fill
+                    c.font = header_font
+                    c.border = all_borders
+                    c.alignment = Alignment(horizontal="center", vertical="center")
+
+                today_date = datetime.now().date()
+                for idx, inv in enumerate(invs_exp, 2):
+                    txn = inv.get("txn_date", "") or ""
+                    fecha_ddmm = _fmt_fecha(txn) if txn else "—"
+                    try:
+                        dt = datetime.strptime(str(txn)[:10], "%Y-%m-%d").date() if len(str(txn)) >= 10 else None
+                        dias_val = (today_date - dt).days if dt else None
+                    except (ValueError, TypeError):
+                        dias_val = None
+                    doc_raw = inv.get("doc", "") or ""
+                    try:
+                        invoice_num = int(str(doc_raw).strip()) if str(doc_raw).strip().isdigit() else None
+                    except (ValueError, TypeError):
+                        invoice_num = None
+                    amt = inv.get("amount_num", 0) or 0
+                    try:
+                        importe_num = float(amt)
+                    except (ValueError, TypeError):
+                        importe_num = 0.0
+                    status = inv.get("status", "—")
+
+                    c_fecha = ws.cell(row=idx, column=1, value=fecha_ddmm)
+                    c_fecha.fill = white_fill
+                    c_fecha.border = all_borders
+
+                    c_dias = ws.cell(row=idx, column=2, value=dias_val)
+                    c_dias.fill = white_fill
+                    c_dias.border = all_borders
+                    c_dias.number_format = "0"
+
+                    c_inv = ws.cell(row=idx, column=3, value=invoice_num if invoice_num is not None else doc_raw or "—")
+                    c_inv.fill = white_fill
+                    c_inv.border = all_borders
+                    if invoice_num is not None:
+                        c_inv.number_format = "0"
+
+                    c_imp = ws.cell(row=idx, column=4, value=importe_num)
+                    c_imp.fill = white_fill
+                    c_imp.border = all_borders
+                    c_imp.number_format = '$#,##0.00'
+
+                    c_status = ws.cell(row=idx, column=5, value=status)
+                    c_status.fill = white_fill
+                    c_status.border = all_borders
+
+                ws.column_dimensions["A"].width = 12
+                ws.column_dimensions["B"].width = 8
+                ws.column_dimensions["C"].width = 14
+                ws.column_dimensions["D"].width = 14
+                ws.column_dimensions["E"].width = 12
+
+                fd, path = tempfile.mkstemp(suffix=".xlsx")
+                os.close(fd)
+                wb.save(path)
+                return (path, nombre_archivo, None)
+            except Exception as e:
+                return (None, None, str(e))
+
         def _pintar_compras() -> None:
             header_card.clear()
             filtro_row.clear()
@@ -8369,6 +8475,22 @@ def build_tab_compras(container) -> None:
                     filtro_estado_ref["val"] = str(val) if val is not None else "Todos"
                     _pintar_compras()
                 filtro_estado.on_value_change(_on_filtro_estado_change)
+                async def _imprimir_invoices_async() -> None:
+                    path, nombre_archivo, err = await run.io_bound(_generar_excel_invoices)
+                    if err:
+                        ui.notify(err, color="warning" if "No hay" in (err or "") else "negative")
+                        return
+                    if path and nombre_archivo:
+                        ui.download(path, nombre_archivo)
+                        ui.notify(f"Exportado: {nombre_archivo}", color="positive")
+                        def _cleanup() -> None:
+                            try:
+                                if path and os.path.exists(path):
+                                    os.unlink(path)
+                            except Exception:
+                                pass
+                        ui.timer(5.0, _cleanup, once=True)
+                ui.button("Imprimir invoices", on_click=_imprimir_invoices_async, color="primary").props("dense no-caps icon=print").classes("ml-4")
 
             with result_area:
                 def _on_sort(c: str) -> None:
