@@ -9977,9 +9977,9 @@ def build_tab_config() -> None:
                     ui.label("MercadoLibre").classes("text-base font-semibold mb-2")
                     ui.label("App ID, Client Secret, Redirect → Guardar → Conectar").classes("text-xs text-gray-600 mb-1")
                     with ui.expansion("Credenciales", icon="key").classes("w-full").props("expand-icon-toggle dense"):
-                        inp_client_id = ui.input("App ID", value=app_creds["client_id"] if app_creds else "").classes("w-full").props("type=text dense")
+                        inp_client_id = ui.input("App ID", value=app_creds["client_id"] if app_creds else "").classes("w-full").props("type=password password-toggle dense")
                         inp_client_secret = ui.input("Client Secret", value=app_creds["client_secret"] if app_creds else "").classes("w-full").props("type=password password-toggle dense")
-                        inp_redirect = ui.input("Redirect URI", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full").props("dense")
+                        inp_redirect = ui.input("Redirect URI", value=(app_creds.get("redirect_uri") or "").strip() or default_redirect if app_creds else default_redirect).classes("w-full").props("type=password password-toggle dense")
 
                     def guardar_app_ml() -> None:
                         cid = (inp_client_id.value or "").strip()
@@ -10037,9 +10037,9 @@ def build_tab_config() -> None:
                         ml_redir.replace("/ml/callback", "/qb/callback") if "/ml/callback" in ml_redir else "http://localhost:8083/qb/callback"
                     )
                     with ui.expansion("Credenciales QB", icon="account_balance").classes("w-full").props("expand-icon-toggle dense"):
-                        inp_qb_cid = ui.input("Client ID", value=qb_app_creds["client_id"] if qb_app_creds else "").classes("w-full").props("type=text dense")
+                        inp_qb_cid = ui.input("Client ID", value=qb_app_creds["client_id"] if qb_app_creds else "").classes("w-full").props("type=password password-toggle dense")
                         inp_qb_csec = ui.input("Client Secret", value=qb_app_creds["client_secret"] if qb_app_creds else "").classes("w-full").props("type=password password-toggle dense")
-                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("w-full").props("dense")
+                        inp_qb_redir = ui.input("Redirect URI", value=(qb_app_creds.get("redirect_uri") or "").strip() or default_qb_redirect if qb_app_creds else default_qb_redirect).classes("w-full").props("type=password password-toggle dense")
                         async def _usar_url_actual_qb():
                             try:
                                 origin = await ui.run_javascript("window.location.origin")
@@ -10049,7 +10049,6 @@ def build_tab_config() -> None:
                             except Exception:
                                 ui.notify("No se pudo detectar la URL actual", color="warning")
                         ui.button("Usar URL actual", on_click=_usar_url_actual_qb, color="secondary").props("dense no-caps flat")
-                        ui.label("Debe coincidir EXACTAMENTE con developer.intuit.com → Keys. Si accedés por IP (ej. http://157.230.88.160:8083), usá esa URL + /qb/callback.").classes("text-xs text-gray-500 mt-1")
 
                     def guardar_qb_creds() -> None:
                         cid = (inp_qb_cid.value or "").strip()
