@@ -10572,15 +10572,21 @@ def _calc_courier_row(
     env_dom = _f(courier.get("env_dom"))
     iibb = _f(courier.get("iibb"))
 
-    L = derechos_rate * fob_total * dolar_despacho  # Derechos = tasa × FOB Total (en USD × Dólar)
-    M = estad_rate * fob_total * dolar_despacho     # Estadística = tasa × FOB Total
+    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa × FOB Total (en USD × Dólar)
+    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa × FOB Total
     N = kg_real * peso_total * dolar_despacho
-    O_val = almacenaje * peso_total * dolar_despacho
-    P = res_3244 * dolar_despacho
-    Q = seguro * dolar_despacho
-    R = gas_ope * dolar_despacho
+    O_val = almacenaje * peso_total * dolar_oficial
+    P = res_3244 * dolar_oficial
+    Q = seguro * dolar_oficial
+    R = gas_ope * dolar_oficial
     S = env_dom * dolar_despacho
-    T = ((0.21 * L) + (0.21 * M) + (0.21 * O_val) + (0.21 * P) + (0.21 * Q) + (0.21 * R) + (iva_rate * fob_total * dolar_despacho)) * ajuste_ana
+    # IVA FOB: monto_flete = Peso(kg) × 2.5; monto_seguro = (FOB tot + monto_flete) × 0.01; CIF = FOB + monto_flete + monto_seguro; IVA = CIF × tipo_iva × dolar_despacho
+    peso_kg = peso_total / 1000 if peso_total > 0 else 0  # peso_total en gramos
+    monto_flete = peso_kg * 2.5
+    monto_seguro = (fob_total + monto_flete) * 0.01
+    cif = fob_total + monto_flete + monto_seguro
+    iva_fob_pesos = iva_rate * cif * dolar_despacho
+    T = ((0.21 * O_val) + (0.21 * P) + (0.21 * Q) + (0.21 * R) + iva_fob_pesos) * ajuste_ana
     U = iibb * R
     V = L + M + N + O_val + P + Q + R + S + T + U
     Z = V + extras + (cambio_pa_manual * dolar_blue) - T  # Excel: Datos!$B$2 = Dólar Blue
