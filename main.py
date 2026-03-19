@@ -10595,8 +10595,7 @@ def _calc_courier_row(
     ml_comision = params.get("ml_comision", 0.15)
     ml_debcre = params.get("ml_debcre", 0.006)
     iva_21 = params.get("iva_21", 0.21)
-    ml_envios_val = params.get("ml_envios", 5823)
-    ml_envios = ml_envios_val if ml_envios_val > 100 else 5823  # ML - Envíos: monto fijo en pesos
+    ml_envios = params.get("ml_envios", 5823)  # ML - Envíos desde Datos
     ml_iibb_per = params.get("ml_iibb_per", 0.055)
 
     cuotas3 = venta_ml * ml_3cuotas if venta_ml > 0 else 0
