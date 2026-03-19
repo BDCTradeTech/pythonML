@@ -14,7 +14,6 @@ import hashlib
 import logging
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-from math import ceil
 import html
 import json
 import sqlite3
@@ -10539,7 +10538,7 @@ def _calc_courier_row(
     ajuste_ana = params.get("ajuste_valor_ana", 1.01)
 
     fob_total = fob * qty
-    peso_total = ceil(qty * peso_unit) if qty > 0 and peso_unit > 0 else 0
+    peso_total = qty * peso_unit if qty > 0 and peso_unit > 0 else 0
 
     posicion_nom = str(row.get("posicion") or "").strip()
     if not posicion_nom and origen:
@@ -10627,7 +10626,7 @@ def _calc_courier_row(
     return {
         **row,
         "fob_total": "u$ " + _fmt(fob_total, 2),
-        "peso_total": str(int(peso_total)),
+        "peso_total": _fmt(peso_total, 2),
         "derechos": _mon(_fmt(L, 0)),
         "estadistica": _mon(_fmt(M, 0)),
         "flete_int": _mon(_fmt(N, 0)),
