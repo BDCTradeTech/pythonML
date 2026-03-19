@@ -10721,6 +10721,8 @@ def _calc_courier_row(
         "margen_vta_raw": margen_vta,
         "margen_costo_raw": margen_costo,
         "margen_detalle": {
+            "venta_ml": venta_ml,
+            "comi_ml": comi_ml,
             "cobrado_ml": cobrado_ml,
             "costo_pesos": AC,
             "iva_total": iva_total,
@@ -11038,6 +11040,8 @@ def build_tab_importacion() -> None:
                                                             def _fmt_mon(x: float) -> str:
                                                                 s = f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                 return f"$ {s}"
+                                                            venta = det.get("venta_ml", 0)
+                                                            comi = det.get("comi_ml", 0)
                                                             cob = det.get("cobrado_ml", 0)
                                                             costo = det.get("costo_pesos", 0)
                                                             iva = det.get("iva_total", 0)
@@ -11045,6 +11049,12 @@ def build_tab_importacion() -> None:
                                                             iibb = det.get("iibb_per", 0)
                                                             env = det.get("envio", 0)
                                                             marg = det.get("margen", 0)
+                                                            with ui.row().classes("gap-2"):
+                                                                ui.label("Venta:").classes("text-sm text-black")
+                                                                ui.label(_fmt_mon(venta)).classes("text-sm text-blue-600")
+                                                            with ui.row().classes("gap-2"):
+                                                                ui.label("Comisiones:").classes("text-sm text-black")
+                                                                ui.label(_fmt_mon(comi)).classes("text-sm text-negative")
                                                             with ui.row().classes("gap-2"):
                                                                 ui.label("Cobrado:").classes("text-sm text-black")
                                                                 ui.label(_fmt_mon(cob)).classes("text-sm text-blue-600")
