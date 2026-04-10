@@ -1319,6 +1319,143 @@ def _pdf_sku_variants_from_aliases(aliases: List[str]) -> List[str]:
     return out
 
 
+def _pdf_sku_multiline_search_parts(s: str) -> List[str]:
+    """Fragmentos que el PDF puede partir en varias líneas (p. ej. 'SM-' y 'X620NLBETPA')."""
+    s = str(s).strip()
+    if not s:
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+
+    def add(x: str) -> None:
+        x = x.strip()
+        if len(x) >= 2 and x not in seen:
+            seen.add(x)
+            out.append(x)
+
+    add(s)
+    if len(s) > 6:
+        add(s[: min(50, len(s))])
+        add(s[:40])
+        add(s[:25])
+    if "-" in s:
+        parts = s.split("-")
+        for i in range(len(parts) - 1):
+            left = "-".join(parts[: i + 1]) + "-"
+            right = "-".join(parts[i + 1 :])
+            add(left)
+            add(right)
+    if len(s) >= 8:
+        for cut in (len(s) // 2, (len(s) + 1) // 2, max(3, len(s) // 3)):
+            if 2 <= cut <= len(s) - 2:
+                add(s[:cut])
+                add(s[cut:])
+    return out
+
+
+def _pdf_sku_all_search_strings(aliases: List[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for a in aliases:
+        for part in _pdf_sku_multiline_search_parts(str(a).strip()):
+            for v in _sku_search_variants(part):
+                if v not in seen:
+                    seen.add(v)
+                    out.append(v)
+    return out
+
+
+def _pdf_find_sku_column_union(
+    page: Any,
+    d_rect: Any,
+    y_ref: float,
+    parts: List[str],
+    x_min: float = 0.0,
+    x_max: Optional[float] = None,
+) -> Optional[Any]:
+    """Une rectángulos de fragmentos del SKU en la misma columna (incl. varias líneas)."""
+    import fitz  # pymupdf
+
+    d = fitz.Rect(d_rect)
+    right_lim = float(x_max) if x_max is not None else float(d.x0) + 28.0
+    y_lo = float(y_ref) - 10.0
+    y_hi = max(float(d.y1), float(y_ref)) + 32.0
+    found: List[Any] = []
+    for part in parts:
+        if len(part) < 2:
+            continue
+        for r in page.search_for(part):
+            rr = fitz.Rect(r)
+            if rr.y0 < y_lo or rr.y0 > y_hi:
+                continue
+            if rr.x0 < x_min - 4:
+                continue
+            if rr.x1 > right_lim + 6:
+                continue
+            if _pdf_rect_matches_description_block(rr, d):
+                continue
+            found.append(rr)
+    if not found:
+        return None
+    anchor = min(float(fitz.Rect(x).x0) for x in found)
+    col = [
+        fitz.Rect(x)
+        for x in found
+        if abs(float(fitz.Rect(x).x0) - anchor) <= 55 and float(fitz.Rect(x).x1) <= right_lim + 10
+    ]
+    if not col:
+        col = [fitz.Rect(x) for x in found]
+    u: Any = col[0]
+    for r in col[1:]:
+        u |= r
+    return u
+
+
+def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
+    """Redibuja el SKU completo en el área (una o dos líneas como en el PDF)."""
+    import fitz  # pymupdf
+
+    u = fitz.Rect(union_rect)
+    text = str(text).strip()
+    if not text:
+        return
+    h = max(float(u.height), 6.0)
+    fs = max(7.0, min(10.0, h / 2.35))
+    rc = page.insert_textbox(
+        u,
+        text,
+        fontsize=fs,
+        fontname="helv",
+        color=(0, 0, 0),
+        align=fitz.TEXT_ALIGN_LEFT,
+    )
+    if rc >= 0:
+        return
+    fs2 = max(6.0, fs - 0.5)
+    rc2 = page.insert_textbox(
+        u, text, fontsize=fs2, fontname="helv", color=(0, 0, 0), align=fitz.TEXT_ALIGN_LEFT
+    )
+    if rc2 >= 0:
+        return
+    lines: List[str] = []
+    if "-" in text:
+        i = text.index("-")
+        lines = [text[: i + 1].strip(), text[i + 1 :].strip()]
+    else:
+        mid = max(2, len(text) // 2)
+        lines = [text[:mid].strip(), text[mid:].strip()]
+    lines = [x for x in lines if x]
+    if not lines:
+        return
+    lh = min(fs2, max(6.5, h / max(len(lines), 1) * 0.85))
+    y = float(u.y0) + lh * 0.78
+    for ln in lines:
+        page.insert_text(
+            fitz.Point(float(u.x0), y), ln, fontsize=lh, fontname="helv", color=(0, 0, 0)
+        )
+        y += lh * 1.18
+
+
 def _pdf_horiz_overlap(a: Any, b: Any) -> float:
     import fitz  # pymupdf
 
@@ -1338,57 +1475,6 @@ def _pdf_rect_matches_description_block(rr: Any, d_rect: Any) -> bool:
         return False
     ov = _pdf_horiz_overlap(r, d)
     return ov > 0.82 * w and abs(r.y0 - d.y0) <= 2.5
-
-
-def _pdf_pick_sku_rect(page: Any, y_ref: float, variants: List[str], d_rect: Any) -> Optional[Any]:
-    """Elige la celda SKU en la fila: prioridad a la izquierda de la descripción."""
-    import fitz  # pymupdf
-
-    d = fitz.Rect(d_rect)
-    candidates: List[Any] = []
-    for variant in variants:
-        if not variant:
-            continue
-        for r in page.search_for(variant):
-            rr = fitz.Rect(r)
-            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
-                continue
-            if _pdf_rect_matches_description_block(rr, d):
-                continue
-            candidates.append(rr)
-    if not candidates:
-        return None
-    left_col = [c for c in candidates if fitz.Rect(c).x1 <= d.x0 + 4]
-    if left_col:
-        return max(left_col, key=lambda c: fitz.Rect(c).x0)
-    mid = (d.x0 + d.x1) / 2
-    left_half = [c for c in candidates if fitz.Rect(c).x1 <= mid + 6]
-    if left_half:
-        return max(left_half, key=lambda c: fitz.Rect(c).x0)
-    return min(candidates, key=lambda c: fitz.Rect(c).x0)
-
-
-def _pdf_find_rect_row_between(
-    page: Any, y_ref: float, variants: List[str], x_lo: float, x_hi: float
-) -> Optional[Any]:
-    """Coincidencia en la fila entre x_lo y x_hi (p. ej. SKU entre descripción y cantidad)."""
-    import fitz  # pymupdf
-
-    best: Optional[Any] = None
-    best_x: Optional[float] = None
-    for variant in variants:
-        for r in page.search_for(variant):
-            rr = fitz.Rect(r)
-            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
-                continue
-            if rr.x1 < x_lo - 2:
-                continue
-            if rr.x0 > x_hi + 2:
-                continue
-            if best is None or rr.x0 < best_x:  # type: ignore[operator]
-                best = rr
-                best_x = rr.x0
-    return best
 
 
 def _numeric_search_variants(value: Any) -> List[str]:
@@ -1518,45 +1604,55 @@ def patch_invoice_pdf_line_items(
             pno, d_rect = found_d
             page = doc[pno]
             y_ref = float(d_rect.y0)
-            fields: List[tuple[Any, str]] = []
+            fields: List[tuple[Any, str, bool]] = []
 
             sku_val = str(spec.get("sku") or "").strip()
             aliases = list(spec.get("sku_aliases") or [])
             if not aliases and sku_val:
                 aliases = [sku_val]
-            sv = _pdf_sku_variants_from_aliases(aliases)
-            s_rect: Optional[Any] = None
-            if sv:
-                s_rect = _pdf_pick_sku_rect(page, y_ref, sv, d_rect)
+            sku_parts = _pdf_sku_all_search_strings(aliases)
+            d_r = fitz.Rect(d_rect)
+            sku_union: Optional[Any] = None
+            if sku_parts:
+                sku_union = _pdf_find_sku_column_union(page, d_rect, y_ref, sku_parts)
 
-            fields.append((d_rect, new_description))
+            fields.append((d_rect, new_description, False))
 
             x_after = float(d_rect.x1) - 2
             qty_rect = _pdf_find_rect_row_after(
                 page, y_ref, _numeric_search_variants(spec["qty"]), x_after
             )
 
-            if not s_rect and sv:
+            if not sku_union and sku_parts:
                 if qty_rect:
-                    s_rect = _pdf_find_rect_row_between(
+                    q_r = fitz.Rect(qty_rect)
+                    sku_union = _pdf_find_sku_column_union(
                         page,
+                        d_rect,
                         y_ref,
-                        sv,
-                        float(fitz.Rect(d_rect).x1) - 4,
-                        float(fitz.Rect(qty_rect).x0) + 4,
+                        sku_parts,
+                        x_min=float(d_r.x1) - 8,
+                        x_max=float(q_r.x0) + 10,
                     )
-                if not s_rect:
-                    s_rect = _pdf_find_rect_row_before(page, y_ref, sv, fitz.Rect(d_rect).x0 - 1)
+            if not sku_union and sku_parts:
+                sku_union = _pdf_find_sku_column_union(
+                    page,
+                    d_rect,
+                    y_ref,
+                    sku_parts,
+                    x_min=0.0,
+                    x_max=float(d_r.x0) - 0.5,
+                )
 
             insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
-            if sv and insert_sku:
-                if s_rect:
-                    fields.insert(0, (s_rect, insert_sku))
+            if sku_parts and insert_sku:
+                if sku_union:
+                    fields.insert(0, (sku_union, insert_sku, True))
                 else:
                     line_warnings.append(f"línea {line_idx + 1} SKU")
             qty_ins = _fmt_pdf_qty_for_insert(float(spec["qty"]))
             if qty_rect:
-                fields.append((qty_rect, qty_ins))
+                fields.append((qty_rect, qty_ins, False))
                 x_after = float(qty_rect.x1) - 1
             else:
                 line_warnings.append(f"línea {line_idx + 1} qty")
@@ -1566,7 +1662,7 @@ def patch_invoice_pdf_line_items(
             )
             rate_ins = _fmt_pdf_money_for_insert(float(spec["rate"]))
             if rate_rect:
-                fields.append((rate_rect, rate_ins))
+                fields.append((rate_rect, rate_ins, False))
                 x_after = float(rate_rect.x1) - 1
             else:
                 line_warnings.append(f"línea {line_idx + 1} rate")
@@ -1576,17 +1672,20 @@ def patch_invoice_pdf_line_items(
             )
             amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
             if amt_rect:
-                fields.append((amt_rect, amt_ins))
+                fields.append((amt_rect, amt_ins, False))
             else:
                 line_warnings.append(f"línea {line_idx + 1} amount")
 
             by_x = sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0), reverse=True)
-            for rect, _txt in by_x:
+            for rect, _txt, _sku in by_x:
                 page.add_redact_annot(fitz.Rect(rect))
             page.apply_redactions()
 
-            for rect, txt in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
-                _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
+            for rect, txt, is_sku in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
+                if is_sku:
+                    _pdf_insert_sku_in_union(page, fitz.Rect(rect), str(txt))
+                else:
+                    _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
 
             replaced_lines += 1
 
