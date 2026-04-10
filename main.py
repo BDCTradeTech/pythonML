@@ -1273,6 +1273,9 @@ def _pdf_description_search_variants(old: str) -> List[str]:
 
 
 _PDF_ROW_Y_TOL = 5.0
+# Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
+_PDF_PATCH_FONTNAME = "helv"
+_PDF_PATCH_FONTSIZE = 9.5
 
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
@@ -1469,32 +1472,25 @@ def _pdf_find_sku_column_union(
 
 
 def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
-    """Redibuja el SKU completo en el área (una o dos líneas como en el PDF)."""
+    """Redibuja el SKU completo; siempre _PDF_PATCH_FONTNAME / _PDF_PATCH_FONTSIZE (igual que el resto del parche)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
     text = str(text).strip()
     if not text:
         return
-    h = max(float(u.height), 6.0)
-    fs = max(7.0, min(10.0, h / 2.35))
+    fs = float(_PDF_PATCH_FONTSIZE)
+    fn = _PDF_PATCH_FONTNAME
     rc = page.insert_textbox(
         u,
         text,
         fontsize=fs,
-        fontname="helv",
+        fontname=fn,
         color=(0, 0, 0),
         align=fitz.TEXT_ALIGN_LEFT,
     )
     if rc >= 0:
         return
-    fs2 = max(6.0, fs - 0.5)
-    rc2 = page.insert_textbox(
-        u, text, fontsize=fs2, fontname="helv", color=(0, 0, 0), align=fitz.TEXT_ALIGN_LEFT
-    )
-    if rc2 >= 0:
-        return
-    # insert_textbox devuelve <0 si no entró todo el texto
     lines: List[str] = []
     if "-" in text:
         i = text.index("-")
@@ -1505,13 +1501,12 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
     lines = [x for x in lines if x]
     if not lines:
         return
-    lh = min(fs2, max(6.5, h / max(len(lines), 1) * 0.85))
-    y = float(u.y0) + lh * 0.78
+    y = float(u.y0) + fs * 0.78
     for ln in lines:
         page.insert_text(
-            fitz.Point(float(u.x0), y), ln, fontsize=lh, fontname="helv", color=(0, 0, 0)
+            fitz.Point(float(u.x0), y), ln, fontsize=fs, fontname=fn, color=(0, 0, 0)
         )
-        y += lh * 1.18
+        y += fs * 1.2
 
 
 def _pdf_horiz_overlap(a: Any, b: Any) -> float:
@@ -1610,9 +1605,11 @@ def _pdf_insert_black_text(page: Any, rect: Any, text: str) -> None:
     import fitz  # pymupdf
 
     r = fitz.Rect(rect)
-    fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
+    fs = float(_PDF_PATCH_FONTSIZE)
     pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
-    page.insert_text(pt, text, fontsize=fs, color=(0, 0, 0))
+    page.insert_text(
+        pt, text, fontsize=fs, fontname=_PDF_PATCH_FONTNAME, color=(0, 0, 0)
+    )
 
 
 def _fmt_pdf_qty_for_insert(qty: float) -> str:
