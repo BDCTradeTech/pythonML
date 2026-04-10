@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import os
+import sys
 import secrets
 import socket
 import ssl
@@ -45,8 +46,8 @@ from nicegui import app, background_tasks, context, run, ui
 
 DB_PATH = Path(__file__).with_name("app.db")
 
-# Versión del sistema: actualizar manualmente (formato yymmddhh) cada vez que se modifica el código
-VERSION = "2.260316.15"
+# Versión del sistema: actualizar manualmente cada vez que se modifica el código
+VERSION = "2.26.04.10.11"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1170,12 +1171,13 @@ def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes]
         return None, str(e)
 
 
-def _first_invoice_line_description(inv_obj: Dict[str, Any]) -> str:
-    """Primera descripción de línea de venta (no subtotal), misma lógica que el detalle en UI."""
+def _all_invoice_line_descriptions(inv_obj: Dict[str, Any]) -> List[str]:
+    """Descripciones de cada línea de venta (orden API / factura), misma lógica que el detalle en UI."""
     lines = inv_obj.get("Line") or []
     if isinstance(lines, dict):
         lines = [lines]
     n = len(lines)
+    out: List[str] = []
     for idx, lin in enumerate(lines):
         sales = lin.get("SalesItemLineDetail") or {}
         if not isinstance(sales, dict):
@@ -1185,54 +1187,93 @@ def _first_invoice_line_description(inv_obj: Dict[str, Any]) -> str:
         desc = str(lin.get("Description") or name or "").strip()
         if idx == n - 1 and desc in ("-", "—", ""):
             continue
-        if desc and desc != "Total":
-            return desc
-    return ""
+        if not desc or desc == "Total":
+            continue
+        out.append(desc)
+    return out
+
+
+def _pdf_description_search_variants(old: str) -> List[str]:
+    variants: List[str] = []
+    seen: set[str] = set()
+    o = str(old).strip()
+    for v in (o, o[:80], o[:50], o[:30]):
+        v = (v or "").strip()
+        if len(v) >= 3 and v not in seen:
+            seen.add(v)
+            variants.append(v)
+    return variants
+
+
+def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
+    """Primera coincidencia en orden página, y0, x0 (lectura típica). Retorna (page_index, Rect) o None."""
+    import fitz  # pymupdf
+
+    best_key: Optional[tuple[int, float, float]] = None
+    best: Optional[tuple[int, Any]] = None
+    for pno in range(len(doc)):
+        page = doc[pno]
+        for variant in variants:
+            for r in page.search_for(variant):
+                rr = fitz.Rect(r)
+                key = (pno, rr.y0, rr.x0)
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = (pno, rr)
+    return best
 
 
 def patch_invoice_pdf_description(
     pdf_bytes: bytes,
     new_description: str,
-    old_description: str,
+    old_descriptions: List[str],
 ) -> tuple[Optional[bytes], Optional[str]]:
-    """Reemplaza en el PDF la primera ocurrencia del texto old_description por new_description (resto igual)."""
+    """Reemplaza en el PDF cada texto de old_descriptions (en orden) por new_description; el resto del PDF no cambia."""
     try:
         import fitz  # pymupdf
     except ImportError:
-        return None, "Falta pymupdf. Ejecutá: pip install pymupdf"
+        py = sys.executable or "python3"
+        return (
+            None,
+            f"Falta PyMuPDF. En el servidor: {py} -m pip install pymupdf "
+            "(o activá el venv del proyecto y: pip install -r requirements.txt)",
+        )
 
-    old = str(old_description).strip()
-    if not old or old in ("—", "-", "Total"):
-        return None, "No hay descripción de ítem para buscar en el PDF"
+    to_replace: List[str] = []
+    for old in old_descriptions:
+        o = str(old).strip()
+        if o and o not in ("—", "-", "Total"):
+            to_replace.append(o)
 
-    variants: List[str] = []
-    seen: set[str] = set()
-    for v in (old, old[:80], old[:50], old[:30]):
-        v = (v or "").strip()
-        if len(v) >= 3 and v not in seen:
-            seen.add(v)
-            variants.append(v)
+    if not to_replace:
+        return None, "No hay descripciones de ítem para buscar en el PDF"
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        replaced = False
-        for page in doc:
-            for variant in variants:
-                rects = page.search_for(variant)
-                if not rects:
-                    continue
-                r = fitz.Rect(rects[0])
-                page.add_redact_annot(r)
-                page.apply_redactions()
-                fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
-                pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
-                page.insert_text(pt, new_description, fontsize=fs, color=(0, 0, 0))
-                replaced = True
-                break
-            if replaced:
-                break
-        if not replaced:
-            return None, "No se encontró la descripción en el PDF (texto partido, plantilla distinta o escaneado)"
+        replaced_count = 0
+        missed: List[int] = []
+        for i, old in enumerate(to_replace):
+            variants = _pdf_description_search_variants(old)
+            found = _pdf_find_first_rect_global(doc, variants)
+            if not found:
+                missed.append(i + 1)
+                continue
+            pno, r = found
+            page = doc[pno]
+            page.add_redact_annot(r)
+            page.apply_redactions()
+            fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
+            pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
+            page.insert_text(pt, new_description, fontsize=fs, color=(0, 0, 0))
+            replaced_count += 1
+
+        if replaced_count == 0:
+            return None, "No se encontró ninguna descripción en el PDF (texto partido, plantilla distinta o escaneado)"
+        if missed:
+            return (
+                doc.tobytes(deflate=True),
+                f"Reemplazadas {replaced_count} de {len(to_replace)} líneas; no encontradas en PDF: ítems {', '.join(map(str, missed))}",
+            )
         return doc.tobytes(deflate=True), None
     finally:
         doc.close()
@@ -8332,7 +8373,7 @@ def build_tab_compras(container) -> None:
 
                         def _descargar_otra() -> None:
                             inv_obj = invoice_popup_ctx.get("inv_obj") or {}
-                            old_desc = _first_invoice_line_description(inv_obj)
+                            old_descs = _all_invoice_line_descriptions(inv_obj)
                             pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
                             if err:
                                 ui.notify(f"Error al descargar PDF: {err}", color="negative")
@@ -8341,9 +8382,9 @@ def build_tab_compras(container) -> None:
                                 ui.notify("No se pudo obtener el PDF", color="warning")
                                 return
                             patched, perr = patch_invoice_pdf_description(
-                                pdf_bytes, "Producto de prueba", old_desc
+                                pdf_bytes, "Producto de Prueba", old_descs
                             )
-                            if perr or not patched:
+                            if not patched:
                                 ui.notify(perr or "No se pudo modificar el PDF", color="negative")
                                 return
                             doc_num = inv.get("doc", "invoice")
@@ -8354,7 +8395,10 @@ def build_tab_compras(container) -> None:
                                 nombre = f"invoice_{doc_num}_otra.pdf"
                                 with dlg:
                                     ui.download(path, nombre)
-                                ui.notify("PDF modificado (descripción)", color="positive")
+                                if perr:
+                                    ui.notify(perr, color="warning")
+                                else:
+                                    ui.notify("PDF modificado (todas las descripciones)", color="positive")
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
@@ -12076,6 +12120,14 @@ def main() -> None:
     # Cargar .env desde el directorio del script (importante cuando se ejecuta como servicio o desde otro CWD)
     env_path = Path(__file__).parent / ".env"
     load_dotenv(env_path)
+    try:
+        import fitz  # noqa: F401  # pymupdf — Invoices «Otra»
+    except ImportError:
+        logging.warning(
+            "PyMuPDF no instalado (pip install pymupdf). Invoices → botón «Otra» no funcionará hasta instalarlo "
+            "en el mismo entorno que ejecuta esta app (p. ej. %s -m pip install pymupdf).",
+            sys.executable or "python3",
+        )
     init_db()
     _arreglar_storage_nicegui()
     port = int(os.getenv("PORT", 8083))
