@@ -1170,6 +1170,74 @@ def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes]
         return None, str(e)
 
 
+def _first_invoice_line_description(inv_obj: Dict[str, Any]) -> str:
+    """Primera descripción de línea de venta (no subtotal), misma lógica que el detalle en UI."""
+    lines = inv_obj.get("Line") or []
+    if isinstance(lines, dict):
+        lines = [lines]
+    n = len(lines)
+    for idx, lin in enumerate(lines):
+        sales = lin.get("SalesItemLineDetail") or {}
+        if not isinstance(sales, dict):
+            continue
+        ref = sales.get("ItemRef") or {}
+        name = ref.get("name", "") if isinstance(ref, dict) else ""
+        desc = str(lin.get("Description") or name or "").strip()
+        if idx == n - 1 and desc in ("-", "—", ""):
+            continue
+        if desc and desc != "Total":
+            return desc
+    return ""
+
+
+def patch_invoice_pdf_description(
+    pdf_bytes: bytes,
+    new_description: str,
+    old_description: str,
+) -> tuple[Optional[bytes], Optional[str]]:
+    """Reemplaza en el PDF la primera ocurrencia del texto old_description por new_description (resto igual)."""
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        return None, "Falta pymupdf. Ejecutá: pip install pymupdf"
+
+    old = str(old_description).strip()
+    if not old or old in ("—", "-", "Total"):
+        return None, "No hay descripción de ítem para buscar en el PDF"
+
+    variants: List[str] = []
+    seen: set[str] = set()
+    for v in (old, old[:80], old[:50], old[:30]):
+        v = (v or "").strip()
+        if len(v) >= 3 and v not in seen:
+            seen.add(v)
+            variants.append(v)
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        replaced = False
+        for page in doc:
+            for variant in variants:
+                rects = page.search_for(variant)
+                if not rects:
+                    continue
+                r = fitz.Rect(rects[0])
+                page.add_redact_annot(r)
+                page.apply_redactions()
+                fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
+                pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
+                page.insert_text(pt, new_description, fontsize=fs, color=(0, 0, 0))
+                replaced = True
+                break
+            if replaced:
+                break
+        if not replaced:
+            return None, "No se encontró la descripción en el PDF (texto partido, plantilla distinta o escaneado)"
+        return doc.tobytes(deflate=True), None
+    finally:
+        doc.close()
+
+
 def fetch_qb_invoices(user_id: int, customer_id: str) -> tuple[tuple[List[Dict[str, Any]], float], Optional[str]]:
     """Obtiene Invoices (facturas de venta) de un Customer. Retorna (invoices, overdue_total), err."""
     data, err = _qb_raw_query(
@@ -8139,6 +8207,7 @@ def build_tab_compras(container) -> None:
 
         def _mostrar_detalle_invoice(inv: Dict[str, Any]) -> None:
             """Abre un popup con el detalle de la factura, cargando desde QuickBooks."""
+            invoice_popup_ctx: Dict[str, Any] = {}
             dlg = ui.dialog()
             with dlg:
                 with ui.card().classes("p-6 min-w-[650px] max-w-[90vw] max-h-[70vh] overflow-hidden flex flex-col"):
@@ -8160,6 +8229,7 @@ def build_tab_compras(container) -> None:
                         ui.label(f"Error: {err}").classes("text-negative")
                     else:
                         inv_obj = detail or {}
+                        invoice_popup_ctx["inv_obj"] = inv_obj
                         def _fmt_dd_mm_aaaa(s: str) -> str:
                             if not s or len(str(s)) < 10:
                                 return str(s) if s else "—"
@@ -8260,8 +8330,37 @@ def build_tab_compras(container) -> None:
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
+                        def _descargar_otra() -> None:
+                            inv_obj = invoice_popup_ctx.get("inv_obj") or {}
+                            old_desc = _first_invoice_line_description(inv_obj)
+                            pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
+                            if err:
+                                ui.notify(f"Error al descargar PDF: {err}", color="negative")
+                                return
+                            if not pdf_bytes:
+                                ui.notify("No se pudo obtener el PDF", color="warning")
+                                return
+                            patched, perr = patch_invoice_pdf_description(
+                                pdf_bytes, "Producto de prueba", old_desc
+                            )
+                            if perr or not patched:
+                                ui.notify(perr or "No se pudo modificar el PDF", color="negative")
+                                return
+                            doc_num = inv.get("doc", "invoice")
+                            try:
+                                fd, path = tempfile.mkstemp(suffix=".pdf")
+                                os.write(fd, patched)
+                                os.close(fd)
+                                nombre = f"invoice_{doc_num}_otra.pdf"
+                                with dlg:
+                                    ui.download(path, nombre)
+                                ui.notify("PDF modificado (descripción)", color="positive")
+                            except Exception as ex:
+                                ui.notify(f"Error: {ex}", color="negative")
+
                         ui.button("Cerrar popup", on_click=dlg.close).props("dense no-caps")
                         ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
+                        ui.button("Otra", on_click=_descargar_otra, color="primary").props("dense no-caps")
 
             dlg.open()
             background_tasks.create(_cargar_y_mostrar(), name="invoice_detail")
