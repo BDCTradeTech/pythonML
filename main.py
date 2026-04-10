@@ -1277,19 +1277,56 @@ _PDF_ROW_Y_TOL = 5.0
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
     """Primera coincidencia en orden página, y0, x0 (lectura típica). Retorna (page_index, Rect) o None."""
+    return _pdf_find_first_rect_global_after_y(doc, variants, 0.0)
+
+
+def _pdf_find_first_rect_global_after_y(
+    doc: Any, variants: List[str], y_min: float
+) -> Optional[tuple[int, Any]]:
+    """Igual que global, pero solo textos con y0 >= y_min (evita repetir filas ya parcheadas)."""
     import fitz  # pymupdf
 
     best_key: Optional[tuple[int, float, float]] = None
     best: Optional[tuple[int, Any]] = None
+    floor = float(y_min)
     for pno in range(len(doc)):
         page = doc[pno]
         for variant in variants:
             for r in page.search_for(variant):
                 rr = fitz.Rect(r)
+                if float(rr.y0) < floor - 1.5:
+                    continue
                 key = (pno, rr.y0, rr.x0)
                 if best_key is None or key < best_key:
                     best_key = key
                     best = (pno, rr)
+    return best
+
+
+def _pdf_next_row_content_y_floor(page: Any, d_rect: Any, min_step: float = 12.0) -> Optional[float]:
+    """Menor y0 de texto en columna de descripción (x >= d.x0) por debajo de esta fila; separa filas del PDF."""
+    import fitz  # pymupdf
+
+    d = fitz.Rect(d_rect)
+    thresh = max(float(d.y0) + min_step, float(d.y1) - 2.0)
+    dd = page.get_text("dict")
+    best: Optional[float] = None
+    for block in dd.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                b = span.get("bbox")
+                if not b or len(b) < 4:
+                    continue
+                sy0 = float(b[1])
+                sx0 = float(b[0])
+                if sy0 <= thresh + 1.0:
+                    continue
+                if sx0 < float(d.x0) + 6.0:
+                    continue
+                if best is None or sy0 < best:
+                    best = sy0
     return best
 
 
@@ -1365,6 +1402,29 @@ def _pdf_sku_all_search_strings(aliases: List[str]) -> List[str]:
     return out
 
 
+def _pdf_cluster_sku_rects_one_row(found: List[Any], d_rect: Any) -> List[Any]:
+    """Mantiene solo fragmentos de la misma celda SKU (2 líneas), no la fila siguiente."""
+    import fitz  # pymupdf
+
+    if not found:
+        return []
+    d = fitz.Rect(d_rect)
+    rects = [fitz.Rect(x) for x in found]
+    left = [r for r in rects if r.x1 <= d.x0 + 16.0]
+    pool = left if left else rects
+    seed = min(pool, key=lambda r: (r.y0, r.x0))
+    out: List[Any] = []
+    for r in sorted(pool, key=lambda z: (z.y0, z.x0)):
+        if abs(float(r.x0) - float(seed.x0)) > 52.0:
+            continue
+        if float(r.y0) < float(seed.y0) - 5.0:
+            continue
+        if float(r.y0) > float(seed.y0) + 44.0:
+            continue
+        out.append(r)
+    return out if out else [seed]
+
+
 def _pdf_find_sku_column_union(
     page: Any,
     d_rect: Any,
@@ -1373,20 +1433,24 @@ def _pdf_find_sku_column_union(
     x_min: float = 0.0,
     x_max: Optional[float] = None,
 ) -> Optional[Any]:
-    """Une rectángulos de fragmentos del SKU en la misma columna (incl. varias líneas)."""
+    """Une rectángulos de fragmentos del SKU en la misma celda (varias líneas), sin invadir la fila de abajo."""
     import fitz  # pymupdf
 
     d = fitz.Rect(d_rect)
     right_lim = float(x_max) if x_max is not None else float(d.x0) + 28.0
-    y_lo = float(y_ref) - 10.0
-    y_hi = max(float(d.y1), float(y_ref)) + 32.0
+    y_lo = float(y_ref) - 9.0
+    next_line = _pdf_next_row_content_y_floor(page, d_rect)
+    y_hi = float(y_ref) + 52.0
+    if next_line is not None:
+        y_hi = min(y_hi, float(next_line) - 5.0)
+    y_hi = max(y_hi, float(y_ref) + 26.0)
     found: List[Any] = []
     for part in parts:
         if len(part) < 2:
             continue
         for r in page.search_for(part):
             rr = fitz.Rect(r)
-            if rr.y0 < y_lo or rr.y0 > y_hi:
+            if float(rr.y0) < y_lo or float(rr.y0) > y_hi:
                 continue
             if rr.x0 < x_min - 4:
                 continue
@@ -1397,14 +1461,7 @@ def _pdf_find_sku_column_union(
             found.append(rr)
     if not found:
         return None
-    anchor = min(float(fitz.Rect(x).x0) for x in found)
-    col = [
-        fitz.Rect(x)
-        for x in found
-        if abs(float(fitz.Rect(x).x0) - anchor) <= 55 and float(fitz.Rect(x).x1) <= right_lim + 10
-    ]
-    if not col:
-        col = [fitz.Rect(x) for x in found]
+    col = _pdf_cluster_sku_rects_one_row(found, d_rect)
     u: Any = col[0]
     for r in col[1:]:
         u |= r
@@ -1437,6 +1494,7 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
     )
     if rc2 >= 0:
         return
+    # insert_textbox devuelve <0 si no entró todo el texto
     lines: List[str] = []
     if "-" in text:
         i = text.index("-")
@@ -1593,10 +1651,11 @@ def patch_invoice_pdf_line_items(
         replaced_lines = 0
         missed_lines: List[int] = []
         line_warnings: List[str] = []
+        next_y_min = 0.0
 
         for line_idx, spec in enumerate(specs):
             d_variants = _pdf_description_search_variants(spec["description"])
-            found_d = _pdf_find_first_rect_global(doc, d_variants)
+            found_d = _pdf_find_first_rect_global_after_y(doc, d_variants, next_y_min)
             if not found_d:
                 missed_lines.append(line_idx + 1)
                 continue
@@ -1686,6 +1745,9 @@ def patch_invoice_pdf_line_items(
                     _pdf_insert_sku_in_union(page, fitz.Rect(rect), str(txt))
                 else:
                     _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
+
+            row_bottom = max(float(fitz.Rect(t[0]).y1) for t in fields)
+            next_y_min = max(next_y_min, row_bottom + 1.5)
 
             replaced_lines += 1
 
