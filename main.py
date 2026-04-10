@@ -1276,6 +1276,8 @@ _PDF_ROW_Y_TOL = 5.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
 _PDF_PATCH_FONTNAME = "helv"
 _PDF_PATCH_FONTSIZE = 9.5
+# SKU: correr el inicio a la izquierda (pt) para una sola línea con más aire
+_PDF_PATCH_SKU_SHIFT_LEFT = 14.0
 
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
@@ -1472,7 +1474,7 @@ def _pdf_find_sku_column_union(
 
 
 def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
-    """Redibuja el SKU completo; siempre _PDF_PATCH_FONTNAME / _PDF_PATCH_FONTSIZE (igual que el resto del parche)."""
+    """Redibuja el SKU en una sola línea; inicio desplazado a la izquierda respecto al rect unión."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -1481,32 +1483,17 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
         return
     fs = float(_PDF_PATCH_FONTSIZE)
     fn = _PDF_PATCH_FONTNAME
-    rc = page.insert_textbox(
-        u,
+    shift = float(_PDF_PATCH_SKU_SHIFT_LEFT)
+    margin_l = float(page.rect.x0) + 10.0
+    x_ins = max(margin_l, float(u.x0) - shift)
+    y_ins = float(u.y0) + fs * 0.78
+    page.insert_text(
+        fitz.Point(x_ins, y_ins),
         text,
         fontsize=fs,
         fontname=fn,
         color=(0, 0, 0),
-        align=fitz.TEXT_ALIGN_LEFT,
     )
-    if rc >= 0:
-        return
-    lines: List[str] = []
-    if "-" in text:
-        i = text.index("-")
-        lines = [text[: i + 1].strip(), text[i + 1 :].strip()]
-    else:
-        mid = max(2, len(text) // 2)
-        lines = [text[:mid].strip(), text[mid:].strip()]
-    lines = [x for x in lines if x]
-    if not lines:
-        return
-    y = float(u.y0) + fs * 0.78
-    for ln in lines:
-        page.insert_text(
-            fitz.Point(float(u.x0), y), ln, fontsize=fs, fontname=fn, color=(0, 0, 0)
-        )
-        y += fs * 1.2
 
 
 def _pdf_horiz_overlap(a: Any, b: Any) -> float:
