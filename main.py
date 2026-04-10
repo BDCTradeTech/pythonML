@@ -1171,25 +1171,47 @@ def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes]
         return None, str(e)
 
 
-def _all_invoice_line_descriptions(inv_obj: Dict[str, Any]) -> List[str]:
-    """Descripciones de cada línea de venta (orden API / factura), misma lógica que el detalle en UI."""
+def _invoice_line_patch_specs(inv_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Un dict por línea de venta: description, sku, qty, rate, amount (números en API)."""
     lines = inv_obj.get("Line") or []
     if isinstance(lines, dict):
         lines = [lines]
     n = len(lines)
-    out: List[str] = []
+    out: List[Dict[str, Any]] = []
     for idx, lin in enumerate(lines):
         sales = lin.get("SalesItemLineDetail") or {}
         if not isinstance(sales, dict):
             continue
         ref = sales.get("ItemRef") or {}
-        name = ref.get("name", "") if isinstance(ref, dict) else ""
+        name = str(ref.get("name", "") if isinstance(ref, dict) else "").strip()
         desc = str(lin.get("Description") or name or "").strip()
         if idx == n - 1 and desc in ("-", "—", ""):
             continue
         if not desc or desc == "Total":
             continue
-        out.append(desc)
+        sku = str(sales.get("Sku") or lin.get("Sku") or "").strip() or name
+        try:
+            qty = float(sales.get("Qty", 1) or 1)
+        except (TypeError, ValueError):
+            qty = 1.0
+        try:
+            amt = float(lin.get("Amount", 0) or 0)
+        except (TypeError, ValueError):
+            amt = 0.0
+        rate_val = sales.get("UnitPrice")
+        try:
+            rate = float(rate_val) if rate_val is not None else (amt / qty if qty else 0.0)
+        except (TypeError, ValueError):
+            rate = amt / qty if qty else 0.0
+        out.append(
+            {
+                "description": desc,
+                "sku": sku,
+                "qty": qty,
+                "rate": rate,
+                "amount": amt,
+            }
+        )
     return out
 
 
@@ -1203,6 +1225,9 @@ def _pdf_description_search_variants(old: str) -> List[str]:
             seen.add(v)
             variants.append(v)
     return variants
+
+
+_PDF_ROW_Y_TOL = 5.0
 
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
@@ -1223,12 +1248,116 @@ def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple
     return best
 
 
-def patch_invoice_pdf_description(
+def _sku_search_variants(sku: str) -> List[str]:
+    sku = str(sku).strip()
+    if not sku or len(sku) < 2:
+        return []
+    variants: List[str] = []
+    seen: set[str] = set()
+    for v in (sku, sku[:40], sku[:25]):
+        v = v.strip()
+        if len(v) >= 2 and v not in seen:
+            seen.add(v)
+            variants.append(v)
+    return variants
+
+
+def _numeric_search_variants(value: Any) -> List[str]:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        s = str(value).strip()
+        return [s] if len(s) >= 1 else []
+    out: List[str] = []
+    seen: set[str] = set()
+
+    def add(x: str) -> None:
+        x = x.strip()
+        if x and x not in seen:
+            seen.add(x)
+            out.append(x)
+
+    add(f"{f:.2f}")
+    add(f"{f:.1f}")
+    if abs(f - int(f)) < 1e-9:
+        add(str(int(round(f))))
+        add(f"{int(round(f))}.00")
+        add(f"{int(round(f))}.0")
+    add(f"{f:g}")
+    add(f"{f:,.2f}")
+    add(f"{f:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    if abs(f) >= 1000:
+        add(f"{int(round(f)):,}")
+    return out
+
+
+def _pdf_find_rect_row_after(
+    page: Any, y_ref: float, variants: List[str], x_min: float
+) -> Optional[Any]:
+    """Primera coincidencia en la fila y_ref con x0 >= x_min (columnas a la derecha)."""
+    import fitz  # pymupdf
+
+    best: Optional[Any] = None
+    best_x: Optional[float] = None
+    for variant in variants:
+        for r in page.search_for(variant):
+            rr = fitz.Rect(r)
+            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
+                continue
+            if rr.x0 < x_min - 2:
+                continue
+            if best is None or rr.x0 < best_x:  # type: ignore[operator]
+                best = rr
+                best_x = rr.x0
+    return best
+
+
+def _pdf_find_rect_row_before(
+    page: Any, y_ref: float, variants: List[str], x_max: float
+) -> Optional[Any]:
+    """Última coincidencia a la izquierda de x_max en la misma fila (p. ej. SKU)."""
+    import fitz  # pymupdf
+
+    best: Optional[Any] = None
+    best_x: Optional[float] = None
+    for variant in variants:
+        for r in page.search_for(variant):
+            rr = fitz.Rect(r)
+            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
+                continue
+            if rr.x1 > x_max + 2:
+                continue
+            if best is None or rr.x0 > best_x:  # type: ignore[operator]
+                best = rr
+                best_x = rr.x0
+    return best
+
+
+def _pdf_insert_black_text(page: Any, rect: Any, text: str) -> None:
+    import fitz  # pymupdf
+
+    r = fitz.Rect(rect)
+    fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
+    pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
+    page.insert_text(pt, text, fontsize=fs, color=(0, 0, 0))
+
+
+def _fmt_pdf_qty_for_insert(qty: float) -> str:
+    if abs(qty - int(qty)) < 1e-6:
+        return str(int(round(qty)))
+    return f"{qty:.2f}"
+
+
+def _fmt_pdf_money_for_insert(x: float) -> str:
+    return f"{float(x):,.2f}"
+
+
+def patch_invoice_pdf_line_items(
     pdf_bytes: bytes,
-    new_description: str,
-    old_descriptions: List[str],
+    inv_obj: Dict[str, Any],
+    new_description: str = "Producto de Prueba",
 ) -> tuple[Optional[bytes], Optional[str]]:
-    """Reemplaza en el PDF cada texto de old_descriptions (en orden) por new_description; el resto del PDF no cambia."""
+    """Por cada línea de venta: descripción -> new_description; SKU, qty, rate y amount se redibujan con el mismo valor (tipografía unificada)."""
     try:
         import fitz  # pymupdf
     except ImportError:
@@ -1239,42 +1368,93 @@ def patch_invoice_pdf_description(
             "(o activá el venv del proyecto y: pip install -r requirements.txt)",
         )
 
-    to_replace: List[str] = []
-    for old in old_descriptions:
-        o = str(old).strip()
-        if o and o not in ("—", "-", "Total"):
-            to_replace.append(o)
-
-    if not to_replace:
-        return None, "No hay descripciones de ítem para buscar en el PDF"
+    specs = _invoice_line_patch_specs(inv_obj)
+    if not specs:
+        return None, "No hay líneas de ítem para parchear en el PDF"
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        replaced_count = 0
-        missed: List[int] = []
-        for i, old in enumerate(to_replace):
-            variants = _pdf_description_search_variants(old)
-            found = _pdf_find_first_rect_global(doc, variants)
-            if not found:
-                missed.append(i + 1)
-                continue
-            pno, r = found
-            page = doc[pno]
-            page.add_redact_annot(r)
-            page.apply_redactions()
-            fs = max(7.0, min(11.0, (r.y1 - r.y0) * 0.75))
-            pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
-            page.insert_text(pt, new_description, fontsize=fs, color=(0, 0, 0))
-            replaced_count += 1
+        replaced_lines = 0
+        missed_lines: List[int] = []
+        line_warnings: List[str] = []
 
-        if replaced_count == 0:
-            return None, "No se encontró ninguna descripción en el PDF (texto partido, plantilla distinta o escaneado)"
-        if missed:
-            return (
-                doc.tobytes(deflate=True),
-                f"Reemplazadas {replaced_count} de {len(to_replace)} líneas; no encontradas en PDF: ítems {', '.join(map(str, missed))}",
+        for line_idx, spec in enumerate(specs):
+            d_variants = _pdf_description_search_variants(spec["description"])
+            found_d = _pdf_find_first_rect_global(doc, d_variants)
+            if not found_d:
+                missed_lines.append(line_idx + 1)
+                continue
+
+            pno, d_rect = found_d
+            page = doc[pno]
+            y_ref = float(d_rect.y0)
+            fields: List[tuple[Any, str]] = []
+
+            sku_val = str(spec.get("sku") or "").strip()
+            if sku_val and sku_val != str(spec["description"]).strip():
+                sv = _sku_search_variants(sku_val)
+                if sv:
+                    s_rect = _pdf_find_rect_row_before(page, y_ref, sv, d_rect.x0 - 3)
+                    if s_rect:
+                        fields.append((s_rect, sku_val))
+                    else:
+                        line_warnings.append(f"línea {line_idx + 1} SKU")
+
+            fields.append((d_rect, new_description))
+
+            x_after = float(d_rect.x1) - 2
+            qty_rect = _pdf_find_rect_row_after(
+                page, y_ref, _numeric_search_variants(spec["qty"]), x_after
             )
-        return doc.tobytes(deflate=True), None
+            qty_ins = _fmt_pdf_qty_for_insert(float(spec["qty"]))
+            if qty_rect:
+                fields.append((qty_rect, qty_ins))
+                x_after = float(qty_rect.x1) - 1
+            else:
+                line_warnings.append(f"línea {line_idx + 1} qty")
+
+            rate_rect = _pdf_find_rect_row_after(
+                page, y_ref, _numeric_search_variants(spec["rate"]), x_after
+            )
+            rate_ins = _fmt_pdf_money_for_insert(float(spec["rate"]))
+            if rate_rect:
+                fields.append((rate_rect, rate_ins))
+                x_after = float(rate_rect.x1) - 1
+            else:
+                line_warnings.append(f"línea {line_idx + 1} rate")
+
+            amt_rect = _pdf_find_rect_row_after(
+                page, y_ref, _numeric_search_variants(spec["amount"]), x_after
+            )
+            amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
+            if amt_rect:
+                fields.append((amt_rect, amt_ins))
+            else:
+                line_warnings.append(f"línea {line_idx + 1} amount")
+
+            by_x = sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0), reverse=True)
+            for rect, _txt in by_x:
+                page.add_redact_annot(fitz.Rect(rect))
+            page.apply_redactions()
+
+            for rect, txt in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
+                _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
+
+            replaced_lines += 1
+
+        if replaced_lines == 0:
+            return None, "No se encontró ninguna descripción en el PDF (texto partido, plantilla distinta o escaneado)"
+        warn_parts: List[str] = []
+        if missed_lines:
+            warn_parts.append(
+                f"Sin fila completa: ítems {', '.join(map(str, missed_lines))}"
+            )
+        if line_warnings:
+            warn_parts.append("Campos no encontrados: " + ", ".join(line_warnings[:12]))
+            if len(line_warnings) > 12:
+                warn_parts[-1] += "…"
+        msg = "; ".join(warn_parts) if warn_parts else None
+        return doc.tobytes(deflate=True), msg
     finally:
         doc.close()
 
@@ -8373,7 +8553,6 @@ def build_tab_compras(container) -> None:
 
                         def _descargar_otra() -> None:
                             inv_obj = invoice_popup_ctx.get("inv_obj") or {}
-                            old_descs = _all_invoice_line_descriptions(inv_obj)
                             pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
                             if err:
                                 ui.notify(f"Error al descargar PDF: {err}", color="negative")
@@ -8381,8 +8560,8 @@ def build_tab_compras(container) -> None:
                             if not pdf_bytes:
                                 ui.notify("No se pudo obtener el PDF", color="warning")
                                 return
-                            patched, perr = patch_invoice_pdf_description(
-                                pdf_bytes, "Producto de Prueba", old_descs
+                            patched, perr = patch_invoice_pdf_line_items(
+                                pdf_bytes, inv_obj, "Producto de Prueba"
                             )
                             if not patched:
                                 ui.notify(perr or "No se pudo modificar el PDF", color="negative")
