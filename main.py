@@ -1171,8 +1171,34 @@ def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes]
         return None, str(e)
 
 
-def _invoice_line_patch_specs(inv_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
+def fetch_qb_item_by_id(user_id: int, item_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Obtiene un Item por Id (para leer Sku como en el PDF)."""
+    item_id = str(item_id or "").strip()
+    if not item_id:
+        return None, "Sin item id"
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens or not qb_tokens.get("realm_id"):
+        return None, "Sin tokens o realm_id"
+    base_url = "https://quickbooks.api.intuit.com"
+    realm_id = qb_tokens["realm_id"]
+    access_token = qb_tokens["access_token"]
+    url = f"{base_url}/v3/company/{realm_id}/item/{item_id}"
+    try:
+        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        return data.get("Item") or data.get("item"), None
+    except Exception as e:
+        return None, str(e)
+
+
+def _invoice_line_patch_specs(
+    inv_obj: Dict[str, Any],
+    user_id: Optional[int] = None,
+    item_detail_cache: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
     """Un dict por línea de venta: description, sku, qty, rate, amount (números en API)."""
+    item_cache: Dict[str, Dict[str, Any]] = item_detail_cache if item_detail_cache is not None else {}
     lines = inv_obj.get("Line") or []
     if isinstance(lines, dict):
         lines = [lines]
@@ -1184,12 +1210,30 @@ def _invoice_line_patch_specs(inv_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
             continue
         ref = sales.get("ItemRef") or {}
         name = str(ref.get("name", "") if isinstance(ref, dict) else "").strip()
+        item_id = str(ref.get("value", "") if isinstance(ref, dict) else "").strip()
         desc = str(lin.get("Description") or name or "").strip()
         if idx == n - 1 and desc in ("-", "—", ""):
             continue
         if not desc or desc == "Total":
             continue
-        sku = str(sales.get("Sku") or lin.get("Sku") or "").strip() or name
+        from_line = str(sales.get("Sku") or lin.get("Sku") or "").strip()
+        item_row: Dict[str, Any] = {}
+        if user_id and item_id:
+            if item_id not in item_cache:
+                got, _err = fetch_qb_item_by_id(user_id, item_id)
+                item_cache[item_id] = got if isinstance(got, dict) else {}
+            item_row = item_cache[item_id]
+        from_item = str(item_row.get("Sku") or "").strip()
+        sku_aliases: List[str] = []
+        for s in (from_line, from_item, name):
+            ss = str(s).strip()
+            if ss and ss not in sku_aliases:
+                sku_aliases.append(ss)
+        for key in ("Sku", "Name", "FullyQualifiedName"):
+            ss = str(item_row.get(key) or "").strip()
+            if ss and ss not in sku_aliases:
+                sku_aliases.append(ss)
+        sku = sku_aliases[0] if sku_aliases else ""
         try:
             qty = float(sales.get("Qty", 1) or 1)
         except (TypeError, ValueError):
@@ -1207,6 +1251,7 @@ def _invoice_line_patch_specs(inv_obj: Dict[str, Any]) -> List[Dict[str, Any]]:
             {
                 "description": desc,
                 "sku": sku,
+                "sku_aliases": sku_aliases,
                 "qty": qty,
                 "rate": rate,
                 "amount": amt,
@@ -1250,16 +1295,100 @@ def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple
 
 def _sku_search_variants(sku: str) -> List[str]:
     sku = str(sku).strip()
-    if not sku or len(sku) < 2:
+    if not sku:
         return []
+    min_len = 1 if len(sku) == 1 else 2
     variants: List[str] = []
     seen: set[str] = set()
     for v in (sku, sku[:40], sku[:25]):
         v = v.strip()
-        if len(v) >= 2 and v not in seen:
+        if len(v) >= min_len and v not in seen:
             seen.add(v)
             variants.append(v)
     return variants
+
+
+def _pdf_sku_variants_from_aliases(aliases: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for a in aliases:
+        for v in _sku_search_variants(str(a).strip()):
+            if v not in seen:
+                seen.add(v)
+                out.append(v)
+    return out
+
+
+def _pdf_horiz_overlap(a: Any, b: Any) -> float:
+    import fitz  # pymupdf
+
+    aa = fitz.Rect(a)
+    bb = fitz.Rect(b)
+    return float(max(0.0, min(aa.x1, bb.x1) - max(aa.x0, bb.x0)))
+
+
+def _pdf_rect_matches_description_block(rr: Any, d_rect: Any) -> bool:
+    """Evita confundir el bloque de descripción con la celda SKU (mismo texto)."""
+    import fitz  # pymupdf
+
+    r = fitz.Rect(rr)
+    d = fitz.Rect(d_rect)
+    w = float(r.width)
+    if w < 1.0:
+        return False
+    ov = _pdf_horiz_overlap(r, d)
+    return ov > 0.82 * w and abs(r.y0 - d.y0) <= 2.5
+
+
+def _pdf_pick_sku_rect(page: Any, y_ref: float, variants: List[str], d_rect: Any) -> Optional[Any]:
+    """Elige la celda SKU en la fila: prioridad a la izquierda de la descripción."""
+    import fitz  # pymupdf
+
+    d = fitz.Rect(d_rect)
+    candidates: List[Any] = []
+    for variant in variants:
+        if not variant:
+            continue
+        for r in page.search_for(variant):
+            rr = fitz.Rect(r)
+            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
+                continue
+            if _pdf_rect_matches_description_block(rr, d):
+                continue
+            candidates.append(rr)
+    if not candidates:
+        return None
+    left_col = [c for c in candidates if fitz.Rect(c).x1 <= d.x0 + 4]
+    if left_col:
+        return max(left_col, key=lambda c: fitz.Rect(c).x0)
+    mid = (d.x0 + d.x1) / 2
+    left_half = [c for c in candidates if fitz.Rect(c).x1 <= mid + 6]
+    if left_half:
+        return max(left_half, key=lambda c: fitz.Rect(c).x0)
+    return min(candidates, key=lambda c: fitz.Rect(c).x0)
+
+
+def _pdf_find_rect_row_between(
+    page: Any, y_ref: float, variants: List[str], x_lo: float, x_hi: float
+) -> Optional[Any]:
+    """Coincidencia en la fila entre x_lo y x_hi (p. ej. SKU entre descripción y cantidad)."""
+    import fitz  # pymupdf
+
+    best: Optional[Any] = None
+    best_x: Optional[float] = None
+    for variant in variants:
+        for r in page.search_for(variant):
+            rr = fitz.Rect(r)
+            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
+                continue
+            if rr.x1 < x_lo - 2:
+                continue
+            if rr.x0 > x_hi + 2:
+                continue
+            if best is None or rr.x0 < best_x:  # type: ignore[operator]
+                best = rr
+                best_x = rr.x0
+    return best
 
 
 def _numeric_search_variants(value: Any) -> List[str]:
@@ -1356,6 +1485,7 @@ def patch_invoice_pdf_line_items(
     pdf_bytes: bytes,
     inv_obj: Dict[str, Any],
     new_description: str = "Producto de Prueba",
+    user_id: Optional[int] = None,
 ) -> tuple[Optional[bytes], Optional[str]]:
     """Por cada línea de venta: descripción -> new_description; SKU, qty, rate y amount se redibujan con el mismo valor (tipografía unificada)."""
     try:
@@ -1368,7 +1498,7 @@ def patch_invoice_pdf_line_items(
             "(o activá el venv del proyecto y: pip install -r requirements.txt)",
         )
 
-    specs = _invoice_line_patch_specs(inv_obj)
+    specs = _invoice_line_patch_specs(inv_obj, user_id, {})
     if not specs:
         return None, "No hay líneas de ítem para parchear en el PDF"
 
@@ -1391,14 +1521,13 @@ def patch_invoice_pdf_line_items(
             fields: List[tuple[Any, str]] = []
 
             sku_val = str(spec.get("sku") or "").strip()
-            if sku_val and sku_val != str(spec["description"]).strip():
-                sv = _sku_search_variants(sku_val)
-                if sv:
-                    s_rect = _pdf_find_rect_row_before(page, y_ref, sv, d_rect.x0 - 3)
-                    if s_rect:
-                        fields.append((s_rect, sku_val))
-                    else:
-                        line_warnings.append(f"línea {line_idx + 1} SKU")
+            aliases = list(spec.get("sku_aliases") or [])
+            if not aliases and sku_val:
+                aliases = [sku_val]
+            sv = _pdf_sku_variants_from_aliases(aliases)
+            s_rect: Optional[Any] = None
+            if sv:
+                s_rect = _pdf_pick_sku_rect(page, y_ref, sv, d_rect)
 
             fields.append((d_rect, new_description))
 
@@ -1406,6 +1535,25 @@ def patch_invoice_pdf_line_items(
             qty_rect = _pdf_find_rect_row_after(
                 page, y_ref, _numeric_search_variants(spec["qty"]), x_after
             )
+
+            if not s_rect and sv:
+                if qty_rect:
+                    s_rect = _pdf_find_rect_row_between(
+                        page,
+                        y_ref,
+                        sv,
+                        float(fitz.Rect(d_rect).x1) - 4,
+                        float(fitz.Rect(qty_rect).x0) + 4,
+                    )
+                if not s_rect:
+                    s_rect = _pdf_find_rect_row_before(page, y_ref, sv, fitz.Rect(d_rect).x0 - 1)
+
+            insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
+            if sv and insert_sku:
+                if s_rect:
+                    fields.insert(0, (s_rect, insert_sku))
+                else:
+                    line_warnings.append(f"línea {line_idx + 1} SKU")
             qty_ins = _fmt_pdf_qty_for_insert(float(spec["qty"]))
             if qty_rect:
                 fields.append((qty_rect, qty_ins))
@@ -8561,7 +8709,10 @@ def build_tab_compras(container) -> None:
                                 ui.notify("No se pudo obtener el PDF", color="warning")
                                 return
                             patched, perr = patch_invoice_pdf_line_items(
-                                pdf_bytes, inv_obj, "Producto de Prueba"
+                                pdf_bytes,
+                                inv_obj,
+                                "Producto de Prueba",
+                                user_id=user["id"],
                             )
                             if not patched:
                                 ui.notify(perr or "No se pudo modificar el PDF", color="negative")
