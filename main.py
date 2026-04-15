@@ -8750,6 +8750,11 @@ def build_tab_compras(container) -> None:
             n = (nombre or "").strip()
             if not n:
                 return "#4b5563"
+            key = n.lower()
+            if key == "sixtar":
+                return "#ea580c"  # naranja
+            if key == "lhs":
+                return "#38bdf8"  # celeste
             return _desp_hex_palette[sum(ord(c) for c in n) % len(_desp_hex_palette)]
 
         def _norm_factura_courier(v: Any) -> str:
