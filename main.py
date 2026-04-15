@@ -8732,34 +8732,47 @@ def build_tab_compras(container) -> None:
         filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
         filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
         filtro_courier_ref: Dict[str, str] = {"val": "Todas"}
-        _desp_color_palette = [
-            "text-blue-700",
-            "text-purple-700",
-            "text-amber-700",
-            "text-cyan-700",
-            "text-fuchsia-700",
-            "text-indigo-700",
-            "text-orange-700",
-            "text-sky-700",
-            "text-violet-700",
-            "text-pink-700",
+        invoice_bdc_qsel_css_done: Dict[str, bool] = {"done": False}
+        _desp_hex_palette = [
+            "#1d4ed8",
+            "#7e22ce",
+            "#b45309",
+            "#0e7490",
+            "#a21caf",
+            "#4338ca",
+            "#c2410c",
+            "#0369a1",
+            "#6d28d9",
+            "#be185d",
         ]
 
-        def _color_despachante(nombre: str) -> str:
+        def _color_despachante_hex(nombre: str) -> str:
             n = (nombre or "").strip()
             if not n:
-                return "text-gray-600"
-            return _desp_color_palette[sum(ord(c) for c in n) % len(_desp_color_palette)]
+                return "#4b5563"
+            return _desp_hex_palette[sum(ord(c) for c in n) % len(_desp_hex_palette)]
 
         def _norm_factura_courier(v: Any) -> str:
             s = str(v or "").strip().lower()
             return "Pagada" if s == "pagada" else "Impaga"
 
-        def _classes_factura_courier_sel(val: Any) -> str:
-            return (
-                "w-36 text-green-600 font-semibold"
-                if _norm_factura_courier(val) == "Pagada"
-                else "w-36 text-red-600 font-semibold"
+        def _hex_factura_courier(val: Any) -> str:
+            return "#16a34a" if _norm_factura_courier(val) == "Pagada" else "#dc2626"
+
+        def _ensure_invoice_bdc_qsel_css() -> None:
+            if invoice_bdc_qsel_css_done["done"]:
+                return
+            invoice_bdc_qsel_css_done["done"] = True
+            ui.add_head_html(
+                """
+<style>
+.invoice-bdc-qsel .q-field__native,
+.invoice-bdc-qsel .q-field__native span {
+  color: var(--qsel-color, #374151) !important;
+  font-weight: 600;
+}
+</style>
+"""
             )
 
         def _fmt_fecha(s: str) -> str:
@@ -9207,6 +9220,8 @@ def build_tab_compras(container) -> None:
                 ui.button("Imprimir invoices", on_click=_imprimir_invoices_async, color="primary").props("dense no-caps icon=print").classes("ml-4")
 
             with result_area:
+                _ensure_invoice_bdc_qsel_css()
+
                 def _on_sort(c: str) -> None:
                     if sort_col_compras.get("val") == c:
                         sort_asc_compras["val"] = not sort_asc_compras.get("val", False)
@@ -9224,18 +9239,14 @@ def build_tab_compras(container) -> None:
                         inv[k] = str(v) if v is not None else ""
                     ui.notify("Guardado", color="positive")
 
-                def _apply_desp_color(sel: Any, nombre: str) -> None:
-                    c = _color_despachante(nombre or "")
-                    sel.classes(replace=f"w-40 {c}")
-
-                def _on_desp_change(e: Any, inv: Dict[str, Any]) -> None:
+                def _on_desp_change(e: Any, inv: Dict[str, Any], wrap: Any) -> None:
                     _save_inv_extra(inv, despachante=e.value or "")
-                    _apply_desp_color(e.sender, e.value or "")
+                    wrap.style(f"--qsel-color: {_color_despachante_hex(e.value or '')}")
 
-                def _on_fc_change(e: Any, inv: Dict[str, Any]) -> None:
+                def _on_fc_change(e: Any, inv: Dict[str, Any], wrap: Any) -> None:
                     v = _norm_factura_courier(e.value)
                     _save_inv_extra(inv, factura_courier=v)
-                    e.sender.classes(replace=_classes_factura_courier_sel(v))
+                    wrap.style(f"--qsel-color: {_hex_factura_courier(v)}")
 
                 if not invs_sorted:
                     ui.label("No hay facturas." if not invs else "No hay facturas con ese Status.").classes("text-gray-500")
@@ -9301,12 +9312,17 @@ def build_tab_compras(container) -> None:
                                             desp_actual = inv.get("despachante", "") or ""
                                             if desp_actual and desp_actual not in desp_opts:
                                                 desp_opts[desp_actual] = desp_actual
-                                            sd = ui.select(
-                                                desp_opts,
-                                                value=desp_actual or None,
-                                                on_change=lambda e, inv=inv: _on_desp_change(e, inv),
-                                            ).props("dense")
-                                            _apply_desp_color(sd, desp_actual)
+                                            desp_wrap = (
+                                                ui.element("div")
+                                                .classes("invoice-bdc-qsel w-40")
+                                                .style(f"--qsel-color: {_color_despachante_hex(desp_actual)}")
+                                            )
+                                            with desp_wrap:
+                                                ui.select(
+                                                    desp_opts,
+                                                    value=desp_actual or None,
+                                                    on_change=lambda e, inv=inv, w=desp_wrap: _on_desp_change(e, inv, w),
+                                                ).classes("w-full min-w-0").props("dense outlined")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             def _fmt_importe_factura(val):
                                                 if not val:
@@ -9329,31 +9345,43 @@ def build_tab_compras(container) -> None:
                                             inp_imp.on("keydown.enter", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             fc_disp = _norm_factura_courier(inv.get("factura_courier"))
-                                            ui.select(
-                                                {"Impaga": "Impaga", "Pagada": "Pagada"},
-                                                value=fc_disp,
-                                                on_change=lambda e, inv=inv: _on_fc_change(e, inv),
-                                            ).classes(_classes_factura_courier_sel(fc_disp)).props("dense")
+                                            fc_wrap = (
+                                                ui.element("div")
+                                                .classes("invoice-bdc-qsel w-36")
+                                                .style(f"--qsel-color: {_hex_factura_courier(fc_disp)}")
+                                            )
+                                            with fc_wrap:
+                                                ui.select(
+                                                    {"Impaga": "Impaga", "Pagada": "Pagada"},
+                                                    value=fc_disp,
+                                                    on_change=lambda e, inv=inv, w=fc_wrap: _on_fc_change(e, inv, w),
+                                                ).classes("w-full min-w-0").props("dense outlined")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             def _fmt_pa(val):
                                                 if not val:
                                                     return ""
                                                 try:
-                                                    s = str(val).replace(" ", "")
+                                                    s = str(val).replace(" ", "").strip()
+                                                    if s.lower().startswith("u$"):
+                                                        s = s[2:].strip()
                                                     if "," in s:
                                                         s = s.replace(".", "").replace(",", ".")
                                                     n = float(s)
                                                     return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                 except (ValueError, TypeError):
-                                                    return str(val)
+                                                    u = str(val).replace(" ", "").strip()
+                                                    if u.lower().startswith("u$"):
+                                                        u = u[2:].strip()
+                                                    return u
                                             def _parse_pa(s):
                                                 if not s:
                                                     return ""
-                                                return str(s).replace(".", "").replace(",", ".").strip()
+                                                t = str(s).replace(" ", "").strip()
+                                                if t.lower().startswith("u$"):
+                                                    t = t[2:].strip()
+                                                return t.replace(".", "").replace(",", ".").strip()
                                             _pa_val = _fmt_pa(inv.get("pa", ""))
-                                            with ui.row().classes("items-center justify-center gap-0.5"):
-                                                ui.label("u$").classes("text-gray-600 text-sm")
-                                                inp_pa = ui.input(value=_pa_val, placeholder="u$").classes("w-24").props("dense")
+                                            inp_pa = ui.input(value=_pa_val).classes("w-32").props('dense outlined prefix="u$"')
                                             inp_pa.on("blur", lambda evt, inv=inv, inp=inp_pa: _save_inv_extra(inv, pa=_parse_pa(inp.value)))
                                             inp_pa.on("keydown.enter", lambda evt, inv=inv, inp=inp_pa: _save_inv_extra(inv, pa=_parse_pa(inp.value)))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
