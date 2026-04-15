@@ -482,6 +482,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN despachante TEXT")
     if "pa" not in inv_extra_cols:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN pa TEXT")
+    if "factura_courier" not in inv_extra_cols:
+        cur.execute("ALTER TABLE invoice_extra ADD COLUMN factura_courier TEXT")
 
     # Migración: dar permisos por defecto a usuarios existentes (admin solo para user_id=1)
     cur.execute("SELECT id FROM users ORDER BY id")
@@ -2267,7 +2269,7 @@ def delete_despachante(despachante_id: int) -> Optional[str]:
 
 
 def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, pa, estado, despachante}}."""
+    """Obtiene los datos extra de invoice_extra para una lista de qb_invoice_id. Retorna {qb_invoice_id: {courier, guia, importe_factura, pa, estado, despachante, factura_courier}}."""
     if not qb_invoice_ids:
         return {}
     conn = get_connection()
@@ -2275,7 +2277,7 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
         cur = conn.cursor()
         placeholders = ",".join("?" * len(qb_invoice_ids))
         cur.execute(
-            f"SELECT qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
+            f"SELECT qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante, factura_courier FROM invoice_extra WHERE user_id = ? AND qb_invoice_id IN ({placeholders})",
             [user_id] + list(qb_invoice_ids),
         )
         return {str(r["qb_invoice_id"]): dict(r) for r in cur.fetchall()}
@@ -2285,21 +2287,37 @@ def get_invoice_extras(user_id: int, qb_invoice_ids: List[str]) -> Dict[str, Dic
 
 def upsert_invoice_extra(user_id: int, qb_invoice_id: str, **kwargs) -> None:
     """Inserta o actualiza fila en invoice_extra. Merge con valores actuales para actualizaciones parciales."""
-    allowed = {"courier", "guia", "importe_factura", "pa", "estado", "despachante"}
+    allowed = {"courier", "guia", "importe_factura", "pa", "estado", "despachante", "factura_courier"}
     kv = {k: str(v or "") if v is not None else "" for k, v in kwargs.items() if k in allowed}
     if not kv:
         return
     extras = get_invoice_extras(user_id, [qb_invoice_id])
     current = extras.get(qb_invoice_id, {})
-    merged = {**{k: (current.get(k) or "") for k in allowed}, **kv}
+    merged: Dict[str, str] = {}
+    for k in allowed:
+        if k == "factura_courier":
+            merged[k] = str(current.get(k) or "Impaga")
+        else:
+            merged[k] = str(current.get(k) or "")
+    merged.update(kv)
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, pa=excluded.pa, estado=excluded.estado, despachante=excluded.despachante""",
-            (user_id, qb_invoice_id, merged["courier"], merged["guia"], merged["importe_factura"], merged["pa"], merged["estado"], merged["despachante"]),
+            """INSERT INTO invoice_extra (user_id, qb_invoice_id, courier, guia, importe_factura, pa, estado, despachante, factura_courier)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(user_id, qb_invoice_id) DO UPDATE SET courier=excluded.courier, guia=excluded.guia, importe_factura=excluded.importe_factura, pa=excluded.pa, estado=excluded.estado, despachante=excluded.despachante, factura_courier=excluded.factura_courier""",
+            (
+                user_id,
+                qb_invoice_id,
+                merged["courier"],
+                merged["guia"],
+                merged["importe_factura"],
+                merged["pa"],
+                merged["estado"],
+                merged["despachante"],
+                merged["factura_courier"],
+            ),
         )
         conn.commit()
     finally:
@@ -8711,6 +8729,38 @@ def build_tab_compras(container) -> None:
         header_data_ref: Dict[str, Any] = {}
         sort_col_compras: Dict[str, str] = {"val": "txn_date"}
         sort_asc_compras: Dict[str, bool] = {"val": False}
+        filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
+        filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
+        filtro_courier_ref: Dict[str, str] = {"val": "Todas"}
+        _desp_color_palette = [
+            "text-blue-700",
+            "text-purple-700",
+            "text-amber-700",
+            "text-cyan-700",
+            "text-fuchsia-700",
+            "text-indigo-700",
+            "text-orange-700",
+            "text-sky-700",
+            "text-violet-700",
+            "text-pink-700",
+        ]
+
+        def _color_despachante(nombre: str) -> str:
+            n = (nombre or "").strip()
+            if not n:
+                return "text-gray-600"
+            return _desp_color_palette[sum(ord(c) for c in n) % len(_desp_color_palette)]
+
+        def _norm_factura_courier(v: Any) -> str:
+            s = str(v or "").strip().lower()
+            return "Pagada" if s == "pagada" else "Impaga"
+
+        def _classes_factura_courier_sel(val: Any) -> str:
+            return (
+                "w-36 text-green-600 font-semibold"
+                if _norm_factura_courier(val) == "Pagada"
+                else "w-36 text-red-600 font-semibold"
+            )
 
         def _fmt_fecha(s: str) -> str:
             """Convierte YYYY-MM-DD a dd-mm-yyyy."""
@@ -8895,10 +8945,27 @@ def build_tab_compras(container) -> None:
                     invs = [i for i in invs if (i.get("status") or "").lower() == filtro_val.lower()]
                 if filtro_estado_ref.get("val", "Todos") != "Todos":
                     invs = [i for i in invs if (i.get("estado") or "En USA") == filtro_estado_ref["val"]]
+                fc_filt = filtro_courier_ref.get("val", "Todas")
+                if fc_filt == "Pagas":
+                    invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Pagada"]
+                elif fc_filt == "Impagas":
+                    invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Impaga"]
                 sc = sort_col_compras.get("val", "txn_date")
                 asc = sort_asc_compras.get("val", False)
 
                 def _sk(x: Dict, col: str):
+                    if col == "importe_factura":
+                        s = str(x.get("importe_factura") or "").replace(" ", "").lstrip("$").strip()
+                        if not s:
+                            return 0.0
+                        try:
+                            if "," in s:
+                                s = s.replace(".", "").replace(",", ".")
+                            return float(s)
+                        except (ValueError, TypeError):
+                            return 0.0
+                    if col == "factura_courier":
+                        return _norm_factura_courier(x.get("factura_courier"))
                     v = x.get(col) or ""
                     if col in ("amount", "amount_num"):
                         try:
@@ -9003,10 +9070,27 @@ def build_tab_compras(container) -> None:
             filtro_estado_val = filtro_estado_ref.get("val", "Todos")
             if filtro_estado_val != "Todos":
                 invs = [i for i in invs if (i.get("estado") or "En USA") == filtro_estado_val]
+            fc_filt = filtro_courier_ref.get("val", "Todas")
+            if fc_filt == "Pagas":
+                invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Pagada"]
+            elif fc_filt == "Impagas":
+                invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Impaga"]
             sc = sort_col_compras.get("val", "txn_date")
             asc = sort_asc_compras.get("val", False)
 
             def _sort_key(x: Dict, col: str):
+                if col == "importe_factura":
+                    s = str(x.get("importe_factura") or "").replace(" ", "").lstrip("$").strip()
+                    if not s:
+                        return 0.0
+                    try:
+                        if "," in s:
+                            s = s.replace(".", "").replace(",", ".")
+                        return float(s)
+                    except (ValueError, TypeError):
+                        return 0.0
+                if col == "factura_courier":
+                    return _norm_factura_courier(x.get("factura_courier"))
                 v = x.get(col) or ""
                 if col in ("amount", "amount_num"):
                     n = x.get("amount_num")
@@ -9069,8 +9153,21 @@ def build_tab_compras(container) -> None:
                             ui.label("Órdenes Impagas").classes("text-base font-semibold text-gray-800")
                             ui.label(str(cantidad_ordenes)).classes("text-sm text-gray-600")
             with filtro_row:
+                ui.label("Pago Courier:").classes("text-sm font-semibold text-gray-800")
+                filtro_courier = ui.select(
+                    {"Todas": "Todas", "Pagas": "Pagas", "Impagas": "Impagas"},
+                    value=filtro_courier_ref.get("val", "Todas"),
+                    label="",
+                ).classes("w-40").props("dense outlined")
+
+                def _on_filtro_courier_change(e):
+                    val = getattr(e, "args", None) or getattr(e, "value", None)
+                    filtro_courier_ref["val"] = str(val) if val is not None else "Todas"
+                    _pintar_compras()
+
+                filtro_courier.on_value_change(_on_filtro_courier_change)
                 filtro_status_val = filtro_status_ref.get("val", "Abierta+Vencida")
-                ui.label("Status:").classes("text-sm font-semibold text-gray-800")
+                ui.label("Status:").classes("text-sm font-semibold text-gray-800 ml-4")
                 filtro_status = ui.select(
                     {"Abierta+Vencida": "Abierta+Vencida", "Todas": "Todas", "Abierta": "Abierta", "Vencida": "Vencida", "Pagada": "Pagada"},
                     value=filtro_status_val,
@@ -9127,6 +9224,19 @@ def build_tab_compras(container) -> None:
                         inv[k] = str(v) if v is not None else ""
                     ui.notify("Guardado", color="positive")
 
+                def _apply_desp_color(sel: Any, nombre: str) -> None:
+                    c = _color_despachante(nombre or "")
+                    sel.classes(replace=f"w-40 {c}")
+
+                def _on_desp_change(e: Any, inv: Dict[str, Any]) -> None:
+                    _save_inv_extra(inv, despachante=e.value or "")
+                    _apply_desp_color(e.sender, e.value or "")
+
+                def _on_fc_change(e: Any, inv: Dict[str, Any]) -> None:
+                    v = _norm_factura_courier(e.value)
+                    _save_inv_extra(inv, factura_courier=v)
+                    e.sender.classes(replace=_classes_factura_courier_sel(v))
+
                 if not invs_sorted:
                     ui.label("No hay facturas." if not invs else "No hay facturas con ese Status.").classes("text-gray-500")
                 else:
@@ -9135,7 +9245,21 @@ def build_tab_compras(container) -> None:
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
                                     estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
-                                    cols = [("numero", "Numero"), ("txn_date", "Fecha"), ("dias", "Días"), ("tipo", "Tipo"), ("doc", "Nº"), ("guia", "Guía"), ("despachante", "Despachante"), ("importe_factura", "Importe factura"), ("pa", "PA"), ("estado", "Estado"), ("amount", "Importe"), ("status", "Status")]
+                                    cols = [
+                                        ("numero", "Numero"),
+                                        ("txn_date", "Fecha"),
+                                        ("dias", "Días"),
+                                        ("tipo", "Tipo"),
+                                        ("doc", "Nº"),
+                                        ("guia", "Guía"),
+                                        ("despachante", "Despachante"),
+                                        ("importe_factura", "Importe factura"),
+                                        ("factura_courier", "Factura Courier"),
+                                        ("pa", "PA"),
+                                        ("estado", "Estado"),
+                                        ("amount", "Importe"),
+                                        ("status", "Status"),
+                                    ]
                                     for col_key, h in cols:
                                         with ui.element("th").classes("px-2 py-2 border text-center"):
                                             if col_key in ("numero", "dias"):
@@ -9177,29 +9301,39 @@ def build_tab_compras(container) -> None:
                                             desp_actual = inv.get("despachante", "") or ""
                                             if desp_actual and desp_actual not in desp_opts:
                                                 desp_opts[desp_actual] = desp_actual
-                                            ui.select(desp_opts, value=desp_actual or None, on_change=lambda e, inv=inv: _save_inv_extra(inv, despachante=e.value or "")).classes("w-40").props("dense")
+                                            sd = ui.select(
+                                                desp_opts,
+                                                value=desp_actual or None,
+                                                on_change=lambda e, inv=inv: _on_desp_change(e, inv),
+                                            ).props("dense")
+                                            _apply_desp_color(sd, desp_actual)
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             def _fmt_importe_factura(val):
                                                 if not val:
                                                     return ""
                                                 try:
-                                                    s = str(val).replace(" ", "")
+                                                    s = str(val).replace(" ", "").lstrip("$").strip()
                                                     if "," in s:
                                                         s = s.replace(".", "").replace(",", ".")
                                                     n = float(s)
                                                     return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                 except (ValueError, TypeError):
-                                                    return str(val)
+                                                    return str(val).lstrip("$").strip()
                                             def _parse_imp(s):
                                                 if not s:
                                                     return ""
-                                                return str(s).replace(".", "").replace(",", ".").strip()
+                                                return str(s).replace(" ", "").lstrip("$").replace(".", "").replace(",", ".").strip()
                                             _imp_val = _fmt_importe_factura(inv.get("importe_factura", ""))
-                                            with ui.row().classes("items-center justify-center gap-0.5"):
-                                                ui.label("$").classes("text-gray-600 text-sm")
-                                                inp_imp = ui.input(value=_imp_val).classes("w-28").props("dense")
+                                            inp_imp = ui.input(value=_imp_val).classes("w-32").props('dense outlined prefix="$"')
                                             inp_imp.on("blur", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
                                             inp_imp.on("keydown.enter", lambda evt, inv=inv, inp=inp_imp: _save_inv_extra(inv, importe_factura=_parse_imp(inp.value)))
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            fc_disp = _norm_factura_courier(inv.get("factura_courier"))
+                                            ui.select(
+                                                {"Impaga": "Impaga", "Pagada": "Pagada"},
+                                                value=fc_disp,
+                                                on_change=lambda e, inv=inv: _on_fc_change(e, inv),
+                                            ).classes(_classes_factura_courier_sel(fc_disp)).props("dense")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             def _fmt_pa(val):
                                                 if not val:
@@ -9232,9 +9366,6 @@ def build_tab_compras(container) -> None:
                                             ui.label(f"u$ {amt_str}")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(inv.get("status", "—"))
-
-        filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
-        filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
 
         def _cargar_compras() -> None:
             qb_cust = get_user_qb_customer(user["id"])
@@ -9290,6 +9421,7 @@ def build_tab_compras(container) -> None:
                 inv["despachante"] = ex.get("despachante") or ""
                 inv["importe_factura"] = ex.get("importe_factura") or ""
                 inv["pa"] = ex.get("pa") or ""
+                inv["factura_courier"] = ex.get("factura_courier") or "Impaga"
                 est = ex.get("estado") or ""
                 status_low = (inv.get("status") or "").lower()
                 if status_low == "pagada":
