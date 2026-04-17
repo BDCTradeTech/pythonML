@@ -47,7 +47,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.14.13"
+VERSION = "2.26.04.10.15"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1273,17 +1273,29 @@ def _pdf_description_search_variants(old: str) -> List[str]:
     variants: List[str] = []
     seen: set[str] = set()
     o = str(old).strip()
-    for v in (o, o[:120], o[:80], o[:50], o[:30]):
+    words = o.split()
+
+    def add(v: str) -> None:
         v = (v or "").strip()
         if len(v) >= 3 and v not in seen:
             seen.add(v)
             variants.append(v)
+
+    for v in (o, o[:120], o[:80], o[:50], o[:30]):
+        add(v)
+    for n in (8, 6, 4):
+        if len(words) >= n:
+            vw = " ".join(words[:n]).strip()
+            add(vw)
+            if len(vw) > 45:
+                add(vw[:45])
     return variants
 
 
 _PDF_ROW_Y_TOL = 5.0
 _PDF_ROW_Y_BAND = 100.0
-_PDF_SKU_REDACT_PAD = 5.5
+_PDF_SKU_REDACT_PAD = 7.0
+_PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
 _PDF_PATCH_FONTNAME = "helv"
 _PDF_PATCH_FONTSIZE = 9.5
@@ -1532,7 +1544,7 @@ def _pdf_cluster_sku_rects_one_row(found: List[Any], d_rect: Any) -> List[Any]:
             continue
         if float(r.y0) < float(seed.y0) - 5.0:
             continue
-        if float(r.y0) > float(seed.y0) + 44.0:
+        if float(r.y0) > float(seed.y0) + 70.0:
             continue
         out.append(r)
     return out if out else [seed]
@@ -1552,12 +1564,14 @@ def _pdf_find_sku_column_union(
     d = fitz.Rect(d_rect)
     # SKU queda a la izquierda del texto de descripción; límite derecho = borde izq. descripción (no +28 que invadía poco o mal)
     right_lim = float(x_max) if x_max is not None else float(d.x0) - 4.0
-    y_lo = float(y_ref) - 9.0
+    y_lo = float(y_ref) - 14.0
     next_line = _pdf_next_row_content_y_floor(page, d_rect)
-    y_hi = float(y_ref) + 52.0
+    y_hi = float(y_ref) + 68.0
     if next_line is not None:
-        y_hi = min(y_hi, float(next_line) - 5.0)
-    y_hi = max(y_hi, float(y_ref) + 26.0)
+        gap_nl = float(next_line) - float(y_ref)
+        if gap_nl > 22.0:
+            y_hi = min(y_hi, float(next_line) - 3.0)
+    y_hi = max(y_hi, float(y_ref) + 34.0)
     found: List[Any] = []
     for part in parts:
         if len(part) < 2:
@@ -1603,8 +1617,13 @@ def _pdf_split_sku_two_lines(text: str) -> tuple[str, str]:
     return a, b
 
 
-def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
-    """Redibuja el SKU en como máximo 2 líneas (sin partir en 3+ como insert_textbox libre)."""
+def _pdf_insert_sku_in_union(
+    page: Any,
+    union_rect: Any,
+    text: str,
+    y_row_align: Optional[float] = None,
+) -> None:
+    """Redibuja el SKU en ≤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que Mouse)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -1635,6 +1654,7 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
         except Exception:
             return len(s) * fs * 0.52
 
+    base_y = float(y_row_align) if y_row_align is not None else float(inner.y0)
     fs = fs_max
     wlim = max(10.0, float(inner.width) - 3.0)
     while fs >= fs_min - 1e-6:
@@ -1643,19 +1663,19 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
             continue
         if not line2:
             break
-        y1 = float(inner.y0) + fs * 0.82
-        y2 = y1 + fs * 1.22
-        if y2 + fs * 0.35 <= float(inner.y1):
+        y1 = base_y + fs * 0.72
+        y2 = y1 + fs * 1.17
+        if y2 + fs * 0.3 <= float(u.y1) + 2.0:
             break
         fs -= 0.35
 
     x0 = float(inner.x0)
     if not line2:
-        y0 = float(inner.y0) + fs * 0.82
+        y0 = base_y + fs * 0.72
         page.insert_text(fitz.Point(x0, y0), line1, fontsize=fs, fontname=fn, color=(0, 0, 0))
         return
-    y1 = float(inner.y0) + fs * 0.82
-    y2 = y1 + fs * 1.22
+    y1 = base_y + fs * 0.72
+    y2 = y1 + fs * 1.17
     page.insert_text(fitz.Point(x0, y1), line1, fontsize=fs, fontname=fn, color=(0, 0, 0))
     page.insert_text(fitz.Point(x0, y2), line2, fontsize=fs, fontname=fn, color=(0, 0, 0))
 
@@ -1720,6 +1740,15 @@ def _pdf_rect_inflate_clipped(rect: Any, pad: float, page_rect: Any) -> Any:
     r.x1 += pad
     r.y1 += pad
     return r & pr
+
+
+def _pdf_inflate_sku_for_redact(rect: Any, page_rect: Any) -> Any:
+    """Borrado SKU: padding uniforme + extra abajo para guiones/partículas residuales."""
+    import fitz  # pymupdf
+
+    r = _pdf_rect_inflate_clipped(rect, float(_PDF_SKU_REDACT_PAD), page_rect)
+    r.y1 = min(float(fitz.Rect(page_rect).y1) - 2.0, float(r.y1) + float(_PDF_SKU_REDACT_PAD_BOTTOM_EXTRA))
+    return r & fitz.Rect(page_rect)
 
 
 def _pdf_find_rect_right_band(
@@ -1849,6 +1878,17 @@ def patch_invoice_pdf_line_items(
             d_variants = _pdf_description_search_variants(spec["description"])
             found_d = _pdf_find_first_rect_global_after_row(doc, d_variants, last_pno, last_y)
             if not found_d:
+                for slack in (40.0, 85.0, 140.0, 220.0):
+                    found_d = _pdf_find_first_rect_global_after_row(
+                        doc, d_variants, last_pno, max(0.0, float(last_y) - slack)
+                    )
+                    if found_d:
+                        break
+            if not found_d and last_pno + 1 < len(doc):
+                found_d = _pdf_find_first_rect_global_after_row(
+                    doc, d_variants, last_pno + 1, 0.0
+                )
+            if not found_d:
                 missed_lines.append(line_idx + 1)
                 continue
 
@@ -1921,9 +1961,7 @@ def patch_invoice_pdf_line_items(
             insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
             if sku_parts and insert_sku:
                 if sku_union:
-                    sku_red = _pdf_rect_inflate_clipped(
-                        sku_union, float(_PDF_SKU_REDACT_PAD), page.rect
-                    )
+                    sku_red = _pdf_inflate_sku_for_redact(sku_union, page.rect)
                     fields.insert(0, (sku_red, insert_sku, True))
                 else:
                     line_warnings.append(f"línea {line_idx + 1} SKU")
@@ -1984,9 +2022,12 @@ def patch_invoice_pdf_line_items(
             page.apply_redactions()
 
             desc_x_insert = float(d_rect.x0) - 2.0
+            y_align_desc = float(d_rect.y0)
             for rect, txt, is_sku in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
                 if is_sku:
-                    _pdf_insert_sku_in_union(page, fitz.Rect(rect), str(txt))
+                    _pdf_insert_sku_in_union(
+                        page, fitz.Rect(rect), str(txt), y_row_align=y_align_desc
+                    )
                 elif str(txt) == str(new_description):
                     _pdf_insert_black_text(
                         page, fitz.Rect(rect), str(txt), min_x0=desc_x_insert
