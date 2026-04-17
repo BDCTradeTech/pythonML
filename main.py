@@ -12,6 +12,8 @@ if not hasattr(asyncio, "to_thread"):
 
 import hashlib
 import logging
+import re
+import unicodedata
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 import html
@@ -47,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.16"
+VERSION = "2.26.04.10.17"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1274,6 +1276,9 @@ def _pdf_description_search_variants(old: str) -> List[str]:
     seen: set[str] = set()
     o = str(old).strip()
     words = o.split()
+    # PDF a veces usa guiones distintos o saltos; la API manda una sola línea
+    o_hyphen = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", o)
+    o_flat = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", o_hyphen)).strip()
 
     def add(v: str) -> None:
         v = (v or "").strip()
@@ -1281,9 +1286,9 @@ def _pdf_description_search_variants(old: str) -> List[str]:
             seen.add(v)
             variants.append(v)
 
-    for v in (o, o[:120], o[:80], o[:50], o[:30]):
+    for v in (o, o_flat, o[:120], o_flat[:120], o[:80], o_flat[:80], o[:50], o_flat[:50], o[:30], o_flat[:30]):
         add(v)
-    for n in (8, 6, 4):
+    for n in (10, 8, 6, 4):
         if len(words) >= n:
             vw = " ".join(words[:n]).strip()
             add(vw)
@@ -1777,11 +1782,12 @@ def _pdf_find_rect_right_band(
     variants: List[str],
     x_min: float,
 ) -> Optional[Any]:
-    """Coincidencia a la derecha de x_min cuyo centro vertical está en [y_lo, y_hi] (filas con descripción multilínea)."""
+    """A la derecha de x_min en [y_lo,y_hi]: prioriza el número cuyo centro vertical está más cerca del centro de la banda (evita 142.11 de otra fila)."""
     import fitz  # pymupdf
 
+    y_mid = (float(y_lo) + float(y_hi)) * 0.5
     best: Optional[Any] = None
-    best_x: Optional[float] = None
+    best_key: Optional[tuple[float, float]] = None
     for variant in variants:
         for r in page.search_for(variant):
             rr = fitz.Rect(r)
@@ -1790,9 +1796,12 @@ def _pdf_find_rect_right_band(
                 continue
             if rr.x0 < x_min - 2:
                 continue
-            if best is None or rr.x0 < best_x:  # type: ignore[operator]
+            dy = abs(cy - y_mid)
+            x0 = float(rr.x0)
+            key = (dy, x0)
+            if best_key is None or key < best_key:
+                best_key = key
                 best = rr
-                best_x = rr.x0
     return best
 
 
@@ -1807,7 +1816,7 @@ def _pdf_find_rect_row_after(
     import fitz  # pymupdf
 
     best: Optional[Any] = None
-    best_x: Optional[float] = None
+    best_key: Optional[tuple[float, float]] = None
     for variant in variants:
         for r in page.search_for(variant):
             rr = fitz.Rect(r)
@@ -1816,10 +1825,76 @@ def _pdf_find_rect_row_after(
                 continue
             if rr.x0 < x_min - 2:
                 continue
-            if best is None or rr.x0 < best_x:  # type: ignore[operator]
+            dy = abs(cy - y_ref)
+            x0 = float(rr.x0)
+            key = (dy, x0)
+            if best_key is None or key < best_key:
+                best_key = key
                 best = rr
-                best_x = rr.x0
     return best
+
+
+def _pdf_try_anchor_row_from_sku(
+    doc: Any,
+    sku_parts: List[str],
+    last_pno: int,
+    last_y: float,
+    spec: Dict[str, Any],
+    desc_col_x0: Optional[float],
+) -> Optional[tuple[int, Any]]:
+    """Si la descripción no aparece como en la API (texto partido), ancla la fila por el SKU y arma un rect de descripción."""
+    import fitz  # pymupdf
+
+    cand = [str(p).strip() for p in sku_parts if len(str(p).strip()) >= 2]
+    if not cand:
+        return None
+    found_s = _pdf_find_first_rect_global_after_row(doc, cand, last_pno, last_y)
+    if not found_s:
+        found_s = _pdf_find_first_rect_global_after_row(
+            doc, cand, last_pno, max(0.0, float(last_y) - 18.0)
+        )
+    if not found_s:
+        return None
+    pno, sku_rect = found_s
+    page = doc[pno]
+    sr = fitz.Rect(sku_rect)
+    loose_qty_x = max(float(sr.x1) + 18.0, float(sr.x0) + 125.0)
+    row_top = float(sr.y0)
+    if pno == last_pno and last_y > 0:
+        y_band_lo = max(row_top - 4.0, last_y + 0.5)
+    else:
+        y_band_lo = row_top - 4.0
+    y_band_hi = y_band_lo + float(_PDF_INVOICE_ROW_Y_SPAN)
+    y_row_center = (y_band_lo + y_band_hi) * 0.5
+    qty_rect = _pdf_find_rect_right_band(
+        page,
+        y_band_lo,
+        y_band_hi,
+        _numeric_search_variants(spec["qty"]),
+        loose_qty_x,
+    )
+    if not qty_rect:
+        qty_rect = _pdf_find_rect_row_after(
+            page,
+            y_row_center,
+            _numeric_search_variants(spec["qty"]),
+            loose_qty_x,
+            y_tol=13.0,
+        )
+    if not qty_rect:
+        qty_rect = _pdf_find_rect_row_after(
+            page,
+            y_row_center,
+            _numeric_search_variants(spec["qty"]),
+            float(sr.x0) + 158.0,
+            y_tol=13.0,
+        )
+    dx0 = float(desc_col_x0) if desc_col_x0 is not None else float(sr.x1) + 8.0
+    qx0 = float(fitz.Rect(qty_rect).x0) if qty_rect is not None else float(sr.x1) + 260.0
+    d_top = min(float(sr.y0), y_band_lo) - 2.0
+    d_bot = max(float(sr.y1), float(fitz.Rect(qty_rect).y1) if qty_rect else float(sr.y1)) + 22.0
+    d_rect = fitz.Rect(dx0, d_top, max(qx0 - 3.0, dx0 + 40.0), d_bot)
+    return (pno, d_rect)
 
 
 def _pdf_find_rect_row_before(
@@ -1897,28 +1972,44 @@ def patch_invoice_pdf_line_items(
         line_warnings: List[str] = []
         last_pno = 0
         last_y = 0.0
+        desc_col_x0: Optional[float] = None
 
         for line_idx, spec in enumerate(specs):
+            sku_val = str(spec.get("sku") or "").strip()
+            aliases = list(spec.get("sku_aliases") or [])
+            if not aliases and sku_val:
+                aliases = [sku_val]
+            sku_parts = _pdf_sku_all_search_strings(aliases)
+
             d_variants = _pdf_description_search_variants(spec["description"])
             found_d = _pdf_find_first_rect_global_after_row(doc, d_variants, last_pno, last_y)
             if not found_d:
                 found_d = _pdf_find_first_rect_global_after_row(
                     doc, d_variants, last_pno, max(0.0, float(last_y) - 18.0)
                 )
+            anchor_used = False
+            if not found_d:
+                from_sku = _pdf_try_anchor_row_from_sku(
+                    doc, sku_parts, last_pno, last_y, spec, desc_col_x0
+                )
+                if from_sku:
+                    found_d = from_sku
+                    anchor_used = True
             if not found_d:
                 missed_lines.append(line_idx + 1)
                 continue
 
             pno, d_rect = found_d
             page = doc[pno]
+            if not anchor_used:
+                dr0 = float(fitz.Rect(d_rect).x0)
+                if desc_col_x0 is None:
+                    desc_col_x0 = dr0
+                else:
+                    desc_col_x0 = min(desc_col_x0, dr0)
             y_ref = float(d_rect.y0)
             fields: List[tuple[Any, str, bool]] = []
 
-            sku_val = str(spec.get("sku") or "").strip()
-            aliases = list(spec.get("sku_aliases") or [])
-            if not aliases and sku_val:
-                aliases = [sku_val]
-            sku_parts = _pdf_sku_all_search_strings(aliases)
             d_r = fitz.Rect(d_rect)
 
             loose_qty_x = max(float(d_rect.x1) + 18.0, float(d_rect.x0) + 125.0)
