@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.18"
+VERSION = "2.26.04.10.19"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -2015,12 +2015,14 @@ def patch_invoice_pdf_line_items(
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
-        replaced_lines = 0
         missed_lines: List[int] = []
         line_warnings: List[str] = []
         last_pno = 0
         last_y = 0.0
         desc_col_x0: Optional[float] = None
+        # Fase 1: localizar todo sobre el PDF sin redactar (si no, al borrar fila 1 desaparece
+        # el texto de las filas 2–N y search_for falla → "Sin fila completa" en cascada).
+        plans: List[Optional[Dict[str, Any]]] = []
 
         for line_idx, spec in enumerate(specs):
             sku_val = str(spec.get("sku") or "").strip()
@@ -2047,6 +2049,7 @@ def patch_invoice_pdf_line_items(
                 missed_lines.append(line_idx + 1)
                 if line_idx > 0 and last_pno < len(doc):
                     last_y = float(last_y) + 28.0
+                plans.append(None)
                 continue
 
             pno, d_rect = found_d
@@ -2136,12 +2139,15 @@ def patch_invoice_pdf_line_items(
             if qx0 is None:
                 dcx = float(desc_col_x0) if desc_col_x0 is not None else float(d_rect.x0)
                 desc_x_hi_cap = dcx + 300.0
+            desc_y_max = float(y_band_hi) + 18.0
+            if qty_rect is not None:
+                desc_y_max = min(desc_y_max, float(fitz.Rect(qty_rect).y1) + 16.0)
             d_erase = _pdf_description_full_redact_rect(
                 page,
                 d_rect,
                 qx0,
                 extra_right_if_no_qty=52.0,
-                y_max=float(y_band_hi) + 22.0,
+                y_max=desc_y_max,
                 x_hi_cap=desc_x_hi_cap,
             )
             fields.append((d_erase, new_description, False))
@@ -2187,27 +2193,35 @@ def patch_invoice_pdf_line_items(
                     x_after,
                     y_tol=13.0,
                 )
+            rate_yc: Optional[float] = None
             if rate_rect:
                 fields.append((rate_rect, rate_ins, False))
                 x_after = float(rate_rect.x1) - 1
+                rrz = fitz.Rect(rate_rect)
+                rate_yc = (float(rrz.y0) + float(rrz.y1)) * 0.5
             else:
                 line_warnings.append(f"línea {line_idx + 1} rate")
 
+            amt_y_pref = (
+                rate_yc
+                if rate_yc is not None
+                else (qty_yc if qty_yc is not None else y_row_center)
+            )
             amt_rect = _pdf_find_rect_right_band(
                 page,
                 y_lo_ra,
                 y_hi_ra,
                 _numeric_search_variants(spec["amount"]),
                 x_after,
-                y_prefer=qty_yc or y_row_center,
+                y_prefer=amt_y_pref,
             )
             if not amt_rect:
                 amt_rect = _pdf_find_rect_row_after(
                     page,
-                    qty_yc if qty_yc is not None else y_row_center,
+                    amt_y_pref,
                     _numeric_search_variants(spec["amount"]),
                     x_after,
-                    y_tol=13.0,
+                    y_tol=15.0,
                 )
             amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
             if amt_rect:
@@ -2215,30 +2229,49 @@ def patch_invoice_pdf_line_items(
             else:
                 line_warnings.append(f"línea {line_idx + 1} amount")
 
-            by_x = sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0), reverse=True)
-            for rect, _txt, _sku in by_x:
-                page.add_redact_annot(fitz.Rect(rect))
-            page.apply_redactions()
-
             desc_x_insert = float(d_rect.x0) - 2.0
-            y_align_desc = float(d_rect.y0)
-            for rect, txt, is_sku in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
-                if is_sku:
-                    _pdf_insert_sku_in_union(
-                        page, fitz.Rect(rect), str(txt), y_row_align=y_align_desc
-                    )
-                elif str(txt) == str(new_description):
-                    _pdf_insert_black_text(
-                        page, fitz.Rect(rect), str(txt), min_x0=desc_x_insert
-                    )
-                else:
-                    _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
+            y_align_sku = float(d_rect.y0)
+            if qty_rect is not None:
+                qz = fitz.Rect(qty_rect)
+                y_align_sku = min(y_align_sku, float(qz.y0) + 2.0)
 
             row_bottom = max(float(fitz.Rect(t[0]).y1) for t in fields)
             last_pno = pno
             last_y = row_bottom + 1.5
 
-            replaced_lines += 1
+            plans.append(
+                {
+                    "pno": pno,
+                    "fields": fields,
+                    "new_description": new_description,
+                    "desc_x_insert": desc_x_insert,
+                    "y_align_sku": y_align_sku,
+                }
+            )
+
+        replaced_lines = sum(1 for p in plans if p is not None)
+
+        for plan in plans:
+            if plan is None:
+                continue
+            page = doc[int(plan["pno"])]
+            fields = plan["fields"]
+            nd = str(plan["new_description"])
+            desc_x_insert = float(plan["desc_x_insert"])
+            y_align_sku = float(plan["y_align_sku"])
+            by_x = sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0), reverse=True)
+            for rect, _txt, _sku in by_x:
+                page.add_redact_annot(fitz.Rect(rect))
+            page.apply_redactions()
+            for rect, txt, is_sku in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
+                if is_sku:
+                    _pdf_insert_sku_in_union(
+                        page, fitz.Rect(rect), str(txt), y_row_align=y_align_sku
+                    )
+                elif str(txt) == nd:
+                    _pdf_insert_black_text(page, fitz.Rect(rect), str(txt), min_x0=desc_x_insert)
+                else:
+                    _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
 
         if replaced_lines == 0:
             return None, "No se encontró ninguna descripción en el PDF (texto partido, plantilla distinta o escaneado)"
