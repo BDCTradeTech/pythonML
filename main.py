@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.20"
+VERSION = "2.26.04.10.21"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1796,14 +1796,16 @@ def _pdf_find_rect_right_band(
     variants: List[str],
     x_min: float,
     y_prefer: Optional[float] = None,
+    max_y_dist: Optional[float] = None,
 ) -> Optional[Any]:
-    """A la derecha de x_min en [y_lo,y_hi]: prioriza cercanía vertical a y_prefer (p. ej. centro del QTY) o al centro de la banda."""
+    """A la derecha de x_min en [y_lo,y_hi]: prioriza cercanía a y_prefer; max_y_dist evita tomar 142.11/amount de la fila de abajo."""
     import fitz  # pymupdf
 
     y_mid = (float(y_lo) + float(y_hi)) * 0.5
     y_tgt = float(y_prefer) if y_prefer is not None else y_mid
     best: Optional[Any] = None
     best_key: Optional[tuple[float, float]] = None
+    myd = float(max_y_dist) if max_y_dist is not None else None
     for variant in variants:
         for r in page.search_for(variant):
             rr = fitz.Rect(r)
@@ -1813,6 +1815,8 @@ def _pdf_find_rect_right_band(
             if rr.x0 < x_min - 2:
                 continue
             dy = abs(cy - y_tgt)
+            if myd is not None and dy > myd + 1e-6:
+                continue
             x0 = float(rr.x0)
             key = (dy, x0)
             if best_key is None or key < best_key:
@@ -1827,17 +1831,21 @@ def _pdf_find_rect_row_after(
     variants: List[str],
     x_min: float,
     y_tol: float = _PDF_ROW_Y_TOL,
+    max_y_dist: Optional[float] = None,
 ) -> Optional[Any]:
     """Primera coincidencia cerca de y_ref (centro vertical del rect) con x0 >= x_min."""
     import fitz  # pymupdf
 
     best: Optional[Any] = None
     best_key: Optional[tuple[float, float]] = None
+    eff_tol = (
+        min(float(y_tol), float(max_y_dist)) if max_y_dist is not None else float(y_tol)
+    )
     for variant in variants:
         for r in page.search_for(variant):
             rr = fitz.Rect(r)
             cy = (float(rr.y0) + float(rr.y1)) * 0.5
-            if abs(cy - y_ref) > y_tol:
+            if abs(cy - y_ref) > eff_tol:
                 continue
             if rr.x0 < x_min - 2:
                 continue
@@ -2176,6 +2184,9 @@ def patch_invoice_pdf_line_items(
             else:
                 y_lo_ra, y_hi_ra = y_band_lo, y_band_hi
 
+            _col_y_anchor = qty_yc if qty_yc is not None else y_row_center
+            _same_row_y = 13.0 if qty_yc is not None else None
+
             rate_ins = _fmt_pdf_money_for_insert(float(spec["rate"]))
             rate_rect = _pdf_find_rect_right_band(
                 page,
@@ -2183,45 +2194,42 @@ def patch_invoice_pdf_line_items(
                 y_hi_ra,
                 _numeric_search_variants(spec["rate"]),
                 x_after,
-                y_prefer=qty_yc or y_row_center,
+                y_prefer=_col_y_anchor,
+                max_y_dist=_same_row_y,
             )
             if not rate_rect:
                 rate_rect = _pdf_find_rect_row_after(
                     page,
-                    qty_yc if qty_yc is not None else y_row_center,
+                    _col_y_anchor,
                     _numeric_search_variants(spec["rate"]),
                     x_after,
-                    y_tol=13.0,
+                    y_tol=14.0,
+                    max_y_dist=_same_row_y,
                 )
-            rate_yc: Optional[float] = None
             if rate_rect:
                 fields.append((rate_rect, rate_ins, False))
                 x_after = float(rate_rect.x1) - 1
-                rrz = fitz.Rect(rate_rect)
-                rate_yc = (float(rrz.y0) + float(rrz.y1)) * 0.5
             else:
                 line_warnings.append(f"línea {line_idx + 1} rate")
 
-            amt_y_pref = (
-                rate_yc
-                if rate_yc is not None
-                else (qty_yc if qty_yc is not None else y_row_center)
-            )
+            # Amount alineado a la misma fila que QTY (centro vertical _col_y_anchor)
             amt_rect = _pdf_find_rect_right_band(
                 page,
                 y_lo_ra,
                 y_hi_ra,
                 _numeric_search_variants(spec["amount"]),
                 x_after,
-                y_prefer=amt_y_pref,
+                y_prefer=_col_y_anchor,
+                max_y_dist=_same_row_y,
             )
             if not amt_rect:
                 amt_rect = _pdf_find_rect_row_after(
                     page,
-                    amt_y_pref,
+                    _col_y_anchor,
                     _numeric_search_variants(spec["amount"]),
                     x_after,
                     y_tol=15.0,
+                    max_y_dist=_same_row_y,
                 )
             amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
             if amt_rect:
@@ -2252,6 +2260,10 @@ def patch_invoice_pdf_line_items(
             else:
                 row_bottom = max(float(fitz.Rect(d_rect).y1), float(d_rect.y0) + 14.0)
             row_bottom = max(row_bottom, float(d_rect.y0) + 6.0)
+            # Tope desde la 1ª línea de descripción: evita que un rate/amount mal asignado a la
+            # fila siguiente inflen last_y y hagan fallar la búsqueda de los ítems 4+.
+            _row_cap = float(d_rect.y0) + float(_PDF_INVOICE_ROW_Y_SPAN) + 36.0
+            row_bottom = min(row_bottom, _row_cap)
             last_pno = pno
             last_y = row_bottom + 1.5
 
