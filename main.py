@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.21"
+VERSION = "2.26.04.10.22"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1301,6 +1301,8 @@ _PDF_ROW_Y_TOL = 5.0
 # Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2–3 líneas de descripción,
 # pero sin el exceso anterior (~100) que mezclaba columnas de filas vecinas.
 _PDF_INVOICE_ROW_Y_SPAN = 40.0
+# Separación mínima entre “filas de ítem” al agrupar rects de search_for (más que el interlineado ~11–12).
+_PDF_DESC_CLUSTER_ROW_SEP = 16.0
 _PDF_SKU_REDACT_PAD = 7.0
 _PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
@@ -1368,6 +1370,100 @@ def _pdf_find_first_rect_global_after_row(
                     best = (pno, rr)
         if best is not None:
             return best
+    return None
+
+
+def _pdf_duplicate_description_skip_count(
+    specs: List[Dict[str, Any]], line_idx: int
+) -> int:
+    """Cuántas líneas anteriores tienen la misma descripción (p. ej. dos ítems Apple idénticos en el PDF)."""
+    d = str(specs[line_idx].get("description") or "").strip()
+    if not d:
+        return 0
+    return sum(
+        1
+        for j in range(line_idx)
+        if str(specs[j].get("description") or "").strip() == d
+    )
+
+
+def _pdf_duplicate_sku_skip_count(specs: List[Dict[str, Any]], line_idx: int) -> int:
+    """Cuántas líneas anteriores tienen el mismo SKU (p. ej. MR9U3LL/A en fila 1 y 2)."""
+    s = str(specs[line_idx].get("sku") or "").strip()
+    if not s:
+        return 0
+    return sum(
+        1
+        for j in range(line_idx)
+        if str(specs[j].get("sku") or "").strip() == s
+    )
+
+
+def _pdf_cluster_search_hits_into_rows(
+    hits: List[tuple[int, float, float, Any]], y_sep: Optional[float] = None
+) -> List[List[tuple[int, float, float, Any]]]:
+    """Agrupa rectángulos de search_for en filas de tabla (una descripción multilínea = una fila)."""
+    if not hits:
+        return []
+    sep = float(y_sep) if y_sep is not None else float(_PDF_DESC_CLUSTER_ROW_SEP)
+    hits = sorted(hits, key=lambda t: (t[0], t[1], t[2]))
+    rows: List[List[tuple[int, float, float, Any]]] = []
+    for h in hits:
+        if not rows:
+            rows.append([h])
+            continue
+        mx_y = max(t[1] for t in rows[-1])
+        if float(h[1]) > mx_y + sep:
+            rows.append([h])
+        else:
+            rows[-1].append(h)
+    return rows
+
+
+def _pdf_find_rect_global_after_row_skip_occurrence(
+    doc: Any,
+    variants: List[str],
+    min_page: int,
+    min_y: float,
+    skip: int,
+    min_variant_len: int = 3,
+) -> Optional[tuple[int, Any]]:
+    """Como _pdf_find_first_rect_global_after_row pero salta filas enteras con la misma descripción.
+
+    search_for devuelve un rect por línea de texto; skip debe contar filas de ítem, no fragmentos.
+    """
+    import fitz  # pymupdf
+
+    if not variants:
+        return None
+    sk = max(0, int(skip))
+    uniq: List[str] = []
+    seen: set[str] = set()
+    for v in variants:
+        v = str(v).strip()
+        if len(v) >= int(min_variant_len) and v not in seen:
+            seen.add(v)
+            uniq.append(v)
+    sorted_v = sorted(uniq, key=len, reverse=True)
+    mp = int(min_page)
+    floor = float(min_y)
+    for variant in sorted_v:
+        hits: List[tuple[int, float, float, Any]] = []
+        for pno in range(len(doc)):
+            if pno < mp:
+                continue
+            page = doc[pno]
+            y_floor = floor if pno == mp else 0.0
+            for r in page.search_for(variant):
+                rr = fitz.Rect(r)
+                if float(rr.y0) < y_floor - 1.5:
+                    continue
+                hits.append((pno, float(rr.y0), float(rr.x0), rr))
+        rows = _pdf_cluster_search_hits_into_rows(hits)
+        if len(rows) > sk:
+            row0 = sorted(rows[sk], key=lambda t: (t[1], t[2]))
+            _p, _y0, _x0, rect = row0[0]
+            return (int(_p), rect)
     return None
 
 
@@ -1890,6 +1986,7 @@ def _pdf_try_anchor_row_from_sku(
     last_y: float,
     spec: Dict[str, Any],
     desc_col_x0: Optional[float],
+    sku_occurrence_skip: int = 0,
 ) -> Optional[tuple[int, Any]]:
     """Si la descripción no aparece como en la API (texto partido), ancla la fila por el SKU y arma un rect de descripción."""
     import fitz  # pymupdf
@@ -1897,16 +1994,17 @@ def _pdf_try_anchor_row_from_sku(
     cand = _pdf_sku_anchor_search_variants(spec, sku_parts)
     if not cand:
         return None
-    found_s = _pdf_find_first_rect_global_after_row(
-        doc, cand, last_pno, last_y, min_variant_len=5
+    sk = max(0, int(sku_occurrence_skip))
+    found_s = _pdf_find_rect_global_after_row_skip_occurrence(
+        doc, cand, last_pno, last_y, sk, min_variant_len=5
     )
     if not found_s:
-        found_s = _pdf_find_first_rect_global_after_row(
-            doc, cand, last_pno, max(0.0, float(last_y) - 18.0), min_variant_len=5
+        found_s = _pdf_find_rect_global_after_row_skip_occurrence(
+            doc, cand, last_pno, max(0.0, float(last_y) - 18.0), sk, min_variant_len=5
         )
     if not found_s:
-        found_s = _pdf_find_first_rect_global_after_row(
-            doc, cand, last_pno, last_y, min_variant_len=4
+        found_s = _pdf_find_rect_global_after_row_skip_occurrence(
+            doc, cand, last_pno, last_y, sk, min_variant_len=4
         )
     if not found_s:
         return None
@@ -2040,15 +2138,30 @@ def patch_invoice_pdf_line_items(
             sku_parts = _pdf_sku_all_search_strings(aliases)
 
             d_variants = _pdf_description_search_variants(spec["description"])
-            found_d = _pdf_find_first_rect_global_after_row(doc, d_variants, last_pno, last_y)
+            _desc_skip = _pdf_duplicate_description_skip_count(specs, line_idx)
+            _sku_skip = _pdf_duplicate_sku_skip_count(specs, line_idx)
+            found_d = _pdf_find_rect_global_after_row_skip_occurrence(
+                doc, d_variants, last_pno, last_y, _desc_skip, min_variant_len=3
+            )
             if not found_d:
-                found_d = _pdf_find_first_rect_global_after_row(
-                    doc, d_variants, last_pno, max(0.0, float(last_y) - 18.0)
+                found_d = _pdf_find_rect_global_after_row_skip_occurrence(
+                    doc,
+                    d_variants,
+                    last_pno,
+                    max(0.0, float(last_y) - 18.0),
+                    _desc_skip,
+                    min_variant_len=3,
                 )
             anchor_used = False
             if not found_d:
                 from_sku = _pdf_try_anchor_row_from_sku(
-                    doc, sku_parts, last_pno, last_y, spec, desc_col_x0
+                    doc,
+                    sku_parts,
+                    last_pno,
+                    last_y,
+                    spec,
+                    desc_col_x0,
+                    sku_occurrence_skip=_sku_skip,
                 )
                 if from_sku:
                     found_d = from_sku
