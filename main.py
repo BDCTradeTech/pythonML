@@ -46,8 +46,8 @@ from nicegui import app, background_tasks, context, run, ui
 
 DB_PATH = Path(__file__).with_name("app.db")
 
-# Versión del sistema: formato 2.aa.mm.dd.hh (aa=año 2 dígitos, mm, dd, hh=hora 00-23). Actualizar al publicar.
-VERSION = "2.26.04.10.16"
+# Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
+VERSION = "2.26.04.14.12"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1282,9 +1282,12 @@ def _pdf_description_search_variants(old: str) -> List[str]:
 
 
 _PDF_ROW_Y_TOL = 5.0
+_PDF_ROW_Y_BAND = 100.0
+_PDF_SKU_REDACT_PAD = 5.5
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
 _PDF_PATCH_FONTNAME = "helv"
 _PDF_PATCH_FONTSIZE = 9.5
+_PDF_PATCH_SKU_FS_MIN = 7.8
 # SKU: correr el inicio a la izquierda (pt) para una sola línea con más aire
 _PDF_PATCH_SKU_SHIFT_LEFT = 14.0
 
@@ -1357,7 +1360,7 @@ def _pdf_description_full_redact_rect(
         x_hi = float(qty_x0) - 4.0
     else:
         x_hi = float(d.x1) + float(extra_right_if_no_qty)
-    x_lo = max(float(page.rect.x0) + 4.0, float(d.x0) - 6.0)
+    x_lo = max(float(page.rect.x0) + 4.0, float(d.x0) - 28.0)
 
     next_sku_y: Optional[float] = None
     dd = page.get_text("dict")
@@ -1371,12 +1374,17 @@ def _pdf_description_full_redact_rect(
                     continue
                 st = str(span.get("text") or "").strip()
                 sx0, sy0, sx1, sy1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
-                if sx1 < float(d.x0) - 8.0 and sy0 > float(d.y0) + 5.0:
-                    if len(st) < 3 and (sx1 - sx0) < 20.0:
-                        continue
-                    if next_sku_y is None or sy0 < next_sku_y:
-                        next_sku_y = sy0
-    y_cap = (float(next_sku_y) - 4.0) if next_sku_y is not None else min(float(page.rect.y1), float(d.y1) + 140.0)
+                if sx0 > float(d.x0) - 10.0:
+                    continue
+                if sy0 <= float(d.y0) + 12.0:
+                    continue
+                if len(st) < 4 and (sx1 - sx0) < 24.0:
+                    continue
+                if len(st) <= 6 and st.replace(".", "").replace("/", "").isdigit():
+                    continue
+                if next_sku_y is None or sy0 < next_sku_y:
+                    next_sku_y = sy0
+    y_cap = (float(next_sku_y) - 7.0) if next_sku_y is not None else min(float(page.rect.y1), float(d.y1) + 140.0)
 
     u = fitz.Rect(d)
     for block in dd.get("blocks", []):
@@ -1392,12 +1400,9 @@ def _pdf_description_full_redact_rect(
                     continue
                 if sy0 > y_cap + 2.0:
                     continue
-                if sx1 <= x_lo + 1.0:
+                if sx1 < x_lo or sx0 > x_hi + 2.0:
                     continue
-                if sx0 > x_hi + 2.0:
-                    continue
-                if max(sx0, x_lo) < min(sx1, x_hi):
-                    u |= fitz.Rect(b)
+                u |= fitz.Rect(b)
     u.x0 = min(float(u.x0), x_lo)
     u.x1 = max(float(u.x1), min(x_hi, float(page.rect.x1) - 6.0))
     if float(u.y1) < float(d.y1):
@@ -1572,20 +1577,23 @@ def _pdf_find_sku_column_union(
 
 
 def _pdf_split_sku_two_lines(text: str) -> tuple[str, str]:
-    """Divide SKU en dos líneas (corte preferente en guión cerca del medio); una sola línea si cabe."""
+    """Divide SKU en dos líneas: guión más cercano al centro (evita cortes tipo '...D' + 'OT5-')."""
     t = str(text).strip()
-    if len(t) <= 16:
+    if len(t) <= 22:
         return t, ""
     mid = len(t) // 2
-    cut = -1
-    for i in range(max(6, mid - 14), min(len(t) - 4, mid + 18)):
-        if t[i] in "-_/":
-            cut = i + 1
-    if cut <= 0:
-        cut = mid
+    best_i = -1
+    best_d = 10**6
+    for i, c in enumerate(t):
+        if c in "-_/":
+            d = abs(i + 0.5 - mid)
+            if d < best_d:
+                best_d = d
+                best_i = i + 1
+    cut = best_i if best_i > 0 else mid
     a, b = t[:cut].strip(), t[cut:].strip()
     if not b:
-        return a, ""
+        return t, ""
     return a, b
 
 
@@ -1608,8 +1616,11 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
     if inner.width < 8 or inner.height < 6:
         inner = fitz.Rect(u)
     line1, line2 = _pdf_split_sku_two_lines(text)
-    fs_max = min(float(_PDF_PATCH_FONTSIZE), max(5.0, (float(inner.height) - 3.0) / 2.45))
-    fs_min = 5.0
+    fs_max = min(
+        float(_PDF_PATCH_FONTSIZE),
+        max(float(_PDF_PATCH_SKU_FS_MIN), (float(inner.height) - 4.0) / 2.45),
+    )
+    fs_min = float(_PDF_PATCH_SKU_FS_MIN)
 
     def _line_len_pt(s: str, fs: float) -> float:
         try:
@@ -1691,6 +1702,44 @@ def _numeric_search_variants(value: Any) -> List[str]:
     if abs(f) >= 1000:
         add(f"{int(round(f)):,}")
     return out
+
+
+def _pdf_rect_inflate_clipped(rect: Any, pad: float, page_rect: Any) -> Any:
+    import fitz  # pymupdf
+
+    r = fitz.Rect(rect)
+    pr = fitz.Rect(page_rect)
+    r.x0 -= pad
+    r.y0 -= pad
+    r.x1 += pad
+    r.y1 += pad
+    return r & pr
+
+
+def _pdf_find_rect_right_band(
+    page: Any,
+    y_lo: float,
+    y_hi: float,
+    variants: List[str],
+    x_min: float,
+) -> Optional[Any]:
+    """Coincidencia a la derecha de x_min cuyo centro vertical está en [y_lo, y_hi] (filas con descripción multilínea)."""
+    import fitz  # pymupdf
+
+    best: Optional[Any] = None
+    best_x: Optional[float] = None
+    for variant in variants:
+        for r in page.search_for(variant):
+            rr = fitz.Rect(r)
+            cy = (float(rr.y0) + float(rr.y1)) * 0.5
+            if cy < y_lo or cy > y_hi:
+                continue
+            if rr.x0 < x_min - 2:
+                continue
+            if best is None or rr.x0 < best_x:  # type: ignore[operator]
+                best = rr
+                best_x = rr.x0
+    return best
 
 
 def _pdf_find_rect_row_after(
@@ -1805,9 +1854,19 @@ def patch_invoice_pdf_line_items(
             d_r = fitz.Rect(d_rect)
 
             loose_qty_x = max(float(d_rect.x1) + 18.0, float(d_rect.x0) + 125.0)
-            qty_rect = _pdf_find_rect_row_after(
-                page, y_ref, _numeric_search_variants(spec["qty"]), loose_qty_x
+            y_band_lo = float(d_rect.y0) - 6.0
+            y_band_hi = float(d_rect.y0) + float(_PDF_ROW_Y_BAND)
+            qty_rect = _pdf_find_rect_right_band(
+                page,
+                y_band_lo,
+                y_band_hi,
+                _numeric_search_variants(spec["qty"]),
+                loose_qty_x,
             )
+            if not qty_rect:
+                qty_rect = _pdf_find_rect_row_after(
+                    page, y_ref, _numeric_search_variants(spec["qty"]), loose_qty_x
+                )
             if not qty_rect:
                 qty_rect = _pdf_find_rect_row_after(
                     page, y_ref, _numeric_search_variants(spec["qty"]), float(d_rect.x0) + 158.0
@@ -1851,7 +1910,10 @@ def patch_invoice_pdf_line_items(
             insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
             if sku_parts and insert_sku:
                 if sku_union:
-                    fields.insert(0, (sku_union, insert_sku, True))
+                    sku_red = _pdf_rect_inflate_clipped(
+                        sku_union, float(_PDF_SKU_REDACT_PAD), page.rect
+                    )
+                    fields.insert(0, (sku_red, insert_sku, True))
                 else:
                     line_warnings.append(f"línea {line_idx + 1} SKU")
             qty_ins = _fmt_pdf_qty_for_insert(float(spec["qty"]))
@@ -1862,19 +1924,43 @@ def patch_invoice_pdf_line_items(
                 line_warnings.append(f"línea {line_idx + 1} qty")
                 x_after = float(d_rect.x1) + 95.0
 
-            rate_rect = _pdf_find_rect_row_after(
-                page, y_ref, _numeric_search_variants(spec["rate"]), x_after
-            )
+            if qty_rect:
+                qc = fitz.Rect(qty_rect)
+                yc = (float(qc.y0) + float(qc.y1)) * 0.5
+                y_lo_ra = yc - 18.0
+                y_hi_ra = yc + 18.0
+            else:
+                y_lo_ra, y_hi_ra = y_band_lo, y_band_hi
+
             rate_ins = _fmt_pdf_money_for_insert(float(spec["rate"]))
+            rate_rect = _pdf_find_rect_right_band(
+                page,
+                y_lo_ra,
+                y_hi_ra,
+                _numeric_search_variants(spec["rate"]),
+                x_after,
+            )
+            if not rate_rect:
+                rate_rect = _pdf_find_rect_row_after(
+                    page, y_ref, _numeric_search_variants(spec["rate"]), x_after
+                )
             if rate_rect:
                 fields.append((rate_rect, rate_ins, False))
                 x_after = float(rate_rect.x1) - 1
             else:
                 line_warnings.append(f"línea {line_idx + 1} rate")
 
-            amt_rect = _pdf_find_rect_row_after(
-                page, y_ref, _numeric_search_variants(spec["amount"]), x_after
+            amt_rect = _pdf_find_rect_right_band(
+                page,
+                y_lo_ra,
+                y_hi_ra,
+                _numeric_search_variants(spec["amount"]),
+                x_after,
             )
+            if not amt_rect:
+                amt_rect = _pdf_find_rect_row_after(
+                    page, y_ref, _numeric_search_variants(spec["amount"]), x_after
+                )
             amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
             if amt_rect:
                 fields.append((amt_rect, amt_ins, False))
