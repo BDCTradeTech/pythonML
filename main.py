@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.28"
+VERSION = "2.26.04.10.29"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1328,6 +1328,12 @@ def _qb_invoice_pdf_download_basename(doc: Any) -> str:
     return f"{base[:80]}.pdf"
 
 
+def _sku_display_every_other_from_first(s: str) -> str:
+    """Solo caracteres en posiciones 1ª, 3ª, 5ª… (índices 0, 2, 4…); la 2ª, 4ª… se omiten."""
+    t = str(s)
+    return "".join(t[i] for i in range(0, len(t), 2))
+
+
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
     """Primera coincidencia en orden página, y0, x0 (lectura típica). Retorna (page_index, Rect) o None."""
     return _pdf_find_first_rect_global_after_row(doc, variants, 0, 0.0)
@@ -2326,6 +2332,7 @@ def _patch_invoice_pdf_items_table_rewrite(
     inv_obj: Dict[str, Any],
     new_description: str,
     user_id: Optional[int],
+    sku_interleaved_display: bool = False,
 ) -> tuple[Optional[bytes], Optional[str]]:
     """Borra el bloque de la tabla de ítems y redibuja todas las filas con datos de la API."""
     try:
@@ -2394,6 +2401,10 @@ def _patch_invoice_pdf_items_table_rewrite(
             sku = str(spec.get("sku") or "").strip()
             if not sku and spec.get("sku_aliases"):
                 sku = str(spec["sku_aliases"][0]).strip()
+            if sku_interleaved_display:
+                raw_sku = sku
+                sku = _sku_display_every_other_from_first(sku)
+                logging.info("PDF patch SKU interleaved: %r -> %r", raw_sku, sku)
             line1, line2 = _pdf_split_sku_two_lines(sku)
             page.insert_text(
                 fitz.Point(x_sku, y_base),
@@ -2447,10 +2458,12 @@ def patch_invoice_pdf_line_items(
     new_description: str = "MOUSE",
     user_id: Optional[int] = None,
     prefer_table_rewrite: bool = True,
+    sku_interleaved_display: bool = False,
 ) -> tuple[Optional[bytes], Optional[str]]:
     """Parchea líneas de venta: por defecto reescribe el bloque entero de la tabla desde la API.
 
     Si prefer_table_rewrite es False, usa el método anterior (búsqueda fila a fila).
+    sku_interleaved_display: en el PDF solo se dibuja 1ª,3ª,5ª… letra del SKU (prueba Mouse/Smartwatch).
     """
     try:
         import fitz  # pymupdf
@@ -2468,7 +2481,11 @@ def patch_invoice_pdf_line_items(
 
     if prefer_table_rewrite:
         rw, rmsg = _patch_invoice_pdf_items_table_rewrite(
-            pdf_bytes, inv_obj, new_description, user_id
+            pdf_bytes,
+            inv_obj,
+            new_description,
+            user_id,
+            sku_interleaved_display=sku_interleaved_display,
         )
         if rw is not None:
             return rw, rmsg
@@ -2628,6 +2645,10 @@ def patch_invoice_pdf_line_items(
             fields.append((d_erase, new_description, False))
 
             insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
+            if sku_interleaved_display and insert_sku:
+                _raw_ins = insert_sku
+                insert_sku = _sku_display_every_other_from_first(insert_sku)
+                logging.info("PDF patch SKU interleaved: %r -> %r", _raw_ins, insert_sku)
             if sku_parts and insert_sku:
                 if sku_union:
                     sku_red = _pdf_inflate_sku_for_redact(sku_union, page.rect)
@@ -9956,6 +9977,7 @@ def build_tab_compras(container) -> None:
                                 inv_obj,
                                 reemplazo,
                                 user_id=user["id"],
+                                sku_interleaved_display=True,
                             )
                             if not patched:
                                 ui.notify(perr or "No se pudo modificar el PDF", color="negative")
