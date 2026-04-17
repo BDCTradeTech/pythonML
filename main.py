@@ -46,8 +46,8 @@ from nicegui import app, background_tasks, context, run, ui
 
 DB_PATH = Path(__file__).with_name("app.db")
 
-# Versión del sistema: actualizar manualmente cada vez que se modifica el código
-VERSION = "2.26.04.10.13"
+# Versión del sistema: formato 2.aa.mm.dd.hh (aa=año 2 dígitos, mm, dd, hh=hora 00-23). Actualizar al publicar.
+VERSION = "2.26.04.10.16"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1207,6 +1207,13 @@ def _invoice_line_patch_specs(
     n = len(lines)
     out: List[Dict[str, Any]] = []
     for idx, lin in enumerate(lines):
+        dt = str(lin.get("DetailType") or "").strip()
+        if dt == "DescriptionOnly":
+            extra = str(lin.get("Description") or "").strip()
+            if extra and out:
+                out[-1]["description"] = f"{out[-1]['description']} {extra}".strip()
+            continue
+
         sales = lin.get("SalesItemLineDetail") or {}
         if not isinstance(sales, dict):
             continue
@@ -1334,6 +1341,68 @@ def _pdf_description_redact_rect(
     else:
         r.x1 = float(r.x1) + float(extra_right_pt)
     return r
+
+
+def _pdf_description_full_redact_rect(
+    page: Any,
+    d_rect: Any,
+    qty_x0: Optional[float],
+    extra_right_if_no_qty: float = 52.0,
+) -> Any:
+    """Unión de todo el bloque de descripción (varias líneas y continuaciones sin SKU) hasta la siguiente fila."""
+    import fitz  # pymupdf
+
+    d = fitz.Rect(d_rect)
+    if qty_x0 is not None:
+        x_hi = float(qty_x0) - 4.0
+    else:
+        x_hi = float(d.x1) + float(extra_right_if_no_qty)
+    x_lo = max(float(page.rect.x0) + 4.0, float(d.x0) - 6.0)
+
+    next_sku_y: Optional[float] = None
+    dd = page.get_text("dict")
+    for block in dd.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                b = span.get("bbox")
+                if not b or len(b) < 4:
+                    continue
+                st = str(span.get("text") or "").strip()
+                sx0, sy0, sx1, sy1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+                if sx1 < float(d.x0) - 8.0 and sy0 > float(d.y0) + 5.0:
+                    if len(st) < 3 and (sx1 - sx0) < 20.0:
+                        continue
+                    if next_sku_y is None or sy0 < next_sku_y:
+                        next_sku_y = sy0
+    y_cap = (float(next_sku_y) - 4.0) if next_sku_y is not None else min(float(page.rect.y1), float(d.y1) + 140.0)
+
+    u = fitz.Rect(d)
+    for block in dd.get("blocks", []):
+        if block.get("type") != 0:
+            continue
+        for line in block.get("lines", []):
+            for span in line.get("spans", []):
+                b = span.get("bbox")
+                if not b or len(b) < 4:
+                    continue
+                sx0, sy0, sx1, sy1 = float(b[0]), float(b[1]), float(b[2]), float(b[3])
+                if sy0 < float(d.y0) - 4.0:
+                    continue
+                if sy0 > y_cap + 2.0:
+                    continue
+                if sx1 <= x_lo + 1.0:
+                    continue
+                if sx0 > x_hi + 2.0:
+                    continue
+                if max(sx0, x_lo) < min(sx1, x_hi):
+                    u |= fitz.Rect(b)
+    u.x0 = min(float(u.x0), x_lo)
+    u.x1 = max(float(u.x1), min(x_hi, float(page.rect.x1) - 6.0))
+    if float(u.y1) < float(d.y1):
+        u.y1 = float(d.y1) + 2.0
+    return u
 
 
 def _pdf_next_row_content_y_floor(page: Any, d_rect: Any, min_step: float = 12.0) -> Optional[float]:
@@ -1502,8 +1571,26 @@ def _pdf_find_sku_column_union(
     return u
 
 
+def _pdf_split_sku_two_lines(text: str) -> tuple[str, str]:
+    """Divide SKU en dos líneas (corte preferente en guión cerca del medio); una sola línea si cabe."""
+    t = str(text).strip()
+    if len(t) <= 16:
+        return t, ""
+    mid = len(t) // 2
+    cut = -1
+    for i in range(max(6, mid - 14), min(len(t) - 4, mid + 18)):
+        if t[i] in "-_/":
+            cut = i + 1
+    if cut <= 0:
+        cut = mid
+    a, b = t[:cut].strip(), t[cut:].strip()
+    if not b:
+        return a, ""
+    return a, b
+
+
 def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
-    """Redibuja el SKU dentro del rect (textbox), reduce fuente si hace falta; evita desbordes en SKUs largos."""
+    """Redibuja el SKU en como máximo 2 líneas (sin partir en 3+ como insert_textbox libre)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -1520,28 +1607,40 @@ def _pdf_insert_sku_in_union(page: Any, union_rect: Any, text: str) -> None:
     )
     if inner.width < 8 or inner.height < 6:
         inner = fitz.Rect(u)
-    fs = float(_PDF_PATCH_FONTSIZE)
+    line1, line2 = _pdf_split_sku_two_lines(text)
+    fs_max = min(float(_PDF_PATCH_FONTSIZE), max(5.0, (float(inner.height) - 3.0) / 2.45))
     fs_min = 5.0
+
+    def _line_len_pt(s: str, fs: float) -> float:
+        try:
+            font = fitz.Font(fontname=fn)
+            return float(font.text_length(s, fontsize=fs))
+        except Exception:
+            return len(s) * fs * 0.52
+
+    fs = fs_max
+    wlim = max(10.0, float(inner.width) - 3.0)
     while fs >= fs_min - 1e-6:
-        rc = page.insert_textbox(
-            inner,
-            text,
-            fontname=fn,
-            fontsize=fs,
-            color=(0, 0, 0),
-            align=0,
-        )
-        if rc >= 0:
-            return
-        fs -= 0.45
-    page.insert_textbox(
-        inner,
-        text,
-        fontname=fn,
-        fontsize=fs_min,
-        color=(0, 0, 0),
-        align=0,
-    )
+        if _line_len_pt(line1, fs) > wlim or (line2 and _line_len_pt(line2, fs) > wlim):
+            fs -= 0.4
+            continue
+        if not line2:
+            break
+        y1 = float(inner.y0) + fs * 0.82
+        y2 = y1 + fs * 1.22
+        if y2 + fs * 0.35 <= float(inner.y1):
+            break
+        fs -= 0.35
+
+    x0 = float(inner.x0)
+    if not line2:
+        y0 = float(inner.y0) + fs * 0.82
+        page.insert_text(fitz.Point(x0, y0), line1, fontsize=fs, fontname=fn, color=(0, 0, 0))
+        return
+    y1 = float(inner.y0) + fs * 0.82
+    y2 = y1 + fs * 1.22
+    page.insert_text(fitz.Point(x0, y1), line1, fontsize=fs, fontname=fn, color=(0, 0, 0))
+    page.insert_text(fitz.Point(x0, y2), line2, fontsize=fs, fontname=fn, color=(0, 0, 0))
 
 
 def _pdf_horiz_overlap(a: Any, b: Any) -> float:
@@ -1745,7 +1844,8 @@ def patch_invoice_pdf_line_items(
                     x_max=qty_x_max if qty_x_max is not None else float(d_r.x0) - 0.5,
                 )
 
-            d_erase = _pdf_description_redact_rect(d_rect, qty_rect, extra_right_pt=52.0)
+            qx0 = float(fitz.Rect(qty_rect).x0) if qty_rect is not None else None
+            d_erase = _pdf_description_full_redact_rect(page, d_rect, qx0, extra_right_if_no_qty=52.0)
             fields.append((d_erase, new_description, False))
 
             insert_sku = sku_val or (str(aliases[0]).strip() if aliases else "")
@@ -9011,13 +9111,13 @@ def build_tab_compras(container) -> None:
                         ui.button(
                             "Mouse",
                             on_click=lambda: _descargar_pdf_parcheado("Mouse", "mouse"),
-                            color="primary",
-                        ).props("dense no-caps")
+                            color="secondary",
+                        ).props("dense no-caps icon=download")
                         ui.button(
                             "Smartwatch",
                             on_click=lambda: _descargar_pdf_parcheado("Smartwatch", "smartwatch"),
-                            color="primary",
-                        ).props("dense no-caps")
+                            color="secondary",
+                        ).props("dense no-caps icon=download")
 
             dlg.open()
             background_tasks.create(_cargar_y_mostrar(), name="invoice_detail")
