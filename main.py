@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.19"
+VERSION = "2.26.04.10.20"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -2235,7 +2235,23 @@ def patch_invoice_pdf_line_items(
                 qz = fitz.Rect(qty_rect)
                 y_align_sku = min(y_align_sku, float(qz.y0) + 2.0)
 
-            row_bottom = max(float(fitz.Rect(t[0]).y1) for t in fields)
+            # last_y NO debe usar d_erase: el rect de descripción puede bajar varias líneas; si
+            # max() incluye ese y1, last_y queda por debajo del y0 de la siguiente descripción y
+            # search_for falla → "Sin fila completa" en ítems 3+ en fase 1.
+            row_bt: List[float] = []
+            if sku_union is not None:
+                row_bt.append(float(fitz.Rect(sku_union).y1))
+            if qty_rect is not None:
+                row_bt.append(float(fitz.Rect(qty_rect).y1))
+            if rate_rect is not None:
+                row_bt.append(float(fitz.Rect(rate_rect).y1))
+            if amt_rect is not None:
+                row_bt.append(float(fitz.Rect(amt_rect).y1))
+            if row_bt:
+                row_bottom = max(row_bt)
+            else:
+                row_bottom = max(float(fitz.Rect(d_rect).y1), float(d_rect.y0) + 14.0)
+            row_bottom = max(row_bottom, float(d_rect.y0) + 6.0)
             last_pno = pno
             last_y = row_bottom + 1.5
 
