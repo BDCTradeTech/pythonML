@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.22"
+VERSION = "2.26.04.10.23"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -2098,13 +2098,325 @@ def _fmt_pdf_money_for_insert(x: float) -> str:
     return f"{float(x):,.2f}"
 
 
+def _pdf_insert_text_right(
+    page: Any, x_right: float, y_baseline: float, text: str, fontsize: float, fontname: str
+) -> None:
+    import fitz  # pymupdf
+
+    t = str(text)
+    try:
+        font = fitz.Font(fontname=fontname)
+        w = float(font.text_length(t, fontsize=fontsize))
+    except Exception:
+        w = len(t) * fontsize * 0.52
+    x = float(x_right) - w
+    page.insert_text(
+        fitz.Point(x, float(y_baseline)),
+        t,
+        fontsize=float(fontsize),
+        fontname=fontname,
+        color=(0, 0, 0),
+    )
+
+
+def _pdf_try_detect_invoice_header_layout(page: Any) -> Optional[Dict[str, Any]]:
+    """Detecta fila de cabecera SKU/DESCRIPTION/QTY/RATE/AMOUNT (plantilla QuickBooks u similar)."""
+    import fitz  # pymupdf
+
+    pairs = [
+        ("SKU", "sku"),
+        ("DESCRIPTION", "description"),
+        ("QTY", "qty"),
+        ("RATE", "rate"),
+        ("AMOUNT", "amount"),
+    ]
+    buckets: Dict[str, List[Any]] = {}
+    for lab, _ in pairs:
+        hits: List[Any] = []
+        for v in (lab, lab.title(), lab.capitalize()):
+            hits = page.search_for(v)
+            if hits:
+                break
+        buckets[lab] = list(hits) if hits else []
+    sku_opts = buckets.get("SKU") or []
+    if not sku_opts:
+        return None
+    sku_sorted = sorted(sku_opts, key=lambda r: (fitz.Rect(r).y0, fitz.Rect(r).x0))
+    for sku_raw in sku_sorted[:24]:
+        sr = fitz.Rect(sku_raw)
+        cy_s = (float(sr.y0) + float(sr.y1)) * 0.5
+        row: Dict[str, Any] = {"sku": sr}
+        ok = True
+        for lab, key in pairs[1:]:
+            cand = buckets.get(lab) or []
+            best: Optional[Any] = None
+            best_dy = 1e9
+            for h in cand:
+                hr = fitz.Rect(h)
+                cy = (float(hr.y0) + float(hr.y1)) * 0.5
+                dy = abs(cy - cy_s)
+                if dy < best_dy and dy < 9.0:
+                    best_dy = dy
+                    best = hr
+            if best is None:
+                ok = False
+                break
+            row[key] = fitz.Rect(best)
+        if not ok:
+            continue
+        x_order = [
+            row["sku"].x0,
+            row["description"].x0,
+            row["qty"].x0,
+            row["rate"].x0,
+            row["amount"].x0,
+        ]
+        if x_order != sorted(x_order):
+            continue
+        y_h_max = max(float(row[k].y1) for k in ("sku", "description", "qty", "rate", "amount"))
+        pr = fitz.Rect(page.rect)
+        return {
+            "x_sku": float(row["sku"].x0),
+            "x_desc": float(row["description"].x0),
+            "x_qty_left": float(row["qty"].x0),
+            "x_rate_left": float(row["rate"].x0),
+            "x_amt_left": float(row["amount"].x0),
+            "x_amt_right": float(row["amount"].x1),
+            "y_data_start": float(y_h_max) + 4.0,
+            "x_margin_l": max(float(pr.x0) + 4.0, float(row["sku"].x0) - 4.0),
+            "x_margin_r": min(float(pr.x1) - 6.0, float(row["amount"].x1) + 12.0),
+        }
+    return None
+
+
+def _pdf_find_items_block_y_end(page: Any, y_min: float) -> float:
+    import fitz  # pymupdf
+
+    pr = fitz.Rect(page.rect)
+    best = float(pr.y1) - 28.0
+    for m in (
+        "BALANCE DUE",
+        "Balance Due",
+        "SUBTOTAL",
+        "Subtotal",
+        "TOTAL",
+        "Total",
+        "TAX",
+        "Tax",
+    ):
+        for r in page.search_for(m):
+            rr = fitz.Rect(r)
+            if float(rr.y0) > float(y_min) + 15.0 and float(rr.y0) < best:
+                best = float(rr.y0)
+    return best - 10.0
+
+
+def _pdf_table_layout_from_first_data_row(
+    doc: Any, specs: List[Dict[str, Any]]
+) -> Optional[tuple[int, Dict[str, Any]]]:
+    """Si no hay cabecera reconocible, usa la1ª línea de ítem para columnas X y tope superior."""
+    import fitz  # pymupdf
+
+    if not specs:
+        return None
+    d_variants = _pdf_description_search_variants(specs[0]["description"])
+    found = _pdf_find_rect_global_after_row_skip_occurrence(
+        doc, d_variants, 0, 0.0, 0, min_variant_len=3
+    )
+    if not found:
+        s0 = specs[0]
+        sv = str(s0.get("sku") or "").strip()
+        al = list(s0.get("sku_aliases") or [])
+        if not al and sv:
+            al = [sv]
+        sp = _pdf_sku_all_search_strings(al)
+        found = _pdf_try_anchor_row_from_sku(
+            doc, sp, 0, 0.0, s0, None, sku_occurrence_skip=0
+        )
+    if not found:
+        return None
+    pno, d_rect = found
+    page = doc[pno]
+    dr = fitz.Rect(d_rect)
+    loose_qty_x = max(float(dr.x1) + 18.0, float(dr.x0) + 125.0)
+    y_lo = float(dr.y0) - 4.0
+    y_hi = y_lo + float(_PDF_INVOICE_ROW_Y_SPAN)
+    y_mid = (y_lo + y_hi) * 0.5
+    qty_rect = _pdf_find_rect_right_band(
+        page,
+        y_lo,
+        y_hi,
+        _numeric_search_variants(specs[0]["qty"]),
+        loose_qty_x,
+        y_prefer=y_mid,
+    )
+    if not qty_rect:
+        return None
+    qr = fitz.Rect(qty_rect)
+    x_after = float(qr.x1) - 1.0
+    yc = (float(qr.y0) + float(qr.y1)) * 0.5
+    y_lr = (yc - 10.0, yc + 10.0)
+    rate_rect = _pdf_find_rect_right_band(
+        page,
+        y_lr[0],
+        y_lr[1],
+        _numeric_search_variants(specs[0]["rate"]),
+        x_after,
+        y_prefer=yc,
+        max_y_dist=14.0,
+    )
+    if not rate_rect:
+        return None
+    rr = fitz.Rect(rate_rect)
+    x_after2 = float(rr.x1) - 1.0
+    amt_rect = _pdf_find_rect_right_band(
+        page,
+        y_lr[0],
+        y_lr[1],
+        _numeric_search_variants(specs[0]["amount"]),
+        x_after2,
+        y_prefer=yc,
+        max_y_dist=14.0,
+    )
+    if not amt_rect:
+        return None
+    ar = fitz.Rect(amt_rect)
+    pr = fitz.Rect(page.rect)
+    x_sku = max(float(pr.x0) + 6.0, float(dr.x0) - 92.0)
+    layout = {
+        "x_sku": x_sku,
+        "x_desc": float(dr.x0),
+        "x_qty_left": float(qr.x0),
+        "x_rate_left": float(rr.x0),
+        "x_amt_left": float(ar.x0),
+        "x_amt_right": float(ar.x1),
+        "y_data_start": float(dr.y0) + 2.0,
+        "x_margin_l": max(float(pr.x0) + 4.0, x_sku - 4.0),
+        "x_margin_r": min(float(pr.x1) - 6.0, float(ar.x1) + 14.0),
+    }
+    return pno, layout
+
+
+def _patch_invoice_pdf_items_table_rewrite(
+    pdf_bytes: bytes,
+    inv_obj: Dict[str, Any],
+    new_description: str,
+    user_id: Optional[int],
+) -> tuple[Optional[bytes], Optional[str]]:
+    """Borra el bloque de la tabla de ítems y redibuja todas las filas con datos de la API."""
+    try:
+        import fitz  # pymupdf
+    except ImportError:
+        return None, None
+
+    specs = _invoice_line_patch_specs(inv_obj, user_id, {})
+    if not specs:
+        return None, None
+
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        layout: Optional[Dict[str, Any]] = None
+        pno = 0
+        for pn in range(len(doc)):
+            ly = _pdf_try_detect_invoice_header_layout(doc[pn])
+            if ly:
+                layout = ly
+                pno = pn
+                break
+        if layout is None:
+            fb = _pdf_table_layout_from_first_data_row(doc, specs)
+            if not fb:
+                return None, None
+            pno, layout = fb
+
+        page = doc[pno]
+        pr = fitz.Rect(page.rect)
+        y0 = float(layout["y_data_start"])
+        y1 = _pdf_find_items_block_y_end(page, y0)
+        if y1 <= y0 + float(len(specs)) * 10.0:
+            y1 = min(float(pr.y1) - 30.0, y0 + max(120.0, float(len(specs)) * 22.0 + 40.0))
+
+        x0 = float(layout["x_margin_l"])
+        x1 = float(layout["x_margin_r"])
+        red = fitz.Rect(x0, y0 - 6.0, x1, y1)
+        page.add_redact_annot(red, fill=(1, 1, 1))
+        page.apply_redactions()
+
+        fs = float(_PDF_PATCH_FONTSIZE)
+        fn = _PDF_PATCH_FONTNAME
+        avail_h = float(y1) - float(y0) - 10.0
+        row_h = max(15.0, min(22.0, avail_h / float(len(specs)))) if specs else 18.0
+
+        x_sku = float(layout["x_sku"])
+        x_desc = float(layout["x_desc"])
+        qty_right = float(layout["x_rate_left"]) - 8.0
+        rate_right = float(layout["x_amt_left"]) - 8.0
+        amt_right = float(layout["x_amt_right"]) + 4.0
+        desc_max_w = max(40.0, qty_right - x_desc - 10.0)
+
+        y_base = float(y0) + fs * 0.72
+        for spec in specs:
+            sku = str(spec.get("sku") or "").strip()
+            if not sku and spec.get("sku_aliases"):
+                sku = str(spec["sku_aliases"][0]).strip()
+            line1, line2 = _pdf_split_sku_two_lines(sku)
+            page.insert_text(
+                fitz.Point(x_sku, y_base),
+                line1,
+                fontsize=fs,
+                fontname=fn,
+                color=(0, 0, 0),
+            )
+            row_extra = 0.0
+            if line2:
+                page.insert_text(
+                    fitz.Point(x_sku, y_base + fs * 1.18),
+                    line2,
+                    fontsize=fs,
+                    fontname=fn,
+                    color=(0, 0, 0),
+                )
+                row_extra = fs * 1.15
+            desc_txt = str(new_description).strip()
+            if desc_max_w > 50 and len(desc_txt) > 90:
+                desc_txt = desc_txt[:87] + "…"
+            page.insert_text(
+                fitz.Point(x_desc, y_base),
+                desc_txt,
+                fontsize=fs,
+                fontname=fn,
+                color=(0, 0, 0),
+            )
+            _pdf_insert_text_right(
+                page, qty_right, y_base, _fmt_pdf_qty_for_insert(float(spec["qty"])), fs, fn
+            )
+            _pdf_insert_text_right(
+                page, rate_right, y_base, _fmt_pdf_money_for_insert(float(spec["rate"])), fs, fn
+            )
+            _pdf_insert_text_right(
+                page, amt_right, y_base, _fmt_pdf_money_for_insert(float(spec["amount"])), fs, fn
+            )
+            y_base += max(row_h, fs + row_extra + 4.0)
+
+        return (
+            doc.tobytes(deflate=True),
+            "Tabla de ítems regenerada desde QuickBooks (bloque único).",
+        )
+    finally:
+        doc.close()
+
+
 def patch_invoice_pdf_line_items(
     pdf_bytes: bytes,
     inv_obj: Dict[str, Any],
     new_description: str = "Mouse",
     user_id: Optional[int] = None,
+    prefer_table_rewrite: bool = True,
 ) -> tuple[Optional[bytes], Optional[str]]:
-    """Por cada línea de venta: descripción -> new_description; SKU, qty, rate y amount se redibujan con el mismo valor (tipografía unificada)."""
+    """Parchea líneas de venta: por defecto reescribe el bloque entero de la tabla desde la API.
+
+    Si prefer_table_rewrite es False, usa el método anterior (búsqueda fila a fila).
+    """
     try:
         import fitz  # pymupdf
     except ImportError:
@@ -2118,6 +2430,13 @@ def patch_invoice_pdf_line_items(
     specs = _invoice_line_patch_specs(inv_obj, user_id, {})
     if not specs:
         return None, "No hay líneas de ítem para parchear en el PDF"
+
+    if prefer_table_rewrite:
+        rw, rmsg = _patch_invoice_pdf_items_table_rewrite(
+            pdf_bytes, inv_obj, new_description, user_id
+        )
+        if rw is not None:
+            return rw, rmsg
 
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
