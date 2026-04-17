@@ -47,7 +47,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.14.12"
+VERSION = "2.26.04.14.13"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1360,7 +1360,8 @@ def _pdf_description_full_redact_rect(
         x_hi = float(qty_x0) - 4.0
     else:
         x_hi = float(d.x1) + float(extra_right_if_no_qty)
-    x_lo = max(float(page.rect.x0) + 4.0, float(d.x0) - 28.0)
+    # Borde izquierdo de la columna DESCRIPCIÓN (nunca invadir columna SKU)
+    desc_x_min = max(float(page.rect.x0) + 6.0, float(d.x0) - 3.0)
 
     next_sku_y: Optional[float] = None
     dd = page.get_text("dict")
@@ -1400,11 +1401,16 @@ def _pdf_description_full_redact_rect(
                     continue
                 if sy0 > y_cap + 2.0:
                     continue
-                if sx1 < x_lo or sx0 > x_hi + 2.0:
+                if sx0 < desc_x_min - 1.0:
+                    continue
+                if sx0 > x_hi + 2.0:
+                    continue
+                if min(sx1, x_hi) <= max(sx0, desc_x_min) + 0.5:
                     continue
                 u |= fitz.Rect(b)
-    u.x0 = min(float(u.x0), x_lo)
-    u.x1 = max(float(u.x1), min(x_hi, float(page.rect.x1) - 6.0))
+    u.x0 = max(float(u.x0), desc_x_min)
+    x_right = min(x_hi, float(page.rect.x1) - 6.0)
+    u.x1 = min(max(float(u.x1), float(d.x1) + 1.0), x_right)
     if float(u.y1) < float(d.y1):
         u.y1 = float(d.y1) + 2.0
     return u
@@ -1784,12 +1790,17 @@ def _pdf_find_rect_row_before(
     return best
 
 
-def _pdf_insert_black_text(page: Any, rect: Any, text: str) -> None:
+def _pdf_insert_black_text(
+    page: Any, rect: Any, text: str, min_x0: Optional[float] = None
+) -> None:
     import fitz  # pymupdf
 
     r = fitz.Rect(rect)
     fs = float(_PDF_PATCH_FONTSIZE)
-    pt = fitz.Point(r.x0, r.y0 + fs * 0.72)
+    x = float(r.x0)
+    if min_x0 is not None:
+        x = max(x, float(min_x0))
+    pt = fitz.Point(x, r.y0 + fs * 0.72)
     page.insert_text(
         pt, text, fontsize=fs, fontname=_PDF_PATCH_FONTNAME, color=(0, 0, 0)
     )
@@ -1972,9 +1983,14 @@ def patch_invoice_pdf_line_items(
                 page.add_redact_annot(fitz.Rect(rect))
             page.apply_redactions()
 
+            desc_x_insert = float(d_rect.x0) - 2.0
             for rect, txt, is_sku in sorted(fields, key=lambda t: float(fitz.Rect(t[0]).x0)):
                 if is_sku:
                     _pdf_insert_sku_in_union(page, fitz.Rect(rect), str(txt))
+                elif str(txt) == str(new_description):
+                    _pdf_insert_black_text(
+                        page, fitz.Rect(rect), str(txt), min_x0=desc_x_insert
+                    )
                 else:
                     _pdf_insert_black_text(page, fitz.Rect(rect), str(txt))
 
