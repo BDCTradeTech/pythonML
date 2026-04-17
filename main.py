@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.25"
+VERSION = "2.26.04.10.27"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1305,6 +1305,11 @@ _PDF_INVOICE_ROW_Y_SPAN = 40.0
 _PDF_DESC_CLUSTER_ROW_SEP = 16.0
 # Debajo del texto SKU/DESCRIPTION/… de cabecera: aire para la franja gris antes de borrar ítems.
 _PDF_TABLE_BODY_TOP_BELOW_HEADER_PT = 14.0
+# Afinado visual al redibujar tabla (pt): SKU más izq., descripción más der., QTY bajo el título.
+_PDF_TABLE_NUDGE_SKU_LEFT = 7.0
+_PDF_TABLE_NUDGE_DESC_RIGHT = 6.0
+# Resta al borde derecho de anclaje de QTY (texto alineado a la derecha en x_qty_right).
+_PDF_TABLE_NUDGE_QTY_LEFT = 5.0
 _PDF_SKU_REDACT_PAD = 7.0
 _PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
@@ -2178,11 +2183,16 @@ def _pdf_try_detect_invoice_header_layout(page: Any) -> Optional[Dict[str, Any]]
         y_h_max = max(float(row[k].y1) for k in ("sku", "description", "qty", "rate", "amount"))
         pr = fitz.Rect(page.rect)
         y_body = float(y_h_max) + float(_PDF_TABLE_BODY_TOP_BELOW_HEADER_PT)
+        q_hdr = row["qty"]
+        r_hdr = row["rate"]
+        # Cantidad alineada a la derecha bajo "QTY" (ancla ~fin de etiqueta), sin invadir RATE.
+        x_qty_right = min(float(q_hdr.x1) + 0.5, float(r_hdr.x0) - 8.0)
         return {
             "x_sku": float(row["sku"].x0),
             "x_desc": float(row["description"].x0),
-            "x_qty_left": float(row["qty"].x0),
-            "x_rate_left": float(row["rate"].x0),
+            "x_qty_left": float(q_hdr.x0),
+            "x_qty_right": x_qty_right,
+            "x_rate_left": float(r_hdr.x0),
             "x_amt_left": float(row["amount"].x0),
             "x_amt_right": float(row["amount"].x1),
             "y_data_start": y_body,
@@ -2286,10 +2296,12 @@ def _pdf_table_layout_from_first_data_row(
     ar = fitz.Rect(amt_rect)
     pr = fitz.Rect(page.rect)
     x_sku = max(float(pr.x0) + 6.0, float(dr.x0) - 92.0)
+    x_qty_right_fb = min(float(qr.x1) + 1.0, float(rr.x0) - 8.0)
     layout = {
         "x_sku": x_sku,
         "x_desc": float(dr.x0),
         "x_qty_left": float(qr.x0),
+        "x_qty_right": x_qty_right_fb,
         "x_rate_left": float(rr.x0),
         "x_amt_left": float(ar.x0),
         "x_amt_right": float(ar.x1),
@@ -2340,7 +2352,12 @@ def _patch_invoice_pdf_items_table_rewrite(
         if y1 <= y0 + float(len(specs)) * 10.0:
             y1 = min(float(pr.y1) - 30.0, y0 + max(120.0, float(len(specs)) * 22.0 + 40.0))
 
-        x0 = float(layout["x_margin_l"])
+        x_sku = max(
+            float(pr.x0) + 4.0,
+            float(layout["x_sku"]) - float(_PDF_TABLE_NUDGE_SKU_LEFT),
+        )
+        x_desc = float(layout["x_desc"]) + float(_PDF_TABLE_NUDGE_DESC_RIGHT)
+        x0 = min(float(layout["x_margin_l"]), x_sku - 3.0)
         x1 = float(layout["x_margin_r"])
         # Sin y0-6: ese margen subía el rect y borraba la franja gris y los títulos de columna.
         red = fitz.Rect(x0, y0, x1, y1)
@@ -2352,9 +2369,14 @@ def _patch_invoice_pdf_items_table_rewrite(
         avail_h = float(y1) - float(y0) - 10.0
         row_h = max(15.0, min(22.0, avail_h / float(len(specs)))) if specs else 18.0
 
-        x_sku = float(layout["x_sku"])
-        x_desc = float(layout["x_desc"])
-        qty_right = float(layout["x_rate_left"]) - 8.0
+        qty_anchor = float(
+            layout.get("x_qty_right") or (float(layout["x_rate_left"]) - 10.0)
+        )
+        qty_right = qty_anchor - float(_PDF_TABLE_NUDGE_QTY_LEFT)
+        q_col_l = float(layout.get("x_qty_left") or (qty_anchor - 36.0))
+        rate_l = float(layout["x_rate_left"])
+        qty_right = max(qty_right, q_col_l + 12.0)
+        qty_right = min(qty_right, rate_l - 4.0)
         rate_right = float(layout["x_amt_left"]) - 8.0
         amt_right = float(layout["x_amt_right"]) + 4.0
         desc_max_w = max(40.0, qty_right - x_desc - 10.0)
