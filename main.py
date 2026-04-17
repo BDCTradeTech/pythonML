@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.27"
+VERSION = "2.26.04.10.28"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1318,6 +1318,14 @@ _PDF_PATCH_FONTSIZE = 9.5
 _PDF_PATCH_SKU_FS_MIN = 7.8
 # SKU: correr el inicio a la izquierda (pt) para una sola línea con más aire
 _PDF_PATCH_SKU_SHIFT_LEFT = 14.0
+
+
+def _qb_invoice_pdf_download_basename(doc: Any) -> str:
+    """Nombre de archivo sugerido para PDF de invoice: `{doc}.pdf` (sin prefijo invoice_)."""
+    base = str(doc or "invoice").strip().replace(" ", "_")
+    for c in '<>:"/\\|?*':
+        base = base.replace(c, "_")
+    return f"{base[:80]}.pdf"
 
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
@@ -9502,7 +9510,7 @@ def build_tab_historicos(container) -> None:
                                                                                         with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                                                                                             f.write(pdf_bytes)
                                                                                             path = f.name
-                                                                                        nombre = f"invoice_{doc}.pdf".replace(" ", "_")[:60]
+                                                                                        nombre = _qb_invoice_pdf_download_basename(doc)
                                                                                         ui.download(path, nombre)
                                                                                         ui.notify("Descarga iniciada", color="positive")
                                                                                     ui.button(doc_txt, on_click=_descargar_invoice).props("flat dense no-caps").classes("text-primary underline hover:no-underline cursor-pointer p-0 min-w-0 font-normal")
@@ -9679,7 +9687,7 @@ def build_tab_stock(container) -> None:
                                                                                 with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
                                                                                     f.write(pdf_bytes)
                                                                                     path = f.name
-                                                                                nombre = f"invoice_{doc}.pdf".replace(" ", "_")[:60]
+                                                                                nombre = _qb_invoice_pdf_download_basename(doc)
                                                                                 ui.download(path, nombre)
                                                                                 ui.notify("Descarga iniciada", color="positive")
                                                                             ui.button(doc_txt, on_click=_descargar_inv).props("flat dense no-caps").classes("text-primary underline hover:no-underline cursor-pointer p-0 min-w-0 font-normal")
@@ -9923,19 +9931,18 @@ def build_tab_compras(container) -> None:
                             if not pdf_bytes:
                                 ui.notify("No se pudo obtener el PDF", color="warning")
                                 return
-                            doc_num = inv.get("doc", "invoice")
                             try:
                                 fd, path = tempfile.mkstemp(suffix=".pdf")
                                 os.write(fd, pdf_bytes)
                                 os.close(fd)
-                                nombre = f"invoice_{doc_num}.pdf"
+                                nombre = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"))
                                 with dlg:
                                     ui.download(path, nombre)
                                 ui.notify("Descarga iniciada", color="positive")
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
-                        def _descargar_pdf_parcheado(reemplazo: str, sufijo_archivo: str) -> None:
+                        def _descargar_pdf_parcheado(reemplazo: str) -> None:
                             inv_obj = invoice_popup_ctx.get("inv_obj") or {}
                             pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
                             if err:
@@ -9953,12 +9960,13 @@ def build_tab_compras(container) -> None:
                             if not patched:
                                 ui.notify(perr or "No se pudo modificar el PDF", color="negative")
                                 return
-                            doc_num = inv.get("doc", "invoice")
                             try:
                                 fd, path = tempfile.mkstemp(suffix=".pdf")
                                 os.write(fd, patched)
                                 os.close(fd)
-                                nombre = f"invoice_{doc_num}_{sufijo_archivo}.pdf"
+                                base_fn = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"))
+                                stem = base_fn[:-4] if base_fn.lower().endswith(".pdf") else base_fn
+                                nombre = f"BDC_{stem}.pdf"
                                 with dlg:
                                     ui.download(path, nombre)
                                 if perr:
@@ -9969,15 +9977,15 @@ def build_tab_compras(container) -> None:
                                 ui.notify(f"Error: {ex}", color="negative")
 
                         ui.button("Cerrar popup", on_click=dlg.close).props("dense no-caps")
-                        ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
+                        ui.button("Invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
                         ui.button(
-                            "MOUSE",
-                            on_click=lambda: _descargar_pdf_parcheado("MOUSE", "mouse"),
+                            "Mouse",
+                            on_click=lambda: _descargar_pdf_parcheado("MOUSE"),
                             color="secondary",
                         ).props("dense no-caps icon=download")
                         ui.button(
-                            "SMARTWATCH",
-                            on_click=lambda: _descargar_pdf_parcheado("SMARTWATCH", "smartwatch"),
+                            "Smartwatch",
+                            on_click=lambda: _descargar_pdf_parcheado("SMARTWATCH"),
                             color="secondary",
                         ).props("dense no-caps icon=download")
 
