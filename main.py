@@ -49,7 +49,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.23"
+VERSION = "2.26.04.10.25"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1303,6 +1303,8 @@ _PDF_ROW_Y_TOL = 5.0
 _PDF_INVOICE_ROW_Y_SPAN = 40.0
 # Separación mínima entre “filas de ítem” al agrupar rects de search_for (más que el interlineado ~11–12).
 _PDF_DESC_CLUSTER_ROW_SEP = 16.0
+# Debajo del texto SKU/DESCRIPTION/… de cabecera: aire para la franja gris antes de borrar ítems.
+_PDF_TABLE_BODY_TOP_BELOW_HEADER_PT = 14.0
 _PDF_SKU_REDACT_PAD = 7.0
 _PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
@@ -1757,7 +1759,7 @@ def _pdf_insert_sku_in_union(
     text: str,
     y_row_align: Optional[float] = None,
 ) -> None:
-    """Redibuja el SKU en ≤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que Mouse)."""
+    """Redibuja el SKU en ≤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -2175,6 +2177,7 @@ def _pdf_try_detect_invoice_header_layout(page: Any) -> Optional[Dict[str, Any]]
             continue
         y_h_max = max(float(row[k].y1) for k in ("sku", "description", "qty", "rate", "amount"))
         pr = fitz.Rect(page.rect)
+        y_body = float(y_h_max) + float(_PDF_TABLE_BODY_TOP_BELOW_HEADER_PT)
         return {
             "x_sku": float(row["sku"].x0),
             "x_desc": float(row["description"].x0),
@@ -2182,7 +2185,7 @@ def _pdf_try_detect_invoice_header_layout(page: Any) -> Optional[Dict[str, Any]]
             "x_rate_left": float(row["rate"].x0),
             "x_amt_left": float(row["amount"].x0),
             "x_amt_right": float(row["amount"].x1),
-            "y_data_start": float(y_h_max) + 4.0,
+            "y_data_start": y_body,
             "x_margin_l": max(float(pr.x0) + 4.0, float(row["sku"].x0) - 4.0),
             "x_margin_r": min(float(pr.x1) - 6.0, float(row["amount"].x1) + 12.0),
         }
@@ -2290,7 +2293,8 @@ def _pdf_table_layout_from_first_data_row(
         "x_rate_left": float(rr.x0),
         "x_amt_left": float(ar.x0),
         "x_amt_right": float(ar.x1),
-        "y_data_start": float(dr.y0) + 2.0,
+        # Primera fila de datos: no subir el borrado (evita comer cabecera si el match sube de más).
+        "y_data_start": float(dr.y0) + 5.0,
         "x_margin_l": max(float(pr.x0) + 4.0, x_sku - 4.0),
         "x_margin_r": min(float(pr.x1) - 6.0, float(ar.x1) + 14.0),
     }
@@ -2338,7 +2342,8 @@ def _patch_invoice_pdf_items_table_rewrite(
 
         x0 = float(layout["x_margin_l"])
         x1 = float(layout["x_margin_r"])
-        red = fitz.Rect(x0, y0 - 6.0, x1, y1)
+        # Sin y0-6: ese margen subía el rect y borraba la franja gris y los títulos de columna.
+        red = fitz.Rect(x0, y0, x1, y1)
         page.add_redact_annot(red, fill=(1, 1, 1))
         page.apply_redactions()
 
@@ -2409,7 +2414,7 @@ def _patch_invoice_pdf_items_table_rewrite(
 def patch_invoice_pdf_line_items(
     pdf_bytes: bytes,
     inv_obj: Dict[str, Any],
-    new_description: str = "Mouse",
+    new_description: str = "MOUSE",
     user_id: Optional[int] = None,
     prefer_table_rewrite: bool = True,
 ) -> tuple[Optional[bytes], Optional[str]]:
@@ -9944,13 +9949,13 @@ def build_tab_compras(container) -> None:
                         ui.button("Cerrar popup", on_click=dlg.close).props("dense no-caps")
                         ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
                         ui.button(
-                            "Mouse",
-                            on_click=lambda: _descargar_pdf_parcheado("Mouse", "mouse"),
+                            "MOUSE",
+                            on_click=lambda: _descargar_pdf_parcheado("MOUSE", "mouse"),
                             color="secondary",
                         ).props("dense no-caps icon=download")
                         ui.button(
-                            "Smartwatch",
-                            on_click=lambda: _descargar_pdf_parcheado("Smartwatch", "smartwatch"),
+                            "SMARTWATCH",
+                            on_click=lambda: _descargar_pdf_parcheado("SMARTWATCH", "smartwatch"),
                             color="secondary",
                         ).props("dense no-caps icon=download")
 
