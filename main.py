@@ -47,7 +47,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: actualizar manualmente cada vez que se modifica el código
-VERSION = "2.26.04.10.11"
+VERSION = "2.26.04.10.12"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1614,7 +1614,7 @@ def _fmt_pdf_money_for_insert(x: float) -> str:
 def patch_invoice_pdf_line_items(
     pdf_bytes: bytes,
     inv_obj: Dict[str, Any],
-    new_description: str = "Producto de Prueba",
+    new_description: str = "Mouse",
     user_id: Optional[int] = None,
 ) -> tuple[Optional[bytes], Optional[str]]:
     """Por cada línea de venta: descripción -> new_description; SKU, qty, rate y amount se redibujan con el mismo valor (tipografía unificada)."""
@@ -8912,7 +8912,7 @@ def build_tab_compras(container) -> None:
                             except Exception as ex:
                                 ui.notify(f"Error: {ex}", color="negative")
 
-                        def _descargar_otra() -> None:
+                        def _descargar_pdf_parcheado(reemplazo: str, sufijo_archivo: str) -> None:
                             inv_obj = invoice_popup_ctx.get("inv_obj") or {}
                             pdf_bytes, err = fetch_qb_invoice_pdf(user["id"], inv.get("id", ""))
                             if err:
@@ -8924,7 +8924,7 @@ def build_tab_compras(container) -> None:
                             patched, perr = patch_invoice_pdf_line_items(
                                 pdf_bytes,
                                 inv_obj,
-                                "Producto de Prueba",
+                                reemplazo,
                                 user_id=user["id"],
                             )
                             if not patched:
@@ -8935,7 +8935,7 @@ def build_tab_compras(container) -> None:
                                 fd, path = tempfile.mkstemp(suffix=".pdf")
                                 os.write(fd, patched)
                                 os.close(fd)
-                                nombre = f"invoice_{doc_num}_otra.pdf"
+                                nombre = f"invoice_{doc_num}_{sufijo_archivo}.pdf"
                                 with dlg:
                                     ui.download(path, nombre)
                                 if perr:
@@ -8947,7 +8947,16 @@ def build_tab_compras(container) -> None:
 
                         ui.button("Cerrar popup", on_click=dlg.close).props("dense no-caps")
                         ui.button("Descargar invoice", on_click=_descargar_pdf, color="secondary").props("dense no-caps icon=download")
-                        ui.button("Otra", on_click=_descargar_otra, color="primary").props("dense no-caps")
+                        ui.button(
+                            "Mouse",
+                            on_click=lambda: _descargar_pdf_parcheado("Mouse", "mouse"),
+                            color="primary",
+                        ).props("dense no-caps")
+                        ui.button(
+                            "Smartwatch",
+                            on_click=lambda: _descargar_pdf_parcheado("Smartwatch", "smartwatch"),
+                            color="primary",
+                        ).props("dense no-caps")
 
             dlg.open()
             background_tasks.create(_cargar_y_mostrar(), name="invoice_detail")
