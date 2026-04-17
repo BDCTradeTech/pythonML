@@ -47,7 +47,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.04.10.15"
+VERSION = "2.26.04.10.16"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -1293,7 +1293,9 @@ def _pdf_description_search_variants(old: str) -> List[str]:
 
 
 _PDF_ROW_Y_TOL = 5.0
-_PDF_ROW_Y_BAND = 100.0
+# Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2–3 líneas de descripción,
+# pero sin el exceso anterior (~100) que mezclaba columnas de filas vecinas.
+_PDF_INVOICE_ROW_Y_SPAN = 40.0
 _PDF_SKU_REDACT_PAD = 7.0
 _PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
 # Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
@@ -1319,19 +1321,34 @@ def _pdf_find_first_rect_global_after_y(
 def _pdf_find_first_rect_global_after_row(
     doc: Any, variants: List[str], min_page: int, min_y: float
 ) -> Optional[tuple[int, Any]]:
-    """Primera coincidencia en orden lectura; en cada página nueva el piso de y se reinicia (corrige multi-página)."""
+    """Primera fila siguiente: prueba cada variante por separado, de la más larga a la más corta.
+
+    Si se mezclan todas las variantes y se toma el mínimo global, prefijos cortos (p. ej. 4 palabras
+    iguales en varios ítems) vuelven a coincidir con filas ya procesadas y destruyen el PDF.
+    """
     import fitz  # pymupdf
 
-    best_key: Optional[tuple[int, float, float]] = None
-    best: Optional[tuple[int, Any]] = None
+    if not variants:
+        return None
+    uniq: List[str] = []
+    seen: set[str] = set()
+    for v in variants:
+        v = str(v).strip()
+        if len(v) >= 3 and v not in seen:
+            seen.add(v)
+            uniq.append(v)
+    # Más específico primero (misma longitud: orden estable del caller)
+    sorted_v = sorted(uniq, key=len, reverse=True)
     mp = int(min_page)
     floor = float(min_y)
-    for pno in range(len(doc)):
-        if pno < mp:
-            continue
-        page = doc[pno]
-        y_floor = floor if pno == mp else 0.0
-        for variant in variants:
+    for variant in sorted_v:
+        best_key: Optional[tuple[int, float, float]] = None
+        best: Optional[tuple[int, Any]] = None
+        for pno in range(len(doc)):
+            if pno < mp:
+                continue
+            page = doc[pno]
+            y_floor = floor if pno == mp else 0.0
             for r in page.search_for(variant):
                 rr = fitz.Rect(r)
                 if float(rr.y0) < y_floor - 1.5:
@@ -1340,7 +1357,9 @@ def _pdf_find_first_rect_global_after_row(
                 if best_key is None or key < best_key:
                     best_key = key
                     best = (pno, rr)
-    return best
+        if best is not None:
+            return best
+    return None
 
 
 def _pdf_description_redact_rect(
@@ -1778,9 +1797,13 @@ def _pdf_find_rect_right_band(
 
 
 def _pdf_find_rect_row_after(
-    page: Any, y_ref: float, variants: List[str], x_min: float
+    page: Any,
+    y_ref: float,
+    variants: List[str],
+    x_min: float,
+    y_tol: float = _PDF_ROW_Y_TOL,
 ) -> Optional[Any]:
-    """Primera coincidencia en la fila y_ref con x0 >= x_min (columnas a la derecha)."""
+    """Primera coincidencia cerca de y_ref (centro vertical del rect) con x0 >= x_min."""
     import fitz  # pymupdf
 
     best: Optional[Any] = None
@@ -1788,7 +1811,8 @@ def _pdf_find_rect_row_after(
     for variant in variants:
         for r in page.search_for(variant):
             rr = fitz.Rect(r)
-            if abs(rr.y0 - y_ref) > _PDF_ROW_Y_TOL:
+            cy = (float(rr.y0) + float(rr.y1)) * 0.5
+            if abs(cy - y_ref) > y_tol:
                 continue
             if rr.x0 < x_min - 2:
                 continue
@@ -1878,15 +1902,8 @@ def patch_invoice_pdf_line_items(
             d_variants = _pdf_description_search_variants(spec["description"])
             found_d = _pdf_find_first_rect_global_after_row(doc, d_variants, last_pno, last_y)
             if not found_d:
-                for slack in (40.0, 85.0, 140.0, 220.0):
-                    found_d = _pdf_find_first_rect_global_after_row(
-                        doc, d_variants, last_pno, max(0.0, float(last_y) - slack)
-                    )
-                    if found_d:
-                        break
-            if not found_d and last_pno + 1 < len(doc):
                 found_d = _pdf_find_first_rect_global_after_row(
-                    doc, d_variants, last_pno + 1, 0.0
+                    doc, d_variants, last_pno, max(0.0, float(last_y) - 18.0)
                 )
             if not found_d:
                 missed_lines.append(line_idx + 1)
@@ -1905,8 +1922,17 @@ def patch_invoice_pdf_line_items(
             d_r = fitz.Rect(d_rect)
 
             loose_qty_x = max(float(d_rect.x1) + 18.0, float(d_rect.x0) + 125.0)
-            y_band_lo = float(d_rect.y0) - 6.0
-            y_band_hi = float(d_rect.y0) + float(_PDF_ROW_Y_BAND)
+            row_top = float(d_rect.y0)
+            if pno == last_pno and last_y > 0:
+                y_band_lo = max(row_top - 4.0, last_y + 0.5)
+            else:
+                y_band_lo = row_top - 4.0
+            d_bot = float(fitz.Rect(d_rect).y1)
+            y_band_hi = max(
+                y_band_lo + float(_PDF_INVOICE_ROW_Y_SPAN),
+                d_bot + 14.0,
+            )
+            y_row_center = (y_band_lo + y_band_hi) * 0.5
             qty_rect = _pdf_find_rect_right_band(
                 page,
                 y_band_lo,
@@ -1916,11 +1942,19 @@ def patch_invoice_pdf_line_items(
             )
             if not qty_rect:
                 qty_rect = _pdf_find_rect_row_after(
-                    page, y_ref, _numeric_search_variants(spec["qty"]), loose_qty_x
+                    page,
+                    y_row_center,
+                    _numeric_search_variants(spec["qty"]),
+                    loose_qty_x,
+                    y_tol=13.0,
                 )
             if not qty_rect:
                 qty_rect = _pdf_find_rect_row_after(
-                    page, y_ref, _numeric_search_variants(spec["qty"]), float(d_rect.x0) + 158.0
+                    page,
+                    y_row_center,
+                    _numeric_search_variants(spec["qty"]),
+                    float(d_rect.x0) + 158.0,
+                    y_tol=13.0,
                 )
 
             qty_x_max: Optional[float] = (
@@ -1976,8 +2010,8 @@ def patch_invoice_pdf_line_items(
             if qty_rect:
                 qc = fitz.Rect(qty_rect)
                 yc = (float(qc.y0) + float(qc.y1)) * 0.5
-                y_lo_ra = yc - 18.0
-                y_hi_ra = yc + 18.0
+                y_lo_ra = yc - 10.0
+                y_hi_ra = yc + 10.0
             else:
                 y_lo_ra, y_hi_ra = y_band_lo, y_band_hi
 
@@ -1991,7 +2025,11 @@ def patch_invoice_pdf_line_items(
             )
             if not rate_rect:
                 rate_rect = _pdf_find_rect_row_after(
-                    page, y_ref, _numeric_search_variants(spec["rate"]), x_after
+                    page,
+                    y_row_center,
+                    _numeric_search_variants(spec["rate"]),
+                    x_after,
+                    y_tol=13.0,
                 )
             if rate_rect:
                 fields.append((rate_rect, rate_ins, False))
@@ -2008,7 +2046,11 @@ def patch_invoice_pdf_line_items(
             )
             if not amt_rect:
                 amt_rect = _pdf_find_rect_row_after(
-                    page, y_ref, _numeric_search_variants(spec["amount"]), x_after
+                    page,
+                    y_row_center,
+                    _numeric_search_variants(spec["amount"]),
+                    x_after,
+                    y_tol=13.0,
                 )
             amt_ins = _fmt_pdf_money_for_insert(float(spec["amount"]))
             if amt_rect:
