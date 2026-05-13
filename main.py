@@ -6746,12 +6746,12 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         except (TypeError, ValueError):
             return "—"
 
-    # (gkey, grupo_label, bg_color, border_color)
+    # (gkey, grupo_label, bg_even, bg_odd, border_color)
     GROUPS = [
-        ("propia",   "Publicación Propia", "#F0F7FF", "#C5DCFA"),
-        ("catalogo", "Catálogo",           "#F1F8F1", "#B8D9B8"),
-        ("x3",       "3 Cuotas",           "#FFFAF0", "#FFE0B2"),
-        ("x6",       "6 Cuotas",           "#FAF5FC", "#E1BEE7"),
+        ("propia",   "Publicación Propia", "#F0F7FF", "#DCEEFB", "#C5DCFA"),
+        ("catalogo", "Catálogo",           "#F1F8F1", "#D6EDD6", "#B8D9B8"),
+        ("x3",       "3 Cuotas",           "#FFFAF0", "#FFF0CC", "#FFE0B2"),
+        ("x6",       "6 Cuotas",           "#FAF5FC", "#EDD9F5", "#E1BEE7"),
     ]
 
     SORT_KEY: Dict[str, Any] = {
@@ -6768,10 +6768,24 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
     TH_HDR  = f"{TH_BASE};background:#1976d2;color:white"
     TD_BASE = "padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
 
+    n_propios  = sum(1 for r in rows_all if r["propia"]["id"])
+    n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
+    n_x3       = sum(1 for r in rows_all if r["x3"]["id"])
+    n_x6       = sum(1 for r in rows_all if r["x6"]["id"])
+
     with result_area:
-        with ui.card().classes("w-full mb-2 p-4 bg-grey-2"):
+        with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap"):
-                ui.label(f"Productos únicos: {len(rows_all)}").classes("text-sm font-medium text-gray-700")
+                for label, count in [
+                    ("Productos únicos", len(rows_all)),
+                    ("Propios",          n_propios),
+                    ("Catálogo",         n_catalogo),
+                    ("En 3 cuotas",      n_x3),
+                    ("En 6 cuotas",      n_x6),
+                ]:
+                    with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
+                        ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
+                        ui.label(label).classes("text-xs text-gray-600 text-center")
 
         filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72 mb-3")
 
@@ -6795,7 +6809,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                 with ui.element("table").classes("w-full border-collapse text-sm"):
                     # ── Cabecera dos niveles ──────────────────────────────────
                     with ui.element("thead"):
-                        # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos (colspan=2)
+                        # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
+                        # Propia: colspan=2, los demás: colspan=3 (+ columna % vs Propia)
                         with ui.element("tr"):
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
@@ -6805,22 +6820,26 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                 ui.label("Nombre" + _ind("title"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};width:60px;text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Stock")
-                            for gkey, glabel, gbg, gborder in GROUPS:
-                                with ui.element("th").props('colspan="2"').style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
+                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
+                                cs = '2' if gkey == "propia" else '3'
+                                with ui.element("th").props(f'colspan="{cs}"').style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
-                        # Fila 2: Publicación / Precio para cada grupo (sticky top=37px)
+                        # Fila 2: Publicación / Precio [/ % vs Propia] para cada grupo
                         with ui.element("tr"):
-                            for gkey, glabel, gbg, gborder in GROUPS:
+                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
                                 with ui.element("th").style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:37px;z-index:10"):
                                     ui.label("Publicación")
                                 with ui.element("th").style(f"{TH_HDR};text-align:center;cursor:pointer;position:sticky;top:37px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
+                                if gkey != "propia":
+                                    with ui.element("th").style(f"{TH_HDR};text-align:center;width:70px;position:sticky;top:37px;z-index:10"):
+                                        ui.label("% vs Propia")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
-                            row_bg = "background:#ffffff" if idx % 2 == 0 else "background:#fafafa"
-                            with ui.element("tr").style(row_bg).classes("hover:bg-blue-50"):
+                            base_bg = "background:#ffffff" if idx % 2 == 0 else "background:#fafafa"
+                            with ui.element("tr").style(base_bg).classes("hover:bg-blue-50"):
                                 with ui.element("td").style(TD_BASE):
                                     ui.label(row.get("marca") or "—")
                                 with ui.element("td").style(TD_BASE):
@@ -6830,12 +6849,14 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                 with ui.element("td").style(f"{TD_BASE};width:60px;text-align:center"):
                                     sv = row.get("stock")
                                     ui.label(str(sv) if sv is not None else "—")
-                                for gkey, glabel, gbg, gborder in GROUPS:
+                                propia_price = row["propia"]["price"]
+                                for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
+                                    gbg = gbg_e if idx % 2 == 0 else gbg_o
                                     slot = row[gkey]
-                                    item_id  = slot["id"]
+                                    item_id   = slot["id"]
                                     permalink = slot["permalink"]
-                                    price    = slot["price"]
-                                    cell_style = f"background:{gbg};border-left:2px solid {gborder};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center"
+                                    price     = slot["price"]
+                                    cell_style  = f"background:{gbg};border-left:2px solid {gborder};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center"
                                     price_style = f"background:{gbg};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:right"
                                     with ui.element("td").style(cell_style):
                                         if item_id and permalink:
@@ -6846,6 +6867,19 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                             ui.label("—").classes("text-gray-400 text-xs")
                                     with ui.element("td").style(price_style):
                                         ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
+                                    if gkey != "propia":
+                                        pct_style = f"background:{gbg};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center;width:70px"
+                                        with ui.element("td").style(pct_style):
+                                            if price is not None and propia_price is not None and float(propia_price) != 0:
+                                                pct = (float(price) - float(propia_price)) / float(propia_price) * 100
+                                                if abs(pct) < 0.05:
+                                                    ui.label("=").classes("text-gray-500 text-xs font-medium")
+                                                elif pct > 0:
+                                                    ui.label(f"+{pct:.1f}%").classes("text-green-700 text-xs font-medium")
+                                                else:
+                                                    ui.label(f"{pct:.1f}%").classes("text-red-600 text-xs font-medium")
+                                            else:
+                                                ui.label("—").classes("text-gray-400 text-xs")
 
         def _on_sort(col: str) -> None:
             if sort_col_ref["val"] == col:
