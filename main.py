@@ -10,6 +10,7 @@ if not hasattr(asyncio, "to_thread"):
         return loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
     asyncio.to_thread = lambda fn, *args, **kwargs: _to_thread_compat(fn, *args, **kwargs)
 
+import bcrypt
 import hashlib
 import logging
 import re
@@ -3512,7 +3513,23 @@ def import_user_db_data(user_id: int, content: bytes) -> str:
 
 
 def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+    """Genera hash bcrypt. Usar solo para passwords NUEVOS."""
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+
+
+def _is_bcrypt_hash(h: str) -> bool:
+    return h.startswith(("$2b$", "$2a$", "$2y$"))
+
+
+def _verify_password(password: str, stored_hash: str) -> bool:
+    """Verifica contra hash bcrypt o SHA-256 legacy."""
+    pw_bytes = password.encode("utf-8")
+    if _is_bcrypt_hash(stored_hash):
+        try:
+            return bcrypt.checkpw(pw_bytes, stored_hash.encode("utf-8"))
+        except Exception:
+            return False
+    return hashlib.sha256(pw_bytes).hexdigest() == stored_hash
 
 
 
@@ -3642,9 +3659,17 @@ def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
         row = cur.fetchone()
         if not row:
             return None
-        if row["password_hash"] != hash_password(password):
+        stored = row["password_hash"]
+        if not _verify_password(password, stored):
             return None
-        return dict(row)
+        # Lazy migration: upgrade SHA-256 hash to bcrypt on successful login
+        if not _is_bcrypt_hash(stored):
+            new_hash = hash_password(password)
+            cur.execute("UPDATE users SET password_hash = ? WHERE username = ?", (new_hash, username))
+            conn.commit()
+        result = dict(row)
+        result.pop("password_hash", None)
+        return result
     finally:
         conn.close()
 
@@ -3658,7 +3683,7 @@ def update_user_password(user_id: int, current_password: str, new_password: str)
         row = cur.fetchone()
         if not row:
             return "Usuario no encontrado."
-        if row["password_hash"] != hash_password(current_password):
+        if not _verify_password(current_password, row["password_hash"]):
             return "Contraseña actual incorrecta."
         new_clean = (new_password or "").strip()
         if len(new_clean) < 4:
