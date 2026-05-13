@@ -6629,7 +6629,12 @@ def build_tab_cuotas(container) -> None:
                 with result_area:
                     ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
                 return
-            _mostrar_tabla_cuotas(result_area, data, access_token)
+            try:
+                _mostrar_tabla_cuotas(result_area, data, access_token)
+            except Exception as e:
+                result_area.clear()
+                with result_area:
+                    ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
 
         background_tasks.create(_cargar_cuotas_async(), name="cargar_cuotas")
 
@@ -6663,7 +6668,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         except (TypeError, ValueError):
             return "$0"
 
-    header_style = "background-color: #1976d2; color: white; font-weight: 600;"
     columns = [
         {"name": "seller_sku", "label": "SKU",               "align": "left"},
         {"name": "id",         "label": "N° Publicación ML", "align": "left"},
@@ -6673,52 +6677,52 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         {"name": "available_quantity", "label": "Stock",     "align": "right"},
     ]
 
-    table_container = ui.element("div").classes("w-full")
-
-    def _render(rows: list) -> None:
-        table_container.clear()
-        with table_container:
-            if not rows:
-                ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
-                return
-            with ui.element("div").classes("w-full overflow-x-auto"):
-                with ui.element("table").classes("w-full border-collapse text-sm"):
-                    with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                            for col in columns:
-                                align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
-                                with ui.element("th").classes(f"px-3 py-2 border {align}"):
-                                    ui.label(col["label"])
-                    with ui.element("tbody"):
-                        for row in rows:
-                            cuotas_val = _cuotas_desde_item(row)
-                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                for col in columns:
-                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
-                                    with ui.element("td").classes(f"px-3 py-1 border-b border-gray-100 {align} text-sm"):
-                                        if col["name"] == "id":
-                                            permalink = row.get("permalink") or ""
-                                            item_id = str(row.get("id") or "")
-                                            if permalink:
-                                                ui.link(item_id, permalink, new_tab=True).classes("text-primary hover:underline")
-                                            else:
-                                                ui.label(item_id)
-                                        elif col["name"] == "price":
-                                            ui.label(fmt_moneda(row.get("price")))
-                                        elif col["name"] == "cuotas":
-                                            ui.label(cuotas_val)
-                                        elif col["name"] == "seller_sku":
-                                            ui.label(row.get("seller_sku") or "—")
-                                        else:
-                                            val = row.get(col["name"])
-                                            ui.label(str(val) if val is not None else "—")
-
     with result_area:
         with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap"):
                 ui.label(f"Total publicaciones (deduplicadas por SKU): {len(rows_all)}").classes("text-sm font-medium text-gray-700")
 
         filtro_input = ui.input(placeholder="Filtrar por SKU...").props("outlined dense clearable").classes("w-64 mb-3")
+
+        table_container = ui.element("div").classes("w-full")
+
+        def _render(rows: list) -> None:
+            table_container.clear()
+            with table_container:
+                if not rows:
+                    ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
+                    return
+                with ui.element("div").classes("w-full overflow-x-auto"):
+                    with ui.element("table").classes("w-full border-collapse text-sm"):
+                        with ui.element("thead"):
+                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                for col in columns:
+                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                    with ui.element("th").classes(f"px-3 py-2 border {align}"):
+                                        ui.label(col["label"])
+                        with ui.element("tbody"):
+                            for row in rows:
+                                cuotas_val = _cuotas_desde_item(row)
+                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                    for col in columns:
+                                        align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                        with ui.element("td").classes(f"px-3 py-1 border-b border-gray-100 {align} text-sm"):
+                                            if col["name"] == "id":
+                                                permalink = row.get("permalink") or ""
+                                                item_id = str(row.get("id") or "")
+                                                if permalink:
+                                                    ui.link(item_id, permalink, new_tab=True).classes("text-primary hover:underline")
+                                                else:
+                                                    ui.label(item_id)
+                                            elif col["name"] == "price":
+                                                ui.label(fmt_moneda(row.get("price")))
+                                            elif col["name"] == "cuotas":
+                                                ui.label(cuotas_val)
+                                            elif col["name"] == "seller_sku":
+                                                ui.label(row.get("seller_sku") or "—")
+                                            else:
+                                                val = row.get(col["name"])
+                                                ui.label(str(val) if val is not None else "—")
 
         def _on_filtro(e) -> None:
             txt = (getattr(e, "value", "") or "").strip().lower()
@@ -6729,8 +6733,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
             _render(filtrados_ref["val"])
 
         filtro_input.on_value_change(_on_filtro)
-
-    with result_area:
         _render(rows_all)
 
 
