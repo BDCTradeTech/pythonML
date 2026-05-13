@@ -23,7 +23,7 @@ import html
 import json
 import sqlite3
 import calendar
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -590,9 +590,8 @@ def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
     needs_refresh = False
     if expires_at:
         try:
-            from datetime import timezone
             exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-            now = datetime.now(timezone.utc) if exp.tzinfo else datetime.utcnow()
+            now = datetime.now(timezone.utc) if exp.tzinfo else datetime.now(timezone.utc).replace(tzinfo=None)
             if (exp - now).total_seconds() < 300:
                 needs_refresh = True
         except Exception:
@@ -619,7 +618,7 @@ def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
                 new_expires = data.get("expires_in")
                 expires_at_new = None
                 if isinstance(new_expires, (int, float)):
-                    expires_at_new = (datetime.utcnow() + timedelta(seconds=int(new_expires))).isoformat()
+                    expires_at_new = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=int(new_expires))).isoformat()
                 conn = get_connection()
                 try:
                     cur = conn.cursor()
@@ -3004,6 +3003,7 @@ def update_compras_lista_row(row_id: int, user_id: int, **kwargs) -> None:
         if sets:
             vals.append(row_id)
             vals.append(user_id)
+            # Seguro: las claves se validan contra whitelist antes de este punto
             cur.execute(
                 f"UPDATE compras_lista SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
                 vals,
@@ -3069,6 +3069,7 @@ def update_pedidos_lista_row(row_id: int, user_id: int, **kwargs) -> None:
         if sets:
             vals.append(row_id)
             vals.append(user_id)
+            # Seguro: las claves se validan contra whitelist antes de este punto
             cur.execute(
                 f"UPDATE pedidos_lista SET {', '.join(sets)} WHERE id = ? AND user_id = ?",
                 vals,
@@ -3308,7 +3309,7 @@ def save_importacion_filas(user_id: int, rows: List[Dict[str, Any]]) -> None:
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM importacion_filas WHERE user_id = ?", (user_id,))
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         for i, row in enumerate(rows):
             cur.execute(
                 "INSERT INTO importacion_filas (user_id, fila_orden, datos_json, created_at) VALUES (?, ?, ?, ?)",
@@ -3384,7 +3385,7 @@ def import_user_db_data(user_id: int, content: bytes) -> str:
                 cur.execute("INSERT INTO precios_producto (id, user_id, tipo_iva, costo_u) VALUES (?, ?, ?, ?)", (item_id, uid, tipo_iva, costo_u))
         # importacion_filas: borrar todo del usuario e insertar backup
         cur.execute("DELETE FROM importacion_filas WHERE user_id = ?", (uid,))
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         for item in sorted(data.get("importacion_filas") or [], key=lambda x: x.get("fila_orden", 0)):
             if isinstance(item, dict) and "datos_json" in item:
                 dj = item["datos_json"]
@@ -3510,7 +3511,7 @@ def create_user(email: str) -> tuple[Optional[str], Optional[str]]:
 
         cur.execute(
             "INSERT INTO users (username, password_hash, created_at, email) VALUES (?, ?, ?, ?)",
-            (email_clean, hash_password(new_password), datetime.utcnow().isoformat(), email_clean),
+            (email_clean, hash_password(new_password), datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), email_clean),
         )
         conn.commit()
         uid = cur.lastrowid
@@ -3648,7 +3649,15 @@ def delete_user_and_all_data(target_user_id: int) -> Optional[str]:
             "importacion_filas",
             "user_tab_permissions",
         ]
+        ALLOWED_USER_TABLES = {
+            "ml_credentials", "qb_tokens", "ml_app_credentials",
+            "qb_app_credentials", "user_qb_customer", "queries",
+            "cotizador_datos", "precios_producto", "importacion_filas",
+            "user_tab_permissions",
+        }
         for t in tables:
+            if t not in ALLOWED_USER_TABLES:
+                continue
             try:
                 cur.execute(f"DELETE FROM {t} WHERE user_id = ?", (target_user_id,))
             except sqlite3.OperationalError:
@@ -3681,7 +3690,7 @@ def save_query(
                 user_id,
                 query_type,
                 json.dumps(params, ensure_ascii=False),
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).replace(tzinfo=None).isoformat(),
                 json.dumps(raw_response, ensure_ascii=False) if raw_response else None,
             ),
         )
@@ -3746,7 +3755,7 @@ def get_ml_access_token(user_id: int) -> Optional[str]:
             try:
                 exp_str = expires_at[:19].replace("T", " ")
                 exp_dt = datetime.strptime(exp_str, "%Y-%m-%d %H:%M:%S")
-                if datetime.utcnow() >= exp_dt - timedelta(minutes=5):
+                if datetime.now(timezone.utc).replace(tzinfo=None) >= exp_dt - timedelta(minutes=5):
                     needs_refresh = True
             except (ValueError, TypeError):
                 needs_refresh = True  # Por si el formato es raro, intentar refresh
@@ -3759,7 +3768,7 @@ def get_ml_access_token(user_id: int) -> Optional[str]:
                 expires_in = data.get("expires_in")
                 new_expires_at = None
                 if isinstance(expires_in, (int, float)):
-                    new_expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+                    new_expires_at = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=int(expires_in))).isoformat()
                 cur.execute(
                     "UPDATE ml_credentials SET access_token = ?, refresh_token = ?, expires_at = ?, raw_data = ? WHERE user_id = ?",
                     (new_token, new_refresh, new_expires_at, json.dumps(data, ensure_ascii=False), user_id),
@@ -13435,7 +13444,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
-            expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+            expires_at = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=int(expires_in))).isoformat()
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM ml_credentials WHERE user_id = ?", (user["id"],))
@@ -13519,7 +13528,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
-            expires_at = (datetime.utcnow() + timedelta(seconds=int(expires_in))).isoformat()
+            expires_at = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(seconds=int(expires_in))).isoformat()
         conn = get_connection()
         cur = conn.cursor()
         cur.execute("DELETE FROM qb_tokens WHERE user_id = ?", (user["id"],))
