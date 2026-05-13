@@ -3,7 +3,10 @@
     "allow": [
       "PowerShell($lines = \\(Get-Content C:\\\\Users\\\\Diego\\\\Desktop\\\\PythonML\\\\main.py\\).Count; Write-Output \"Total lines: $lines\")",
       "Bash(python *)",
-      "PowerShell(Get-Command *)"
+      "PowerShell(Get-Command *)",
+      "PowerShell(py *)",
+      "Bash(py -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
+      "Bash(py -m pytest test_auth.py -v)"
     ]
   }
 }
