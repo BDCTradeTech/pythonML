@@ -6639,6 +6639,24 @@ def build_tab_cuotas(container) -> None:
         background_tasks.create(_cargar_cuotas_async(), name="cargar_cuotas")
 
 
+def _cuotas_key(it: dict) -> tuple:
+    sku = (it.get("seller_sku") or "").strip()
+    if sku:
+        return ("sku", sku)
+    cpid = (it.get("catalog_product_id") or "").strip()
+    if cpid:
+        return ("catalog", cpid)
+    return ("id", str(it.get("id") or ""))
+
+
+def _cuotas_score(it: dict) -> tuple:
+    status_score = {"active": 2, "paused": 1, "closed": 0}.get(
+        str(it.get("status") or "").lower(), 0)
+    cuotas_score = 1 if str(it.get("listing_type_id") or "").lower() == "gold_pro" else 0
+    stock_score = int(it.get("available_quantity") or 0)
+    return (status_score, cuotas_score, stock_score)
+
+
 def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) -> None:
     """Pinta la tabla de cuotas deduplicada por SKU."""
     items = data.get("results", [])
@@ -6649,14 +6667,19 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
             ui.label("No se encontraron publicaciones activas.").classes("text-gray-600")
         return
 
-    # Deduplicar por seller_sku; si está vacío usar id como clave
-    seen_keys: dict = {}
+    # Agrupar por (sku → catalog_product_id → id), elegir representante con mayor score
+    groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for it in items:
-        key = (it.get("seller_sku") or "").strip() or str(it.get("id") or "")
-        if key and key not in seen_keys:
-            seen_keys[key] = it
+        groups.setdefault(_cuotas_key(it), []).append(it)
 
-    rows_all = sorted(seen_keys.values(), key=lambda r: (r.get("seller_sku") or "").lower())
+    rows_all = []
+    for key, group in groups.items():
+        best = dict(max(group, key=_cuotas_score))
+        all_cuotas = sorted({_cuotas_desde_item(i) for i in group})
+        best["cuotas_todas"] = " / ".join(all_cuotas)
+        rows_all.append(best)
+
+    rows_all.sort(key=lambda r: (r.get("seller_sku") or "").lower())
 
     filtrados_ref: Dict[str, list] = {"val": list(rows_all)}
 
@@ -6702,7 +6725,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                         ui.label(col["label"])
                         with ui.element("tbody"):
                             for row in rows:
-                                cuotas_val = _cuotas_desde_item(row)
                                 with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
                                     for col in columns:
                                         align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
@@ -6717,7 +6739,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                             elif col["name"] == "price":
                                                 ui.label(fmt_moneda(row.get("price")))
                                             elif col["name"] == "cuotas":
-                                                ui.label(cuotas_val)
+                                                ui.label(row.get("cuotas_todas") or "—")
                                             elif col["name"] == "seller_sku":
                                                 ui.label(row.get("seller_sku") or "—")
                                             else:
