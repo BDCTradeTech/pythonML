@@ -3796,13 +3796,14 @@ def _parse_ml_item_body(body: dict) -> dict:
             val = att.get("value_name") or att.get("value_id")
             if val:
                 color = str(val)
-                break
         elif aid == "SELLER_SKU":
             v = att.get("value_name") or att.get("value") or att.get("value_id")
             if v is None and att.get("values"):
                 v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
             if v is not None:
                 seller_sku = str(v).strip()
+        if marca and color and seller_sku:
+            break
     if not seller_sku:
         seller_sku = (body.get("seller_custom_field") or "").strip()
     if not seller_sku:
@@ -6763,9 +6764,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
     }
 
-    TH_BASE  = "font-weight:600;padding:6px 10px;border:1px solid #ccc"
-    TH_BLUE  = f"{TH_BASE};background:#1976d2;color:white;cursor:pointer"
-    TD_BASE  = "padding:4px 10px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
+    TH_BASE = "font-weight:600;padding:8px 12px;border:1px solid #555"
+    TH_HDR  = f"{TH_BASE};background:#1976d2;color:white"
+    TD_BASE = "padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
 
     with result_area:
         with ui.card().classes("w-full mb-2 p-4 bg-grey-2"):
@@ -6774,7 +6775,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
 
         filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72 mb-3")
 
-        table_container = ui.element("div").classes("w-full overflow-x-auto")
+        table_container = ui.element("div").style("width:100%;max-height:65vh;overflow:auto")
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -6793,32 +6794,32 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                     return
                 with ui.element("table").classes("w-full border-collapse text-sm"):
                     # ── Cabecera dos niveles ──────────────────────────────────
-                    with ui.element("thead").style("position:sticky;top:0;z-index:10"):
-                        # Fila 1: Marca / SKU / Nombre (rowspan=2) + grupos (colspan=2)
+                    with ui.element("thead"):
+                        # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos (colspan=2)
                         with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE}").on("click", lambda: _on_sort("marca")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE}").on("click", lambda: _on_sort("seller_sku")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE};min-width:220px").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};min-width:220px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE};width:60px;text-align:center"):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};width:60px;text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Stock")
                             for gkey, glabel, gbg, gborder in GROUPS:
-                                with ui.element("th").props('colspan="2"').style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:center;font-weight:700"):
+                                with ui.element("th").props('colspan="2"').style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
-                        # Fila 2: Publicación / Precio para cada grupo
+                        # Fila 2: Publicación / Precio para cada grupo (sticky top=37px)
                         with ui.element("tr"):
                             for gkey, glabel, gbg, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:center"):
+                                with ui.element("th").style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:37px;z-index:10"):
                                     ui.label("Publicación")
-                                with ui.element("th").style(f"background:{gbg};{TH_BASE};text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
+                                with ui.element("th").style(f"{TH_HDR};text-align:center;cursor:pointer;position:sticky;top:37px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
-                            row_bg = "background:#ffffff" if idx % 2 == 0 else "background:#f9fafb"
+                            row_bg = "background:#ffffff" if idx % 2 == 0 else "background:#fafafa"
                             with ui.element("tr").style(row_bg).classes("hover:bg-blue-50"):
                                 with ui.element("td").style(TD_BASE):
                                     ui.label(row.get("marca") or "—")
@@ -6834,8 +6835,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                     item_id  = slot["id"]
                                     permalink = slot["permalink"]
                                     price    = slot["price"]
-                                    cell_style = f"background:{gbg};border-left:2px solid {gborder};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
-                                    price_style = f"background:{gbg};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:right"
+                                    cell_style = f"background:{gbg};border-left:2px solid {gborder};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center"
+                                    price_style = f"background:{gbg};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:right"
                                     with ui.element("td").style(cell_style):
                                         if item_id and permalink:
                                             ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline text-xs")
