@@ -189,20 +189,6 @@ def init_db() -> None:
         "UPDATE qb_customer_preasignado SET qb_customer_id = '55' WHERE LOWER(TRIM(email)) = 'sanjustocentrocomputacion@gmail.com'"
     )
 
-    # Usuario sanjustocentrocomputacion: crear si no existe (contraseña provisoria Temp1234)
-    _pw_temp = hashlib.sha256("Temp1234".encode("utf-8")).hexdigest()
-    cur.execute(
-        """INSERT OR IGNORE INTO users (username, password_hash, created_at, email) VALUES (?, ?, ?, ?)""",
-        ("sanjustocentrocomputacion@gmail.com", _pw_temp, datetime.utcnow().isoformat(), "sanjustocentrocomputacion@gmail.com"),
-    )
-    cur.execute("SELECT id FROM users WHERE username = ?", ("sanjustocentrocomputacion@gmail.com",))
-    _sanjusto_row = cur.fetchone()
-    if _sanjusto_row:
-        _uid = _sanjusto_row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
-            can = 1 if tab_key != "admin" else 0
-            cur.execute("INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)", (_uid, tab_key, can))
-
     # Credenciales de MercadoLibre asociadas al usuario (tokens OAuth)
     cur.execute(
         """
