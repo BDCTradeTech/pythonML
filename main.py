@@ -498,12 +498,14 @@ def init_db() -> None:
     if "factura_courier" not in inv_extra_cols:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN factura_courier TEXT")
 
-    # Migración: dar permisos por defecto a usuarios existentes (admin solo para user_id=1)
+    # Migración: dar permisos por defecto a usuarios existentes (admin para el usuario con id más bajo)
+    cur.execute("SELECT MIN(id) FROM users")
+    _admin_uid = cur.fetchone()[0] or 1
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
         for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
-            can = 1 if tab_key != "admin" or uid == 1 else 0
+            can = 1 if tab_key != "admin" or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
                 (uid, tab_key, can),
