@@ -10,6 +10,7 @@ if not hasattr(asyncio, "to_thread"):
         return loop.run_in_executor(None, functools.partial(fn, *args, **kwargs))
     asyncio.to_thread = lambda fn, *args, **kwargs: _to_thread_compat(fn, *args, **kwargs)
 
+import base64
 import bcrypt
 from cryptography.fernet import Fernet
 import hashlib
@@ -391,73 +392,6 @@ def init_db() -> None:
         """
     )
 
-    # Lista de compras a cotizar
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS compras_lista (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            fecha TEXT NOT NULL,
-            marca TEXT,
-            producto TEXT,
-            cantidad TEXT,
-            precio_sugerido TEXT,
-            estado TEXT NOT NULL DEFAULT 'Cotizar',
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        )
-        """
-    )
-    try:
-        cur.execute("ALTER TABLE compras_lista ADD COLUMN usuario_qb TEXT")
-    except sqlite3.OperationalError:
-        pass
-    try:
-        cur.execute("ALTER TABLE compras_lista ADD COLUMN sku TEXT")
-    except sqlite3.OperationalError:
-        pass
-
-    # Marcas (catálogo global para Compras)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS marcas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL UNIQUE
-        )
-        """
-    )
-
-    # Despachantes (catálogo global)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS despachantes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT NOT NULL UNIQUE
-        )
-        """
-    )
-    cur.execute("SELECT COUNT(*) FROM despachantes")
-    if cur.fetchone()[0] == 0:
-        for nombre in ["LHS", "NC Supplies", "Sixtar", "Rosario"]:
-            cur.execute("INSERT INTO despachantes (nombre) VALUES (?)", (nombre,))
-
-    # Lista de pedidos (similar a compras + cliente)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS pedidos_lista (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            fecha TEXT NOT NULL,
-            marca TEXT,
-            producto TEXT,
-            cantidad TEXT,
-            precio_sugerido TEXT,
-            estado TEXT NOT NULL DEFAULT 'Cotizar',
-            cliente TEXT,
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        )
-        """
-    )
-
     # Permisos por pestaña por usuario (Admin)
     cur.execute(
         """
@@ -646,7 +580,6 @@ def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
     """Refresca el access_token QB si está por vencer (< 5 min) o si no hay expires_at.
     Actualiza qb_tokens en la BD con el expires_at calculado.
     Retorna el access_token vigente, o None si no hay tokens/credenciales configurados."""
-    import base64
     qb_creds = get_qb_app_credentials(user_id)
     qb_tokens = get_qb_tokens(user_id)
     if not qb_creds or not qb_tokens:
@@ -4691,7 +4624,6 @@ def ml_get_orders(
     """Lista órdenes del vendedor. Pagina hasta `limit` (máx 50 por request, ML no acepta más).
     sort=date_desc para órdenes más recientes primero.
     date_from/date_to: ISO 8601 (ej. 2025-02-01T00:00:00.000-03:00) para filtrar por fecha."""
-    import logging
     log = logging.getLogger(__name__)
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     page_size = 50
@@ -4703,66 +4635,6 @@ def ml_get_orders(
 
     all_flat: List[Dict[str, Any]] = []
     seen_ids: set = set()
-
-    def _do_fetch(use_date_filter: bool) -> None:
-        nonlocal all_flat, seen_ids
-        params_filter = date_params if use_date_filter else {}
-        for url, extra in [
-            ("https://api.mercadolibre.com/orders/search", {"seller": seller_id}),
-            ("https://api.mercadolibre.com/orders/search", {"seller": seller_id, "caller.id": seller_id}),
-            ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id}),
-            ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id, "caller.id": seller_id}),
-        ]:
-            off = offset
-            while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
-                params: Dict[str, Any] = {**extra, **params_filter, "limit": page_size, "offset": off, "sort": "date_desc"}
-                try:
-                    resp = requests.get(url, params=params, headers=headers, timeout=25)
-                    if not resp.ok:
-                        if off == offset:
-                            try:
-                                err_body = resp.json()
-                            except Exception:
-                                err_body = resp.text[:300]
-                            log.debug("ML orders %s %s: %s", url.split("/")[-1], resp.status_code, err_body)
-                        break
-                    data = resp.json()
-                    raw = data.get("results") or data.get("orders") or data.get("elements") or []
-
-                    if not raw:
-                        break
-
-                    if isinstance(raw[0], (int, float)):
-                        for oid in raw[:page_size]:
-                            try:
-                                r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers={**headers, "x-format-new": "true"}, timeout=10)
-                                if r.status_code == 200:
-                                    ob = r.json()
-                                    oid_val = ob.get("id")
-                                    if oid_val and str(oid_val) not in seen_ids:
-                                        seen_ids.add(str(oid_val))
-                                        all_flat.append(ob)
-                            except Exception:
-                                pass
-                        off += len(raw)
-                        if len(raw) < page_size:
-                            break
-                        continue
-
-                    for o in _flatten_raw(raw):
-                        oid_val = o.get("id")
-                        if oid_val and str(oid_val) not in seen_ids:
-                            seen_ids.add(str(oid_val))
-                            all_flat.append(o)
-                    off += len(raw)
-                    if len(raw) < page_size:
-                        break
-                except Exception as ex:
-                    log.debug("ML orders %s: %s", url.split("/")[-1], ex)
-                    break
-
-            if len(all_flat) >= limit:
-                break
 
     def _flatten_raw(raw_list: list) -> list:
         out = []
@@ -8891,7 +8763,6 @@ def _parse_fecha_compras_input(s: str) -> str:
     if not s or not str(s).strip():
         return ""
     s = str(s).strip()
-    import re
     # Buscar dd-mm-yy (o yy) y opcional hh:mm
     m = re.search(r"(\d{1,2})-(\d{1,2})-(\d{2,4})\s*(\d{1,2}:\d{2})?", s)
     if m:
@@ -13594,7 +13465,6 @@ def index(request: Request) -> None:  # type: ignore[override]
         client_secret = qb_app_creds["client_secret"]
         base_url = _get_base_url(request)
         redirect_uri = base_url.rstrip("/") + "/qb/callback"
-        import base64
         auth_str = f"{client_id}:{client_secret}"
         auth_b64 = base64.b64encode(auth_str.encode()).decode()
         try:

@@ -38,7 +38,7 @@ Con el entorno virtual activado:
 python main.py
 ```
 
-Luego abre el navegador en `http://localhost:8080/`.
+Luego abre el navegador en `http://localhost:8083/`.
 
 ### Configuración para enviar emails
 
