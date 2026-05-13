@@ -11,6 +11,7 @@ if not hasattr(asyncio, "to_thread"):
     asyncio.to_thread = lambda fn, *args, **kwargs: _to_thread_compat(fn, *args, **kwargs)
 
 import bcrypt
+from cryptography.fernet import Fernet
 import hashlib
 import logging
 import re
@@ -73,6 +74,28 @@ TAB_KEYS = [
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
 ]
+
+
+# ==========================
+# ENCRIPTACIÓN DE SECRETS
+# ==========================
+
+
+def _get_fernet() -> Fernet:
+    key = os.getenv("CREDENTIAL_ENCRYPTION_KEY", "")
+    if not key:
+        raise RuntimeError("CREDENTIAL_ENCRYPTION_KEY no configurado. Ver .env.example")
+    return Fernet(key.encode())
+
+
+def _encrypt_secret(plain: str) -> str:
+    return _get_fernet().encrypt(plain.encode()).decode()
+
+
+def _decrypt_secret(token: str) -> str:
+    if not token.startswith("gAAAAA"):
+        return token  # plaintext legacy: aún no migrado
+    return _get_fernet().decrypt(token.encode()).decode()
 
 
 # ==========================
@@ -502,7 +525,7 @@ def get_ml_app_credentials(user_id: int) -> Optional[Dict[str, str]]:
         if row and row["client_id"] and row["client_secret"]:
             return {
                 "client_id": row["client_id"],
-                "client_secret": row["client_secret"],
+                "client_secret": _decrypt_secret(row["client_secret"]),
                 "redirect_uri": (row["redirect_uri"] or "").strip() or None,
             }
         return None
@@ -515,9 +538,10 @@ def set_ml_app_credentials(user_id: int, client_id: str, client_secret: str, red
     conn = get_connection()
     try:
         cur = conn.cursor()
+        enc = _encrypt_secret(client_secret.strip())
         cur.execute(
             "INSERT INTO ml_app_credentials (user_id, client_id, client_secret, redirect_uri) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET client_id=?, client_secret=?, redirect_uri=?",
-            (user_id, client_id.strip(), client_secret.strip(), redirect_uri or "", client_id.strip(), client_secret.strip(), redirect_uri or ""),
+            (user_id, client_id.strip(), enc, redirect_uri or "", client_id.strip(), enc, redirect_uri or ""),
         )
         conn.commit()
     finally:
@@ -537,7 +561,7 @@ def get_qb_app_credentials(user_id: int) -> Optional[Dict[str, str]]:
         if row and row["client_id"] and row["client_secret"]:
             return {
                 "client_id": row["client_id"],
-                "client_secret": row["client_secret"],
+                "client_secret": _decrypt_secret(row["client_secret"]),
                 "redirect_uri": (row["redirect_uri"] or "").strip() or None,
             }
         return None
@@ -550,9 +574,10 @@ def set_qb_app_credentials(user_id: int, client_id: str, client_secret: str, red
     conn = get_connection()
     try:
         cur = conn.cursor()
+        enc = _encrypt_secret(client_secret.strip())
         cur.execute(
             "INSERT INTO qb_app_credentials (user_id, client_id, client_secret, redirect_uri) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET client_id=?, client_secret=?, redirect_uri=?",
-            (user_id, client_id.strip(), client_secret.strip(), redirect_uri or "", client_id.strip(), client_secret.strip(), redirect_uri or ""),
+            (user_id, client_id.strip(), enc, redirect_uri or "", client_id.strip(), enc, redirect_uri or ""),
         )
         conn.commit()
     finally:
