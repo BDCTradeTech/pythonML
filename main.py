@@ -6658,7 +6658,7 @@ def _cuotas_score(it: dict) -> tuple:
 
 
 def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) -> None:
-    """Pinta la tabla de cuotas deduplicada por SKU."""
+    """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
 
@@ -6667,47 +6667,99 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
             ui.label("No se encontraron publicaciones activas.").classes("text-gray-600")
         return
 
-    # Agrupar por (sku → catalog_product_id → id), elegir representante con mayor score
+    # ── Agrupación ────────────────────────────────────────────────────────────
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for it in items:
         groups.setdefault(_cuotas_key(it), []).append(it)
 
-    rows_all = []
-    for key, group in groups.items():
-        best = dict(max(group, key=_cuotas_score))
-        all_cuotas = sorted({_cuotas_desde_item(i) for i in group})
-        best["cuotas_todas"] = " / ".join(all_cuotas)
-        rows_all.append(best)
+    def _slot(it: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if not it:
+            return {"id": "", "permalink": "", "price": None}
+        return {"id": str(it.get("id") or ""), "permalink": it.get("permalink") or "", "price": it.get("price")}
 
-    rows_all.sort(key=lambda r: (r.get("seller_sku") or "").lower())
+    def _build_row(group: List[Dict[str, Any]]) -> Dict[str, Any]:
+        propia = catalogo = x3 = x6 = None
+        for it in group:
+            cuotas = _cuotas_desde_item(it)
+            is_cat = it.get("catalog_listing") is True
+            lt = str(it.get("listing_type_id") or "").lower()
+            if not is_cat and lt == "gold_special":
+                if propia is None or _cuotas_score(it) > _cuotas_score(propia):
+                    propia = it
+            if is_cat:
+                if catalogo is None or _cuotas_score(it) > _cuotas_score(catalogo):
+                    catalogo = it
+            if cuotas == "x3":
+                if x3 is None or _cuotas_score(it) > _cuotas_score(x3):
+                    x3 = it
+            if cuotas == "x6":
+                if x6 is None or _cuotas_score(it) > _cuotas_score(x6):
+                    x6 = it
+        rep = max(group, key=_cuotas_score)
+        return {
+            "marca":      rep.get("marca") or "—",
+            "seller_sku": rep.get("seller_sku") or "",
+            "title":      rep.get("title") or "",
+            "propia":     _slot(propia),
+            "catalogo":   _slot(catalogo),
+            "x3":         _slot(x3),
+            "x6":         _slot(x6),
+        }
 
-    filtrados_ref: Dict[str, list] = {"val": list(rows_all)}
+    rows_all = [_build_row(g) for g in groups.values()]
+    rows_all.sort(key=lambda r: r.get("title", "").lower())
+
+    filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
+    sort_col_ref:  Dict[str, str]   = {"val": "title"}
+    sort_asc_ref:  Dict[str, bool]  = {"val": True}
 
     def fmt_moneda(val: Any) -> str:
         if val is None:
-            return "$0"
+            return "—"
         try:
             return "$" + f"{int(float(val)):,}".replace(",", ".")
         except (TypeError, ValueError):
-            return "$0"
+            return "—"
 
-    columns = [
-        {"name": "seller_sku", "label": "SKU",               "align": "left"},
-        {"name": "id",         "label": "N° Publicación ML", "align": "left"},
-        {"name": "cuotas",     "label": "Cuotas",            "align": "center"},
-        {"name": "title",      "label": "Nombre",            "align": "left"},
-        {"name": "price",      "label": "Precio",            "align": "right"},
-        {"name": "available_quantity", "label": "Stock",     "align": "right"},
+    # (gkey, grupo_label, bg_color, border_color)
+    GROUPS = [
+        ("propia",   "Publicación Propia", "#E3F2FD", "#90CAF9"),
+        ("catalogo", "Catálogo",           "#E8F5E9", "#A5D6A7"),
+        ("x3",       "3 Cuotas",           "#FFF3E0", "#FFCC80"),
+        ("x6",       "6 Cuotas",           "#F3E5F5", "#CE93D8"),
     ]
 
+    SORT_KEY: Dict[str, Any] = {
+        "marca":          lambda r: (r.get("marca") or "").lower(),
+        "seller_sku":     lambda r: (r.get("seller_sku") or "").lower(),
+        "title":          lambda r: r.get("title", "").lower(),
+        "propia_price":   lambda r: r["propia"]["price"]   if r["propia"]["price"]   is not None else -1,
+        "catalogo_price": lambda r: r["catalogo"]["price"] if r["catalogo"]["price"] is not None else -1,
+        "x3_price":       lambda r: r["x3"]["price"]       if r["x3"]["price"]       is not None else -1,
+        "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
+    }
+
+    TH_BASE  = "font-weight:600;padding:6px 10px;border:1px solid #ccc"
+    TH_BLUE  = f"{TH_BASE};background:#1976d2;color:white;cursor:pointer"
+    TD_BASE  = "padding:4px 10px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
+
     with result_area:
-        with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
+        with ui.card().classes("w-full mb-2 p-4 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap"):
-                ui.label(f"Total publicaciones (deduplicadas por SKU): {len(rows_all)}").classes("text-sm font-medium text-gray-700")
+                ui.label(f"Productos únicos: {len(rows_all)}").classes("text-sm font-medium text-gray-700")
 
-        filtro_input = ui.input(placeholder="Filtrar por SKU...").props("outlined dense clearable").classes("w-64 mb-3")
+        filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72 mb-3")
 
-        table_container = ui.element("div").classes("w-full")
+        table_container = ui.element("div").classes("w-full overflow-x-auto")
+
+        def _sort_rows(rows: list) -> list:
+            key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
+            return sorted(rows, key=key_fn, reverse=not sort_asc_ref["val"])
+
+        def _ind(col: str) -> str:
+            if sort_col_ref["val"] != col:
+                return ""
+            return " ▲" if sort_asc_ref["val"] else " ▼"
 
         def _render(rows: list) -> None:
             table_container.clear()
@@ -6715,47 +6767,78 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                 if not rows:
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
                     return
-                with ui.element("div").classes("w-full overflow-x-auto"):
-                    with ui.element("table").classes("w-full border-collapse text-sm"):
-                        with ui.element("thead"):
-                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                for col in columns:
-                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
-                                    with ui.element("th").classes(f"px-3 py-2 border {align}"):
-                                        ui.label(col["label"])
-                        with ui.element("tbody"):
-                            for row in rows:
-                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                    for col in columns:
-                                        align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
-                                        with ui.element("td").classes(f"px-3 py-1 border-b border-gray-100 {align} text-sm"):
-                                            if col["name"] == "id":
-                                                permalink = row.get("permalink") or ""
-                                                item_id = str(row.get("id") or "")
-                                                if permalink:
-                                                    ui.link(item_id, permalink, new_tab=True).classes("text-primary hover:underline")
-                                                else:
-                                                    ui.label(item_id)
-                                            elif col["name"] == "price":
-                                                ui.label(fmt_moneda(row.get("price")))
-                                            elif col["name"] == "cuotas":
-                                                ui.label(row.get("cuotas_todas") or "—")
-                                            elif col["name"] == "seller_sku":
-                                                ui.label(row.get("seller_sku") or "—")
-                                            else:
-                                                val = row.get(col["name"])
-                                                ui.label(str(val) if val is not None else "—")
+                with ui.element("table").classes("w-full border-collapse text-sm"):
+                    # ── Cabecera dos niveles ──────────────────────────────────
+                    with ui.element("thead").style("position:sticky;top:0;z-index:10"):
+                        # Fila 1: Marca / SKU / Nombre (rowspan=2) + grupos (colspan=2)
+                        with ui.element("tr"):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE}").on("click", lambda: _on_sort("marca")):
+                                ui.label("Marca" + _ind("marca"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE}").on("click", lambda: _on_sort("seller_sku")):
+                                ui.label("SKU" + _ind("seller_sku"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE};min-width:220px").on("click", lambda: _on_sort("title")):
+                                ui.label("Nombre" + _ind("title"))
+                            for gkey, glabel, gbg, gborder in GROUPS:
+                                with ui.element("th").props('colspan="2"').style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:center;font-weight:700"):
+                                    ui.label(glabel)
+                        # Fila 2: N° / Precio para cada grupo
+                        with ui.element("tr"):
+                            for gkey, glabel, gbg, gborder in GROUPS:
+                                pcol = f"{gkey}_price"
+                                with ui.element("th").style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:left"):
+                                    ui.label("N°")
+                                with ui.element("th").style(f"background:{gbg};{TH_BASE};text-align:right;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
+                                    ui.label("Precio" + _ind(pcol))
+                    # ── Cuerpo ────────────────────────────────────────────────
+                    with ui.element("tbody"):
+                        for idx, row in enumerate(rows):
+                            row_bg = "background:#ffffff" if idx % 2 == 0 else "background:#f9fafb"
+                            with ui.element("tr").style(row_bg).classes("hover:bg-blue-50"):
+                                with ui.element("td").style(TD_BASE):
+                                    ui.label(row.get("marca") or "—")
+                                with ui.element("td").style(TD_BASE):
+                                    ui.label(row.get("seller_sku") or "—")
+                                with ui.element("td").style(f"{TD_BASE};min-width:220px"):
+                                    ui.label(row.get("title") or "—")
+                                for gkey, glabel, gbg, gborder in GROUPS:
+                                    slot = row[gkey]
+                                    item_id  = slot["id"]
+                                    permalink = slot["permalink"]
+                                    price    = slot["price"]
+                                    cell_style = f"background:{gbg};border-left:2px solid {gborder};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
+                                    price_style = f"background:{gbg};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:right"
+                                    with ui.element("td").style(cell_style):
+                                        if item_id and permalink:
+                                            ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline text-xs")
+                                        elif item_id:
+                                            ui.label(item_id).classes("text-xs")
+                                        else:
+                                            ui.label("—").classes("text-gray-400 text-xs")
+                                    with ui.element("td").style(price_style):
+                                        ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
+
+        def _on_sort(col: str) -> None:
+            if sort_col_ref["val"] == col:
+                sort_asc_ref["val"] = not sort_asc_ref["val"]
+            else:
+                sort_col_ref["val"] = col
+                sort_asc_ref["val"] = True
+            _render(_sort_rows(filtrados_ref["val"]))
 
         def _on_filtro(e) -> None:
             txt = (getattr(e, "value", "") or "").strip().lower()
             if txt:
-                filtrados_ref["val"] = [r for r in rows_all if txt in (r.get("seller_sku") or "").lower()]
+                filtrados_ref["val"] = [
+                    r for r in rows_all
+                    if txt in (r.get("seller_sku") or "").lower()
+                    or txt in r.get("title", "").lower()
+                ]
             else:
                 filtrados_ref["val"] = list(rows_all)
-            _render(filtrados_ref["val"])
+            _render(_sort_rows(filtrados_ref["val"]))
 
         filtro_input.on_value_change(_on_filtro)
-        _render(rows_all)
+        _render(_sort_rows(rows_all))
 
 
 def build_tab_precios(container) -> None:
