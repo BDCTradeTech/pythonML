@@ -34,6 +34,7 @@ import ssl
 import smtplib
 import subprocess
 import tempfile
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from collections import defaultdict
@@ -3488,6 +3489,9 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 
+_email_lock = threading.Lock()
+
+
 def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
     """Envía un email vía SMTP. Devuelve None si OK, mensaje de error si falla.
     Variables: SMTP_HOST, SMTP_PORT (465=SSL, 587=STARTTLS), SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_FROM_NAME"""
@@ -3513,24 +3517,26 @@ def send_email(to_email: str, subject: str, body_plain: str) -> Optional[str]:
 
         ctx = ssl.create_default_context()
         envelope_from = user
-        _orig_getaddrinfo = socket.getaddrinfo
 
-        def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-            return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+        with _email_lock:
+            _orig_getaddrinfo = socket.getaddrinfo
 
-        socket.getaddrinfo = _ipv4_getaddrinfo
-        try:
-            if port == 465:
-                with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
-                    smtp.login(user, password_env)
-                    smtp.sendmail(envelope_from, to_email, msg.as_string())
-            else:
-                with smtplib.SMTP(host, port, timeout=30) as smtp:
-                    smtp.starttls(context=ctx)
-                    smtp.login(user, password_env)
-                    smtp.sendmail(envelope_from, to_email, msg.as_string())
-        finally:
-            socket.getaddrinfo = _orig_getaddrinfo
+            def _ipv4_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+                return _orig_getaddrinfo(host, port, socket.AF_INET, type, proto, flags)
+
+            socket.getaddrinfo = _ipv4_getaddrinfo
+            try:
+                if port == 465:
+                    with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as smtp:
+                        smtp.login(user, password_env)
+                        smtp.sendmail(envelope_from, to_email, msg.as_string())
+                else:
+                    with smtplib.SMTP(host, port, timeout=30) as smtp:
+                        smtp.starttls(context=ctx)
+                        smtp.login(user, password_env)
+                        smtp.sendmail(envelope_from, to_email, msg.as_string())
+            finally:
+                socket.getaddrinfo = _orig_getaddrinfo
         return None
     except Exception as e:
         return f"Error al enviar email: {str(e)}"
