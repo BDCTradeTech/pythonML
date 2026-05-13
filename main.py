@@ -5330,39 +5330,8 @@ def show_main_layout(container) -> None:
             val = getattr(e, "value", None)
             if val:
                 app.storage.user["last_tab"] = val
-            if val == "Invoices" and not compras_cargado[0]:
-                compras_cargado[0] = True
-                build_tab_compras(compras_container)
-            elif val == "Stock" and not stock_cargado[0]:
-                stock_cargado[0] = True
-                build_tab_stock(stock_container)
-            elif val == "Compras" and not compras_lista_cargado[0]:
-                compras_lista_cargado[0] = True
-                build_tab_compras_lista(compras_lista_container)
-            elif val == "Pedidos" and not pedidos_cargado[0]:
-                pedidos_cargado[0] = True
-                build_tab_pedidos(pedidos_container)
-            elif val == "Productos" and not precios_cargado[0]:
-                precios_cargado[0] = True
-                build_tab_precios(precios_container)
-            elif val == "Precios" and not precios_detalle_cargado[0]:
-                precios_detalle_cargado[0] = True
-                build_tab_precios_detalle(precios_detalle_container)
-            elif val == "Ventas" and not ventas_cargado[0]:
-                ventas_cargado[0] = True
-                build_tab_ventas(ventas_container)
-            elif val == "Estadísticas" and not estadisticas_cargado[0]:
-                estadisticas_cargado[0] = True
-                build_tab_estadisticas(estadisticas_container)
-            elif val == "Balance" and not balance_cargado[0]:
-                balance_cargado[0] = True
-                build_tab_balance(balance_container)
-            elif val == tab_historicos and not historicos_cargado[0]:
-                historicos_cargado[0] = True
-                build_tab_historicos(historicos_container)
-            elif val == "Admin" and not admin_cargado[0]:
-                admin_cargado[0] = True
-                build_tab_admin(admin_container)
+            if val:
+                _lazy_load(val)
 
         tab_panels.on_value_change(on_tab_change)
 
