@@ -438,7 +438,7 @@ def init_db() -> None:
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "precios", "cuotas", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
             can = 1 if tab_key != "admin" or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
@@ -4952,6 +4952,7 @@ def show_main_layout(container) -> None:
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
                 tab_precios_detalle = ui.tab("Precios")
+                tab_cuotas = ui.tab("Cuotas")
                 tab_compras = ui.tab("Invoices")
                 tab_stock = ui.tab("Stock")
                 tab_compras_lista = ui.tab("Compras")
@@ -4971,6 +4972,7 @@ def show_main_layout(container) -> None:
             "Ventas": tab_ventas,
             "Productos": tab_precios,
             "Precios": tab_precios_detalle,
+            "Cuotas": tab_cuotas,
             "Invoices": tab_compras,
             "Stock": tab_stock,
             "Compras": tab_compras_lista,
@@ -4984,7 +4986,7 @@ def show_main_layout(container) -> None:
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -4998,6 +5000,7 @@ def show_main_layout(container) -> None:
         pedidos_cargado = [False]
         historicos_cargado = [False]
         admin_cargado = [False]
+        cuotas_cargado = [False]
 
         def _lazy_load(val: str) -> None:
             if val == "Invoices" and not compras_cargado[0]:
@@ -5018,6 +5021,9 @@ def show_main_layout(container) -> None:
             elif val == "Precios" and not precios_detalle_cargado[0]:
                 precios_detalle_cargado[0] = True
                 build_tab_precios_detalle(precios_detalle_container)
+            elif val == "Cuotas" and not cuotas_cargado[0]:
+                cuotas_cargado[0] = True
+                build_tab_cuotas(cuotas_container)
             elif val == "Ventas" and not ventas_cargado[0]:
                 ventas_cargado[0] = True
                 build_tab_ventas(ventas_container)
@@ -5065,7 +5071,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -5208,6 +5214,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_cuotas):
+                cuotas_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_config):
                 build_tab_config()
@@ -6585,6 +6594,144 @@ def build_tab_ventas(container) -> None:
                 ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
 
         _cargar_ventas()
+
+
+def build_tab_cuotas(container) -> None:
+    """Pestaña Cuotas: lista deduplicada por SKU con info de cuotas de cada publicación."""
+    container.clear()
+    user = require_login()
+    if not user:
+        return
+
+    with container:
+        access_token = get_ml_access_token(user["id"])
+        if not access_token:
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+            return
+
+        result_area = ui.column().classes("w-full gap-2")
+
+        with result_area:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando cuotas...").classes("text-xl text-gray-700")
+
+        async def _cargar_cuotas_async() -> None:
+            try:
+                data = await run.io_bound(ml_get_my_items, access_token, False)
+            except requests.exceptions.HTTPError as e:
+                result_area.clear()
+                with result_area:
+                    ui.label(f"❌ Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
+                return
+            except Exception as e:
+                result_area.clear()
+                with result_area:
+                    ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
+                return
+            _mostrar_tabla_cuotas(result_area, data, access_token)
+
+        background_tasks.create(_cargar_cuotas_async(), name="cargar_cuotas")
+
+
+def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) -> None:
+    """Pinta la tabla de cuotas deduplicada por SKU."""
+    items = data.get("results", [])
+    result_area.clear()
+
+    if not items:
+        with result_area:
+            ui.label("No se encontraron publicaciones activas.").classes("text-gray-600")
+        return
+
+    # Deduplicar por seller_sku; si está vacío usar id como clave
+    seen_keys: dict = {}
+    for it in items:
+        key = (it.get("seller_sku") or "").strip() or str(it.get("id") or "")
+        if key and key not in seen_keys:
+            seen_keys[key] = it
+
+    rows_all = sorted(seen_keys.values(), key=lambda r: (r.get("seller_sku") or "").lower())
+
+    filtrados_ref: Dict[str, list] = {"val": list(rows_all)}
+
+    def fmt_moneda(val: Any) -> str:
+        if val is None:
+            return "$0"
+        try:
+            return "$" + f"{int(float(val)):,}".replace(",", ".")
+        except (TypeError, ValueError):
+            return "$0"
+
+    header_style = "background-color: #1976d2; color: white; font-weight: 600;"
+    columns = [
+        {"name": "seller_sku", "label": "SKU",               "align": "left"},
+        {"name": "id",         "label": "N° Publicación ML", "align": "left"},
+        {"name": "cuotas",     "label": "Cuotas",            "align": "center"},
+        {"name": "title",      "label": "Nombre",            "align": "left"},
+        {"name": "price",      "label": "Precio",            "align": "right"},
+        {"name": "available_quantity", "label": "Stock",     "align": "right"},
+    ]
+
+    table_container = ui.element("div").classes("w-full")
+
+    def _render(rows: list) -> None:
+        table_container.clear()
+        with table_container:
+            if not rows:
+                ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
+                return
+            with ui.element("div").classes("w-full overflow-x-auto"):
+                with ui.element("table").classes("w-full border-collapse text-sm"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                            for col in columns:
+                                align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                with ui.element("th").classes(f"px-3 py-2 border {align}"):
+                                    ui.label(col["label"])
+                    with ui.element("tbody"):
+                        for row in rows:
+                            cuotas_val = _cuotas_desde_item(row)
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                for col in columns:
+                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                    with ui.element("td").classes(f"px-3 py-1 border-b border-gray-100 {align} text-sm"):
+                                        if col["name"] == "id":
+                                            permalink = row.get("permalink") or ""
+                                            item_id = str(row.get("id") or "")
+                                            if permalink:
+                                                ui.link(item_id, permalink, new_tab=True).classes("text-primary hover:underline")
+                                            else:
+                                                ui.label(item_id)
+                                        elif col["name"] == "price":
+                                            ui.label(fmt_moneda(row.get("price")))
+                                        elif col["name"] == "cuotas":
+                                            ui.label(cuotas_val)
+                                        elif col["name"] == "seller_sku":
+                                            ui.label(row.get("seller_sku") or "—")
+                                        else:
+                                            val = row.get(col["name"])
+                                            ui.label(str(val) if val is not None else "—")
+
+    with result_area:
+        with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
+            with ui.row().classes("items-center gap-4 flex-wrap"):
+                ui.label(f"Total publicaciones (deduplicadas por SKU): {len(rows_all)}").classes("text-sm font-medium text-gray-700")
+
+        filtro_input = ui.input(placeholder="Filtrar por SKU...").props("outlined dense clearable").classes("w-64 mb-3")
+
+        def _on_filtro(e) -> None:
+            txt = (getattr(e, "value", "") or "").strip().lower()
+            if txt:
+                filtrados_ref["val"] = [r for r in rows_all if txt in (r.get("seller_sku") or "").lower()]
+            else:
+                filtrados_ref["val"] = list(rows_all)
+            _render(filtrados_ref["val"])
+
+        filtro_input.on_value_change(_on_filtro)
+
+    with result_area:
+        _render(rows_all)
 
 
 def build_tab_precios(container) -> None:
