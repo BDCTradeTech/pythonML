@@ -6696,10 +6696,34 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                 if x6 is None or _cuotas_score(it) > _cuotas_score(x6):
                     x6 = it
         rep = max(group, key=_cuotas_score)
+        # SKU: usa el del representante; si vacío, busca en todos los items del grupo
+        sku = (rep.get("seller_sku") or "").strip()
+        if not sku:
+            for it in group:
+                candidate = (it.get("seller_sku") or "").strip()
+                if not candidate:
+                    candidate = (it.get("seller_custom_field") or "").strip()
+                if not candidate:
+                    for att in (it.get("attributes") or []):
+                        if (att.get("id") or "").strip().upper() == "SELLER_SKU":
+                            v = att.get("value_name") or att.get("value") or att.get("value_id")
+                            if v:
+                                candidate = str(v).strip()
+                                break
+                if candidate:
+                    sku = candidate
+                    break
+        # Stock: prefiere propia, fallback catálogo
+        stock_val = None
+        if propia is not None:
+            stock_val = propia.get("available_quantity")
+        elif catalogo is not None:
+            stock_val = catalogo.get("available_quantity")
         return {
             "marca":      rep.get("marca") or "—",
-            "seller_sku": rep.get("seller_sku") or "",
+            "seller_sku": sku,
             "title":      rep.get("title") or "",
+            "stock":      stock_val,
             "propia":     _slot(propia),
             "catalogo":   _slot(catalogo),
             "x3":         _slot(x3),
@@ -6723,10 +6747,10 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
 
     # (gkey, grupo_label, bg_color, border_color)
     GROUPS = [
-        ("propia",   "Publicación Propia", "#E3F2FD", "#90CAF9"),
-        ("catalogo", "Catálogo",           "#E8F5E9", "#A5D6A7"),
-        ("x3",       "3 Cuotas",           "#FFF3E0", "#FFCC80"),
-        ("x6",       "6 Cuotas",           "#F3E5F5", "#CE93D8"),
+        ("propia",   "Publicación Propia", "#F0F7FF", "#C5DCFA"),
+        ("catalogo", "Catálogo",           "#F1F8F1", "#B8D9B8"),
+        ("x3",       "3 Cuotas",           "#FFFAF0", "#FFE0B2"),
+        ("x6",       "6 Cuotas",           "#FAF5FC", "#E1BEE7"),
     ]
 
     SORT_KEY: Dict[str, Any] = {
@@ -6778,16 +6802,18 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                 ui.label("SKU" + _ind("seller_sku"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE};min-width:220px").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_BLUE};width:60px;text-align:center"):
+                                ui.label("Stock")
                             for gkey, glabel, gbg, gborder in GROUPS:
                                 with ui.element("th").props('colspan="2"').style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:center;font-weight:700"):
                                     ui.label(glabel)
-                        # Fila 2: N° / Precio para cada grupo
+                        # Fila 2: Publicación / Precio para cada grupo
                         with ui.element("tr"):
                             for gkey, glabel, gbg, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:left"):
-                                    ui.label("N°")
-                                with ui.element("th").style(f"background:{gbg};{TH_BASE};text-align:right;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
+                                with ui.element("th").style(f"background:{gbg};{TH_BASE};border-left:2px solid {gborder};text-align:center"):
+                                    ui.label("Publicación")
+                                with ui.element("th").style(f"background:{gbg};{TH_BASE};text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
@@ -6800,6 +6826,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                                     ui.label(row.get("seller_sku") or "—")
                                 with ui.element("td").style(f"{TD_BASE};min-width:220px"):
                                     ui.label(row.get("title") or "—")
+                                with ui.element("td").style(f"{TD_BASE};width:60px;text-align:center"):
+                                    sv = row.get("stock")
+                                    ui.label(str(sv) if sv is not None else "—")
                                 for gkey, glabel, gbg, gborder in GROUPS:
                                     slot = row[gkey]
                                     item_id  = slot["id"]
