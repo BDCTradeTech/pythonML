@@ -6764,9 +6764,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
     }
 
-    TH_BASE = "font-weight:600;padding:8px 12px;border:1px solid #555"
-    TH_HDR  = f"{TH_BASE};background:#1976d2;color:white"
-    TD_BASE = "padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem"
+    TH_HDR1 = "font-weight:600;font-size:12px;padding:6px 8px;border:1px solid #555;background:#1976d2;color:white"
+    TH_HDR2 = "font-weight:600;font-size:12px;padding:5px 8px;border:1px solid #555;background:#1976d2;color:white"
+    TD_BASE = "padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.75rem"
 
     n_propios  = sum(1 for r in rows_all if r["propia"]["id"])
     n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
@@ -6777,7 +6777,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
         with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap"):
                 for label, count in [
-                    ("Productos únicos", len(rows_all)),
+                    ("Publicaciones únicas", len(rows_all)),
                     ("Propios",          n_propios),
                     ("Catálogo",         n_catalogo),
                     ("En 3 cuotas",      n_x3),
@@ -6789,7 +6789,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
 
         filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72 mb-3")
 
-        table_container = ui.element("div").style("width:100%;max-height:65vh;overflow:auto")
+        table_container = ui.element("div").style("width:100%;max-height:65vh;overflow:auto;position:relative")
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -6812,28 +6812,28 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str) 
                         # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
                         # Propia: colspan=2, los demás: colspan=3 (+ columna % vs Propia)
                         with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};min-width:220px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};min-width:220px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR};width:60px;text-align:center;position:sticky;top:0;z-index:11"):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:60px;text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Stock")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 cs = '2' if gkey == "propia" else '3'
-                                with ui.element("th").props(f'colspan="{cs}"').style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
+                                with ui.element("th").props(f'colspan="{cs}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
                         # Fila 2: Publicación / Precio [/ % vs Propia] para cada grupo
                         with ui.element("tr"):
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"{TH_HDR};border-left:2px solid {gborder};text-align:center;position:sticky;top:37px;z-index:10"):
+                                with ui.element("th").style(f"{TH_HDR2};border-left:2px solid {gborder};text-align:center;position:sticky;top:31px;z-index:10"):
                                     ui.label("Publicación")
-                                with ui.element("th").style(f"{TH_HDR};text-align:center;cursor:pointer;position:sticky;top:37px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                with ui.element("th").style(f"{TH_HDR2};text-align:center;cursor:pointer;position:sticky;top:31px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
                                 if gkey != "propia":
-                                    with ui.element("th").style(f"{TH_HDR};text-align:center;width:70px;position:sticky;top:37px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};text-align:center;width:70px;position:sticky;top:31px;z-index:10"):
                                         ui.label("% vs Propia")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
