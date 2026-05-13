@@ -3871,6 +3871,77 @@ def get_ml_access_token(user_id: int) -> Optional[str]:
         conn.close()
 
 
+def _parse_ml_item_body(body: dict) -> dict:
+    """Convierte el body de la API /items al formato interno de la app."""
+    marca = ""
+    color = ""
+    seller_sku = ""
+    for att in body.get("attributes") or []:
+        aid = (att.get("id") or "").strip().upper()
+        if aid in ("BRAND", "MARCA"):
+            val = att.get("value_name") or att.get("value_id")
+            marca = str(val) if val is not None else ""
+        elif aid in ("COLOR", "COLOUR"):
+            val = att.get("value_name") or att.get("value_id")
+            if val:
+                color = str(val)
+                break
+        elif aid == "SELLER_SKU":
+            v = att.get("value_name") or att.get("value") or att.get("value_id")
+            if v is None and att.get("values"):
+                v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
+            if v is not None:
+                seller_sku = str(v).strip()
+    if not seller_sku:
+        seller_sku = (body.get("seller_custom_field") or "").strip()
+    if not seller_sku:
+        for var in body.get("variations") or []:
+            for vatt in (var.get("attribute_combinations") or var.get("attributes") or []):
+                if (vatt.get("id") or "").strip().upper() == "SELLER_SKU":
+                    v = vatt.get("value_name") or vatt.get("value") or vatt.get("value_id")
+                    if v is not None:
+                        seller_sku = str(v).strip()
+                        break
+            if seller_sku:
+                break
+    if not color:
+        tit = (body.get("title") or "").lower()
+        colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor", "silver", "space gray", "space grey", "gold", "negro espacial", "midnight"]
+        equiv = {"silver": "Plateado", "space gray": "Gris", "space grey": "Gris", "gold": "Dorado", "negro espacial": "Negro", "midnight": "Negro"}
+        for c in colores:
+            if c in tit:
+                color = equiv.get(c, c.capitalize())
+                break
+    catalog_listing = body.get("catalog_listing") is True
+    original_price = body.get("original_price") or body.get("base_price")
+    thumbnail = body.get("thumbnail") or ""
+    if not thumbnail and body.get("pictures"):
+        pic = (body.get("pictures") or [{}])[0]
+        thumbnail = pic.get("secure_url") or pic.get("url") or ""
+    return {
+        "id": body.get("id"),
+        "title": body.get("title", ""),
+        "thumbnail": thumbnail,
+        "price": body.get("price"),
+        "sale_price": body.get("sale_price"),
+        "original_price": original_price,
+        "available_quantity": body.get("available_quantity"),
+        "sold_quantity": body.get("sold_quantity"),
+        "status": body.get("status", ""),
+        "permalink": body.get("permalink", ""),
+        "catalog_product_id": body.get("catalog_product_id"),
+        "catalog_listing": catalog_listing,
+        "listing_type_id": body.get("listing_type_id"),
+        "sale_terms": body.get("sale_terms"),
+        "seller_sku": seller_sku,
+        "marca": marca or "—",
+        "color": color or "—",
+        "last_updated": body.get("last_updated"),
+        "stop_time": body.get("stop_time"),
+        "date_created": body.get("date_created"),
+    }
+
+
 def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str, Any]:
     """Obtiene las publicaciones del vendedor desde la API de MercadoLibre (paginado).
     include_paused=False (default): solo activas, carga más rápido.
@@ -3931,74 +4002,7 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
         )
         items_resp.raise_for_status()
         def _item_from_body(body: dict) -> dict:
-            marca = ""
-            color = ""
-            seller_sku = ""
-            for att in body.get("attributes") or []:
-                aid = (att.get("id") or "").strip().upper()
-                if aid in ("BRAND", "MARCA"):
-                    val = att.get("value_name") or att.get("value_id")
-                    marca = str(val) if val is not None else ""
-                elif aid in ("COLOR", "COLOUR"):
-                    val = att.get("value_name") or att.get("value_id")
-                    if val:
-                        color = str(val)
-                        break
-                elif aid == "SELLER_SKU":
-                    v = att.get("value_name") or att.get("value") or att.get("value_id")
-                    if v is None and att.get("values"):
-                        v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
-                    if v is not None:
-                        seller_sku = str(v).strip()
-            if not seller_sku:
-                seller_sku = (body.get("seller_custom_field") or "").strip()
-            if not seller_sku:
-                for var in body.get("variations") or []:
-                    for vatt in (var.get("attribute_combinations") or var.get("attributes") or []):
-                        if (vatt.get("id") or "").strip().upper() == "SELLER_SKU":
-                            v = vatt.get("value_name") or vatt.get("value") or vatt.get("value_id")
-                            if v is not None:
-                                seller_sku = str(v).strip()
-                                break
-                    if seller_sku:
-                        break
-            if not color:
-                tit = (body.get("title") or "").lower()
-                colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor", "silver", "space gray", "space grey", "gold", "negro espacial", "midnight"]
-                equiv = {"silver": "Plateado", "space gray": "Gris", "space grey": "Gris", "gold": "Dorado", "negro espacial": "Negro", "midnight": "Negro"}
-                for c in colores:
-                    if c in tit:
-                        color = equiv.get(c, c.capitalize())
-                        break
-            catalog_listing = body.get("catalog_listing") is True
-            # original_price existe cuando ML tiene precio promocional fijado
-            original_price = body.get("original_price") or body.get("base_price")
-            thumbnail = body.get("thumbnail") or ""
-            if not thumbnail and body.get("pictures"):
-                pic = (body.get("pictures") or [{}])[0]
-                thumbnail = pic.get("secure_url") or pic.get("url") or ""
-            return {
-                "id": body.get("id"),
-                "title": body.get("title", ""),
-                "thumbnail": thumbnail,
-                "price": body.get("price"),
-                "sale_price": body.get("sale_price"),
-                "original_price": original_price,
-                "available_quantity": body.get("available_quantity"),
-                "sold_quantity": body.get("sold_quantity"),
-                "status": body.get("status", ""),
-                "permalink": body.get("permalink", ""),
-                "catalog_product_id": body.get("catalog_product_id"),
-                "catalog_listing": catalog_listing,
-                "listing_type_id": body.get("listing_type_id"),
-                "sale_terms": body.get("sale_terms"),
-                "seller_sku": seller_sku,
-                "marca": marca or "—",
-                "color": color or "—",
-                "last_updated": body.get("last_updated"),
-                "stop_time": body.get("stop_time"),
-                "date_created": body.get("date_created"),
-            }
+            return _parse_ml_item_body(body)
 
         for item_data in items_resp.json():
             if isinstance(item_data, dict) and item_data.get("code") == 200:
@@ -4046,73 +4050,7 @@ def _cuotas_desde_item(item: Dict[str, Any]) -> str:
 
 
 def _body_to_precios_item(body: dict) -> dict:
-    """Convierte el body de la API /items al formato usado en Precios (igual que _item_from_body en ml_get_my_items)."""
-    marca = ""
-    color = ""
-    seller_sku = ""
-    for att in body.get("attributes") or []:
-        aid = (att.get("id") or "").strip().upper()
-        if aid in ("BRAND", "MARCA"):
-            val = att.get("value_name") or att.get("value_id")
-            marca = str(val) if val is not None else ""
-        elif aid in ("COLOR", "COLOUR"):
-            val = att.get("value_name") or att.get("value_id")
-            if val:
-                color = str(val)
-                break
-        elif aid == "SELLER_SKU":
-            v = att.get("value_name") or att.get("value") or att.get("value_id")
-            if v is None and att.get("values"):
-                v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
-            if v is not None:
-                seller_sku = str(v).strip()
-    if not seller_sku:
-        seller_sku = (body.get("seller_custom_field") or "").strip()
-    if not seller_sku:
-        for var in body.get("variations") or []:
-            for vatt in (var.get("attribute_combinations") or var.get("attributes") or []):
-                if (vatt.get("id") or "").strip().upper() == "SELLER_SKU":
-                    v = vatt.get("value_name") or vatt.get("value") or vatt.get("value_id")
-                    if v is not None:
-                        seller_sku = str(v).strip()
-                        break
-            if seller_sku:
-                break
-    if not color:
-        tit = (body.get("title") or "").lower()
-        colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor"]
-        for c in colores:
-            if c in tit:
-                color = c.capitalize()
-                break
-    catalog_listing = body.get("catalog_listing") is True
-    original_price = body.get("original_price") or body.get("base_price")
-    thumbnail = body.get("thumbnail") or ""
-    if not thumbnail and body.get("pictures"):
-        pic = (body.get("pictures") or [{}])[0]
-        thumbnail = pic.get("secure_url") or pic.get("url") or ""
-    return {
-        "id": body.get("id"),
-        "title": body.get("title", ""),
-        "thumbnail": thumbnail,
-        "price": body.get("price"),
-        "sale_price": body.get("sale_price"),
-        "original_price": original_price,
-        "available_quantity": body.get("available_quantity"),
-        "sold_quantity": body.get("sold_quantity"),
-        "status": body.get("status", ""),
-        "permalink": body.get("permalink", ""),
-        "catalog_product_id": body.get("catalog_product_id"),
-        "catalog_listing": catalog_listing,
-        "listing_type_id": body.get("listing_type_id"),
-        "sale_terms": body.get("sale_terms"),
-        "seller_sku": seller_sku,
-        "marca": marca or "—",
-        "color": color or "—",
-        "last_updated": body.get("last_updated"),
-        "stop_time": body.get("stop_time"),
-        "date_created": body.get("date_created"),
-    }
+    return _parse_ml_item_body(body)
 
 
 def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[str, Any]:
