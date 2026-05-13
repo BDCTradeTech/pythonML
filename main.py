@@ -639,47 +639,32 @@ def set_user_qb_customer(user_id: int, qb_customer_id: str, qb_customer_name: Op
         conn.close()
 
 
-def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str]]:
-    """
-    Obtiene la lista de Customers de QuickBooks.
-    Devuelve (lista, None) si OK, o ([], mensaje_error) si falla.
-    """
+def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
+    """Refresca el access_token QB si está por vencer (< 5 min) o si no hay expires_at.
+    Actualiza qb_tokens en la BD con el expires_at calculado.
+    Retorna el access_token vigente, o None si no hay tokens/credenciales configurados."""
     import base64
-    from urllib.parse import quote
-
     qb_creds = get_qb_app_credentials(user_id)
     qb_tokens = get_qb_tokens(user_id)
     if not qb_creds or not qb_tokens:
-        return [], "Credenciales o tokens de QuickBooks no configurados"
-    if not qb_tokens.get("realm_id"):
-        return [], "Falta realm_id. Volvé a Conectar cuenta en Configuración."
-
-    realm_id = qb_tokens["realm_id"]
+        return None
     access_token = qb_tokens["access_token"]
     refresh_token = qb_tokens.get("refresh_token")
     expires_at = qb_tokens.get("expires_at")
-
-    # Refrescar token si está por vencer (menos de 5 min)
     needs_refresh = False
     if expires_at:
         try:
-            from datetime import datetime as dt
-            exp = dt.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if exp.tzinfo:
-                from datetime import timezone
-                now = dt.now(timezone.utc)
-            else:
-                now = dt.utcnow()
+            from datetime import timezone
+            exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            now = datetime.now(timezone.utc) if exp.tzinfo else datetime.utcnow()
             if (exp - now).total_seconds() < 300:
                 needs_refresh = True
         except Exception:
             needs_refresh = True
     elif refresh_token:
         needs_refresh = True
-
-    if needs_refresh and refresh_token and qb_creds:
-        auth_str = f"{qb_creds['client_id']}:{qb_creds['client_secret']}"
-        auth_b64 = base64.b64encode(auth_str.encode()).decode()
+    if needs_refresh and refresh_token:
+        auth_b64 = base64.b64encode(f"{qb_creds['client_id']}:{qb_creds['client_secret']}".encode()).decode()
         try:
             resp = requests.post(
                 "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
@@ -698,8 +683,7 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
                 new_expires = data.get("expires_in")
                 expires_at_new = None
                 if isinstance(new_expires, (int, float)):
-                    from datetime import datetime as dt, timedelta
-                    expires_at_new = (dt.utcnow() + timedelta(seconds=int(new_expires))).isoformat()
+                    expires_at_new = (datetime.utcnow() + timedelta(seconds=int(new_expires))).isoformat()
                 conn = get_connection()
                 try:
                     cur = conn.cursor()
@@ -713,6 +697,25 @@ def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str
                 access_token = new_token
         except Exception:
             pass
+    return access_token
+
+
+def fetch_qb_customers(user_id: int) -> tuple[List[Dict[str, str]], Optional[str]]:
+    """
+    Obtiene la lista de Customers de QuickBooks.
+    Devuelve (lista, None) si OK, o ([], mensaje_error) si falla.
+    """
+    from urllib.parse import quote
+
+    qb_tokens = get_qb_tokens(user_id)
+    if not qb_tokens:
+        return [], "Credenciales o tokens de QuickBooks no configurados"
+    if not qb_tokens.get("realm_id"):
+        return [], "Falta realm_id. Volvé a Conectar cuenta en Configuración."
+    realm_id = qb_tokens["realm_id"]
+    access_token = _refresh_qb_token_if_needed(user_id)
+    if not access_token:
+        return [], "Credenciales o tokens de QuickBooks no configurados"
 
     base_url = "https://quickbooks.api.intuit.com"
     query = "SELECT Id, DisplayName FROM Customer MAXRESULTS 1000"
@@ -767,60 +770,18 @@ def _qb_raw_query(user_id: int, query_sql: str) -> tuple[Optional[dict], Optiona
     Ejecuta una consulta SQL contra la API de QuickBooks.
     Retorna (data_json, None) si OK, o (None, mensaje_error) si falla.
     """
-    import base64
     from urllib.parse import quote
 
-    qb_creds = get_qb_app_credentials(user_id)
     qb_tokens = get_qb_tokens(user_id)
-    if not qb_creds or not qb_tokens:
+    if not qb_tokens:
         return None, "Credenciales o tokens de QuickBooks no configurados"
     if not qb_tokens.get("realm_id"):
         return None, "Falta realm_id. Volvé a Conectar cuenta en Configuración."
     realm_id = qb_tokens["realm_id"]
-    access_token = qb_tokens["access_token"]
-    refresh_token = qb_tokens.get("refresh_token")
-    expires_at = qb_tokens.get("expires_at")
-    needs_refresh = False
-    if expires_at:
-        try:
-            from datetime import datetime as dt
-            exp = dt.fromisoformat(expires_at.replace("Z", "+00:00"))
-            if exp.tzinfo:
-                from datetime import timezone
-                now = dt.now(timezone.utc)
-            else:
-                now = dt.utcnow()
-            if (exp - now).total_seconds() < 300:
-                needs_refresh = True
-        except Exception:
-            needs_refresh = True
-    elif refresh_token:
-        needs_refresh = True
-    if needs_refresh and refresh_token and qb_creds:
-        auth_str = f"{qb_creds['client_id']}:{qb_creds['client_secret']}"
-        auth_b64 = base64.b64encode(auth_str.encode()).decode()
-        try:
-            resp = requests.post(
-                "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-                data={"grant_type": "refresh_token", "refresh_token": refresh_token},
-                headers={"Accept": "application/json", "Content-Type": "application/x-www-form-urlencoded", "Authorization": f"Basic {auth_b64}"},
-                timeout=15,
-            )
-            if resp.ok:
-                data = resp.json()
-                conn = get_connection()
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        "UPDATE qb_tokens SET access_token=?, refresh_token=?, expires_at=?, raw_data=? WHERE user_id=?",
-                        (data.get("access_token"), data.get("refresh_token") or refresh_token, None, json.dumps(data, ensure_ascii=False), user_id),
-                    )
-                    conn.commit()
-                finally:
-                    conn.close()
-                access_token = data.get("access_token")
-        except Exception:
-            pass
+    access_token = _refresh_qb_token_if_needed(user_id)
+    if not access_token:
+        return None, "Credenciales o tokens de QuickBooks no configurados"
+
     base_url = "https://quickbooks.api.intuit.com"
     url = f"{base_url}/v3/company/{realm_id}/query?query={quote(query_sql)}&minorversion=65"
     try:
