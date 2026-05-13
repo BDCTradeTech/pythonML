@@ -13838,13 +13838,17 @@ def main() -> None:
     if not es_produccion and os.getenv("NGROK_AUTO_START", "0").strip().lower() in ("1", "true", "yes"):
         print("Iniciando ngrok...")
         _iniciar_ngrok(port)
+    _secret = os.getenv("STORAGE_SECRET", "")
+    if not _secret:
+        print("ERROR: STORAGE_SECRET no configurado. Ver .env.example")
+        sys.exit(1)
     # host 0.0.0.0 necesario para que Render/cloud pueda acceder al servicio
     ui.run(
         title="BDC systems",
         reload=False,
         host="0.0.0.0" if es_produccion else "127.0.0.1",
         port=port,
-        storage_secret=os.getenv("STORAGE_SECRET", "cambia-esta-clave"),
+        storage_secret=os.getenv("STORAGE_SECRET", ""),
         reconnect_timeout=120,  # Evita "Connection lost" durante carga pesada (Precios con muchos productos)
         message_history_length=2000,  # Más mensajes al reconectar para restaurar UI
     )
