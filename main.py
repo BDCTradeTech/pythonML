@@ -1127,24 +1127,6 @@ def fetch_qb_customer_detail(user_id: int, customer_id: str) -> tuple[Optional[D
         return None, str(e)
 
 
-def fetch_qb_invoice_detail(user_id: int, invoice_id: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Obtiene el detalle completo de una Invoice por ID."""
-    qb_tokens = get_qb_tokens(user_id)
-    if not qb_tokens or not qb_tokens.get("realm_id"):
-        return None, "Sin tokens o realm_id"
-    base_url = "https://quickbooks.api.intuit.com"
-    realm_id = qb_tokens["realm_id"]
-    access_token = qb_tokens["access_token"]
-    url = f"{base_url}/v3/company/{realm_id}/invoice/{invoice_id}"
-    try:
-        r = requests.get(url, headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"}, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        return data.get("Invoice", {}), None
-    except Exception as e:
-        return None, str(e)
-
-
 def fetch_qb_invoice_pdf(user_id: int, invoice_id: str) -> tuple[Optional[bytes], Optional[str]]:
     """Descarga una Invoice como PDF. Retorna (pdf_bytes, None) o (None, mensaje_error)."""
     qb_tokens = get_qb_tokens(user_id)
