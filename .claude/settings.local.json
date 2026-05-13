@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($lines = \\(Get-Content C:\\\\Users\\\\Diego\\\\Desktop\\\\PythonML\\\\main.py\\).Count; Write-Output \"Total lines: $lines\")",
+      "Bash(python *)",
+      "PowerShell(Get-Command *)"
+    ]
+  }
+}
