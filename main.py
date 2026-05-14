@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.20"
+VERSION = "2.26.05.14.21"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5371,6 +5371,21 @@ def fmt_n(val) -> str:
         return "0"
 
 
+def _safe_str(val) -> str:
+    if isinstance(val, str):
+        return val.strip()
+    if isinstance(val, dict):
+        for key in ("url", "secure_url", "data"):
+            v = val.get(key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            if isinstance(v, dict):
+                inner = v.get("url") or v.get("secure_url") or ""
+                if isinstance(inner, str) and inner.strip():
+                    return inner.strip()
+    return ""
+
+
 def _pintar_home_inline(
     container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None
 ) -> None:
@@ -5477,11 +5492,11 @@ def _pintar_home_inline(
         with ui.column().classes("w-full gap-3"):
             # ── HEADER ─────────────────────────────────────────────────────────────
             prof = profile or {}
-            secure_thumb = prof.get("secure_thumbnail") or prof.get("thumbnail") or ""
-            logo = prof.get("logo") or ""
-            img_url = (logo or secure_thumb or "").strip()
-            nickname = prof.get("nickname") or prof.get("first_name") or "Usuario ML"
-            power = rep.get("power_seller_status")
+            secure_thumb = _safe_str(prof.get("secure_thumbnail")) or _safe_str(prof.get("thumbnail"))
+            logo = _safe_str(prof.get("logo"))
+            img_url = logo or secure_thumb
+            nickname = _safe_str(prof.get("nickname")) or _safe_str(prof.get("first_name")) or "Usuario ML"
+            power = _safe_str(prof.get("power_seller_status"))
             with ui.element("div").style("background:#ffffff;border-bottom:3px solid #1976d2;padding:16px 20px;border-radius:8px 8px 0 0;box-shadow:0 1px 4px rgba(0,0,0,0.06)"):
                 with ui.row().classes("w-full items-center gap-4"):
                     if img_url:
