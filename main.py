@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.24"
+VERSION = "2.26.05.14.25"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5375,7 +5375,8 @@ def _safe_str(val) -> str:
     if isinstance(val, str):
         return val.strip()
     if isinstance(val, dict):
-        return (val.get("secure_url") or val.get("url") or val.get("data") or "").strip()
+        return (val.get("picture_url") or val.get("secure_url") or
+                val.get("url") or val.get("data") or "").strip()
     return ""
 
 
@@ -5485,9 +5486,7 @@ def _pintar_home_inline(
         with ui.column().classes("w-full gap-3"):
             # ── HEADER + KPI ROW (6 elementos) ────────────────────────────────────
             prof = profile or {}
-            import logging, sys
-            logging.warning(f"[LOGO DEBUG] thumbnail={prof.get('thumbnail')} secure={prof.get('secure_thumbnail')} logo={prof.get('logo')}")
-            print(f"[LOGO DEBUG] thumbnail={prof.get('thumbnail')} secure={prof.get('secure_thumbnail')} logo={prof.get('logo')}", flush=True, file=sys.stderr)
+
             secure_thumb = _safe_str(prof.get("secure_thumbnail")) or _safe_str(prof.get("thumbnail"))
             logo = _safe_str(prof.get("logo"))
             img_url = logo or secure_thumb
