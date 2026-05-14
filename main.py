@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.17"
+VERSION = "2.26.05.14.18"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6848,7 +6848,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
 
     TH_HDR1 = "font-weight:700;font-size:11px;padding:5px 6px;border:1px solid #1565c0;background:#1976d2;color:white;letter-spacing:0.05em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,0.15)"
     TH_HDR2 = "font-weight:500;font-size:10px;padding:4px 5px;border:1px solid #1565c0;background:#1565c0;color:rgba(255,255,255,0.85)"
-    TD_BASE = "padding:3px 6px;border-bottom:1px solid #e5e7eb;font-size:11px"
+    TD_BASE = "padding:3px 6px;border-bottom:1px solid #e5e7eb;font-size:10px"
 
     n_propios  = sum(1 for r in rows_all if r["propia"]["id"])
     n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
@@ -6946,7 +6946,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 promo = row.get("promo", {})
                                 promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
                                 promo_price = promo.get("price_promo")
-                                _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:11px"
+                                _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:10px"
                                 # Precio Promo
                                 with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;font-weight:600;text-align:right"):
                                     ui.label(fmt_moneda(promo_price)).classes("" if promo_price is not None else "text-gray-400")
@@ -6982,9 +6982,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     item_id   = slot["id"]
                                     permalink = slot["permalink"]
                                     price     = slot["price"]
-                                    _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:11px"
+                                    _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:10px"
                                     # Publicación
-                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:10px;font-family:monospace;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
+                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:9px;font-family:monospace;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                         if item_id and permalink:
                                             ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
                                         elif item_id:
