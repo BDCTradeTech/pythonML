@@ -6695,6 +6695,7 @@ def _get_promo_data(access_token: str, item_id: str) -> dict:
     """Obtiene precio promo, % ML y % vendedor para un ítem. Devuelve None en cada campo si no hay promo."""
     empty: dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
     sp = ml_get_item_sale_price_full(access_token, item_id)
+    logging.warning(f"[PROMO DEBUG] item={item_id} sp={sp}")
     if not sp:
         return empty
     amount = sp.get("amount")
@@ -6702,6 +6703,7 @@ def _get_promo_data(access_token: str, item_id: str) -> dict:
     promotion_id = sp.get("promotion_id")
     promotion_type = sp.get("promotion_type") or ""
     campaign_id = sp.get("campaign_id")
+    logging.warning(f"[PROMO DEBUG] promotion_id={promotion_id} campaign_id={campaign_id} amount={amount}")
     if not promotion_id or amount is None:
         return empty
     # FIX 3: total_disc con fallbacks cuando regular_amount es None
@@ -6718,6 +6720,7 @@ def _get_promo_data(access_token: str, item_id: str) -> dict:
         discounts = ml_get_promotion_item_discounts(
             access_token, str(campaign_id), str(promotion_type), item_id, total_disc
         )
+    logging.warning(f"[PROMO DEBUG] discounts={discounts}")
     if discounts:
         return {"price_promo": float(amount), "meli_pct": discounts.get("meli_pct"), "seller_pct": discounts.get("seller_pct")}
     return {"price_promo": float(amount), "meli_pct": None, "seller_pct": None}
