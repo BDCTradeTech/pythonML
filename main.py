@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.29"
+VERSION = "2.26.05.14.30"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -4754,6 +4754,8 @@ def ml_get_shipments_today(access_token: str, seller_id: str) -> Dict[str, int]:
     offset = 0
     limit = 50
     headers = {"Authorization": f"Bearer {access_token}"}
+    import logging as _slog
+    _slog.warning(f"[SHIP2 DEBUG] llamando seller_id={seller_id} date_from={date_from} date_to={date_to}")
     while True:
         try:
             resp = requests.get(
@@ -4766,6 +4768,7 @@ def ml_get_shipments_today(access_token: str, seller_id: str) -> Dict[str, int]:
             resp.raise_for_status()
             data = resp.json()
             results_s = data.get("results") or []
+            _slog.warning(f"[SHIP2 DEBUG] status={resp.status_code} total={(data.get('paging') or {}).get('total')} results_count={len(results_s)} primer_resultado={results_s[0] if results_s else 'VACIO'}")
             if not results_s:
                 break
             for s in results_s:
@@ -4778,7 +4781,8 @@ def ml_get_shipments_today(access_token: str, seller_id: str) -> Dict[str, int]:
             offset += limit
             if offset >= total or offset >= 500:
                 break
-        except Exception:
+        except Exception as e:
+            _slog.warning(f"[SHIP2 DEBUG] EXCEPCION: {e}")
             break
     return {"flex": flex_count, "me": me_count}
 
