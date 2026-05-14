@@ -6,7 +6,12 @@
       "PowerShell(Get-Command *)",
       "PowerShell(py *)",
       "Bash(py -c \"import ast; ast.parse\\(open\\('main.py', encoding='utf-8'\\).read\\(\\)\\); print\\('OK'\\)\")",
-      "Bash(py -m pytest test_auth.py -v)"
+      "Bash(py -m pytest test_auth.py -v)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(scp *)",
+      "Bash(ssh *)"
     ]
   }
 }
