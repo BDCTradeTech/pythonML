@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.30"
+VERSION = "2.26.05.14.31"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5374,6 +5374,8 @@ def build_tab_estadisticas(estadisticas_container) -> None:
         background_tasks.create(_cargar_estadisticas_async(), name="cargar_estadisticas")
 
     async def _cargar_estadisticas_async() -> None:
+        import logging as _stlog
+        _stlog.warning("[STAT DEBUG] iniciando carga estadísticas")
         try:
             profile = await run.io_bound(ml_get_user_profile, access_token)
             seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
@@ -5393,6 +5395,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                     shipments_today = await run.io_bound(ml_get_shipments_today, access_token, str(seller_id))
                 except Exception:
                     pass
+                _stlog.warning(f"[STAT DEBUG] shipments_today={shipments_today}")
             try:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
