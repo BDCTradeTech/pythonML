@@ -6651,6 +6651,12 @@ def build_tab_cuotas(container) -> None:
                     _rid = str(_g[0].get("id") or "")
                 if _rid:
                     rep_ids.append(_rid)
+            seller_id = ""
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id = str((profile or {}).get("id") or "")
+            except Exception:
+                pass
             total_grupos = len(rep_ids)
             result_area.clear()
             promo_lbl = None
@@ -6660,7 +6666,7 @@ def build_tab_cuotas(container) -> None:
                     promo_lbl = ui.label(f"Cargando promociones 0/{total_grupos}...").classes("text-xl text-gray-700")
             promo_data: Dict[str, Dict] = {}
             for _i, _iid in enumerate(rep_ids):
-                promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid)
+                promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
             try:
@@ -6691,39 +6697,38 @@ def _cuotas_score(it: dict) -> tuple:
     return (status_score, cuotas_score, stock_score)
 
 
-def _get_promo_data(access_token: str, item_id: str) -> dict:
-    """Obtiene precio promo, % ML y % vendedor para un ítem. Devuelve None en cada campo si no hay promo."""
+def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dict:
+    """Obtiene precio promo, % ML y % vendedor. Misma cascada de 3 intentos que el popup de precios."""
     empty: dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
     sp = ml_get_item_sale_price_full(access_token, item_id)
-    logging.warning(f"[PROMO DEBUG] item={item_id} sp={sp}")
-    if not sp:
+    if not sp or sp.get("amount") is None:
         return empty
-    amount = sp.get("amount")
-    regular = sp.get("regular_amount")
-    promotion_id = sp.get("promotion_id")
-    promotion_type = sp.get("promotion_type") or ""
-    campaign_id = sp.get("campaign_id")
-    logging.warning(f"[PROMO DEBUG] promotion_id={promotion_id} campaign_id={campaign_id} amount={amount}")
-    if not promotion_id or amount is None:
+    amt_f = float(sp["amount"])
+    reg = sp.get("regular_amount")
+    if reg is None or float(reg) <= 0 or abs(float(reg) - amt_f) <= 0.01:
         return empty
-    # FIX 3: total_disc con fallbacks cuando regular_amount es None
-    total_disc = 0.0
-    if regular and float(regular) > 0:
-        total_disc = (float(regular) - float(amount)) / float(regular) * 100
-    elif amount and sp.get("price") and float(sp.get("price", 0)) > 0:
-        total_disc = (float(sp["price"]) - float(amount)) / float(sp["price"]) * 100
-    else:
-        total_disc = 10.0
-    discounts = ml_get_promotion_item_discounts(access_token, str(promotion_id), str(promotion_type), item_id, total_disc)
-    # FIX 2: fallback por campaign_id — ML a veces da campaign_id en metadata sin promotion_id útil
-    if not discounts and campaign_id:
-        discounts = ml_get_promotion_item_discounts(
-            access_token, str(campaign_id), str(promotion_type), item_id, total_disc
+    reg_f = float(reg)
+    total_pct = (reg_f - amt_f) / reg_f * 100
+    cid = sp.get("campaign_id")
+    pid = sp.get("promotion_id")
+    pt  = (sp.get("promotion_type") or "").strip().upper()
+    d = None
+    if cid:
+        d = ml_get_promotion_item_discounts_by_campaign(
+            access_token, str(cid), item_id, total_pct,
+            seller_id, promotion_type_hint=pt
         )
-    logging.warning(f"[PROMO DEBUG] discounts={discounts}")
-    if discounts:
-        return {"price_promo": float(amount), "meli_pct": discounts.get("meli_pct"), "seller_pct": discounts.get("seller_pct")}
-    return {"price_promo": float(amount), "meli_pct": None, "seller_pct": None}
+    if d is None and pid and pt and not str(pid).upper().startswith("OFFER-"):
+        d = ml_get_promotion_item_discounts(
+            access_token, str(pid), pt, item_id, total_pct
+        )
+    if d is None and seller_id:
+        d = ml_get_promotion_item_discounts_by_user(
+            access_token, item_id, seller_id, total_pct
+        )
+    if d:
+        return {"price_promo": amt_f, "meli_pct": d.get("meli_pct"), "seller_pct": d.get("seller_pct")}
+    return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
 
 
 def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None) -> None:
