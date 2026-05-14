@@ -6895,11 +6895,11 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                     with ui.element("thead"):
                         # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
                         with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:70px;min-width:70px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:70px;min-width:70px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:110px;min-width:110px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:110px;min-width:110px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};min-width:200px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};min-width:300px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:45px;min-width:45px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
@@ -6911,22 +6911,22 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     ui.label(glabel)
                         # Fila 2: sub-columnas de cada grupo
                         with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};width:80px;min-width:80px;border-left:2px solid {PROMO_BORDER};text-align:right;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:70px;min-width:70px;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("Precio Promo")
-                            with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:45px;min-width:45px;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:45px;min-width:45px;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% Vend.")
-                            with ui.element("th").style(f"{TH_HDR2};width:65px;min-width:65px;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% vs Propia")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"{TH_HDR2};width:90px;min-width:90px;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
+                                with ui.element("th").style(f"{TH_HDR2};width:80px;min-width:80px;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
                                     ui.label("Publicación")
-                                with ui.element("th").style(f"{TH_HDR2};width:75px;min-width:75px;text-align:right;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                with ui.element("th").style(f"{TH_HDR2};width:65px;min-width:65px;text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
                                 if gkey != "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:65px;min-width:65px;text-align:center;position:sticky;top:28px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
                                         ui.label("% vs Propia")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
@@ -6948,24 +6948,24 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 promo_price = promo.get("price_promo")
                                 _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:11px"
                                 # Precio Promo
-                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;font-weight:600;text-align:right;width:80px"):
+                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;font-weight:600;text-align:right;width:70px"):
                                     ui.label(fmt_moneda(promo_price)).classes("" if promo_price is not None else "text-gray-400")
                                 # % ML
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:55px"):
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:45px"):
                                     meli_pct = promo.get("meli_pct")
                                     if meli_pct is not None:
                                         ui.label(f"{meli_pct:.1f}%").style("color:#43a047;font-weight:500")
                                     else:
                                         ui.label("—").classes("text-gray-400")
                                 # % Vendedor
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:55px"):
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:45px"):
                                     seller_pct = promo.get("seller_pct")
                                     if seller_pct is not None:
                                         ui.label(f"{seller_pct:.1f}%").style("color:#e65100;font-weight:500")
                                     else:
                                         ui.label("—").classes("text-gray-400")
-                                # % vs Propia (Promos) — verde si más barato, rojo si más caro
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:65px"):
+                                # % vs Propia (Promos) — positivo=rojo, negativo=verde
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:55px"):
                                     if promo_price is not None and propia_price is not None and float(propia_price) != 0:
                                         pct_p = (float(promo_price) - float(propia_price)) / float(propia_price) * 100
                                         if abs(pct_p) < 0.05:
@@ -6984,7 +6984,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     price     = slot["price"]
                                     _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:11px"
                                     # Publicación
-                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:10px;font-family:monospace;text-align:center;width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
+                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:10px;font-family:monospace;text-align:center;width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                         if item_id and permalink:
                                             ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
                                         elif item_id:
@@ -6992,11 +6992,11 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         else:
                                             ui.label("—").classes("text-gray-400")
                                     # Precio
-                                    with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right;width:75px"):
+                                    with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right;width:65px"):
                                         ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
-                                    # % vs Propia (grupos) — rojo si más caro, verde si más barato
+                                    # % vs Propia (grupos) — positivo=rojo, negativo=verde
                                     if gkey != "propia":
-                                        with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center;width:65px"):
+                                        with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center;width:55px"):
                                             if price is not None and propia_price is not None and float(propia_price) != 0:
                                                 pct = (float(price) - float(propia_price)) / float(propia_price) * 100
                                                 if abs(pct) < 0.05:
