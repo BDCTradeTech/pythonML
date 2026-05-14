@@ -4222,7 +4222,7 @@ def ml_get_promotion_item_discounts(
     total_discount_pct: float,
 ) -> Optional[Dict[str, float]]:
     """Obtiene meli y seller % del ítem en la promo. Los benefits pueden ser puntos % (meli+seller=total) o proporción (meli+seller=100)."""
-    if not access_token or not promotion_id or not promotion_type or not item_id:
+    if not access_token or not promotion_id or not item_id:
         return None
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     try:
@@ -6701,12 +6701,23 @@ def _get_promo_data(access_token: str, item_id: str) -> dict:
     regular = sp.get("regular_amount")
     promotion_id = sp.get("promotion_id")
     promotion_type = sp.get("promotion_type") or ""
+    campaign_id = sp.get("campaign_id")
     if not promotion_id or amount is None:
         return empty
+    # FIX 3: total_disc con fallbacks cuando regular_amount es None
     total_disc = 0.0
     if regular and float(regular) > 0:
         total_disc = (float(regular) - float(amount)) / float(regular) * 100
+    elif amount and sp.get("price") and float(sp.get("price", 0)) > 0:
+        total_disc = (float(sp["price"]) - float(amount)) / float(sp["price"]) * 100
+    else:
+        total_disc = 10.0
     discounts = ml_get_promotion_item_discounts(access_token, str(promotion_id), str(promotion_type), item_id, total_disc)
+    # FIX 2: fallback por campaign_id — ML a veces da campaign_id en metadata sin promotion_id útil
+    if not discounts and campaign_id:
+        discounts = ml_get_promotion_item_discounts(
+            access_token, str(campaign_id), str(promotion_type), item_id, total_disc
+        )
     if discounts:
         return {"price_promo": float(amount), "meli_pct": discounts.get("meli_pct"), "seller_pct": discounts.get("seller_pct")}
     return {"price_promo": float(amount), "meli_pct": None, "seller_pct": None}
