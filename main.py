@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.27"
+VERSION = "2.26.05.14.28"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5406,7 +5406,15 @@ def _pintar_home_inline(
     ayer_local = today_local - timedelta(days=1)
     antes_ayer_local = today_local - timedelta(days=2)
 
+    import logging as _log_orders
+    _log_orders.warning(f"[ORDERS DEBUG] total órdenes recibidas: {len(results)}")
+    _debug_count = 0
+
     for ord_item in results:
+        if _debug_count < 3:
+            _d = ord_item.get("date_created") or ""
+            _log_orders.warning(f"[ORDERS DEBUG] orden {_debug_count}: keys={list(ord_item.keys())[:8]} date={_d[:10] if _d else '?'}")
+            _debug_count += 1
         dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
         if not dt_str or not isinstance(dt_str, str):
             continue
