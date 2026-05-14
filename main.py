@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.19"
+VERSION = "2.26.05.14.20"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5357,6 +5357,20 @@ def build_tab_estadisticas(estadisticas_container) -> None:
     cargar_y_pintar()
 
 
+def fmt_m(val) -> str:
+    try:
+        return f"${int(round(float(val))):,}".replace(",", ".")
+    except Exception:
+        return "$0"
+
+
+def fmt_n(val) -> str:
+    try:
+        return f"{int(round(float(val))):,}".replace(",", ".")
+    except Exception:
+        return "0"
+
+
 def _pintar_home_inline(
     container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None
 ) -> None:
@@ -5368,13 +5382,18 @@ def _pintar_home_inline(
     primer_dia_mes = today_local.replace(day=1)
     hoy_unidades, hoy_monto = 0, 0.0
     ayer_unidades, ayer_monto = 0, 0.0
+    antes_ayer_unidades, antes_ayer_monto = 0, 0.0
     semana_unidades, semana_monto = 0, 0.0
     d15_unidades, d15_monto = 0, 0.0
     d21_unidades, d21_monto = 0, 0.0
     mes_unidades, mes_monto = 0, 0.0
+    d60_unidades, d60_monto = 0, 0.0
+    d90_unidades, d90_monto = 0, 0.0
     ventas_mes_actual_unid, ventas_mes_actual_monto = 0, 0.0
     por_mes: Dict[str, Any] = {}
     top_productos: Dict[str, Dict[str, Any]] = {}  # item_id -> {title, units}
+    ayer_local = today_local - timedelta(days=1)
+    antes_ayer_local = today_local - timedelta(days=2)
 
     for ord_item in results:
         dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
@@ -5399,22 +5418,31 @@ def _pintar_home_inline(
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
-        ayer_local = today_local - timedelta(days=1)
         if dt == ayer_local:
             ayer_unidades += units
             ayer_monto += total_amount
-        if (today_local - dt).days <= 6:
+        if dt == antes_ayer_local:
+            antes_ayer_unidades += units
+            antes_ayer_monto += total_amount
+        days_ago = (today_local - dt).days
+        if days_ago <= 6:
             semana_unidades += units
             semana_monto += total_amount
-        if (today_local - dt).days <= 14:
+        if days_ago <= 14:
             d15_unidades += units
             d15_monto += total_amount
-        if (today_local - dt).days <= 20:
+        if days_ago <= 20:
             d21_unidades += units
             d21_monto += total_amount
-        if (today_local - dt).days <= 30:
+        if days_ago <= 30:
             mes_unidades += units
             mes_monto += total_amount
+        if days_ago <= 59:
+            d60_unidades += units
+            d60_monto += total_amount
+        if days_ago <= 89:
+            d90_unidades += units
+            d90_monto += total_amount
         if primer_dia_mes <= dt <= today_local:
             ventas_mes_actual_unid += units
             ventas_mes_actual_monto += total_amount
@@ -5449,21 +5477,18 @@ def _pintar_home_inline(
         with ui.column().classes("w-full gap-3"):
             # ── HEADER ─────────────────────────────────────────────────────────────
             prof = profile or {}
-            raw_pic = prof.get("thumbnail") or prof.get("picture") or prof.get("logo") or prof.get("avatar")
-            pic_url = None
-            if isinstance(raw_pic, str) and raw_pic.strip():
-                pic_url = raw_pic.strip()
-            elif isinstance(raw_pic, dict):
-                pic_url = (raw_pic.get("url") or raw_pic.get("secure_url") or raw_pic.get("data", {}).get("url") or "").strip() or None
+            secure_thumb = prof.get("secure_thumbnail") or prof.get("thumbnail") or ""
+            logo = prof.get("logo") or ""
+            img_url = (logo or secure_thumb or "").strip()
             nickname = prof.get("nickname") or prof.get("first_name") or "Usuario ML"
             power = rep.get("power_seller_status")
             with ui.element("div").style("background:#ffffff;border-bottom:3px solid #1976d2;padding:16px 20px;border-radius:8px 8px 0 0;box-shadow:0 1px 4px rgba(0,0,0,0.06)"):
                 with ui.row().classes("w-full items-center gap-4"):
-                    if pic_url:
-                        ui.image(pic_url).style("width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid #1976d2;flex-shrink:0")
+                    if img_url:
+                        ui.image(img_url).style("width:52px;height:52px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e0e0e0")
                     else:
                         initials = "".join(w[0].upper() for w in nickname.split()[:2]) if nickname else "ML"
-                        with ui.element("div").style("width:54px;height:54px;border-radius:50%;background:#1976d2;display:flex;align-items:center;justify-content:center;flex-shrink:0"):
+                        with ui.element("div").style("width:52px;height:52px;border-radius:50%;background:#1976d2;display:flex;align-items:center;justify-content:center;flex-shrink:0"):
                             ui.label(initials).style("color:white;font-size:18px;font-weight:700;line-height:1")
                     with ui.column().classes("gap-0.5"):
                         ui.label(nickname).style("font-size:18px;font-weight:700;color:#1976d2;line-height:1.2")
@@ -5474,7 +5499,7 @@ def _pintar_home_inline(
                     if on_refresh:
                         ui.button("Actualizar", on_click=lambda: on_refresh()).props("flat dense icon=refresh").style("color:#1976d2")
 
-            # ── KPI ROW ────────────────────────────────────────────────────────────
+            # ── KPI ROW (5 KPIs) ───────────────────────────────────────────────────
             dolar_kpi_str = (get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")) if user_id else "1475"
             try:
                 dolar_kpi = float(str(dolar_kpi_str).replace(",", ".").strip())
@@ -5485,38 +5510,33 @@ def _pintar_home_inline(
             mes_usd_kpi = ventas_mes_actual_monto / dolar_kpi if dolar_kpi > 0 else 0
             ticket_prom_kpi = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
 
+            meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+                            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+            mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
+
             with ui.row().classes("w-full gap-2 flex-nowrap"):
-                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #1976d2;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #1976d2;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
                     ui.label("VENTAS HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label(str(hoy_unidades)).style("font-size:26px;font-weight:700;color:#1976d2;line-height:1.2")
-                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
-                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #43a047;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
-                    ui.label("VENTAS 7 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label(str(semana_unidades)).style("font-size:26px;font-weight:700;color:#43a047;line-height:1.2")
-                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
-                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #f57c00;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
-                    ui.label("FACTURACIÓN MES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label(f"$ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).style("font-size:18px;font-weight:700;color:#f57c00;line-height:1.2")
-                    ui.label(f"u$ {mes_usd_kpi:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
-                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #7b1fa2;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                    ui.label(str(hoy_unidades)).style("font-size:24px;font-weight:700;color:#1976d2;line-height:1.2")
+                    ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#616161")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #00bcd4;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
+                    ui.label("FLEX HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label("—").style("font-size:24px;font-weight:700;color:#00bcd4;line-height:1.2")
+                    ui.label("Próximamente").style("font-size:10px;color:#bdbdbd;font-style:italic")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #0288d1;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
+                    ui.label("ME HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label("—").style("font-size:24px;font-weight:700;color:#0288d1;line-height:1.2")
+                    ui.label("Próximamente").style("font-size:10px;color:#bdbdbd;font-style:italic")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #f57c00;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
+                    ui.label(f"FACTURACIÓN {mes_actual_nom.upper()}").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label(fmt_m(ventas_mes_actual_monto)).style("font-size:16px;font-weight:700;color:#f57c00;line-height:1.2")
+                    ui.label(f"u$ {fmt_n(mes_usd_kpi)}").style("font-size:11px;color:#616161")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #7b1fa2;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
                     ui.label("TICKET PROMEDIO").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label(f"$ {ticket_prom_kpi:,.0f}".replace(",", ".")).style("font-size:18px;font-weight:700;color:#7b1fa2;line-height:1.2")
+                    ui.label(fmt_m(ticket_prom_kpi)).style("font-size:16px;font-weight:700;color:#7b1fa2;line-height:1.2")
                     ui.label(f"{ventas_mes_actual_unid} unidades").style("font-size:11px;color:#616161")
 
             # ── FILA 1: Reputación | Ventas períodos | Facturación | Históricas ───
-            def _pct(val: Any) -> str:
-                if val is None:
-                    return "—"
-                try:
-                    v = float(val)
-                    if 0 <= v <= 1:
-                        return f"{v * 100:.2f}%"
-                    if 0 < v <= 100:
-                        return f"{v:.2f}%"
-                    return str(val)
-                except (TypeError, ValueError):
-                    return str(val) if val is not None else "—"
-
             metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
             sales_meta = metrics.get("sales", {}) or {}
             completed = sales_meta.get("completed") or 0
@@ -5551,7 +5571,7 @@ def _pintar_home_inline(
             level_color = level_colors.get(str(level_id), "#6b7280")
             MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
 
-            def _pct_to_float(v: Any) -> Optional[float]:
+            def _to_float_rate(v: Any) -> Optional[float]:
                 if v is None:
                     return None
                 try:
@@ -5560,14 +5580,44 @@ def _pintar_home_inline(
                 except (TypeError, ValueError):
                     return None
 
-            def _row_color(actual: Optional[float], max_val: float) -> str:
-                if actual is None or actual == 0:
-                    return "text-emerald-600"
-                return "text-red-600 font-semibold" if actual > max_val else "text-emerald-600"
+            def _semaforo(rate_raw: Any, max_val: float, label: str) -> None:
+                rate_f = _to_float_rate(rate_raw)
+                if rate_f is None:
+                    rate_pct_str = "—"
+                    color = "#9e9e9e"
+                    bar_pct = 0.0
+                elif rate_f == 0:
+                    rate_pct_str = "0,00%"
+                    color = "#43a047"
+                    bar_pct = 0.0
+                else:
+                    rate_pct_str = f"{rate_f * 100:.2f}%".replace(".", ",")
+                    ratio = rate_f / max_val if max_val > 0 else 1.0
+                    if ratio < 0.5:
+                        color = "#43a047"
+                    elif ratio < 0.9:
+                        color = "#fb8c00"
+                    else:
+                        color = "#e53935"
+                    bar_pct = min(ratio * 100, 100)
+                with ui.element("div").style("margin-bottom:6px"):
+                    with ui.element("div").style("display:flex;align-items:center;gap:8px"):
+                        with ui.element("div").style(f"width:10px;height:10px;border-radius:50%;background:{color};flex-shrink:0"):
+                            pass
+                        ui.label(label).style("font-size:11px;flex:1;color:#424242")
+                        ui.label(rate_pct_str).style(f"font-size:11px;font-weight:600;color:{color}")
+                    with ui.element("div").style("height:4px;border-radius:2px;background:#f0f0f0;margin-top:3px"):
+                        with ui.element("div").style(f"height:4px;border-radius:2px;background:{color};width:{bar_pct:.1f}%"):
+                            pass
 
-            meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-                            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-            mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
+            def _pct_fmt(val: Any) -> str:
+                if val is None:
+                    return "—"
+                try:
+                    v = float(val)
+                    return f"{(v * 100 if 0 <= v <= 1 else v):.2f}%"
+                except (TypeError, ValueError):
+                    return "—"
 
             with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden max-w-full"):
                 # Card Reputación
@@ -5576,60 +5626,38 @@ def _pintar_home_inline(
                         pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label("REPUTACIÓN").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
-                        with ui.row().classes("gap-2 items-center mb-2"):
+                        with ui.row().classes("gap-2 items-center mb-3"):
                             ui.icon("lightbulb", size="sm").style(f"color:{level_color}")
                             ui.label(f"Nivel: {level_label}").style(f"color:{level_color};font-weight:600;font-size:13px")
-                        with ui.column().classes("gap-1.5"):
-                            r_c = _pct_to_float(rate_claims)
-                            with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("Reclamos:").style("font-size:12px;color:#424242")
-                                ui.label(f"{_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS)).style("font-size:12px")
-                            r_m = _pct_to_float(rate_mediat)
-                            with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("Mediaciones:").style("font-size:12px;color:#424242")
-                                ui.label(f"{_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT)).style("font-size:12px")
-                            r_k = _pct_to_float(rate_canc)
-                            with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("Cancelaciones:").style("font-size:12px;color:#424242")
-                                ui.label(f"{_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC)).style("font-size:12px")
-                            r_d = _pct_to_float(rate_delayed)
-                            with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("Demora envíos:").style("font-size:12px;color:#424242")
-                                ui.label(f"{_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED)).style("font-size:12px")
+                        _semaforo(rate_claims, MAX_CLAIMS, f"Reclamos (máx {MAX_CLAIMS*100:.0f}%)")
+                        _semaforo(rate_mediat, MAX_MEDIAT, f"Mediaciones (máx {MAX_MEDIAT*100:.1f}%)")
+                        _semaforo(rate_canc, MAX_CANC, f"Cancelaciones (máx {MAX_CANC*100:.1f}%)")
+                        _semaforo(rate_delayed, MAX_DELAYED, f"Demora envíos (máx {MAX_DELAYED*100:.0f}%)")
 
-                # Card Ventas períodos
+                # Card Ventas períodos — 3 filas × 3
                 with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("height:4px;background:#1976d2"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
-                        ui.label("VENTAS POR PERÍODO").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
+                        ui.label("VENTAS POR PERÍODO").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:6px")
+                        def _mini(lbl, unid, monto, bg, color):
+                            with ui.element("div").style(f"flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:{bg}"):
+                                ui.label(lbl).style(f"font-size:10px;color:{color}")
+                                ui.label(str(unid)).style(f"font-size:13px;font-weight:700;color:{color}")
+                                ui.label(fmt_m(monto)).style("font-size:9px;color:#424242;white-space:nowrap")
                         with ui.column().classes("gap-1 w-full"):
                             with ui.row().classes("gap-1 w-full flex-nowrap"):
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e3f2fd"):
-                                    ui.label("Hoy").style("font-size:10px;color:#1565c0")
-                                    ui.label(str(hoy_unidades)).style("font-size:13px;font-weight:700;color:#1565c0")
-                                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#f5f5f5"):
-                                    ui.label("Ayer").style("font-size:10px;color:#616161")
-                                    ui.label(str(ayer_unidades)).style("font-size:13px;font-weight:700;color:#424242")
-                                    ui.label(f"$ {ayer_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e8f5e9"):
-                                    ui.label("7 días").style("font-size:10px;color:#2e7d32")
-                                    ui.label(str(semana_unidades)).style("font-size:13px;font-weight:700;color:#2e7d32")
-                                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                _mini("Hoy", hoy_unidades, hoy_monto, "#e3f2fd", "#1565c0")
+                                _mini("Ayer", ayer_unidades, ayer_monto, "#f5f5f5", "#616161")
+                                _mini("Antes de ayer", antes_ayer_unidades, antes_ayer_monto, "#fce4ec", "#880e4f")
                             with ui.row().classes("gap-1 w-full flex-nowrap"):
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e0f2f1"):
-                                    ui.label("15 días").style("font-size:10px;color:#00695c")
-                                    ui.label(str(d15_unidades)).style("font-size:13px;font-weight:700;color:#00695c")
-                                    ui.label(f"$ {d15_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e0f7fa"):
-                                    ui.label("21 días").style("font-size:10px;color:#00838f")
-                                    ui.label(str(d21_unidades)).style("font-size:13px;font-weight:700;color:#00838f")
-                                    ui.label(f"$ {d21_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
-                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#fff8e1"):
-                                    ui.label("30 días").style("font-size:10px;color:#e65100")
-                                    ui.label(str(mes_unidades)).style("font-size:13px;font-weight:700;color:#e65100")
-                                    ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                _mini("7 días", semana_unidades, semana_monto, "#e8f5e9", "#2e7d32")
+                                _mini("15 días", d15_unidades, d15_monto, "#e0f2f1", "#00695c")
+                                _mini("21 días", d21_unidades, d21_monto, "#e0f7fa", "#00838f")
+                            with ui.row().classes("gap-1 w-full flex-nowrap"):
+                                _mini("30 días", mes_unidades, mes_monto, "#fff8e1", "#e65100")
+                                _mini("60 días", d60_unidades, d60_monto, "#ede7f6", "#4527a0")
+                                _mini("90 días", d90_unidades, d90_monto, "#f3e5f5", "#6a1b9a")
 
                 # Card Facturación Mensual (echart)
                 if meses_orden:
@@ -5639,19 +5667,18 @@ def _pintar_home_inline(
                     chart_labels = [f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}" for k in orden_rev]
                     chart_data = []
                     for i, k in enumerate(orden_rev):
-                        val = round(por_mes[k]["total"] / 1e6, 2)
+                        val_m = por_mes[k]["total"]
                         is_actual = i == len(orden_rev) - 1
-                        lbl_m = f"${val:.2f}M"
                         chart_data.append({
-                            "value": val,
+                            "value": round(val_m, 0),
                             "itemStyle": {"color": "#43a047" if is_actual else "#1976d2"},
-                            "label": {"show": True, "position": "top", "formatter": lbl_m, "fontSize": 10}
+                            "label": {"show": True, "position": "top", "formatter": fmt_m(val_m), "fontSize": 9}
                         })
                     chart_options = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 55, "right": 20, "top": 30, "bottom": 35},
-                        "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 11, "interval": 0}},
-                        "yAxis": {"type": "value", "name": "M$", "nameTextStyle": {"fontSize": 10}, "axisLabel": {"fontSize": 10}},
+                        "grid": {"left": 65, "right": 15, "top": 30, "bottom": 35},
+                        "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 10, "interval": 0}},
+                        "yAxis": {"type": "value", "name": "$", "nameTextStyle": {"fontSize": 10}, "axisLabel": {"fontSize": 9, "formatter": "{value}"}},
                         "series": [{"type": "bar", "data": chart_data, "barWidth": "55%"}],
                     }
                     with ui.element("div").style("flex:1;min-width:280px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;min-height:185px;flex-shrink:0"):
@@ -5702,9 +5729,9 @@ def _pintar_home_inline(
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#424242'}"):
                                                 ui.label(str(v["units"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#424242'}"):
-                                                ui.label(f"$ {v['total']:,.0f}".replace(",", "."))
+                                                ui.label(fmt_m(v["total"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#616161'}"):
-                                                ui.label(f"u$ {total_usd:,.0f}".replace(",", "."))
+                                                ui.label(f"u$ {fmt_n(total_usd)}")
 
             # ── FILA 2: Top Ventas | Stock | Graf Semanal | Ventas Mes ────────────
             claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
@@ -5738,10 +5765,10 @@ def _pintar_home_inline(
                     ventas_por_dia[key_ord] += units_ord
 
             with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1 overflow-x-auto"):
-                # Card Top Ventas
-                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:6]
+                # Card Top Ventas — 8 productos
+                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:8]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
-                rank_colors = ["#1976d2", "#1565c0", "#1e88e5", "#42a5f5", "#90caf9", "#bbdefb"]
+                rank_colors = ["#1565c0", "#1976d2", "#1e88e5", "#42a5f5", "#64b5f6", "#90caf9", "#bbdefb", "#e3f2fd"]
 
                 with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("height:4px;background:#43a047"):
@@ -5756,16 +5783,16 @@ def _pintar_home_inline(
                                 tit = (p["title"] or "—")[:35]
                                 if len(p.get("title") or "") > 35:
                                     tit += "…"
-                                bar_color = rank_colors[i] if i < len(rank_colors) else "#90caf9"
-                                bar_opacity = max(0.25, 1.0 - i * 0.13)
-                                with ui.row().classes("w-full items-start gap-2 mb-2"):
-                                    with ui.element("div").style(f"width:18px;height:18px;border-radius:50%;background:{bar_color};display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"):
-                                        ui.label(str(i + 1)).style("color:white;font-size:9px;font-weight:700")
+                                bar_color = rank_colors[i] if i < len(rank_colors) else "#e3f2fd"
+                                bar_opacity = max(0.25, 1.0 - i * 0.1)
+                                with ui.row().classes("w-full items-start gap-2 mb-1"):
+                                    with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{bar_color};display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"):
+                                        ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
                                     with ui.column().classes("flex-1 min-w-0 gap-0"):
                                         with ui.row().classes("w-full items-center justify-between gap-1"):
-                                            ui.label(tit).style("font-size:11px;color:#212121;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
+                                            ui.label(tit).style("font-size:10px;color:#212121;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
                                             ui.label(f"{p['units']}u · {pct:.0f}%").style("font-size:9px;color:#616161;white-space:nowrap;flex-shrink:0")
-                                        with ui.element("div").style(f"height:3px;background:{bar_color};width:{min(pct, 100):.0f}%;opacity:{bar_opacity:.2f};border-radius:2px;margin-top:3px"):
+                                        with ui.element("div").style(f"height:3px;background:{bar_color};width:{min(pct, 100):.0f}%;opacity:{bar_opacity:.2f};border-radius:2px;margin-top:2px"):
                                             pass
 
                 # Card Stock + Últimas ventas
@@ -5784,14 +5811,14 @@ def _pintar_home_inline(
                     with ui.element("div").style("height:4px;background:#f57c00"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
-                        ui.label("STOCK").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:6px")
+                        ui.label("STOCK PROPIAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:6px")
                         with ui.row().classes("gap-2 w-full flex-nowrap mb-3"):
                             with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
-                                ui.label("Publicaciones").style("font-size:9px;color:#e65100")
+                                ui.label("Publicaciones propias").style("font-size:8px;color:#e65100")
                                 ui.label(str(publicaciones_propias_con_stock)).style("font-size:16px;font-weight:700;color:#e65100")
                             with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
-                                ui.label("Unidades").style("font-size:9px;color:#e65100")
-                                ui.label(f"{unidades_propias_en_stock:,.0f}".replace(",", ".")).style("font-size:16px;font-weight:700;color:#e65100")
+                                ui.label("Unidades propias").style("font-size:8px;color:#e65100")
+                                ui.label(fmt_n(unidades_propias_en_stock)).style("font-size:16px;font-weight:700;color:#e65100")
                             with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
                                 ui.label("Marcas").style("font-size:9px;color:#e65100")
                                 ui.label(str(marcas_distintas)).style("font-size:16px;font-weight:700;color:#e65100")
@@ -5830,8 +5857,8 @@ def _pintar_home_inline(
                                         ui.label(f"{uds}u").style("font-size:10px;font-weight:600;color:#1976d2;display:block")
                                         ui.label(f"{fecha_fmt} {hora_fmt}".strip()).style("font-size:9px;color:#9e9e9e;display:block")
 
-                # Card Gráfico Semanal
-                dias_orden = sorted(ventas_por_dia.keys())[-7:]
+                # Card Gráfico Semanal — 14 días
+                dias_orden = sorted(ventas_por_dia.keys())[-14:]
                 uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
                 uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
                 var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
@@ -5843,30 +5870,36 @@ def _pintar_home_inline(
                         dia_sem = dias_semana_es[fd.weekday()]
                         chart_labels_sem.append(f"{dia_sem} {fd.day}")
                         uds_s = ventas_por_dia.get(key, 0)
-                        is_hoy = fd == today_local
-                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": "#43a047" if is_hoy else "#1976d2"}})
+                        days_back = (today_local - fd).days
+                        if days_back == 0:
+                            bar_color_s = "#43a047"
+                        elif days_back <= 6:
+                            bar_color_s = "#1976d2"
+                        else:
+                            bar_color_s = "#90CAF9"
+                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}})
                     chart_options_sem = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 40, "right": 20, "top": 25, "bottom": 35},
-                        "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 10, "interval": 0}},
-                        "yAxis": {"type": "value", "axisLabel": {"fontSize": 10}},
-                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "55%", "label": {"show": True, "position": "top", "fontSize": 10}}],
+                        "grid": {"left": 35, "right": 15, "top": 25, "bottom": 40},
+                        "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 9, "interval": 0, "rotate": 30}},
+                        "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
+                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {"show": True, "position": "top", "fontSize": 9}}],
                     }
-                    with ui.element("div").style("flex:1;min-width:280px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;min-height:185px;flex-shrink:0"):
+                    with ui.element("div").style("flex:1;min-width:300px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style("height:4px;background:#00897b"):
                             pass
                         with ui.element("div").style("padding:10px 14px 4px"):
-                            ui.label("UNIDADES VENDIDAS SEMANALES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                        ui.echart(chart_options_sem).classes("w-full").style("height:140px")
+                            ui.label("UNIDADES VENDIDAS — 14 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.echart(chart_options_sem).classes("w-full").style("height:145px")
                         with ui.element("div").style("padding:4px 14px 10px"):
                             with ui.row().classes("gap-4"):
                                 ui.label(f"Esta semana: {uds_esta_semana} u").style("font-size:11px;color:#424242")
-                                ui.label(f"Semana pasada: {uds_semana_pasada} u").style("font-size:11px;color:#424242")
+                                ui.label(f"Semana anterior: {uds_semana_pasada} u").style("font-size:11px;color:#424242")
                             variacion_color = "#43a047" if var_pct >= 0 else "#e53935"
                             ui.label(f"Variación: {var_pct:+.1f}%").style(f"font-size:11px;font-weight:600;color:{variacion_color}")
                 else:
                     with ui.element("div").style("flex:1;min-width:120px;background:white;border:1px solid #e0e0e0;border-radius:8px;padding:16px;flex-shrink:0"):
-                        ui.label("UNIDADES VENDIDAS SEMANALES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.label("UNIDADES VENDIDAS — 14 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
                         ui.label("Sin datos").style("font-size:12px;color:#9e9e9e;margin-top:6px")
 
                 # Card Ventas del mes / Estimaciones
@@ -5888,18 +5921,18 @@ def _pintar_home_inline(
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label(f"VENTAS — {mes_actual_nom.upper()}").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
                         with ui.column().classes("gap-1"):
-                            ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).style("font-size:12px;color:#212121")
+                            ui.label(f"Ventas a la fecha: {fmt_m(ventas_mes_actual_monto)}").style("font-size:12px;color:#212121")
                             ui.label(f"Días transcurridos: {dias_transcurridos}").style("font-size:12px;color:#616161")
                             ui.label(f"Unidades vendidas: {ventas_mes_actual_unid}").style("font-size:12px;color:#616161")
-                            ui.label(f"Ventas diarias: $ {venta_diaria:,.0f}".replace(",", ".")).style("font-size:12px;color:#616161")
-                            ui.label(f"Unidades/día: {venta_diaria_u:,.1f}".replace(",", ".")).style("font-size:12px;color:#616161")
-                            ui.label(f"Ticket promedio: $ {ticket_prom2:,.0f}".replace(",", ".")).style("font-size:12px;color:#616161")
+                            ui.label(f"Ventas diarias: {fmt_m(venta_diaria)}").style("font-size:12px;color:#616161")
+                            ui.label(f"Unidades/día: {venta_diaria_u:.1f}").style("font-size:12px;color:#616161")
+                            ui.label(f"Ticket promedio: {fmt_m(ticket_prom2)}").style("font-size:12px;color:#616161")
                         with ui.element("div").style("border-top:1px solid #e0e0e0;margin:10px -14px"):
                             pass
                         with ui.element("div").style("background:#f5f5f5;border-radius:6px;padding:10px 12px"):
                             ui.label("ESTIMACIÓN MENSUAL").style("font-size:9px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:4px")
-                            ui.label(f"$ {venta_estimada_mes:,.0f}".replace(",", ".")).style("font-size:20px;font-weight:700;color:#1976d2;line-height:1.2")
-                            ui.label(f"u$ {venta_estimada_mes_usd:,.0f}".replace(",", ".")).style("font-size:13px;color:#616161;margin-top:2px")
+                            ui.label(fmt_m(venta_estimada_mes)).style("font-size:20px;font-weight:700;color:#1976d2;line-height:1.2")
+                            ui.label(f"u$ {fmt_n(venta_estimada_mes_usd)}").style("font-size:13px;color:#616161;margin-top:2px")
 
 
 
