@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.18"
+VERSION = "2.26.05.14.19"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5446,304 +5446,373 @@ def _pintar_home_inline(
 
     container.clear()
     with container:
-            with ui.column().classes("w-full gap-2"):
-                # Barra amarilla MercadoLibre (#FFE600)
-                with ui.element("div").classes("w-full min-h-[88px] py-5 px-6 rounded-xl shadow-xl").style("background: linear-gradient(135deg, #FFE600 0%, #ffed4d 50%, #FFE600 100%);"):
-                    with ui.row().classes("w-full items-center gap-5"):
-                        # Logo/foto del usuario ML (thumbnail, picture o logo)
-                        prof = profile or {}
-                        raw_pic = prof.get("thumbnail") or prof.get("picture") or prof.get("logo") or prof.get("avatar")
-                        pic_url = None
-                        if isinstance(raw_pic, str) and raw_pic.strip():
-                            pic_url = raw_pic.strip()
-                        elif isinstance(raw_pic, dict):
-                            pic_url = (raw_pic.get("url") or raw_pic.get("secure_url") or raw_pic.get("data", {}).get("url") or "").strip() or None
-                        if pic_url:
-                            ui.image(pic_url).classes("w-20 h-20 rounded-full object-cover ring-4 ring-gray-800/30 shadow-lg")
-                        else:
-                            ui.icon("store", size="4rem").classes("text-gray-800 opacity-90")
-                        with ui.column().classes("gap-1"):
-                            ui.label(prof.get("nickname") or prof.get("first_name") or "Usuario ML").classes(
-                                "text-2xl font-bold text-gray-900"
-                            )
-                            power = rep.get("power_seller_status")
-                            if power:
-                                with ui.badge(color="amber").classes("text-amber-900 font-medium"):
-                                    ui.label(f"MercadoLíder {power.capitalize()}")
-                        ui.element("div").classes("flex-1")
-                        if on_refresh:
-                            ui.button("Actualizar", on_click=lambda: on_refresh()).props("flat dense round icon=refresh").classes("text-gray-800 hover:bg-gray-800/10")
-                # Grid: Reputación | Ventas | Gráfico | Históricas
-                with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden max-w-full"):
-                    # Reputación
-                    def _pct(val: Any) -> str:
-                        if val is None:
-                            return "—"
-                        try:
-                            v = float(val)
-                            if 0 <= v <= 1:
-                                return f"{v * 100:.2f}%"
-                            if 0 < v <= 100:
-                                return f"{v:.2f}%"
-                            return str(val)
-                        except (TypeError, ValueError):
-                            return str(val) if val is not None else "—"
+        with ui.column().classes("w-full gap-3"):
+            # ── HEADER ─────────────────────────────────────────────────────────────
+            prof = profile or {}
+            raw_pic = prof.get("thumbnail") or prof.get("picture") or prof.get("logo") or prof.get("avatar")
+            pic_url = None
+            if isinstance(raw_pic, str) and raw_pic.strip():
+                pic_url = raw_pic.strip()
+            elif isinstance(raw_pic, dict):
+                pic_url = (raw_pic.get("url") or raw_pic.get("secure_url") or raw_pic.get("data", {}).get("url") or "").strip() or None
+            nickname = prof.get("nickname") or prof.get("first_name") or "Usuario ML"
+            power = rep.get("power_seller_status")
+            with ui.element("div").style("background:#ffffff;border-bottom:3px solid #1976d2;padding:16px 20px;border-radius:8px 8px 0 0;box-shadow:0 1px 4px rgba(0,0,0,0.06)"):
+                with ui.row().classes("w-full items-center gap-4"):
+                    if pic_url:
+                        ui.image(pic_url).style("width:54px;height:54px;border-radius:50%;object-fit:cover;border:2px solid #1976d2;flex-shrink:0")
+                    else:
+                        initials = "".join(w[0].upper() for w in nickname.split()[:2]) if nickname else "ML"
+                        with ui.element("div").style("width:54px;height:54px;border-radius:50%;background:#1976d2;display:flex;align-items:center;justify-content:center;flex-shrink:0"):
+                            ui.label(initials).style("color:white;font-size:18px;font-weight:700;line-height:1")
+                    with ui.column().classes("gap-0.5"):
+                        ui.label(nickname).style("font-size:18px;font-weight:700;color:#1976d2;line-height:1.2")
+                        if power:
+                            with ui.element("span").style("background:#E3F0FF;color:#1560a8;font-size:10px;font-weight:600;padding:2px 8px;border-radius:12px;display:inline-block;margin-top:2px"):
+                                ui.label(f"MercadoLíder {power.capitalize()}")
+                    ui.element("div").classes("flex-1")
+                    if on_refresh:
+                        ui.button("Actualizar", on_click=lambda: on_refresh()).props("flat dense icon=refresh").style("color:#1976d2")
 
-                    metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
-                    sales_meta = metrics.get("sales", {}) or {}
-                    completed = sales_meta.get("completed") or 0
-                    claims = metrics.get("claims", {}) or metrics.get("disputes", {}) or {}
-                    canc = metrics.get("cancellations", {}) or {}
-                    delayed = metrics.get("delayed_handling_time", {}) or {}
-                    mediat = metrics.get("mediations", {}) or metrics.get("disputes", {}) or {}
+            # ── KPI ROW ────────────────────────────────────────────────────────────
+            dolar_kpi_str = (get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")) if user_id else "1475"
+            try:
+                dolar_kpi = float(str(dolar_kpi_str).replace(",", ".").strip())
+                if dolar_kpi <= 0:
+                    dolar_kpi = 1475.0
+            except (TypeError, ValueError):
+                dolar_kpi = 1475.0
+            mes_usd_kpi = ventas_mes_actual_monto / dolar_kpi if dolar_kpi > 0 else 0
+            ticket_prom_kpi = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
 
-                    def _get_rate(m: Dict[str, Any], total_completed: float = 0) -> Any:
-                        exc = m.get("excluded") or {}
-                        if isinstance(exc.get("real_rate"), (int, float)):
-                            return exc["real_rate"]
-                        if isinstance(exc.get("real_value"), (int, float)) and total_completed > 0:
-                            return exc["real_value"] / total_completed
-                        if isinstance(m.get("rate"), (int, float)):
-                            return m["rate"]
-                        if isinstance(m.get("value"), (int, float)) and total_completed > 0:
-                            return m["value"] / total_completed
-                        return None
+            with ui.row().classes("w-full gap-2 flex-nowrap"):
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #1976d2;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                    ui.label("VENTAS HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label(str(hoy_unidades)).style("font-size:26px;font-weight:700;color:#1976d2;line-height:1.2")
+                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #43a047;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                    ui.label("VENTAS 7 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label(str(semana_unidades)).style("font-size:26px;font-weight:700;color:#43a047;line-height:1.2")
+                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #f57c00;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                    ui.label("FACTURACIÓN MES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label(f"$ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).style("font-size:18px;font-weight:700;color:#f57c00;line-height:1.2")
+                    ui.label(f"u$ {mes_usd_kpi:,.0f}".replace(",", ".")).style("font-size:11px;color:#616161")
+                with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #7b1fa2;border-radius:6px;padding:12px 14px;border:1px solid #e0e0e0"):
+                    ui.label("TICKET PROMEDIO").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                    ui.label(f"$ {ticket_prom_kpi:,.0f}".replace(",", ".")).style("font-size:18px;font-weight:700;color:#7b1fa2;line-height:1.2")
+                    ui.label(f"{ventas_mes_actual_unid} unidades").style("font-size:11px;color:#616161")
 
-                    try:
-                        tot = float(completed) if completed else 0
-                    except (TypeError, ValueError):
-                        tot = 0
-                    rate_claims = _get_rate(claims, tot)
-                    rate_canc = _get_rate(canc, tot)
-                    rate_delayed = _get_rate(delayed, tot)
-                    rate_mediat = _get_rate(mediat, tot) if mediat else None
-                    level_id = rep.get("level_id") or "—"
-                    level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
-                    level_colors = {"1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308", "4_light_green": "#84cc16", "5_green": "#22c55e"}
-                    level_color = level_colors.get(str(level_id), "#6b7280")
-                    MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
+            # ── FILA 1: Reputación | Ventas períodos | Facturación | Históricas ───
+            def _pct(val: Any) -> str:
+                if val is None:
+                    return "—"
+                try:
+                    v = float(val)
+                    if 0 <= v <= 1:
+                        return f"{v * 100:.2f}%"
+                    if 0 < v <= 100:
+                        return f"{v:.2f}%"
+                    return str(val)
+                except (TypeError, ValueError):
+                    return str(val) if val is not None else "—"
 
-                    def _pct_to_float(v: Any) -> Optional[float]:
-                        if v is None:
-                            return None
-                        try:
-                            x = float(v)
-                            return x if 0 < x <= 1 else x / 100.0
-                        except (TypeError, ValueError):
-                            return None
+            metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
+            sales_meta = metrics.get("sales", {}) or {}
+            completed = sales_meta.get("completed") or 0
+            claims = metrics.get("claims", {}) or metrics.get("disputes", {}) or {}
+            canc = metrics.get("cancellations", {}) or {}
+            delayed = metrics.get("delayed_handling_time", {}) or {}
+            mediat = metrics.get("mediations", {}) or metrics.get("disputes", {}) or {}
 
-                    def _row_color(actual: Optional[float], max_val: float) -> str:
-                        if actual is None or actual == 0:
-                            return "text-emerald-600"
-                        return "text-red-600 font-semibold" if actual > max_val else "text-emerald-600"
+            def _get_rate(m: Dict[str, Any], total_completed: float = 0) -> Any:
+                exc = m.get("excluded") or {}
+                if isinstance(exc.get("real_rate"), (int, float)):
+                    return exc["real_rate"]
+                if isinstance(exc.get("real_value"), (int, float)) and total_completed > 0:
+                    return exc["real_value"] / total_completed
+                if isinstance(m.get("rate"), (int, float)):
+                    return m["rate"]
+                if isinstance(m.get("value"), (int, float)) and total_completed > 0:
+                    return m["value"] / total_completed
+                return None
 
-                    meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
-                                    7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
-                    mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
+            try:
+                tot = float(completed) if completed else 0
+            except (TypeError, ValueError):
+                tot = 0
+            rate_claims = _get_rate(claims, tot)
+            rate_canc = _get_rate(canc, tot)
+            rate_delayed = _get_rate(delayed, tot)
+            rate_mediat = _get_rate(mediat, tot) if mediat else None
+            level_id = rep.get("level_id") or "—"
+            level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
+            level_colors = {"1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308", "4_light_green": "#84cc16", "5_green": "#22c55e"}
+            level_color = level_colors.get(str(level_id), "#6b7280")
+            MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
 
-                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-4 border-l-4 border-l-emerald-500"):
-                        ui.label("Reputación").classes("text-lg font-semibold text-emerald-700 dark:text-emerald-400 mb-1")
+            def _pct_to_float(v: Any) -> Optional[float]:
+                if v is None:
+                    return None
+                try:
+                    x = float(v)
+                    return x if 0 < x <= 1 else x / 100.0
+                except (TypeError, ValueError):
+                    return None
+
+            def _row_color(actual: Optional[float], max_val: float) -> str:
+                if actual is None or actual == 0:
+                    return "text-emerald-600"
+                return "text-red-600 font-semibold" if actual > max_val else "text-emerald-600"
+
+            meses_nombres = {1: "Enero", 2: "Febrero", 3: "Marzo", 4: "Abril", 5: "Mayo", 6: "Junio",
+                            7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
+            mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
+
+            with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden max-w-full"):
+                # Card Reputación
+                with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#22c55e"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label("REPUTACIÓN").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
                         with ui.row().classes("gap-2 items-center mb-2"):
-                            ui.icon("lightbulb", size="sm").style(f"color: {level_color}")
-                            ui.label(f"Nivel: {level_label}").classes("text-base").style(f"color: {level_color}; font-weight: 600")
-                        with ui.column().classes("gap-1.5 text-base"):
+                            ui.icon("lightbulb", size="sm").style(f"color:{level_color}")
+                            ui.label(f"Nivel: {level_label}").style(f"color:{level_color};font-weight:600;font-size:13px")
+                        with ui.column().classes("gap-1.5"):
                             r_c = _pct_to_float(rate_claims)
                             with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("• Reclamos:").classes("text-black")
-                                ui.label(f"{_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS))
+                                ui.label("Reclamos:").style("font-size:12px;color:#424242")
+                                ui.label(f"{_pct(rate_claims)} (máx 1%)").classes(_row_color(r_c, MAX_CLAIMS)).style("font-size:12px")
                             r_m = _pct_to_float(rate_mediat)
                             with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("• Mediaciones:").classes("text-black")
-                                ui.label(f"{_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT))
+                                ui.label("Mediaciones:").style("font-size:12px;color:#424242")
+                                ui.label(f"{_pct(rate_mediat) if rate_mediat is not None else '—'} (máx 0,5%)").classes(_row_color(r_m, MAX_MEDIAT)).style("font-size:12px")
                             r_k = _pct_to_float(rate_canc)
                             with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("• Cancelaciones:").classes("text-black")
-                                ui.label(f"{_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC))
+                                ui.label("Cancelaciones:").style("font-size:12px;color:#424242")
+                                ui.label(f"{_pct(rate_canc)} (máx 0,5%)").classes(_row_color(r_k, MAX_CANC)).style("font-size:12px")
                             r_d = _pct_to_float(rate_delayed)
                             with ui.row().classes("gap-1 items-baseline"):
-                                ui.label("• Demora envíos:").classes("text-black")
-                                ui.label(f"{_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED))
+                                ui.label("Demora envíos:").style("font-size:12px;color:#424242")
+                                ui.label(f"{_pct(rate_delayed)} (máx 8%)").classes(_row_color(r_d, MAX_DELAYED)).style("font-size:12px")
 
-                    # Ventas (2 filas: Hoy/Ayer/7d y 15d/21d/30d)
-                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-2 border-l-4 border-l-blue-500 overflow-hidden"):
-                        ui.label("Ventas").classes("text-sm font-semibold text-blue-700 dark:text-blue-400 mb-1")
+                # Card Ventas períodos
+                with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#1976d2"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label("VENTAS POR PERÍODO").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
                         with ui.column().classes("gap-1 w-full"):
                             with ui.row().classes("gap-1 w-full flex-nowrap"):
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-blue-50 dark:bg-blue-900/40"):
-                                    ui.label("Hoy").classes("text-xs text-blue-600")
-                                    ui.label(str(hoy_unidades)).classes("text-base font-bold text-blue-800")
-                                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-slate-50 dark:bg-slate-900/40"):
-                                    ui.label("Ayer").classes("text-xs text-slate-600")
-                                    ui.label(str(ayer_unidades)).classes("text-base font-bold text-slate-800")
-                                    ui.label(f"$ {ayer_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-emerald-50 dark:bg-emerald-900/40"):
-                                    ui.label("7 días").classes("text-xs text-emerald-600")
-                                    ui.label(str(semana_unidades)).classes("text-base font-bold text-emerald-800")
-                                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e3f2fd"):
+                                    ui.label("Hoy").style("font-size:10px;color:#1565c0")
+                                    ui.label(str(hoy_unidades)).style("font-size:13px;font-weight:700;color:#1565c0")
+                                    ui.label(f"$ {hoy_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#f5f5f5"):
+                                    ui.label("Ayer").style("font-size:10px;color:#616161")
+                                    ui.label(str(ayer_unidades)).style("font-size:13px;font-weight:700;color:#424242")
+                                    ui.label(f"$ {ayer_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e8f5e9"):
+                                    ui.label("7 días").style("font-size:10px;color:#2e7d32")
+                                    ui.label(str(semana_unidades)).style("font-size:13px;font-weight:700;color:#2e7d32")
+                                    ui.label(f"$ {semana_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
                             with ui.row().classes("gap-1 w-full flex-nowrap"):
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-teal-50 dark:bg-teal-900/40"):
-                                    ui.label("15 días").classes("text-xs text-teal-600")
-                                    ui.label(str(d15_unidades)).classes("text-base font-bold text-teal-800")
-                                    ui.label(f"$ {d15_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-cyan-50 dark:bg-cyan-900/40"):
-                                    ui.label("21 días").classes("text-xs text-cyan-600")
-                                    ui.label(str(d21_unidades)).classes("text-base font-bold text-cyan-800")
-                                    ui.label(f"$ {d21_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
-                                with ui.column().classes("p-2 flex-1 min-w-0 rounded bg-amber-50 dark:bg-amber-900/40"):
-                                    ui.label("30 días").classes("text-xs text-amber-600")
-                                    ui.label(str(mes_unidades)).classes("text-base font-bold text-amber-800")
-                                    ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).classes("text-xs font-medium whitespace-nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e0f2f1"):
+                                    ui.label("15 días").style("font-size:10px;color:#00695c")
+                                    ui.label(str(d15_unidades)).style("font-size:13px;font-weight:700;color:#00695c")
+                                    ui.label(f"$ {d15_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#e0f7fa"):
+                                    ui.label("21 días").style("font-size:10px;color:#00838f")
+                                    ui.label(str(d21_unidades)).style("font-size:13px;font-weight:700;color:#00838f")
+                                    ui.label(f"$ {d21_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
+                                with ui.element("div").style("flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:#fff8e1"):
+                                    ui.label("30 días").style("font-size:10px;color:#e65100")
+                                    ui.label(str(mes_unidades)).style("font-size:13px;font-weight:700;color:#e65100")
+                                    ui.label(f"$ {mes_monto:,.0f}".replace(",", ".")).style("font-size:9px;color:#424242;white-space:nowrap")
 
-                    # Gráfico ventas por mes (valores en millones para eje Y legible)
-                    if meses_orden:
-                        orden_rev = list(reversed(meses_orden))
-                        meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
-                                     "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
-                        chart_labels = [f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}" for k in orden_rev]
-                        chart_data = []
-                        for i, k in enumerate(orden_rev):
-                            val = round(por_mes[k]["total"] / 1e6, 2)
-                            is_actual = i == len(orden_rev) - 1
-                            lbl_m = f"${val:.2f}M"
-                            chart_data.append({
-                                "value": val,
-                                "itemStyle": {"color": "#10b981" if is_actual else "#6366f1"},
-                                "label": {"show": True, "position": "top", "formatter": lbl_m}
-                            })
-                        chart_options = {
-                            "grid": {"left": 60, "right": 25, "top": 25, "bottom": 35},
-                            "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 12, "interval": 0}},
-                            "yAxis": {"type": "value", "name": "Millones de pesos", "axisLabel": {"fontSize": 12}},
-                            "series": [{"type": "bar", "data": chart_data, "barWidth": "60%"}],
-                        }
-                        with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-4 border-l-4 border-l-indigo-500").style("min-height: 185px"):
-                            ui.label("Facturación Mensual").classes("text-base font-semibold text-indigo-600 mb-1 px-1")
-                            ui.echart(chart_options).classes("w-full").style("height: 155px")
-                    else:
-                        with ui.card().classes("flex-1 min-w-[120px] shrink-0 p-4 border-l-4 border-l-indigo-500"):
-                            ui.label("Facturación Mensual").classes("text-sm font-semibold")
-                            ui.label("Sin datos").classes("text-xs text-gray-500")
+                # Card Facturación Mensual (echart)
+                if meses_orden:
+                    orden_rev = list(reversed(meses_orden))
+                    meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
+                                 "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+                    chart_labels = [f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}" for k in orden_rev]
+                    chart_data = []
+                    for i, k in enumerate(orden_rev):
+                        val = round(por_mes[k]["total"] / 1e6, 2)
+                        is_actual = i == len(orden_rev) - 1
+                        lbl_m = f"${val:.2f}M"
+                        chart_data.append({
+                            "value": val,
+                            "itemStyle": {"color": "#43a047" if is_actual else "#1976d2"},
+                            "label": {"show": True, "position": "top", "formatter": lbl_m, "fontSize": 10}
+                        })
+                    chart_options = {
+                        "backgroundColor": "transparent",
+                        "grid": {"left": 55, "right": 20, "top": 30, "bottom": 35},
+                        "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 11, "interval": 0}},
+                        "yAxis": {"type": "value", "name": "M$", "nameTextStyle": {"fontSize": 10}, "axisLabel": {"fontSize": 10}},
+                        "series": [{"type": "bar", "data": chart_data, "barWidth": "55%"}],
+                    }
+                    with ui.element("div").style("flex:1;min-width:280px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;min-height:185px;flex-shrink:0"):
+                        with ui.element("div").style("height:4px;background:#f57c00"):
+                            pass
+                        with ui.element("div").style("padding:10px 14px 4px"):
+                            ui.label("FACTURACIÓN MENSUAL").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.echart(chart_options).classes("w-full").style("height:155px")
+                else:
+                    with ui.element("div").style("flex:1;min-width:120px;background:white;border:1px solid #e0e0e0;border-radius:8px;padding:16px;flex-shrink:0"):
+                        ui.label("FACTURACIÓN MENSUAL").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.label("Sin datos").style("font-size:12px;color:#9e9e9e;margin-top:6px")
 
-                    # Ventas Históricas (tabla más grande)
-                    with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-indigo-500"):
-                        ui.label("Ventas Históricas").classes("text-base font-semibold text-indigo-600 mb-2")
+                # Card Ventas Históricas
+                with ui.element("div").style("flex:1;min-width:260px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#1976d2"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label("VENTAS HISTÓRICAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
                         if not meses_orden:
                             trans = rep.get("transactions", {}) or {}
-                            tot = trans.get("total") or trans.get("completed") or 0
-                            ui.label(f"Sin datos (perfil: {tot} trans.)" if tot else "No hay órdenes").classes("text-gray-500 text-sm")
+                            tot_trans = trans.get("total") or trans.get("completed") or 0
+                            ui.label(f"Sin datos (perfil: {tot_trans} trans.)" if tot_trans else "No hay órdenes").style("font-size:12px;color:#9e9e9e")
                         else:
                             dolar_str = get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
                             dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
                             if dolar_oficial <= 0:
                                 dolar_oficial = 1475.0
-                            with ui.element("div").classes("w-full border rounded overflow-hidden"):
-                                with ui.row().classes("w-full font-semibold bg-indigo-600 text-white py-1.5 px-2 gap-2 items-center text-sm"):
-                                    ui.label("Mes").classes("min-w-[70px]")
-                                    ui.label("Unid").classes("w-14 text-right")
-                                    ui.label("Facturación $").classes("w-24 text-right")
-                                    ui.label("Facturación u$").classes("w-24 text-right")
-                                for key in meses_orden:
-                                    v = por_mes[key]
-                                    total_usd = (v["total"] / dolar_oficial) if dolar_oficial else 0.0
-                                    with ui.row().classes("w-full py-1 px-2 gap-2 items-center border-t border-gray-200 text-sm"):
-                                        ui.label(key).classes("min-w-[70px]")
-                                        ui.label(str(v["units"])).classes("w-14 text-right")
-                                        ui.label(f"$ {v['total']:,.0f}".replace(",", ".")).classes("w-24 text-right")
-                                        ui.label(f"u$ {total_usd:,.0f}".replace(",", ".")).classes("w-24 text-right")
+                            with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
+                                with ui.element("thead"):
+                                    with ui.element("tr").style("background:#1976d2;color:white"):
+                                        for col_h in ["Mes", "Unid", "$ ARS", "u$ USD"]:
+                                            with ui.element("th").style("padding:4px 8px;text-align:right;font-weight:600;font-size:10px;text-transform:uppercase"):
+                                                ui.label(col_h)
+                                with ui.element("tbody"):
+                                    for ri, key in enumerate(meses_orden):
+                                        v = por_mes[key]
+                                        total_usd = (v["total"] / dolar_oficial) if dolar_oficial else 0.0
+                                        is_mes_actual = key == mes_actual_key
+                                        row_bg = "#ffffff" if ri % 2 == 0 else "#fafafa"
+                                        with ui.element("tr").style(f"background:{row_bg};border-bottom:1px solid #f0f0f0"):
+                                            with ui.element("td").style("padding:4px 8px"):
+                                                if is_mes_actual:
+                                                    with ui.element("span").style("background:#E3F0FF;color:#1560a8;font-size:10px;font-weight:700;padding:1px 6px;border-radius:10px;display:inline-block"):
+                                                        ui.label(key)
+                                                else:
+                                                    ui.label(key).style("font-size:11px;color:#424242")
+                                            with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#424242'}"):
+                                                ui.label(str(v["units"]))
+                                            with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#424242'}"):
+                                                ui.label(f"$ {v['total']:,.0f}".replace(",", "."))
+                                            with ui.element("td").style(f"padding:4px 8px;text-align:right;{'font-weight:700;color:#1976d2' if is_mes_actual else 'color:#616161'}"):
+                                                ui.label(f"u$ {total_usd:,.0f}".replace(",", "."))
 
-                claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
-                mediat_val = (mediat.get("value") or mediat.get("excluded", {}).get("real_value") or 0) if mediat else 0
-                canc_val = (canc.get("value") or canc.get("excluded", {}).get("real_value") or 0)
-                postventa_total = claims_val + mediat_val + canc_val
+            # ── FILA 2: Top Ventas | Stock | Graf Semanal | Ventas Mes ────────────
+            claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
+            mediat_val = (mediat.get("value") or mediat.get("excluded", {}).get("real_value") or 0) if mediat else 0
+            canc_val = (canc.get("value") or canc.get("excluded", {}).get("real_value") or 0)
+            postventa_total = claims_val + mediat_val + canc_val
 
-                # Unidades vendidas semanales (últimos 14 días: esta semana + semana pasada)
-                ventas_por_dia: Dict[str, int] = {}
-                dias_semana_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-                for d in range(14):
-                    fd = today_local - timedelta(days=d)
-                    ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
-                for ord_item in results:
-                    dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
-                    if not dt_str:
-                        continue
-                    try:
-                        dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-                    except Exception:
-                        continue
-                    if (today_local - dt).days > 13:
-                        continue
-                    items = ord_item.get("order_items") or ord_item.get("items") or []
-                    units = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
-                    if units == 0:
-                        total_amount = ord_item.get("total_amount") or ord_item.get("paid_amount") or 0
-                        if total_amount and float(total_amount or 0) > 0:
-                            units = 1
-                    key = dt.strftime("%Y-%m-%d")
-                    if key in ventas_por_dia:
-                        ventas_por_dia[key] += units
+            ventas_por_dia: Dict[str, int] = {}
+            dias_semana_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+            for d in range(14):
+                fd = today_local - timedelta(days=d)
+                ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
+            for ord_item in results:
+                dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
+                if not dt_str:
+                    continue
+                try:
+                    dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
+                except Exception:
+                    continue
+                if (today_local - dt).days > 13:
+                    continue
+                items_ord = ord_item.get("order_items") or ord_item.get("items") or []
+                units_ord = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_ord if isinstance(it, dict))
+                if units_ord == 0:
+                    total_amount_ord = ord_item.get("total_amount") or ord_item.get("paid_amount") or 0
+                    if total_amount_ord and float(total_amount_ord or 0) > 0:
+                        units_ord = 1
+                key_ord = dt.strftime("%Y-%m-%d")
+                if key_ord in ventas_por_dia:
+                    ventas_por_dia[key_ord] += units_ord
 
-                with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1.5 overflow-x-auto"):
-                    # Top ventas: 6 productos más vendidos del mes actual (sin scroll)
-                    top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:6]
-                    total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
+            with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1 overflow-x-auto"):
+                # Card Top Ventas
+                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:6]
+                total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
+                rank_colors = ["#1976d2", "#1565c0", "#1e88e5", "#42a5f5", "#90caf9", "#bbdefb"]
 
-                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-3 border-l-4 border-l-emerald-600"):
-                        ui.label(f"Top ventas - {mes_actual_nom}").classes("text-base font-semibold text-emerald-800 mb-1")
+                with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#43a047"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
                         if not top_list:
-                            ui.label("Sin ventas este mes").classes("text-sm text-gray-500")
+                            ui.label("Sin ventas este mes").style("font-size:12px;color:#9e9e9e")
                         else:
-                            with ui.row().classes("w-full py-0.5 font-semibold text-gray-600 border-b border-gray-200 text-sm"):
-                                ui.label("#").classes("w-5 shrink-0")
-                                ui.label("Producto").classes("flex-1 truncate min-w-0")
-                                ui.label("Qty").classes("w-8 shrink-0 text-right")
-                                ui.label("%").classes("w-8 shrink-0 text-right")
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
                                 tit = (p["title"] or "—")[:35]
                                 if len(p.get("title") or "") > 35:
                                     tit += "…"
-                                with ui.row().classes("w-full py-0.5 gap-1 items-center border-b border-gray-100 text-sm"):
-                                    ui.label(f"{i+1}.").classes("w-5 text-gray-500 shrink-0")
-                                    ui.label(tit).classes("flex-1 truncate min-w-0")
-                                    ui.label(str(p["units"])).classes("w-8 shrink-0 text-right font-medium")
-                                    ui.label(f"{pct:.1f}%").classes("w-8 shrink-0 text-right text-emerald-600")
+                                bar_color = rank_colors[i] if i < len(rank_colors) else "#90caf9"
+                                bar_opacity = max(0.25, 1.0 - i * 0.13)
+                                with ui.row().classes("w-full items-start gap-2 mb-2"):
+                                    with ui.element("div").style(f"width:18px;height:18px;border-radius:50%;background:{bar_color};display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"):
+                                        ui.label(str(i + 1)).style("color:white;font-size:9px;font-weight:700")
+                                    with ui.column().classes("flex-1 min-w-0 gap-0"):
+                                        with ui.row().classes("w-full items-center justify-between gap-1"):
+                                            ui.label(tit).style("font-size:11px;color:#212121;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
+                                            ui.label(f"{p['units']}u · {pct:.0f}%").style("font-size:9px;color:#616161;white-space:nowrap;flex-shrink:0")
+                                        with ui.element("div").style(f"height:3px;background:{bar_color};width:{min(pct, 100):.0f}%;opacity:{bar_opacity:.2f};border-radius:2px;margin-top:3px"):
+                                            pass
 
-                    # Stock: misma lógica que Productos barra gris (tipo = Catalogo si catalog_listing True, sino Propia)
-                    items_list = (items_data or {}).get("results") or []
-                    propias = [it for it in items_list if isinstance(it, dict) and it.get("catalog_listing") is not True]
-                    publicaciones_propias_con_stock = sum(1 for it in propias if (it.get("available_quantity") or 0) > 0)
-                    unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
-                    marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
-                    marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
-                    def _orden_fecha(o):
-                        ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
-                        return ds[:10] if ds else ""
+                # Card Stock + Últimas ventas
+                items_list = (items_data or {}).get("results") or []
+                propias = [it for it in items_list if isinstance(it, dict) and it.get("catalog_listing") is not True]
+                publicaciones_propias_con_stock = sum(1 for it in propias if (it.get("available_quantity") or 0) > 0)
+                unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
+                marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
+                marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
+                def _orden_fecha(o):
+                    ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
+                    return ds[:10] if ds else ""
+                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:5]
 
-                    ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:5]
-
-                    with ui.card().classes("flex-1 min-w-[200px] shrink-0 p-3 border-l-4 border-l-amber-500"):
-                        ui.label("Stock").classes("text-base font-semibold text-amber-700 mb-1")
-                        with ui.row().classes("w-full gap-3 flex-wrap text-sm text-gray-700"):
-                            ui.label(f"Publicaciones: {publicaciones_propias_con_stock}")
-                            ui.label(f"Unidades: {unidades_propias_en_stock:,.0f}".replace(",", "."))
-                            ui.label(f"Marcas: {marcas_distintas}")
+                with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#f57c00"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label("STOCK").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:6px")
+                        with ui.row().classes("gap-2 w-full flex-nowrap mb-3"):
+                            with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
+                                ui.label("Publicaciones").style("font-size:9px;color:#e65100")
+                                ui.label(str(publicaciones_propias_con_stock)).style("font-size:16px;font-weight:700;color:#e65100")
+                            with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
+                                ui.label("Unidades").style("font-size:9px;color:#e65100")
+                                ui.label(f"{unidades_propias_en_stock:,.0f}".replace(",", ".")).style("font-size:16px;font-weight:700;color:#e65100")
+                            with ui.element("div").style("flex:1;text-align:center;padding:6px 4px;background:#fff8e1;border-radius:4px"):
+                                ui.label("Marcas").style("font-size:9px;color:#e65100")
+                                ui.label(str(marcas_distintas)).style("font-size:16px;font-weight:700;color:#e65100")
+                        ui.label("ÚLTIMAS VENTAS").style("font-size:9px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:4px")
                         if ultimas_5_ventas:
-                            ui.label("Últimas 5 ventas").classes("text-sm font-semibold text-amber-600 mt-1 mb-0.5")
                             for v in ultimas_5_ventas:
                                 ds_raw = v.get("date_closed") or v.get("date_created") or v.get("date_last_updated") or ""
                                 try:
                                     if "T" in ds_raw:
-                                        dt = datetime.strptime(ds_raw[:19], "%Y-%m-%dT%H:%M:%S")
+                                        dt_v = datetime.strptime(ds_raw[:19], "%Y-%m-%dT%H:%M:%S")
                                     elif " " in ds_raw:
-                                        dt = datetime.strptime(ds_raw[:16], "%Y-%m-%d %H:%M")
+                                        dt_v = datetime.strptime(ds_raw[:16], "%Y-%m-%d %H:%M")
                                     elif len(ds_raw) >= 10:
-                                        dt = datetime.strptime(ds_raw[:10], "%Y-%m-%d")
+                                        dt_v = datetime.strptime(ds_raw[:10], "%Y-%m-%d")
                                     else:
-                                        dt = None
-                                    fecha_fmt = f"{dt.day:02d}-{dt.month:02d} {dt.hour:02d}:{dt.minute:02d}" if dt else "—"
+                                        dt_v = None
+                                    hora_fmt = f"{dt_v.hour:02d}:{dt_v.minute:02d}" if dt_v else ""
+                                    fecha_fmt = f"{dt_v.day:02d}/{dt_v.month:02d}" if dt_v else "—"
                                 except Exception:
-                                    fecha_fmt = ds_raw[:16] if ds_raw else "—"
+                                    hora_fmt = ""
+                                    fecha_fmt = ds_raw[:10] if ds_raw else "—"
                                 items_v = v.get("order_items") or v.get("items") or []
                                 uds = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_v if isinstance(it, dict))
                                 if uds == 0:
@@ -5752,69 +5821,86 @@ def _pintar_home_inline(
                                 primer_item = items_v[0] if items_v else {}
                                 obj = primer_item.get("item") or primer_item
                                 tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
-                                tit = (tit[:32] + "…") if len(str(tit)) > 32 else str(tit)
-                                with ui.row().classes("w-full items-center gap-1 overflow-hidden py-0.5"):
-                                    ui.label(f"• {tit}").classes("text-sm text-gray-700 truncate flex-1 min-w-0")
-                                    ui.label(f"cant: {uds} · {fecha_fmt}").classes("text-sm text-gray-600 shrink-0")
+                                tit = (tit[:30] + "…") if len(str(tit)) > 30 else str(tit)
+                                with ui.row().classes("w-full items-center gap-1 py-0.5"):
+                                    with ui.element("div").style("width:6px;height:6px;border-radius:50%;background:#43a047;flex-shrink:0"):
+                                        pass
+                                    ui.label(tit).style("font-size:11px;color:#424242;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0")
+                                    with ui.element("div").style("text-align:right;flex-shrink:0"):
+                                        ui.label(f"{uds}u").style("font-size:10px;font-weight:600;color:#1976d2;display:block")
+                                        ui.label(f"{fecha_fmt} {hora_fmt}".strip()).style("font-size:9px;color:#9e9e9e;display:block")
 
-                    # Unidades Vendidas Semanales (gráfico de barras, últimos 7 días)
-                    dias_orden = sorted(ventas_por_dia.keys())[-7:]
-                    uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
-                    uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
-                    var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
-                    if dias_orden:
-                        chart_labels = []
-                        chart_data = []
-                        for i, key in enumerate(dias_orden):
-                            fd = datetime.strptime(key, "%Y-%m-%d").date()
-                            dia_sem = dias_semana_es[fd.weekday()]
-                            chart_labels.append(f"{dia_sem} {fd.day}")
-                            uds = ventas_por_dia.get(key, 0)
-                            is_hoy = fd == today_local
-                            chart_data.append({"value": uds, "itemStyle": {"color": "#14b8a6" if is_hoy else "#0d9488"}})
-                        chart_options_sem = {
-                            "grid": {"left": 50, "right": 25, "top": 25, "bottom": 35},
-                            "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 11, "interval": 0}},
-                            "yAxis": {"type": "value", "axisLabel": {"fontSize": 12}},
-                            "series": [{"type": "bar", "data": chart_data, "barWidth": "60%", "label": {"show": True, "position": "top", "fontSize": 11}}],
-                        }
-                        with ui.card().classes("flex-1 min-w-[280px] shrink-0 p-4 border-l-4 border-l-teal-500").style("min-height: 185px"):
-                            ui.label("Unidades Vendidas Semanales").classes("text-base font-semibold text-teal-700 mb-1 px-1")
-                            ui.echart(chart_options_sem).classes("w-full").style("height: 155px")
-                            with ui.column().classes("mt-2 gap-0.5 text-sm"):
-                                ui.label(f"Unidades vendidas esta semana: {uds_esta_semana}").classes("text-gray-700")
-                                ui.label(f"Unidades vendidas la semana pasada: {uds_semana_pasada}").classes("text-gray-700")
-                                variacion_cls = "text-emerald-600 font-semibold" if var_pct >= 0 else "text-red-600 font-semibold"
-                                ui.label(f"Variación semanal: {var_pct:+.1f}%").classes(variacion_cls)
-                    else:
-                        with ui.card().classes("flex-1 min-w-[120px] shrink-0 p-4 border-l-4 border-l-teal-500"):
-                            ui.label("Unidades Vendidas Semanales").classes("text-sm font-semibold")
-                            ui.label("Sin datos").classes("text-xs text-gray-500")
+                # Card Gráfico Semanal
+                dias_orden = sorted(ventas_por_dia.keys())[-7:]
+                uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
+                uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
+                var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
+                if dias_orden:
+                    chart_labels_sem = []
+                    chart_data_sem = []
+                    for i, key in enumerate(dias_orden):
+                        fd = datetime.strptime(key, "%Y-%m-%d").date()
+                        dia_sem = dias_semana_es[fd.weekday()]
+                        chart_labels_sem.append(f"{dia_sem} {fd.day}")
+                        uds_s = ventas_por_dia.get(key, 0)
+                        is_hoy = fd == today_local
+                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": "#43a047" if is_hoy else "#1976d2"}})
+                    chart_options_sem = {
+                        "backgroundColor": "transparent",
+                        "grid": {"left": 40, "right": 20, "top": 25, "bottom": 35},
+                        "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 10, "interval": 0}},
+                        "yAxis": {"type": "value", "axisLabel": {"fontSize": 10}},
+                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "55%", "label": {"show": True, "position": "top", "fontSize": 10}}],
+                    }
+                    with ui.element("div").style("flex:1;min-width:280px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;min-height:185px;flex-shrink:0"):
+                        with ui.element("div").style("height:4px;background:#00897b"):
+                            pass
+                        with ui.element("div").style("padding:10px 14px 4px"):
+                            ui.label("UNIDADES VENDIDAS SEMANALES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.echart(chart_options_sem).classes("w-full").style("height:140px")
+                        with ui.element("div").style("padding:4px 14px 10px"):
+                            with ui.row().classes("gap-4"):
+                                ui.label(f"Esta semana: {uds_esta_semana} u").style("font-size:11px;color:#424242")
+                                ui.label(f"Semana pasada: {uds_semana_pasada} u").style("font-size:11px;color:#424242")
+                            variacion_color = "#43a047" if var_pct >= 0 else "#e53935"
+                            ui.label(f"Variación: {var_pct:+.1f}%").style(f"font-size:11px;font-weight:600;color:{variacion_color}")
+                else:
+                    with ui.element("div").style("flex:1;min-width:120px;background:white;border:1px solid #e0e0e0;border-radius:8px;padding:16px;flex-shrink:0"):
+                        ui.label("UNIDADES VENDIDAS SEMANALES").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
+                        ui.label("Sin datos").style("font-size:12px;color:#9e9e9e;margin-top:6px")
 
-                    # Ventas del mes, estimaciones y ganancias
-                    dias_transcurridos = (today_local - primer_dia_mes).days + 1
-                    dias_del_mes = calendar.monthrange(today_local.year, today_local.month)[1]
-                    venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
-                    venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+                # Card Ventas del mes / Estimaciones
+                dias_transcurridos = (today_local - primer_dia_mes).days + 1
+                dias_del_mes = calendar.monthrange(today_local.year, today_local.month)[1]
+                venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
+                venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+                dolar_str2 = (get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")) if user_id else "1475"
+                dolar_oficial2 = float(str(dolar_str2).replace(",", ".").strip()) if dolar_str2 else 1475.0
+                if dolar_oficial2 <= 0:
+                    dolar_oficial2 = 1475.0
+                venta_estimada_mes_usd = (venta_estimada_mes / dolar_oficial2) if dolar_oficial2 > 0 else 0
+                venta_diaria_u = ventas_mes_actual_unid / dias_transcurridos if dias_transcurridos > 0 else 0
+                ticket_prom2 = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
 
-                    with ui.card().classes("flex-1 min-w-[260px] shrink-0 p-4 border-l-4 border-l-violet-500"):
-                        ui.label(f"Ventas - {mes_actual_nom}").classes("text-base font-semibold text-violet-700 mb-2")
-                        with ui.column().classes("gap-1.5 text-sm"):
-                            ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            ui.label(f"Cantidad de días: {dias_transcurridos}").classes("text-gray-700")
-                            ui.label(f"Unidades vendidas: {ventas_mes_actual_unid}").classes("text-gray-700")
-                            ui.element("div").classes("border-t border-gray-200 my-1")
-                            ui.label(f"Ventas diarias: $ {venta_diaria:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            venta_diaria_u = ventas_mes_actual_unid / dias_transcurridos if dias_transcurridos > 0 else 0
-                            ui.label(f"Venta diaria u: {venta_diaria_u:,.1f}".replace(",", ".")).classes("text-gray-700")
-                            ticket_prom = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
-                            ui.label(f"Ticket Promedio: $ {ticket_prom:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            ui.element("div").classes("border-t border-gray-200 my-1")
-                            ui.label(f"Venta estimada mensual: $ {venta_estimada_mes:,.0f}".replace(",", ".")).classes("text-gray-700")
-                            dolar_str = (get_cotizador_param("dolar_oficial", user_id) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")) if user_id else "1475"
-                            dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
-                            venta_estimada_mes_usd = (venta_estimada_mes / dolar_oficial) if dolar_oficial > 0 else 0
-                            ui.label(f"Venta estimada mensual: u$ {venta_estimada_mes_usd:,.0f}".replace(",", ".")).classes("text-gray-700")
+                with ui.element("div").style("flex:1;min-width:260px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("height:4px;background:#7b1fa2"):
+                        pass
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label(f"VENTAS — {mes_actual_nom.upper()}").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:8px")
+                        with ui.column().classes("gap-1"):
+                            ui.label(f"Ventas a la fecha: $ {ventas_mes_actual_monto:,.0f}".replace(",", ".")).style("font-size:12px;color:#212121")
+                            ui.label(f"Días transcurridos: {dias_transcurridos}").style("font-size:12px;color:#616161")
+                            ui.label(f"Unidades vendidas: {ventas_mes_actual_unid}").style("font-size:12px;color:#616161")
+                            ui.label(f"Ventas diarias: $ {venta_diaria:,.0f}".replace(",", ".")).style("font-size:12px;color:#616161")
+                            ui.label(f"Unidades/día: {venta_diaria_u:,.1f}".replace(",", ".")).style("font-size:12px;color:#616161")
+                            ui.label(f"Ticket promedio: $ {ticket_prom2:,.0f}".replace(",", ".")).style("font-size:12px;color:#616161")
+                        with ui.element("div").style("border-top:1px solid #e0e0e0;margin:10px -14px"):
+                            pass
+                        with ui.element("div").style("background:#f5f5f5;border-radius:6px;padding:10px 12px"):
+                            ui.label("ESTIMACIÓN MENSUAL").style("font-size:9px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase;margin-bottom:4px")
+                            ui.label(f"$ {venta_estimada_mes:,.0f}".replace(",", ".")).style("font-size:20px;font-weight:700;color:#1976d2;line-height:1.2")
+                            ui.label(f"u$ {venta_estimada_mes_usd:,.0f}".replace(",", ".")).style("font-size:13px;color:#616161;margin-top:2px")
+
 
 
 def build_tab_ventas(container) -> None:
