@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.28"
+VERSION = "2.26.05.14.29"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -4740,6 +4740,49 @@ def ml_get_orders(
     return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener órdenes"}
 
 
+def ml_get_shipments_today(access_token: str, seller_id: str) -> Dict[str, int]:
+    """Obtiene conteo de envíos de hoy por tipo (Flex vs Mercado Envíos).
+    Usa GET /shipments/search con date_from/date_to del día actual en UTC-3.
+    Retorna {"flex": N, "me": N}."""
+    from datetime import timezone
+    tz_arg = timezone(timedelta(hours=-3))
+    now = datetime.now(tz_arg)
+    date_from = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+    date_to = now.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+    flex_count = 0
+    me_count = 0
+    offset = 0
+    limit = 50
+    headers = {"Authorization": f"Bearer {access_token}"}
+    while True:
+        try:
+            resp = requests.get(
+                "https://api.mercadolibre.com/shipments/search",
+                headers=headers,
+                params={"seller_id": seller_id, "date_from": date_from, "date_to": date_to,
+                        "limit": limit, "offset": offset},
+                timeout=15,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            results_s = data.get("results") or []
+            if not results_s:
+                break
+            for s in results_s:
+                lt = str(s.get("logistic_type") or "").lower()
+                if lt == "self_service":
+                    flex_count += 1
+                elif lt in ("fulfillment", "xd_drop_off", "drop_off", "cross_docking", "me2"):
+                    me_count += 1
+            total = (data.get("paging") or {}).get("total") or 0
+            offset += limit
+            if offset >= total or offset >= 500:
+                break
+        except Exception:
+            break
+    return {"flex": flex_count, "me": me_count}
+
+
 def ml_search_similar(
     query: str, limit: int = 20, access_token: Optional[str] = None, solo_propias: bool = False
 ) -> Dict[str, Any]:
@@ -5332,6 +5375,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
             orders_data: Dict[str, Any] = {}
             items_data: Dict[str, Any] = {"results": []}
+            shipments_today: Dict[str, int] = {"flex": 0, "me": 0}
             if seller_id:
                 limit_str = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
                 try:
@@ -5341,6 +5385,10 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 except (ValueError, TypeError):
                     limit_ordenes = 1000
                 orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit_ordenes, 0)
+                try:
+                    shipments_today = await run.io_bound(ml_get_shipments_today, access_token, str(seller_id))
+                except Exception:
+                    pass
             try:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
@@ -5352,7 +5400,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today)
 
     cargar_y_pintar()
 
@@ -5381,7 +5429,7 @@ def _safe_str(val) -> str:
 
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -5406,15 +5454,7 @@ def _pintar_home_inline(
     ayer_local = today_local - timedelta(days=1)
     antes_ayer_local = today_local - timedelta(days=2)
 
-    import logging as _log_orders
-    _log_orders.warning(f"[ORDERS DEBUG] total órdenes recibidas: {len(results)}")
-    _debug_count = 0
-
     for ord_item in results:
-        if _debug_count < 3:
-            _d = ord_item.get("date_created") or ""
-            _log_orders.warning(f"[ORDERS DEBUG] orden {_debug_count}: keys={list(ord_item.keys())[:8]} date={_d[:10] if _d else '?'}")
-            _debug_count += 1
         dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
         if not dt_str or not isinstance(dt_str, str):
             continue
@@ -5437,9 +5477,6 @@ def _pintar_home_inline(
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
-            if flex_hoy + me_hoy == 0:
-                import logging
-                logging.warning(f"[SHIP DEBUG] order_id={ord_item.get('id')} shipping={ord_item.get('shipping')}")
             logistic = (ord_item.get("shipping") or {}).get("logistic_type") or ""
             if logistic == "self_service":
                 flex_hoy += 1
@@ -5492,6 +5529,11 @@ def _pintar_home_inline(
             por_mes[key] = {"units": 0, "total": 0.0}
         por_mes[key]["units"] += units
         por_mes[key]["total"] += total_amount
+
+    # Si se obtuvo conteo directo de /shipments/search, tiene prioridad sobre el loop
+    if shipments_today is not None:
+        flex_hoy = shipments_today.get("flex", 0)
+        me_hoy = shipments_today.get("me", 0)
 
     # Incluir siempre el mes actual aunque no tenga ventas (para que el gráfico muestre marzo, etc.)
     mes_actual_key = today_local.strftime("%Y-%m")
