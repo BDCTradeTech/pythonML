@@ -6846,9 +6846,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
     }
 
-    TH_HDR1 = "font-weight:600;font-size:12px;padding:6px 8px;border:1px solid #555;background:#1976d2;color:white"
-    TH_HDR2 = "font-weight:600;font-size:12px;padding:5px 8px;border:1px solid #555;background:#1976d2;color:white"
-    TD_BASE = "padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.75rem"
+    TH_HDR1 = "font-weight:700;font-size:11px;padding:5px 6px;border:1px solid #1565c0;background:#1976d2;color:white;letter-spacing:0.05em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,0.15)"
+    TH_HDR2 = "font-weight:500;font-size:10px;padding:4px 5px;border:1px solid #1565c0;background:#1565c0;color:rgba(255,255,255,0.85)"
+    TD_BASE = "padding:3px 6px;border-bottom:1px solid #e5e7eb;font-size:11px"
 
     n_propios  = sum(1 for r in rows_all if r["propia"]["id"])
     n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
@@ -6890,105 +6890,123 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 if not rows:
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
                     return
-                with ui.element("table").classes("w-full border-collapse text-sm"):
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:collapse"):
                     # ── Cabecera dos niveles ──────────────────────────────────
                     with ui.element("thead"):
                         # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
-                        # Propia: colspan=2, los demás: colspan=3 (+ columna % vs Propia)
                         with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:70px;min-width:70px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:110px;min-width:110px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};min-width:220px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};min-width:200px;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:60px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("stock")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:45px;min-width:45px;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
-                            with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
+                            with ui.element("th").props('colspan="4"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Promociones")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 cs = '2' if gkey == "propia" else '3'
                                 with ui.element("th").props(f'colspan="{cs}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
-                        # Fila 2: Publicación / Precio [/ % vs Propia] para cada grupo
+                        # Fila 2: sub-columnas de cada grupo
                         with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};border-left:2px solid {PROMO_BORDER};text-align:right;position:sticky;top:31px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:80px;min-width:80px;border-left:2px solid {PROMO_BORDER};text-align:right;position:sticky;top:28px;z-index:10"):
                                 ui.label("Precio Promo")
-                            with ui.element("th").style(f"{TH_HDR2};text-align:center;width:70px;position:sticky;top:31px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};text-align:center;width:70px;position:sticky;top:31px;z-index:10"):
-                                ui.label("% Vendedor")
+                            with ui.element("th").style(f"{TH_HDR2};width:55px;min-width:55px;text-align:center;position:sticky;top:28px;z-index:10"):
+                                ui.label("% Vend.")
+                            with ui.element("th").style(f"{TH_HDR2};width:65px;min-width:65px;text-align:center;position:sticky;top:28px;z-index:10"):
+                                ui.label("% vs Propia")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"{TH_HDR2};border-left:2px solid {gborder};text-align:center;position:sticky;top:31px;z-index:10"):
+                                with ui.element("th").style(f"{TH_HDR2};width:90px;min-width:90px;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
                                     ui.label("Publicación")
-                                with ui.element("th").style(f"{TH_HDR2};text-align:center;cursor:pointer;position:sticky;top:31px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                with ui.element("th").style(f"{TH_HDR2};width:75px;min-width:75px;text-align:right;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                     ui.label("Precio" + _ind(pcol))
                                 if gkey != "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};text-align:center;width:70px;position:sticky;top:31px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:65px;min-width:65px;text-align:center;position:sticky;top:28px;z-index:10"):
                                         ui.label("% vs Propia")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
                             base_bg = "background:#ffffff" if idx % 2 == 0 else "background:#fafafa"
                             with ui.element("tr").style(base_bg).classes("hover:bg-blue-50"):
-                                with ui.element("td").style(TD_BASE):
+                                with ui.element("td").style(f"{TD_BASE};width:70px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                     ui.label(row.get("marca") or "—")
-                                with ui.element("td").style(TD_BASE):
+                                with ui.element("td").style(f"{TD_BASE};width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                     ui.label(row.get("seller_sku") or "—")
-                                with ui.element("td").style(f"{TD_BASE};min-width:220px"):
+                                with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                     ui.label(row.get("title") or "—")
-                                with ui.element("td").style(f"{TD_BASE};width:60px;text-align:center"):
+                                with ui.element("td").style(f"{TD_BASE};width:45px;text-align:center"):
                                     sv = row.get("stock")
                                     ui.label(str(sv) if sv is not None else "—")
                                 propia_price = row["propia"]["price"]
                                 promo = row.get("promo", {})
                                 promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
                                 promo_price = promo.get("price_promo")
-                                with ui.element("td").style(f"background:{promo_bg};border-left:2px solid {PROMO_BORDER};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.75rem;text-align:right"):
+                                _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:11px"
+                                # Precio Promo
+                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;font-weight:600;text-align:right;width:80px"):
                                     ui.label(fmt_moneda(promo_price)).classes("" if promo_price is not None else "text-gray-400")
-                                with ui.element("td").style(f"background:{promo_bg};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.75rem;text-align:center;width:70px"):
+                                # % ML
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:55px"):
                                     meli_pct = promo.get("meli_pct")
                                     if meli_pct is not None:
-                                        ui.label(f"{meli_pct:.1f}%").classes("text-green-700 text-xs font-medium")
+                                        ui.label(f"{meli_pct:.1f}%").style("color:#43a047;font-weight:500")
                                     else:
-                                        ui.label("—").classes("text-gray-400 text-xs")
-                                with ui.element("td").style(f"background:{promo_bg};padding:4px 8px;border-bottom:1px solid #e5e7eb;font-size:0.75rem;text-align:center;width:70px"):
+                                        ui.label("—").classes("text-gray-400")
+                                # % Vendedor
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:55px"):
                                     seller_pct = promo.get("seller_pct")
                                     if seller_pct is not None:
-                                        ui.label(f"{seller_pct:.1f}%").classes("text-orange-600 text-xs font-medium")
+                                        ui.label(f"{seller_pct:.1f}%").style("color:#e65100;font-weight:500")
                                     else:
-                                        ui.label("—").classes("text-gray-400 text-xs")
+                                        ui.label("—").classes("text-gray-400")
+                                # % vs Propia (Promos) — verde si más barato, rojo si más caro
+                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center;width:65px"):
+                                    if promo_price is not None and propia_price is not None and float(propia_price) != 0:
+                                        pct_p = (float(promo_price) - float(propia_price)) / float(propia_price) * 100
+                                        if abs(pct_p) < 0.05:
+                                            ui.label("=").style("color:#757575")
+                                        elif pct_p < 0:
+                                            ui.label(f"{pct_p:.1f}%").style("color:#43a047;font-weight:500")
+                                        else:
+                                            ui.label(f"+{pct_p:.1f}%").style("color:#e53935;font-weight:500")
+                                    else:
+                                        ui.label("—").classes("text-gray-400")
                                 for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                     gbg = gbg_e if idx % 2 == 0 else gbg_o
                                     slot = row[gkey]
                                     item_id   = slot["id"]
                                     permalink = slot["permalink"]
                                     price     = slot["price"]
-                                    cell_style  = f"background:{gbg};border-left:2px solid {gborder};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center"
-                                    price_style = f"background:{gbg};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:right"
-                                    with ui.element("td").style(cell_style):
+                                    _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:11px"
+                                    # Publicación
+                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:10px;font-family:monospace;text-align:center;width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                         if item_id and permalink:
-                                            ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline text-xs")
+                                            ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
                                         elif item_id:
-                                            ui.label(item_id).classes("text-xs")
+                                            ui.label(item_id)
                                         else:
-                                            ui.label("—").classes("text-gray-400 text-xs")
-                                    with ui.element("td").style(price_style):
+                                            ui.label("—").classes("text-gray-400")
+                                    # Precio
+                                    with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right;width:75px"):
                                         ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
+                                    # % vs Propia (grupos) — rojo si más caro, verde si más barato
                                     if gkey != "propia":
-                                        pct_style = f"background:{gbg};padding:8px 12px;border-bottom:1px solid #e5e7eb;font-size:0.875rem;text-align:center;width:70px"
-                                        with ui.element("td").style(pct_style):
+                                        with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center;width:65px"):
                                             if price is not None and propia_price is not None and float(propia_price) != 0:
                                                 pct = (float(price) - float(propia_price)) / float(propia_price) * 100
                                                 if abs(pct) < 0.05:
-                                                    ui.label("=").classes("text-gray-500 text-xs font-medium")
+                                                    ui.label("=").style("color:#757575")
                                                 elif pct > 0:
-                                                    ui.label(f"+{pct:.1f}%").classes("text-green-700 text-xs font-medium")
+                                                    ui.label(f"+{pct:.1f}%").style("color:#e53935;font-weight:500")
                                                 else:
-                                                    ui.label(f"{pct:.1f}%").classes("text-red-600 text-xs font-medium")
+                                                    ui.label(f"{pct:.1f}%").style("color:#43a047;font-weight:500")
                                             else:
-                                                ui.label("—").classes("text-gray-400 text-xs")
+                                                ui.label("—").classes("text-gray-400")
 
         def _on_sort(col: str) -> None:
             if sort_col_ref["val"] == col:
