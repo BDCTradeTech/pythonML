@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.32"
+VERSION = "2.26.05.14.33"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -4740,50 +4740,31 @@ def ml_get_orders(
     return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener órdenes"}
 
 
-def ml_get_shipments_today(access_token: str, seller_id: str) -> Dict[str, int]:
-    """Obtiene conteo de envíos de hoy por tipo (Flex vs Mercado Envíos).
-    Usa GET /shipments/search con date_from/date_to del día actual en UTC-3.
+def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, int]:
+    """Obtiene logistic_type de cada shipment_id dado via GET /shipments/{id}.
     Retorna {"flex": N, "me": N}."""
-    from datetime import timezone
-    tz_arg = timezone(timedelta(hours=-3))
-    now = datetime.now(tz_arg)
-    date_from = now.replace(hour=0, minute=0, second=0, microsecond=0).strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
-    date_to = now.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
     flex_count = 0
     me_count = 0
-    offset = 0
-    limit = 50
     headers = {"Authorization": f"Bearer {access_token}"}
-    import logging as _slog
-    _slog.warning(f"[SHIP2 DEBUG] llamando seller_id={seller_id} date_from={date_from} date_to={date_to}")
-    while True:
+    for ship_id in shipping_ids:
+        if not ship_id:
+            continue
         try:
             resp = requests.get(
-                "https://api.mercadolibre.com/shipments/search",
+                f"https://api.mercadolibre.com/shipments/{ship_id}",
                 headers=headers,
-                params={"seller_id": seller_id, "date_from": date_from, "date_to": date_to,
-                        "limit": limit, "offset": offset},
-                timeout=15,
+                timeout=10,
             )
-            resp.raise_for_status()
+            if resp.status_code != 200:
+                continue
             data = resp.json()
-            results_s = data.get("results") or []
-            _slog.warning(f"[SHIP2 DEBUG] status={resp.status_code} total={(data.get('paging') or {}).get('total')} results_count={len(results_s)} primer_resultado={results_s[0] if results_s else 'VACIO'}")
-            if not results_s:
-                break
-            for s in results_s:
-                lt = str(s.get("logistic_type") or "").lower()
-                if lt == "self_service":
-                    flex_count += 1
-                elif lt in ("fulfillment", "xd_drop_off", "drop_off", "cross_docking", "me2"):
-                    me_count += 1
-            total = (data.get("paging") or {}).get("total") or 0
-            offset += limit
-            if offset >= total or offset >= 500:
-                break
-        except Exception as e:
-            _slog.warning(f"[SHIP2 DEBUG] EXCEPCION: {e}")
-            break
+            lt = str(data.get("logistic_type") or "").lower()
+            if lt == "self_service":
+                flex_count += 1
+            elif lt in ("fulfillment", "xd_drop_off", "drop_off", "cross_docking", "me2"):
+                me_count += 1
+        except Exception:
+            continue
     return {"flex": flex_count, "me": me_count}
 
 
@@ -5366,8 +5347,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
         return
 
     def cargar_y_pintar() -> None:
-        import logging as _blog
-        _blog.warning("[BUILD DEBUG] build_tab_estadisticas llamado")
         estadisticas_container.clear()
         with estadisticas_container:
             with ui.card().classes("w-full p-8 items-center gap-4"):
@@ -5376,8 +5355,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
         background_tasks.create(_cargar_estadisticas_async(), name="cargar_estadisticas")
 
     async def _cargar_estadisticas_async() -> None:
-        import logging as _stlog
-        _stlog.warning("[STAT DEBUG] iniciando carga estadísticas")
         try:
             profile = await run.io_bound(ml_get_user_profile, access_token)
             seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
@@ -5393,11 +5370,20 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 except (ValueError, TypeError):
                     limit_ordenes = 1000
                 orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit_ordenes, 0)
+                from datetime import timezone
+                _tz_arg = timezone(timedelta(hours=-3))
+                _today_str = datetime.now(_tz_arg).strftime("%Y-%m-%d")
+                shipping_ids_hoy: List[str] = []
+                for _ord in (orders_data.get("results") or []):
+                    _dt_str = (_ord.get("date_created") or _ord.get("date_closed") or "")[:10]
+                    if _dt_str == _today_str:
+                        _ship_id = (_ord.get("shipping") or {}).get("id")
+                        if _ship_id:
+                            shipping_ids_hoy.append(str(_ship_id))
                 try:
-                    shipments_today = await run.io_bound(ml_get_shipments_today, access_token, str(seller_id))
+                    shipments_today = await run.io_bound(ml_get_shipments_today, access_token, shipping_ids_hoy)
                 except Exception:
                     pass
-                _stlog.warning(f"[STAT DEBUG] shipments_today={shipments_today}")
             try:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
