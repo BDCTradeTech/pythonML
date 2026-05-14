@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.25"
+VERSION = "2.26.05.14.26"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5390,6 +5390,8 @@ def _pintar_home_inline(
     today_local = datetime.now().date()
     primer_dia_mes = today_local.replace(day=1)
     hoy_unidades, hoy_monto = 0, 0.0
+    flex_hoy = 0
+    me_hoy = 0
     ayer_unidades, ayer_monto = 0, 0.0
     antes_ayer_unidades, antes_ayer_monto = 0, 0.0
     semana_unidades, semana_monto = 0, 0.0
@@ -5427,6 +5429,11 @@ def _pintar_home_inline(
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
+            logistic = (ord_item.get("shipping") or {}).get("logistic_type") or ""
+            if logistic == "self_service":
+                flex_hoy += 1
+            elif logistic in ("fulfillment", "xd_drop_off", "drop_off", "cross_docking"):
+                me_hoy += 1
         if dt == ayer_local:
             ayer_unidades += units
             ayer_monto += total_amount
@@ -5527,12 +5534,12 @@ def _pintar_home_inline(
                     ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#616161")
                 with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #00bcd4;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
                     ui.label("FLEX HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label("—").style("font-size:24px;font-weight:700;color:#00bcd4;line-height:1.2")
-                    ui.label("Próximamente").style("font-size:10px;color:#bdbdbd;font-style:italic")
+                    ui.label(fmt_n(flex_hoy)).style("font-size:24px;font-weight:700;color:#00bcd4;line-height:1.2")
+                    ui.label("órdenes").style("font-size:11px;color:#616161")
                 with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #0288d1;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
                     ui.label("MERCADO ENVÍOS HOY").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
-                    ui.label("—").style("font-size:24px;font-weight:700;color:#0288d1;line-height:1.2")
-                    ui.label("Próximamente").style("font-size:10px;color:#bdbdbd;font-style:italic")
+                    ui.label(fmt_n(me_hoy)).style("font-size:24px;font-weight:700;color:#0288d1;line-height:1.2")
+                    ui.label("órdenes").style("font-size:11px;color:#616161")
                 with ui.element("div").style("flex:1;min-width:0;background:white;border-left:4px solid #f57c00;border-radius:6px;padding:10px 12px;border:1px solid #e0e0e0"):
                     ui.label(f"FACTURACIÓN {mes_actual_nom.upper()}").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
                     ui.label(fmt_m(ventas_mes_actual_monto)).style("font-size:16px;font-weight:700;color:#f57c00;line-height:1.2")
