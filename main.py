@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.31"
+VERSION = "2.26.05.14.32"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5366,6 +5366,8 @@ def build_tab_estadisticas(estadisticas_container) -> None:
         return
 
     def cargar_y_pintar() -> None:
+        import logging as _blog
+        _blog.warning("[BUILD DEBUG] build_tab_estadisticas llamado")
         estadisticas_container.clear()
         with estadisticas_container:
             with ui.card().classes("w-full p-8 items-center gap-4"):
