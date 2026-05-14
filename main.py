@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.14.22"
+VERSION = "2.26.05.14.23"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5485,6 +5485,8 @@ def _pintar_home_inline(
         with ui.column().classes("w-full gap-3"):
             # ── HEADER + KPI ROW (6 elementos) ────────────────────────────────────
             prof = profile or {}
+            import logging
+            logging.warning(f"[LOGO DEBUG] thumbnail={prof.get('thumbnail')} secure={prof.get('secure_thumbnail')} logo={prof.get('logo')}")
             secure_thumb = _safe_str(prof.get("secure_thumbnail")) or _safe_str(prof.get("thumbnail"))
             logo = _safe_str(prof.get("logo"))
             img_url = logo or secure_thumb
@@ -5772,7 +5774,6 @@ def _pintar_home_inline(
                 # Card Top Ventas — 8 productos
                 top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:10]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
-                rank_colors = ["#1565c0", "#1976d2", "#1e88e5", "#42a5f5", "#64b5f6", "#90caf9", "#bbdefb", "#e3f2fd", "#e8f5e9", "#c8e6c9"]
 
                 with ui.element("div").style("flex:1;min-width:200px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("height:4px;background:#43a047"):
@@ -5784,19 +5785,17 @@ def _pintar_home_inline(
                         else:
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                tit = (p["title"] or "—")[:35]
-                                if len(p.get("title") or "") > 35:
+                                tit = (p["title"] or "—")[:45]
+                                if len(p.get("title") or "") > 45:
                                     tit += "…"
-                                bar_color = rank_colors[i] if i < len(rank_colors) else "#e3f2fd"
-                                bar_opacity = max(0.25, 1.0 - i * 0.1)
                                 with ui.row().classes("w-full items-start gap-2 mb-1"):
-                                    with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{bar_color};display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"):
+                                    with ui.element("div").style("width:16px;height:16px;border-radius:50%;background:#1976d2;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px"):
                                         ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
                                     with ui.column().classes("flex-1 min-w-0 gap-0"):
                                         with ui.row().classes("w-full items-center justify-between gap-1"):
-                                            ui.label(tit).style("font-size:10px;color:#212121;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
+                                            ui.label(tit).style("font-size:12px;color:#212121;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
                                             ui.label(f"{p['units']}u · {pct:.0f}%").style("font-size:9px;color:#616161;white-space:nowrap;flex-shrink:0")
-                                        with ui.element("div").style(f"height:3px;background:{bar_color};width:{min(pct, 100):.0f}%;opacity:{bar_opacity:.2f};border-radius:2px;margin-top:2px"):
+                                        with ui.element("div").style(f"height:3px;background:#1976d2;width:{min(pct, 100):.0f}%;border-radius:2px;margin-top:2px"):
                                             pass
 
                 # Card Stock + Últimas ventas
@@ -5852,14 +5851,14 @@ def _pintar_home_inline(
                                 primer_item = items_v[0] if items_v else {}
                                 obj = primer_item.get("item") or primer_item
                                 tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
-                                tit = (tit[:30] + "…") if len(str(tit)) > 30 else str(tit)
+                                tit = (tit[:50] + "…") if len(str(tit)) > 50 else str(tit)
                                 with ui.row().classes("w-full items-center gap-1 py-0.5"):
                                     with ui.element("div").style("width:6px;height:6px;border-radius:50%;background:#43a047;flex-shrink:0"):
                                         pass
-                                    ui.label(tit).style("font-size:11px;color:#424242;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0")
+                                    ui.label(tit).style("font-size:12px;color:#424242;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0")
                                     with ui.element("div").style("text-align:right;flex-shrink:0"):
-                                        ui.label(f"{uds}u").style("font-size:10px;font-weight:600;color:#1976d2;display:block")
-                                        ui.label(f"{fecha_fmt} {hora_fmt}".strip()).style("font-size:9px;color:#9e9e9e;display:block")
+                                        ui.label(f"{uds}u").style("font-size:12px;font-weight:600;color:#1976d2;display:block")
+                                        ui.label(f"{fecha_fmt} {hora_fmt}".strip()).style("font-size:12px;color:#9e9e9e;display:block")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
@@ -5896,21 +5895,24 @@ def _pintar_home_inline(
                             ui.label("UNIDADES VENDIDAS — 14 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
                         ui.echart(chart_options_sem).classes("w-full").style("height:145px")
                         with ui.element("div").style("padding:4px 14px 10px"):
-                            with ui.row().classes("gap-4"):
-                                ui.label(f"Esta semana: {uds_esta_semana} u").style("font-size:11px;color:#424242")
-                                ui.label(f"Semana anterior: {uds_semana_pasada} u").style("font-size:11px;color:#424242")
-                            variacion_color = "#43a047" if var_pct >= 0 else "#e53935"
-                            ui.label(f"Variación: {var_pct:+.1f}%").style(f"font-size:11px;font-weight:600;color:{variacion_color}")
                             prom_7 = uds_esta_semana / 7
-                            uds_14 = uds_esta_semana + uds_semana_pasada
-                            prom_14 = uds_14 / 14
                             hoy_u = ventas_por_dia.get(today_local.strftime("%Y-%m-%d"), 0)
                             hoy_vs_prom = ((hoy_u - prom_7) / prom_7 * 100) if prom_7 > 0 else (100.0 if hoy_u > 0 else 0.0)
+                            variacion_color = "#43a047" if var_pct >= 0 else "#e53935"
                             hoy_vs_color = "#43a047" if hoy_vs_prom >= 0 else "#e53935"
-                            with ui.row().classes("gap-4 mt-1"):
-                                ui.label(f"Prom 7d: {prom_7:.1f} u/día").style("font-size:10px;color:#616161")
-                                ui.label(f"Prom 14d: {prom_14:.1f} u/día").style("font-size:10px;color:#616161")
-                                ui.label(f"Hoy vs prom 7d: {hoy_vs_prom:+.0f}%").style(f"font-size:10px;font-weight:600;color:{hoy_vs_color}")
+                            with ui.row().classes("gap-2 flex-nowrap"):
+                                with ui.element("div").style("flex:1;background:#e3f2fd;border-left:3px solid #1976d2;border-radius:8px;padding:8px 12px"):
+                                    ui.label("ESTA SEMANA").style("font-size:9px;font-weight:600;color:#9e9e9e;text-transform:uppercase;letter-spacing:0.05em")
+                                    ui.label(f"{uds_esta_semana} u").style("font-size:16px;font-weight:700;color:#1976d2;line-height:1.2")
+                                with ui.element("div").style("flex:1;background:#f5f5f5;border-left:3px solid #9e9e9e;border-radius:8px;padding:8px 12px"):
+                                    ui.label("SEMANA ANTERIOR").style("font-size:9px;font-weight:600;color:#9e9e9e;text-transform:uppercase;letter-spacing:0.05em")
+                                    ui.label(f"{uds_semana_pasada} u").style("font-size:16px;font-weight:700;color:#616161;line-height:1.2")
+                                with ui.element("div").style(f"flex:1;background:{'#e8f5e9' if var_pct >= 0 else '#fce4ec'};border-left:3px solid {variacion_color};border-radius:8px;padding:8px 12px"):
+                                    ui.label("VARIACIÓN").style("font-size:9px;font-weight:600;color:#9e9e9e;text-transform:uppercase;letter-spacing:0.05em")
+                                    ui.label(f"{var_pct:+.1f}%").style(f"font-size:16px;font-weight:700;color:{variacion_color};line-height:1.2")
+                                with ui.element("div").style(f"flex:1;background:{'#e8f5e9' if hoy_vs_prom >= 0 else '#fce4ec'};border-left:3px solid {hoy_vs_color};border-radius:8px;padding:8px 12px"):
+                                    ui.label("HOY VS PROM 7D").style("font-size:9px;font-weight:600;color:#9e9e9e;text-transform:uppercase;letter-spacing:0.05em")
+                                    ui.label(f"{hoy_vs_prom:+.0f}%").style(f"font-size:16px;font-weight:700;color:{hoy_vs_color};line-height:1.2")
                 else:
                     with ui.element("div").style("flex:1;min-width:120px;background:white;border:1px solid #e0e0e0;border-radius:8px;padding:16px;flex-shrink:0"):
                         ui.label("UNIDADES VENDIDAS — 14 DÍAS").style("font-size:10px;font-weight:600;letter-spacing:0.07em;color:#9e9e9e;text-transform:uppercase")
@@ -5928,6 +5930,8 @@ def _pintar_home_inline(
                 venta_estimada_mes_usd = (venta_estimada_mes / dolar_oficial2) if dolar_oficial2 > 0 else 0
                 venta_diaria_u = ventas_mes_actual_unid / dias_transcurridos if dias_transcurridos > 0 else 0
                 ticket_prom2 = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
+                venta_x_unidad = ventas_mes_actual_monto / ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 0
+                proyeccion_anual = (ventas_mes_actual_monto / dias_transcurridos * 365) if dias_transcurridos > 0 else 0
 
                 with ui.element("div").style("flex:1;min-width:260px;background:white;border:1px solid #e0e0e0;border-radius:8px;overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("height:4px;background:#7b1fa2"):
@@ -5942,10 +5946,12 @@ def _pintar_home_inline(
                             _kpi_cell("Facturado", fmt_m(ventas_mes_actual_monto), "#7b1fa2", "#f3e5f5")
                             _kpi_cell("Estimado mes", fmt_m(venta_estimada_mes), "#1976d2", "#e3f2fd")
                             _kpi_cell(f"Días ({dias_transcurridos}/{dias_del_mes})", str(dias_transcurridos), "#616161", "#f5f5f5")
+                            _kpi_cell("Venta/unid prom", fmt_m(venta_x_unidad), "#e53935", "#fce4ec")
                         with ui.row().classes("gap-1 w-full flex-nowrap"):
                             _kpi_cell("Unidades", str(ventas_mes_actual_unid), "#43a047", "#e8f5e9")
                             _kpi_cell("$/día", fmt_m(venta_diaria), "#f57c00", "#fff8e1")
                             _kpi_cell("Ticket prom", fmt_m(ticket_prom2), "#0288d1", "#e1f5fe")
+                            _kpi_cell("Proyección año", fmt_m(proyeccion_anual), "#00796b", "#e0f2f1")
 
 
 
