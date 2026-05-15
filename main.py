@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.18"
+VERSION = "2.26.05.15.19"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -76,6 +76,11 @@ TAB_KEYS = [
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
 ]
+
+# Grupos de tabs para control de acceso por defecto
+TABS_BASE = {"home", "pedidos", "importacion", "pesos", "datos", "configuracion"}
+TABS_ML   = {"estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "cuotas", "historicos", "stock"}
+TABS_QB   = {"compras", "compras_lista"}
 
 
 # ==========================
@@ -2923,6 +2928,22 @@ def set_user_tab_permission(user_id: int, tab_key: str, can_access: bool) -> Non
         conn.close()
 
 
+def _enable_tabs_for_user(user_id: int, tab_set: set) -> None:
+    """Habilita un conjunto de tabs para un usuario solo si actualmente están en 0."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for tab_key in tab_set:
+            cur.execute(
+                "INSERT INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, 1) "
+                "ON CONFLICT(user_id, tab_key) DO UPDATE SET can_access=1 WHERE can_access=0",
+                (user_id, tab_key),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def user_can_access_tab(user_id: int, tab_key: str) -> bool:
     """Devuelve si el usuario puede acceder a la pestaña."""
     perms = get_user_tab_permissions(user_id)
@@ -3517,7 +3538,7 @@ def create_user(email: str) -> tuple[Optional[str], Optional[str]]:
         uid = cur.lastrowid
         if uid:
             for tab_key, _ in TAB_KEYS:
-                can = 1 if (tab_key != "admin" or is_first) else 0
+                can = 1 if tab_key in TABS_BASE or (tab_key == "admin" and is_first) else 0
                 cur.execute(
                     "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
                     (uid, tab_key, can),
@@ -12256,6 +12277,102 @@ def build_tab_admin(container) -> None:
                                             chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
             ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
 
+            # Tarjeta Asignación QuickBooks
+            with ui.card().classes("w-full p-3 bg-grey-2"):
+                ui.label("Asignación QuickBooks").classes("text-base font-semibold mb-2")
+                ui.label("Asignar Customer QB a un usuario habilita automáticamente las tabs Invoices y Compras.").classes("text-xs text-gray-600 mb-3")
+
+                _qb_assign_users = get_all_users()
+                _qb_user_options = {str(u["id"]): u.get("username", str(u["id"])) for u in _qb_assign_users}
+                _qb_sel_uid: Dict[str, Any] = {"val": None}
+                _qb_current_label: Any = {"ref": None}
+                _qb_customers_container: Any = {"ref": None}
+
+                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
+                    qb_user_select = ui.select(
+                        options=_qb_user_options,
+                        label="Seleccionar usuario",
+                        with_input=True,
+                    ).classes("min-w-[240px]")
+
+                    lbl_current = ui.label("").classes("text-sm text-gray-700")
+                    _qb_current_label["ref"] = lbl_current
+
+                def _on_qb_user_select(e: Any) -> None:
+                    uid_str = str(e.value) if e.value is not None else None
+                    _qb_sel_uid["val"] = uid_str
+                    if not uid_str:
+                        _qb_current_label["ref"].text = ""
+                        return
+                    try:
+                        uid_int = int(uid_str)
+                    except (ValueError, TypeError):
+                        return
+                    cust = get_user_qb_customer(uid_int)
+                    if cust:
+                        _qb_current_label["ref"].text = f"Customer actual: {cust.get('name', '—')} (id {cust.get('id', '—')})"
+                    else:
+                        _qb_current_label["ref"].text = "Sin customer asignado"
+
+                qb_user_select.on_value_change(_on_qb_user_select)
+
+                qb_customers_container = ui.column().classes("w-full gap-1 mt-2")
+                _qb_customers_container["ref"] = qb_customers_container
+
+                def _buscar_customers_qb() -> None:
+                    qb_customers_container.clear()
+                    data, err = _qb_raw_query(user["id"], "SELECT Id, DisplayName, PrimaryEmailAddr FROM Customer MAXRESULTS 100")
+                    if err or not data:
+                        with qb_customers_container:
+                            ui.label(f"Error: {err or 'Sin datos'}").classes("text-negative text-sm")
+                        return
+                    customers = (data.get("QueryResponse") or {}).get("Customer") or []
+                    if not customers:
+                        with qb_customers_container:
+                            ui.label("No se encontraron customers en QB.").classes("text-sm text-gray-600")
+                        return
+                    with qb_customers_container:
+                        ui.label(f"{len(customers)} customers encontrados. Click en un cliente para asignarlo al usuario seleccionado.").classes("text-xs text-gray-500 mb-1")
+                        with ui.element("table").classes("border-collapse text-xs w-full"):
+                            with ui.element("thead"):
+                                with ui.element("tr").classes("bg-gray-100"):
+                                    for col_h in ["ID", "Nombre", "Email"]:
+                                        with ui.element("th").classes("px-2 py-1 border text-left"):
+                                            ui.label(col_h)
+                                    with ui.element("th").classes("px-2 py-1 border text-center"):
+                                        ui.label("Asignar")
+                            with ui.element("tbody"):
+                                for c in customers:
+                                    cid = str(c.get("Id", ""))
+                                    cname = str(c.get("DisplayName") or c.get("FullyQualifiedName") or "—")
+                                    cemail_obj = c.get("PrimaryEmailAddr") or {}
+                                    cemail = str(cemail_obj.get("Address") or "—") if isinstance(cemail_obj, dict) else "—"
+                                    with ui.element("tr").classes("border-t border-gray-200 hover:bg-blue-50"):
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
+                                            ui.label(cid)
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
+                                            ui.label(cname)
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
+                                            ui.label(cemail)
+                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            def _asignar(cid_inner=cid, cname_inner=cname) -> None:
+                                                uid_str = _qb_sel_uid["val"]
+                                                if not uid_str:
+                                                    ui.notify("Seleccioná un usuario primero", color="warning")
+                                                    return
+                                                try:
+                                                    uid_int = int(uid_str)
+                                                except (ValueError, TypeError):
+                                                    ui.notify("Usuario inválido", color="negative")
+                                                    return
+                                                set_user_qb_customer(uid_int, cid_inner, cname_inner)
+                                                _enable_tabs_for_user(uid_int, TABS_QB)
+                                                _qb_current_label["ref"].text = f"Customer actual: {cname_inner} (id {cid_inner})"
+                                                ui.notify(f"Asignado {cname_inner} → usuario {uid_str}. Tabs QB habilitadas.", color="positive")
+                                            ui.button("Asignar", on_click=_asignar).props("flat dense no-caps").classes("text-xs text-blue-600")
+
+                ui.button("Buscar clientes en QB", on_click=_buscar_customers_qb, color="primary").props("dense no-caps")
+
             # Tarjetas Marcas y Despachantes lado a lado
             with ui.row().classes("w-full gap-6 flex-wrap"):
                 # Tarjeta Marcas (catálogo global para Compras)
@@ -14172,6 +14289,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         )
         conn.commit()
         conn.close()
+        _enable_tabs_for_user(user["id"], TABS_ML)
         # Redirigir a / sin el code para limpiar la URL (el usuario verá el panel y una notificación)
         return RedirectResponse(url="/", status_code=302)
 
