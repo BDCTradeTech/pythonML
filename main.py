@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.08"
+VERSION = "2.26.05.15.09"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5594,6 +5594,12 @@ def _pintar_home_inline(
                     ui.label("MERCADO ENVÍOS HOY").style(_LBL)
                     ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#0891b2;line-height:1.2")
                     ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                no_concretadas = max(0, hoy_unidades - flex_hoy - me_hoy)
+                nc_color = "#dc2626" if no_concretadas > 0 else "#6b7280"
+                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {nc_color}"):
+                    ui.label("NO CONCRETADAS").style(_LBL)
+                    ui.label(fmt_n(no_concretadas)).style(f"font-size:22px;font-weight:600;color:{nc_color};line-height:1.2")
+                    ui.label("canceladas/pendientes").style("font-size:11px;color:#6b7280")
                 with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {_GREEN}"):
                     ui.label(f"FACTURACIÓN {mes_actual_nom.upper()}").style(_LBL)
                     ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:16px;font-weight:600;color:{_GREEN};line-height:1.2")
@@ -5711,7 +5717,7 @@ def _pintar_home_inline(
                         def _mini(lbl, unid, monto, bg, bdr, col):
                             with ui.element("div").style(f"flex:1;min-width:0;padding:5px 7px;border-radius:4px;background:{bg};border:1px solid {bdr}"):
                                 ui.label(lbl).style(f"font-size:10px;color:{col};font-weight:500")
-                                ui.label(str(unid)).style(f"font-size:13px;font-weight:700;color:{col}")
+                                ui.label(fmt_n(unid)).style(f"font-size:13px;font-weight:700;color:{col}")
                                 ui.label(fmt_m(monto)).style("font-size:9px;color:#6b7280;white-space:nowrap")
                         with ui.column().classes("gap-1 w-full"):
                             with ui.row().classes("gap-1 w-full flex-nowrap"):
@@ -5761,6 +5767,16 @@ def _pintar_home_inline(
                             pass
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("FACTURACIÓN MENSUAL").style(_LBL)
+                            _meses_sorted_fc = sorted(por_mes.keys())
+                            _idx_fc = _meses_sorted_fc.index(mes_actual_key) if mes_actual_key in _meses_sorted_fc else -1
+                            if _idx_fc > 0:
+                                _mes_ant_key_fc = _meses_sorted_fc[_idx_fc - 1]
+                                _monto_act_fc = por_mes.get(mes_actual_key, {}).get("total", 0)
+                                _monto_ant_fc = por_mes.get(_mes_ant_key_fc, {}).get("total", 0)
+                                if _monto_ant_fc > 0:
+                                    _var_fc = (_monto_act_fc - _monto_ant_fc) / _monto_ant_fc * 100
+                                    _var_fc_color = _GREEN if _var_fc >= 0 else "#dc2626"
+                                    ui.label(f"{_var_fc:+.1f}% vs mes ant.").style(f"font-size:11px;color:{_var_fc_color};font-weight:600;margin-top:2px")
                         ui.echart(chart_options).classes("w-full").style("height:200px")
                 else:
                     with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
@@ -5803,7 +5819,7 @@ def _pintar_home_inline(
                                                 else:
                                                     ui.label(key).style("font-size:11px;color:#374151")
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color}"):
-                                                ui.label(str(v["units"]))
+                                                ui.label(fmt_n(v["units"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color}"):
                                                 ui.label(fmt_m(v["total"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color if is_mes_actual else '#6b7280'}"):
@@ -5877,7 +5893,7 @@ def _pintar_home_inline(
                 def _orden_fecha(o):
                     ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
                     return ds[:10] if ds else ""
-                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:5]
+                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:8]
 
                 with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
@@ -5908,10 +5924,8 @@ def _pintar_home_inline(
                                     else:
                                         dt_v = None
                                     hora_fmt = f"{dt_v.hour:02d}:{dt_v.minute:02d}" if dt_v else ""
-                                    fecha_fmt = f"{dt_v.day:02d}/{dt_v.month:02d}" if dt_v else "—"
                                 except Exception:
                                     hora_fmt = ""
-                                    fecha_fmt = ds_raw[:10] if ds_raw else "—"
                                 items_v = v.get("order_items") or v.get("items") or []
                                 uds = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_v if isinstance(it, dict))
                                 if uds == 0:
@@ -5920,14 +5934,11 @@ def _pintar_home_inline(
                                 primer_item = items_v[0] if items_v else {}
                                 obj = primer_item.get("item") or primer_item
                                 tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
-                                tit = (tit[:50] + "…") if len(str(tit)) > 50 else str(tit)
-                                with ui.row().classes("w-full items-center gap-1 py-0.5"):
-                                    with ui.element("div").style(f"width:6px;height:6px;border-radius:50%;background:{_GREEN};flex-shrink:0"):
-                                        pass
-                                    ui.label(tit).style("font-size:12px;color:#374151;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0")
-                                    with ui.element("div").style("text-align:right;flex-shrink:0"):
-                                        ui.label(f"{uds}u").style(f"font-size:12px;font-weight:600;color:{_BLUE};display:block")
-                                        ui.label(f"{fecha_fmt} {hora_fmt}".strip()).style("font-size:12px;color:#9ca3af;display:block")
+                                tit = (tit[:40] + "…") if len(str(tit)) > 40 else str(tit)
+                                with ui.row().classes("w-full items-center justify-between gap-2 py-0.5 flex-nowrap"):
+                                    ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1")
+                                    ui.label(f"{uds}u").style(f"font-size:11px;font-weight:700;color:{_BLUE};white-space:nowrap;flex-shrink:0")
+                                    ui.label(hora_fmt).style("font-size:11px;color:#6b7280;white-space:nowrap;flex-shrink:0")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
