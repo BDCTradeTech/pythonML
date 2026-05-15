@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.15"
+VERSION = "2.26.05.15.16"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5891,7 +5891,7 @@ def _pintar_home_inline(
 
             with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1 overflow-x-auto"):
                 # Card Top Ventas
-                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:18]
+                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:13]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
                 with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
@@ -5925,7 +5925,7 @@ def _pintar_home_inline(
                 def _orden_fecha(o):
                     ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
                     return ds[:10] if ds else ""
-                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:13]
+                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:9]
 
                 with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
