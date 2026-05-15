@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.26"
+VERSION = "2.26.05.15.27"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6059,32 +6059,20 @@ def _pintar_home_inline(
                             hoy_vs_prom = ((hoy_u - prom_7) / prom_7 * 100) if prom_7 > 0 else (100.0 if hoy_u > 0 else 0.0)
                             variacion_color = _GREEN if var_pct >= 0 else "#dc2626"
                             hoy_vs_color = _GREEN if hoy_vs_prom >= 0 else "#dc2626"
-                            var_icon = "↑" if var_pct >= 0 else "↓"
-                            hvp_icon = "↑" if hoy_vs_prom >= 0 else "↓"
-                            var_bg = "#f0fdf4" if var_pct >= 0 else "#fef2f2"
-                            hvp_bg = "#f0fdf4" if hoy_vs_prom >= 0 else "#fef2f2"
-                            _ROW = "display:flex;align-items:center;gap:8px;margin-bottom:6px"
-                            _ICO = "width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex-shrink:0"
-                            with ui.element("div").style(_ROW):
-                                with ui.element("div").style(f"{_ICO};background:#eff6ff;color:{_BLUE}"):
-                                    ui.label("7d")
-                                ui.label("ESTA SEMANA").style("flex:1;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                                ui.label(f"{fmt_n(uds_esta_semana)} u").style(f"font-size:13px;font-weight:500;color:{_BLUE};text-align:right")
-                            with ui.element("div").style(_ROW):
-                                with ui.element("div").style(f"{_ICO};background:#f3f4f6;color:#6b7280"):
-                                    ui.label("7d")
-                                ui.label("SEMANA ANTERIOR").style("flex:1;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                                ui.label(f"{fmt_n(uds_semana_pasada)} u").style("font-size:13px;font-weight:500;color:#6b7280;text-align:right")
-                            with ui.element("div").style(_ROW):
-                                with ui.element("div").style(f"{_ICO};background:{var_bg};color:{variacion_color}"):
-                                    ui.label(var_icon)
-                                ui.label("VARIACIÓN SEMANAL").style("flex:1;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                                ui.label(f"{var_pct:+.1f}%").style(f"font-size:13px;font-weight:500;color:{variacion_color};text-align:right")
-                            with ui.element("div").style(f"{_ROW};margin-bottom:0"):
-                                with ui.element("div").style(f"{_ICO};background:{hvp_bg};color:{hoy_vs_color}"):
-                                    ui.label(hvp_icon)
-                                ui.label("HOY VS PROM 7D").style("flex:1;font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                                ui.label(f"{hoy_vs_prom:+.0f}%").style(f"font-size:13px;font-weight:500;color:{hoy_vs_color};text-align:right")
+                            _CELL = "background:#f9fafb;border:0.5px solid #e5e7eb;border-radius:0 4px 4px 0;padding:5px 8px;display:flex;justify-content:space-between;align-items:center"
+                            with ui.element("div").style("display:grid;grid-template-columns:1fr 1fr;gap:4px"):
+                                with ui.element("div").style(f"{_CELL};border-left:3px solid #1d4ed8"):
+                                    ui.label("Esta semana").style("font-size:10px;color:#6b7280")
+                                    ui.label(f"{fmt_n(uds_esta_semana)} u").style("font-size:12px;font-weight:500;color:#1d4ed8")
+                                with ui.element("div").style(f"{_CELL};border-left:3px solid #6b7280"):
+                                    ui.label("Sem. anterior").style("font-size:10px;color:#6b7280")
+                                    ui.label(f"{fmt_n(uds_semana_pasada)} u").style("font-size:12px;font-weight:500;color:#6b7280")
+                                with ui.element("div").style(f"{_CELL};border-left:3px solid {variacion_color}"):
+                                    ui.label("Variación").style("font-size:10px;color:#6b7280")
+                                    ui.label(f"{var_pct:+.1f}%").style(f"font-size:12px;font-weight:500;color:{variacion_color}")
+                                with ui.element("div").style(f"{_CELL};border-left:3px solid {hoy_vs_color}"):
+                                    ui.label("Hoy vs prom 7d").style("font-size:10px;color:#6b7280")
+                                    ui.label(f"{hoy_vs_prom:+.0f}%").style(f"font-size:12px;font-weight:500;color:{hoy_vs_color}")
                 else:
                     with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
                         ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
