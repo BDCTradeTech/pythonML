@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.10"
+VERSION = "2.26.05.15.11"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5750,29 +5750,42 @@ def _pintar_home_inline(
                             bar_color = "#3b82f6"
                         else:
                             bar_color = "#bfdbfe"
+                        monto_str = fmt_m(val_m)
                         if i > 0:
                             val_prev = por_mes[orden_rev[i - 1]]["total"]
                             if val_prev > 0:
                                 pct_var = (val_m - val_prev) / val_prev * 100
                                 pct_str = f"{pct_var:+.1f}%"
-                                pct_color = _GREEN if pct_var >= 0 else "#dc2626"
+                                rich_key = "pctpos" if pct_var >= 0 else "pctneg"
+                                lbl_fmt = f"{{{rich_key}|{pct_str}}}\n{{monto|{monto_str}}}"
                             else:
-                                pct_str = ""
-                                pct_color = "#6b7280"
+                                lbl_fmt = f"{{monto|{monto_str}}}"
                         else:
-                            pct_str = ""
-                            pct_color = "#6b7280"
+                            lbl_fmt = f"{{monto|{monto_str}}}"
                         chart_data.append({
                             "value": round(val_m, 0),
                             "itemStyle": {"color": bar_color},
-                            "label": {"show": True, "position": "top", "formatter": pct_str, "fontSize": 8, "color": pct_color}
+                            "label": {"formatter": lbl_fmt},
                         })
                     chart_options = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 5, "right": 5, "top": 25, "bottom": 35, "containLabel": False},
+                        "grid": {"left": 5, "right": 5, "top": 42, "bottom": 35, "containLabel": False},
                         "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 10, "interval": 0}},
                         "yAxis": {"show": False},
-                        "series": [{"type": "bar", "data": chart_data, "barWidth": "55%"}],
+                        "series": [{
+                            "type": "bar",
+                            "data": chart_data,
+                            "barWidth": "55%",
+                            "label": {
+                                "show": True,
+                                "position": "top",
+                                "rich": {
+                                    "pctpos": {"color": "#16a34a", "fontSize": 9, "fontWeight": "bold"},
+                                    "pctneg": {"color": "#dc2626", "fontSize": 9, "fontWeight": "bold"},
+                                    "monto": {"color": "#111827", "fontSize": 9},
+                                },
+                            },
+                        }],
                     }
                     with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style(f"height:3px;background:{_GREEN}"):
