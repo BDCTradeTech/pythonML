@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.17"
+VERSION = "2.26.05.15.18"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5096,7 +5096,7 @@ def show_main_layout(container) -> None:
             menu_obj.open()
 
         with ui.row().classes("w-full items-center q-pa-md bg-grey-2 gap-2 flex-wrap"):
-            with ui.row().classes("items-center gap-1 shrink-0"):
+            with ui.row().classes("items-center gap-1 flex-wrap"):
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
@@ -5181,7 +5181,7 @@ def show_main_layout(container) -> None:
                 if perms.get("admin", False):
                     ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
             ui.space()
-            with ui.row().classes("items-center gap-3 shrink-0"):
+            with ui.row().classes("items-center gap-3 flex-wrap"):
                 with ui.row().classes("items-center gap-2"):
                     ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
                     ui.label("ML").classes("text-xs text-gray-600")
