@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.09"
+VERSION = "2.26.05.15.10"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5750,10 +5750,22 @@ def _pintar_home_inline(
                             bar_color = "#3b82f6"
                         else:
                             bar_color = "#bfdbfe"
+                        if i > 0:
+                            val_prev = por_mes[orden_rev[i - 1]]["total"]
+                            if val_prev > 0:
+                                pct_var = (val_m - val_prev) / val_prev * 100
+                                pct_str = f"{pct_var:+.1f}%"
+                                pct_color = _GREEN if pct_var >= 0 else "#dc2626"
+                            else:
+                                pct_str = ""
+                                pct_color = "#6b7280"
+                        else:
+                            pct_str = ""
+                            pct_color = "#6b7280"
                         chart_data.append({
                             "value": round(val_m, 0),
                             "itemStyle": {"color": bar_color},
-                            "label": {"show": True, "position": "top", "formatter": fmt_m(val_m), "fontSize": 9}
+                            "label": {"show": True, "position": "top", "formatter": pct_str, "fontSize": 8, "color": pct_color}
                         })
                     chart_options = {
                         "backgroundColor": "transparent",
@@ -5767,16 +5779,6 @@ def _pintar_home_inline(
                             pass
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("FACTURACIÓN MENSUAL").style(_LBL)
-                            _meses_sorted_fc = sorted(por_mes.keys())
-                            _idx_fc = _meses_sorted_fc.index(mes_actual_key) if mes_actual_key in _meses_sorted_fc else -1
-                            if _idx_fc > 0:
-                                _mes_ant_key_fc = _meses_sorted_fc[_idx_fc - 1]
-                                _monto_act_fc = por_mes.get(mes_actual_key, {}).get("total", 0)
-                                _monto_ant_fc = por_mes.get(_mes_ant_key_fc, {}).get("total", 0)
-                                if _monto_ant_fc > 0:
-                                    _var_fc = (_monto_act_fc - _monto_ant_fc) / _monto_ant_fc * 100
-                                    _var_fc_color = _GREEN if _var_fc >= 0 else "#dc2626"
-                                    ui.label(f"{_var_fc:+.1f}% vs mes ant.").style(f"font-size:11px;color:{_var_fc_color};font-weight:600;margin-top:2px")
                         ui.echart(chart_options).classes("w-full").style("height:200px")
                 else:
                     with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
@@ -5934,7 +5936,7 @@ def _pintar_home_inline(
                                 primer_item = items_v[0] if items_v else {}
                                 obj = primer_item.get("item") or primer_item
                                 tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
-                                tit = (tit[:40] + "…") if len(str(tit)) > 40 else str(tit)
+                                tit = (tit[:55] + "…") if len(str(tit)) > 55 else str(tit)
                                 with ui.row().classes("w-full items-center justify-between gap-2 py-0.5 flex-nowrap"):
                                     ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1")
                                     ui.label(f"{uds}u").style(f"font-size:11px;font-weight:700;color:{_BLUE};white-space:nowrap;flex-shrink:0")
@@ -6019,20 +6021,44 @@ def _pintar_home_inline(
                         pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
-                        def _kpi_cell(lbl, val, color="#111827", bg="#f9fafb"):
-                            with ui.element("div").style(f"flex:1;padding:6px 8px;background:{bg};border-radius:4px;text-align:center"):
-                                ui.label(lbl).style("font-size:8px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.05em")
-                                ui.label(val).style(f"font-size:14px;font-weight:700;color:{color};line-height:1.2")
-                        with ui.row().classes("gap-1 w-full flex-nowrap mb-1"):
-                            _kpi_cell("Facturado", fmt_m(ventas_mes_actual_monto), _BLUE, "#eff6ff")
-                            _kpi_cell("Estimado mes", fmt_m(venta_estimada_mes), _GREEN, "#f0fdf4")
-                            _kpi_cell(f"Días ({dias_transcurridos}/{dias_del_mes})", str(dias_transcurridos))
-                            _kpi_cell("Venta/unid prom", fmt_m(venta_x_unidad))
-                        with ui.row().classes("gap-1 w-full flex-nowrap"):
-                            _kpi_cell("Unidades", str(ventas_mes_actual_unid))
-                            _kpi_cell("$/día", fmt_m(venta_diaria))
-                            _kpi_cell("Ticket prom", fmt_m(ticket_prom2))
-                            _kpi_cell("Proyección año", fmt_m(proyeccion_anual))
+                        # Bloque 1 — Resultados a la fecha
+                        with ui.element("div").style("background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;padding:10px 12px;margin-bottom:8px"):
+                            ui.label(f"RESULTADOS AL DÍA {dias_transcurridos}").style(f"{_LBL};margin-bottom:6px")
+                            with ui.row().classes("gap-1 w-full flex-nowrap mb-1"):
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Facturado").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:15px;font-weight:700;color:{_BLUE};line-height:1.2")
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label(f"Días ({dias_transcurridos}/{dias_del_mes})").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(str(dias_transcurridos)).style("font-size:15px;font-weight:700;color:#6b7280;line-height:1.2")
+                            with ui.row().classes("gap-1 w-full flex-nowrap"):
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Prom. diario").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_m(venta_diaria)).style("font-size:13px;font-weight:600;color:#374151;line-height:1.2")
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Ticket prom").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_m(ticket_prom2)).style("font-size:13px;font-weight:600;color:#374151;line-height:1.2")
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Unidades").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_n(ventas_mes_actual_unid)).style("font-size:13px;font-weight:600;color:#374151;line-height:1.2")
+                        # Bloque 2 — Estimación fin de mes
+                        venta_estimada_unid = int(venta_diaria_u * dias_del_mes) if dias_transcurridos > 0 else 0
+                        with ui.element("div").style("background:#f0fdf4;border:1px solid #d1fae5;border-radius:6px;padding:10px 12px"):
+                            ui.label("ESTIMACIÓN FIN DE MES").style(f"font-size:11px;color:{_GREEN};text-transform:uppercase;letter-spacing:.05em;font-weight:500;margin-bottom:6px")
+                            with ui.row().classes("gap-1 w-full flex-nowrap mb-1"):
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Facturación est.").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_m(venta_estimada_mes)).style(f"font-size:15px;font-weight:700;color:{_GREEN};line-height:1.2")
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("En dólares").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(f"u$ {fmt_n(venta_estimada_mes_usd)}").style(f"font-size:15px;font-weight:700;color:{_GREEN};line-height:1.2")
+                            with ui.row().classes("gap-1 w-full flex-nowrap"):
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Unidades est.").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_n(venta_estimada_unid)).style(f"font-size:13px;font-weight:600;color:{_GREEN};line-height:1.2")
+                                with ui.element("div").style("flex:1;text-align:center"):
+                                    ui.label("Proyección anual").style("font-size:8px;color:#9ca3af;text-transform:uppercase")
+                                    ui.label(fmt_m(proyeccion_anual)).style("font-size:13px;font-weight:600;color:#6b7280;line-height:1.2")
 
 
 
