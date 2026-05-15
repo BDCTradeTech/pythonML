@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.24"
+VERSION = "2.26.05.15.25"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6049,7 +6049,7 @@ def _pintar_home_inline(
                         chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}, "label": {"formatter": lbl_fmt}})
                     chart_options_sem = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 35, "right": 15, "top": 60, "bottom": 40},
+                        "grid": {"left": 35, "right": 15, "top": 60, "bottom": 25},
                         "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 9, "interval": 0, "rotate": 30}},
                         "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
                         "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {
@@ -6066,7 +6066,7 @@ def _pintar_home_inline(
                             pass
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
-                        ui.echart(chart_options_sem).classes("w-full").style("height:145px")
+                        ui.echart(chart_options_sem).classes("w-full").style("height:220px")
                         with ui.element("div").style("padding:4px 14px 10px"):
                             prom_7 = uds_esta_semana / 7
                             hoy_u = ventas_por_dia.get(today_local.strftime("%Y-%m-%d"), 0)
