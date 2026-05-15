@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.20"
+VERSION = "2.26.05.15.21"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -63,6 +63,7 @@ TAB_KEYS = [
     ("ventas", "Ventas"),
     ("productos", "Productos"),
     ("precios", "Precios"),
+    ("cuotas", "Cuotas"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
     ("compras", "Invoices"),
