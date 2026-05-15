@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.27"
+VERSION = "2.26.05.15.28"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5644,7 +5644,7 @@ def _pintar_home_inline(
                             ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#7c3aed;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
-                            ui.label("MERCADO ENVÍOS HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label("CORREO HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#0891b2;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding-left:14px"):
@@ -5866,8 +5866,9 @@ def _pintar_home_inline(
                             with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                 with ui.element("thead"):
                                     with ui.element("tr").style("background:#f9fafb"):
-                                        for col_h in ["Mes", "Unid", "$ ARS", "u$ USD"]:
-                                            with ui.element("th").style("padding:4px 8px;text-align:right;font-weight:600;font-size:10px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e0e2e7"):
+                                        for ci, col_h in enumerate(["Mes", "Unid", "$ ARS", "u$ USD"]):
+                                            align = "left" if ci == 0 else "right"
+                                            with ui.element("th").style(f"padding:4px 8px;text-align:{align};font-weight:600;font-size:10px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e0e2e7"):
                                                 ui.label(col_h)
                                 with ui.element("tbody"):
                                     for ri, key in enumerate(meses_orden):
@@ -5927,7 +5928,7 @@ def _pintar_home_inline(
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas
-                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:13]
+                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:14]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
@@ -5959,7 +5960,7 @@ def _pintar_home_inline(
                 def _orden_fecha(o):
                     ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
                     return ds[:10] if ds else ""
-                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:9]
+                ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:10]
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("padding:12px 14px"):
