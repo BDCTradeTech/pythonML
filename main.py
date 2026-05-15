@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.28"
+VERSION = "2.26.05.15.29"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5878,10 +5878,9 @@ def _pintar_home_inline(
                                         row_bg = "#eff6ff" if is_mes_actual else ("#ffffff" if ri % 2 == 0 else "#fafafa")
                                         row_color = _BLUE if is_mes_actual else "#374151"
                                         with ui.element("tr").style(f"background:{row_bg};border-bottom:1px solid #f3f4f6"):
-                                            with ui.element("td").style("padding:4px 8px"):
+                                            with ui.element("td").style("padding:4px 8px;text-align:left"):
                                                 if is_mes_actual:
-                                                    with ui.element("span").style(f"background:#eff6ff;color:{_BLUE};font-size:10px;font-weight:500;padding:2px 6px;border-radius:4px;display:inline-block"):
-                                                        ui.label(key)
+                                                    ui.label(key).style(f"font-size:11px;color:{_BLUE};font-weight:600")
                                                 else:
                                                     ui.label(key).style("font-size:11px;color:#374151")
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color}"):
@@ -5948,7 +5947,7 @@ def _pintar_home_inline(
                                     ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
                                     with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
                                         ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
-                                        ui.label(f"· {pct:.0f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
+                                        ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
 
                 # Card Stock + Últimas ventas
                 items_list = (items_data or {}).get("results") or []
