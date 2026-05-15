@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.14"
+VERSION = "2.26.05.15.15"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5567,47 +5567,64 @@ def _pintar_home_inline(
                             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
             mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
 
+            no_concretadas = max(0, hoy_unidades - flex_hoy - me_hoy)
+            nc_color = "#dc2626" if no_concretadas > 0 else "#6b7280"
+
             with ui.row().classes("w-full gap-2 flex-nowrap items-stretch"):
-                with ui.element("div").style(f"flex:2;min-width:0;{_CARD};border-left:4px solid {_BLUE};display:flex;align-items:center;gap:10px"):
-                    if img_url:
-                        ui.image(img_url).style("width:44px;height:44px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e0e2e7")
-                    else:
-                        initials = "".join(w[0].upper() for w in nickname.split()[:2]) if nickname else "ML"
-                        with ui.element("div").style(f"width:44px;height:44px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
-                            ui.label(initials).style("color:white;font-size:16px;font-weight:700;line-height:1")
-                    with ui.column().classes("gap-0.5 flex-1 min-w-0"):
-                        ui.label(nickname).style(f"font-size:15px;font-weight:700;color:{_BLUE};line-height:1.2;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")
-                        if power:
-                            with ui.element("span").style(f"background:#eff6ff;color:{_BLUE};font-size:9px;font-weight:600;padding:2px 7px;border-radius:12px;display:inline-block;margin-top:2px"):
-                                ui.label(f"MercadoLíder {power.capitalize()}")
-                    if on_refresh:
-                        ui.button("Actualizar", on_click=lambda: on_refresh()).props("flat dense icon=refresh").style(f"color:{_BLUE};flex-shrink:0")
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {_BLUE}"):
-                    ui.label("VENTAS HOY").style(_LBL)
-                    ui.label(str(hoy_unidades)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
-                    ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#6b7280")
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid #7c3aed"):
-                    ui.label("FLEX HOY").style(_LBL)
-                    ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#7c3aed;line-height:1.2")
-                    ui.label("órdenes").style("font-size:11px;color:#6b7280")
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid #0891b2"):
-                    ui.label("MERCADO ENVÍOS HOY").style(_LBL)
-                    ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#0891b2;line-height:1.2")
-                    ui.label("órdenes").style("font-size:11px;color:#6b7280")
-                no_concretadas = max(0, hoy_unidades - flex_hoy - me_hoy)
-                nc_color = "#dc2626" if no_concretadas > 0 else "#6b7280"
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {nc_color}"):
-                    ui.label("NO CONCRETADAS").style(_LBL)
-                    ui.label(fmt_n(no_concretadas)).style(f"font-size:22px;font-weight:600;color:{nc_color};line-height:1.2")
-                    ui.label("canceladas/pendientes").style("font-size:11px;color:#6b7280")
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {_GREEN}"):
-                    ui.label(f"FACTURACIÓN {mes_actual_nom.upper()}").style(_LBL)
-                    ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:16px;font-weight:600;color:{_GREEN};line-height:1.2")
-                    ui.label(f"u$ {fmt_n(mes_usd_kpi)}").style("font-size:11px;color:#6b7280")
-                with ui.element("div").style(f"flex:1;min-width:0;{_CARD};border-left:4px solid {_BLUE}"):
-                    ui.label("TICKET PROMEDIO").style(_LBL)
-                    ui.label(fmt_m(ticket_prom_kpi)).style(f"font-size:16px;font-weight:600;color:{_BLUE};line-height:1.2")
-                    ui.label(f"{ventas_mes_actual_unid} unidades").style("font-size:11px;color:#6b7280")
+                # BLOQUE 1 — Tienda
+                with ui.element("div").style("flex:1.1;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                    with ui.element("div").style("display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #1d4ed8;padding-bottom:5px;margin-bottom:8px"):
+                        ui.label("TIENDA").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
+                        if on_refresh:
+                            ui.button("↻ Actualizar", on_click=lambda: on_refresh()).props("flat dense").style(f"font-size:10px;color:{_BLUE};padding:0;min-height:0")
+                    with ui.element("div").style("display:flex;align-items:center;gap:10px"):
+                        if img_url:
+                            ui.image(img_url).style("width:40px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e0e2e7")
+                        else:
+                            initials = "".join(w[0].upper() for w in nickname.split()[:2]) if nickname else "ML"
+                            with ui.element("div").style(f"width:40px;height:40px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
+                                ui.label(initials).style("color:white;font-size:15px;font-weight:700;line-height:1")
+                        with ui.element("div").style("flex:1;min-width:0"):
+                            ui.label(nickname).style(f"font-size:14px;font-weight:700;color:{_BLUE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap")
+                            if power:
+                                with ui.element("span").style(f"background:#eff6ff;color:{_BLUE};font-size:9px;font-weight:600;padding:2px 7px;border-radius:12px;display:inline-block;margin-top:3px"):
+                                    ui.label(f"MercadoLíder {power.capitalize()}")
+
+                # BLOQUE 2 — Operaciones de hoy
+                with ui.element("div").style("flex:2;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                    with ui.element("div").style("border-bottom:2px solid #1d4ed8;padding-bottom:5px;margin-bottom:8px"):
+                        ui.label("OPERACIONES DE HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
+                    with ui.element("div").style("display:flex;align-items:flex-start"):
+                        with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("VENTAS HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(str(hoy_unidades)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
+                            ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("FLEX HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#7c3aed;line-height:1.2")
+                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("MERCADO ENVÍOS HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#0891b2;line-height:1.2")
+                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding-left:14px"):
+                            ui.label("NO CONCRETADAS").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(no_concretadas)).style(f"font-size:22px;font-weight:600;color:{nc_color};line-height:1.2")
+                            ui.label("cancel./pend.").style("font-size:11px;color:#6b7280")
+
+                # BLOQUE 3 — Facturación mes
+                with ui.element("div").style("flex:1.3;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                    with ui.element("div").style("border-bottom:2px solid #16a34a;padding-bottom:5px;margin-bottom:8px"):
+                        ui.label(f"FACTURACIÓN — {mes_actual_nom.upper()}").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
+                    with ui.element("div").style("display:flex;align-items:flex-start"):
+                        with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("FACTURADO").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:17px;font-weight:600;color:{_GREEN};line-height:1.2")
+                            ui.label(f"u$ {fmt_n(mes_usd_kpi)}").style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding-left:14px"):
+                            ui.label("TICKET PROM").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_m(ticket_prom_kpi)).style(f"font-size:17px;font-weight:600;color:{_BLUE};line-height:1.2")
+                            ui.label(f"{fmt_n(ventas_mes_actual_unid)} unidades").style("font-size:11px;color:#6b7280")
 
             # ── FILA 1: Reputación | Ventas períodos | Facturación | Históricas ───
             metrics = rep.get("metrics", {}) or rep.get("transactions", {}) or {}
@@ -5874,7 +5891,7 @@ def _pintar_home_inline(
 
             with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1 overflow-x-auto"):
                 # Card Top Ventas
-                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:10]
+                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:18]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
                 with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
