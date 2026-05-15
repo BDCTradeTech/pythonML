@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.21"
+VERSION = "2.26.05.15.22"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -12310,9 +12310,9 @@ def build_tab_admin(container) -> None:
                 with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
                     qb_user_select = ui.select(
                         options=_qb_user_options,
-                        label="Seleccionar usuario",
+                        label="Seleccionar usuario...",
                         with_input=True,
-                    ).classes("min-w-[240px]")
+                    ).props("use-input input-debounce=0 clearable").classes("min-w-[280px]")
 
                     lbl_current = ui.label("").classes("text-sm text-gray-700")
                     _qb_current_label["ref"] = lbl_current
