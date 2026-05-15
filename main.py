@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.23"
+VERSION = "2.26.05.15.24"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6049,15 +6049,15 @@ def _pintar_home_inline(
                         chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}, "label": {"formatter": lbl_fmt}})
                     chart_options_sem = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 35, "right": 15, "top": 45, "bottom": 40},
+                        "grid": {"left": 35, "right": 15, "top": 60, "bottom": 40},
                         "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 9, "interval": 0, "rotate": 30}},
                         "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
                         "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {
                             "show": True,
                             "position": "top",
                             "rich": {
-                                "fact": {"color": "#6b7280", "fontSize": 9, "align": "center"},
-                                "uds":  {"color": "#111827", "fontSize": 10, "fontWeight": "bold", "align": "center"},
+                                "fact": {"color": "#6b7280", "fontSize": 8, "align": "center"},
+                                "uds":  {"color": "#111827", "fontSize": 9, "fontWeight": "bold", "align": "center"},
                             },
                         }}],
                     }
