@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.19"
+VERSION = "2.26.05.15.20"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -527,7 +527,7 @@ def set_qb_app_credentials(user_id: int, client_id: str, client_secret: str, red
 
 
 def get_qb_tokens(user_id: int) -> Optional[Any]:
-    """Obtiene los tokens OAuth de QuickBooks del usuario (access_token, refresh_token, expires_at, realm_id)."""
+    """Obtiene tokens QB del usuario. Si no tiene, usa los del admin (user_id=1) como fallback — todos usan la misma cuenta QB."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -536,7 +536,16 @@ def get_qb_tokens(user_id: int) -> Optional[Any]:
             (user_id,),
         )
         row = cur.fetchone()
-        return dict(row) if row and row["access_token"] else None
+        if row and row["access_token"]:
+            return dict(row)
+        if user_id != 1:
+            cur.execute(
+                "SELECT access_token, refresh_token, expires_at, realm_id FROM qb_tokens WHERE user_id = 1 ORDER BY id DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            if row and row["access_token"]:
+                return dict(row)
+        return None
     finally:
         conn.close()
 
@@ -584,11 +593,20 @@ def set_user_qb_customer(user_id: int, qb_customer_id: str, qb_customer_name: Op
 def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
     """Refresca el access_token QB si está por vencer (< 5 min) o si no hay expires_at.
     Actualiza qb_tokens en la BD con el expires_at calculado.
+    Si el usuario usa el token del admin (fallback), guarda el refresh en user_id=1.
     Retorna el access_token vigente, o None si no hay tokens/credenciales configurados."""
-    qb_creds = get_qb_app_credentials(user_id)
+    qb_creds = get_qb_app_credentials(user_id) or (get_qb_app_credentials(1) if user_id != 1 else None)
     qb_tokens = get_qb_tokens(user_id)
     if not qb_creds or not qb_tokens:
         return None
+    # Determinar dónde guardar el token refrescado (propio o admin)
+    conn_chk = get_connection()
+    try:
+        cur_chk = conn_chk.cursor()
+        cur_chk.execute("SELECT id FROM qb_tokens WHERE user_id = ?", (user_id,))
+        storage_user_id = user_id if cur_chk.fetchone() is not None else 1
+    finally:
+        conn_chk.close()
     access_token = qb_tokens["access_token"]
     refresh_token = qb_tokens.get("refresh_token")
     expires_at = qb_tokens.get("expires_at")
@@ -629,7 +647,7 @@ def _refresh_qb_token_if_needed(user_id: int) -> Optional[str]:
                     cur = conn.cursor()
                     cur.execute(
                         "UPDATE qb_tokens SET access_token=?, refresh_token=?, expires_at=?, raw_data=? WHERE user_id=?",
-                        (new_token, new_refresh, expires_at_new, json.dumps(data, ensure_ascii=False), user_id),
+                        (new_token, new_refresh, expires_at_new, json.dumps(data, ensure_ascii=False), storage_user_id),
                     )
                     conn.commit()
                 finally:
@@ -12367,6 +12385,12 @@ def build_tab_admin(container) -> None:
                                                     return
                                                 set_user_qb_customer(uid_int, cid_inner, cname_inner)
                                                 _enable_tabs_for_user(uid_int, TABS_QB)
+                                                # Copiar credenciales QB del admin si el usuario no las tiene
+                                                if uid_int != 1:
+                                                    creds_admin = get_qb_app_credentials(1)
+                                                    creds_usuario = get_qb_app_credentials(uid_int)
+                                                    if creds_admin and not creds_usuario:
+                                                        set_qb_app_credentials(uid_int, creds_admin["client_id"], creds_admin["client_secret"], creds_admin.get("redirect_uri"))
                                                 _qb_current_label["ref"].text = f"Customer actual: {cname_inner} (id {cid_inner})"
                                                 ui.notify(f"Asignado {cname_inner} → usuario {uid_str}. Tabs QB habilitadas.", color="positive")
                                             ui.button("Asignar", on_click=_asignar).props("flat dense no-caps").classes("text-xs text-blue-600")
