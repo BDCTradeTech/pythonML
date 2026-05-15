@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.22"
+VERSION = "2.26.05.15.23"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5905,10 +5905,12 @@ def _pintar_home_inline(
             postventa_total = claims_val + mediat_val + canc_val
 
             ventas_por_dia: Dict[str, int] = {}
+            facturacion_por_dia: Dict[str, float] = {}
             dias_semana_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
             for d in range(14):
                 fd = today_local - timedelta(days=d)
                 ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
+                facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
             for ord_item in results:
                 dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
                 if not dt_str:
@@ -5928,6 +5930,8 @@ def _pintar_home_inline(
                 key_ord = dt.strftime("%Y-%m-%d")
                 if key_ord in ventas_por_dia:
                     ventas_por_dia[key_ord] += units_ord
+                if key_ord in facturacion_por_dia:
+                    facturacion_por_dia[key_ord] += float(ord_item.get("total_amount") or ord_item.get("paid_amount") or 0)
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas
@@ -6017,6 +6021,13 @@ def _pintar_home_inline(
                 uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
                 uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
                 var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
+                def _fmt_compacto(val: float) -> str:
+                    if val >= 1_000_000:
+                        return f"${val/1_000_000:.1f}M"
+                    elif val >= 1_000:
+                        return f"${val/1_000:.0f}K"
+                    return f"${int(val)}"
+
                 if dias_orden:
                     chart_labels_sem = []
                     chart_data_sem = []
@@ -6025,6 +6036,7 @@ def _pintar_home_inline(
                         dia_sem = dias_semana_es[fd.weekday()]
                         chart_labels_sem.append(f"{dia_sem} {fd.day}")
                         uds_s = ventas_por_dia.get(key, 0)
+                        fact_s = facturacion_por_dia.get(key, 0.0)
                         days_back = (today_local - fd).days
                         if days_back == 0:
                             bar_color_s = _GREEN
@@ -6032,13 +6044,22 @@ def _pintar_home_inline(
                             bar_color_s = "#3b82f6"
                         else:
                             bar_color_s = "#e5e7eb"
-                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}})
+                        fact_str = _fmt_compacto(fact_s)
+                        lbl_fmt = f"{{fact|{fact_str}}}\n{{uds|{uds_s}}}"
+                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}, "label": {"formatter": lbl_fmt}})
                     chart_options_sem = {
                         "backgroundColor": "transparent",
-                        "grid": {"left": 35, "right": 15, "top": 25, "bottom": 40},
+                        "grid": {"left": 35, "right": 15, "top": 45, "bottom": 40},
                         "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 9, "interval": 0, "rotate": 30}},
                         "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
-                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {"show": True, "position": "top", "fontSize": 9}}],
+                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {
+                            "show": True,
+                            "position": "top",
+                            "rich": {
+                                "fact": {"color": "#6b7280", "fontSize": 9, "align": "center"},
+                                "uds":  {"color": "#111827", "fontSize": 10, "fontWeight": "bold", "align": "center"},
+                            },
+                        }}],
                     }
                     with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style(f"height:3px;background:{_BLUE}"):
