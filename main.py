@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.25"
+VERSION = "2.26.05.15.26"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5752,8 +5752,6 @@ def _pintar_home_inline(
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch overflow-hidden max-w-full"):
                 # Card Reputación
                 with ui.element("div").style(f"flex:1;min-width:220px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{level_color}"):
-                        pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label("REPUTACIÓN").style(f"{_LBL};margin-bottom:8px")
                         with ui.row().classes("gap-2 items-center mb-3"):
@@ -5767,8 +5765,6 @@ def _pintar_home_inline(
 
                 # Card Ventas períodos
                 with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                        pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label("VENTAS POR PERÍODO").style(f"{_LBL};margin-bottom:6px")
                         def _mini(lbl, unid, monto, bg, bdr, col):
@@ -5846,8 +5842,6 @@ def _pintar_home_inline(
                         }],
                     }
                     with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
-                        with ui.element("div").style(f"height:3px;background:{_GREEN}"):
-                            pass
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("FACTURACIÓN MENSUAL").style(_LBL)
                         ui.echart(chart_options).classes("w-full").style("height:200px")
@@ -5858,8 +5852,6 @@ def _pintar_home_inline(
 
                 # Card Ventas Históricas
                 with ui.element("div").style(f"flex:1;min-width:240px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                        pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label("VENTAS HISTÓRICAS").style(f"{_LBL};margin-bottom:8px")
                         if not meses_orden:
@@ -5939,8 +5931,6 @@ def _pintar_home_inline(
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                        pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
                         if not top_list:
@@ -5972,8 +5962,6 @@ def _pintar_home_inline(
                 ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:9]
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                        pass
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label("STOCK PROPIAS").style(f"{_LBL};margin-bottom:6px")
                         with ui.row().classes("gap-2 w-full flex-nowrap mb-3"):
@@ -6062,8 +6050,6 @@ def _pintar_home_inline(
                         }}],
                     }
                     with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
-                        with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                            pass
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
                         ui.echart(chart_options_sem).classes("w-full").style("height:220px")
