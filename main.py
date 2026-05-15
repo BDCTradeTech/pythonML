@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.12"
+VERSION = "2.26.05.15.13"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6030,47 +6030,35 @@ def _pintar_home_inline(
                 venta_x_unidad = ventas_mes_actual_monto / ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 0
                 proyeccion_anual = (ventas_mes_actual_monto / dias_transcurridos * 365) if dias_transcurridos > 0 else 0
 
-                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style(f"height:3px;background:{_BLUE}"):
-                        pass
-                    with ui.element("div").style("padding:12px 14px"):
-                        ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
-                        # Bloque 1 — Resultados a la fecha
-                        with ui.element("div").style("background:#f8faff;border:1px solid #dbeafe;border-radius:8px;padding:12px;margin-bottom:8px"):
-                            with ui.element("div").style("border-bottom:1px solid #dbeafe;padding-bottom:6px;margin-bottom:8px"):
-                                ui.label(f"RESULTADOS AL DÍA {dias_transcurridos}").style(f"font-size:10px;color:{_BLUE};text-transform:uppercase;letter-spacing:.05em;font-weight:600")
-                            with ui.element("div").style("text-align:center;margin-bottom:8px"):
-                                ui.label("Facturado").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:20px;font-weight:700;color:{_BLUE};line-height:1.2")
-                            with ui.row().classes("gap-0 w-full"):
-                                with ui.element("div").style("flex:1;text-align:center;border-right:1px solid #dbeafe;padding-right:4px"):
-                                    ui.label("Prom. diario").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(fmt_m(venta_diaria)).style("font-size:13px;font-weight:600;color:#374151;line-height:1.2")
-                                with ui.element("div").style("flex:1;text-align:center;border-right:1px solid #dbeafe;padding:0 4px"):
-                                    ui.label("Ticket prom").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(fmt_m(ticket_prom2)).style("font-size:13px;font-weight:600;color:#374151;line-height:1.2")
-                                with ui.element("div").style("flex:1;text-align:center;padding-left:4px"):
-                                    ui.label(f"Días · Unidades").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(f"{dias_transcurridos}/{dias_del_mes} · {fmt_n(ventas_mes_actual_unid)}u").style("font-size:12px;font-weight:600;color:#374151;line-height:1.2")
-                        # Bloque 2 — Estimación fin de mes
-                        venta_estimada_unid = int(venta_diaria_u * dias_del_mes) if dias_transcurridos > 0 else 0
-                        with ui.element("div").style("background:#f0fdf4;border:1px solid #d1fae5;border-radius:8px;padding:12px"):
-                            with ui.element("div").style("border-bottom:1px solid #d1fae5;padding-bottom:6px;margin-bottom:8px"):
-                                ui.label("ESTIMACIÓN FIN DE MES").style(f"font-size:10px;color:{_GREEN};text-transform:uppercase;letter-spacing:.05em;font-weight:600")
-                            with ui.row().classes("gap-2 w-full items-end mb-2 flex-nowrap"):
-                                with ui.element("div").style("flex:2"):
-                                    ui.label("Facturación est.").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(fmt_m(venta_estimada_mes)).style(f"font-size:20px;font-weight:700;color:{_GREEN};line-height:1.2")
-                                with ui.element("div").style("flex:1;text-align:right"):
-                                    ui.label("En dólares").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(f"u$ {fmt_n(venta_estimada_mes_usd)}").style(f"font-size:13px;font-weight:600;color:{_GREEN};line-height:1.2")
-                            with ui.row().classes("gap-0 w-full"):
-                                with ui.element("div").style("flex:1;text-align:center;border-right:1px solid #d1fae5;padding-right:4px"):
-                                    ui.label("Unidades est.").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(fmt_n(venta_estimada_unid)).style(f"font-size:13px;font-weight:600;color:{_GREEN};line-height:1.2")
-                                with ui.element("div").style("flex:1;text-align:center;padding-left:4px"):
-                                    ui.label("Proyección anual").style("font-size:9px;color:#9ca3af;text-transform:uppercase")
-                                    ui.label(fmt_m(proyeccion_anual)).style("font-size:13px;font-weight:600;color:#6b7280;line-height:1.2")
+                with ui.element("div").style("flex:1;min-width:260px;flex-shrink:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:12px"):
+                    ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
+                    # Bloque 1 — Resultados a la fecha
+                    with ui.element("div").style("border-left:3px solid #1d4ed8;background:#f8faff;border-radius:0 6px 6px 0;padding:8px 10px;margin-bottom:6px"):
+                        ui.label(f"RESULTADOS AL DÍA {dias_transcurridos}").style("font-size:10px;color:#0c447c;text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:4px")
+                        ui.label(fmt_m(ventas_mes_actual_monto)).style("font-size:18px;font-weight:500;color:#1d4ed8;margin:3px 0;display:block")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("Días transcurridos").style("color:#6b7280")
+                            ui.label(f"{dias_transcurridos}/{dias_del_mes}").style("font-weight:500;color:#374151")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("Unidades vendidas").style("color:#6b7280")
+                            ui.label(fmt_n(ventas_mes_actual_unid)).style("font-weight:500;color:#374151")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("Prom. diario").style("color:#6b7280")
+                            ui.label(fmt_m(venta_diaria)).style("font-weight:500;color:#374151")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("Ticket promedio").style("color:#6b7280")
+                            ui.label(fmt_m(ticket_prom2)).style("font-weight:500;color:#374151")
+                    # Bloque 2 — Estimación fin de mes
+                    venta_estimada_unid = int(venta_diaria_u * dias_del_mes) if dias_transcurridos > 0 else 0
+                    with ui.element("div").style("border-left:3px solid #16a34a;background:#f0fdf4;border-radius:0 6px 6px 0;padding:8px 10px"):
+                        ui.label("ESTIMACIÓN FIN DE MES").style("font-size:10px;color:#15803d;text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:4px")
+                        ui.label(fmt_m(venta_estimada_mes)).style("font-size:18px;font-weight:500;color:#16a34a;margin:3px 0;display:block")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("En dólares").style("color:#6b7280")
+                            ui.label(f"u$ {fmt_n(venta_estimada_mes_usd)}").style("font-weight:500;color:#374151")
+                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
+                            ui.label("Unidades estimadas").style("color:#6b7280")
+                            ui.label(fmt_n(venta_estimada_unid)).style("font-weight:500;color:#374151")
 
 
 
