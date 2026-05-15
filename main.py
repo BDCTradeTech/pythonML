@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.15.16"
+VERSION = "2.26.05.15.17"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -5570,9 +5570,9 @@ def _pintar_home_inline(
             no_concretadas = max(0, hoy_unidades - flex_hoy - me_hoy)
             nc_color = "#dc2626" if no_concretadas > 0 else "#6b7280"
 
-            with ui.row().classes("w-full gap-2 flex-nowrap items-stretch"):
+            with ui.row().classes("w-full gap-2 flex-wrap items-stretch"):
                 # BLOQUE 1 — Tienda
-                with ui.element("div").style("flex:1.1;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                with ui.element("div").style("flex:1.1;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
                     with ui.element("div").style("display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #1d4ed8;padding-bottom:5px;margin-bottom:8px"):
                         ui.label("TIENDA").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
                         if on_refresh:
@@ -5591,10 +5591,10 @@ def _pintar_home_inline(
                                     ui.label(f"MercadoLíder {power.capitalize()}")
 
                 # BLOQUE 2 — Operaciones de hoy
-                with ui.element("div").style("flex:2;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                with ui.element("div").style("flex:2;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
                     with ui.element("div").style("border-bottom:2px solid #1d4ed8;padding-bottom:5px;margin-bottom:8px"):
                         ui.label("OPERACIONES DE HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
-                    with ui.element("div").style("display:flex;align-items:flex-start"):
+                    with ui.element("div").style("display:flex;align-items:flex-start;flex-wrap:wrap"):
                         with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("VENTAS HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(str(hoy_unidades)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
@@ -5613,10 +5613,10 @@ def _pintar_home_inline(
                             ui.label("cancel./pend.").style("font-size:11px;color:#6b7280")
 
                 # BLOQUE 3 — Facturación mes
-                with ui.element("div").style("flex:1.3;min-width:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                with ui.element("div").style("flex:1.3;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
                     with ui.element("div").style("border-bottom:2px solid #16a34a;padding-bottom:5px;margin-bottom:8px"):
                         ui.label(f"FACTURACIÓN — {mes_actual_nom.upper()}").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
-                    with ui.element("div").style("display:flex;align-items:flex-start"):
+                    with ui.element("div").style("display:flex;align-items:flex-start;flex-wrap:wrap"):
                         with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("FACTURADO").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(fmt_m(ventas_mes_actual_monto)).style(f"font-size:17px;font-weight:600;color:{_GREEN};line-height:1.2")
@@ -5709,9 +5709,9 @@ def _pintar_home_inline(
                 except (TypeError, ValueError):
                     return "—"
 
-            with ui.row().classes("w-full gap-2 flex-nowrap items-stretch overflow-hidden max-w-full"):
+            with ui.row().classes("w-full gap-2 flex-wrap items-stretch overflow-hidden max-w-full"):
                 # Card Reputación
-                with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1;min-width:220px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{level_color}"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
@@ -5726,7 +5726,7 @@ def _pintar_home_inline(
                         _semaforo(rate_delayed, MAX_DELAYED, f"Demora envíos (máx {MAX_DELAYED*100:.0f}%)")
 
                 # Card Ventas períodos
-                with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
@@ -5817,7 +5817,7 @@ def _pintar_home_inline(
                         ui.label("Sin datos").style("font-size:12px;color:#9ca3af;margin-top:6px")
 
                 # Card Ventas Históricas
-                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1;min-width:240px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
@@ -5889,12 +5889,12 @@ def _pintar_home_inline(
                 if key_ord in ventas_por_dia:
                     ventas_por_dia[key_ord] += units_ord
 
-            with ui.row().classes("w-full gap-2 flex-nowrap items-stretch mt-1 overflow-x-auto"):
+            with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas
                 top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:13]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
-                with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
@@ -5927,7 +5927,7 @@ def _pintar_home_inline(
                     return ds[:10] if ds else ""
                 ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:9]
 
-                with ui.element("div").style(f"flex:1;min-width:200px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style(f"height:3px;background:{_BLUE}"):
                         pass
                     with ui.element("div").style("padding:12px 14px"):
@@ -6000,7 +6000,7 @@ def _pintar_home_inline(
                         "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
                         "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {"show": True, "position": "top", "fontSize": 9}}],
                     }
-                    with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
+                    with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style(f"height:3px;background:{_BLUE}"):
                             pass
                         with ui.element("div").style("padding:10px 14px 4px"):
@@ -6058,7 +6058,7 @@ def _pintar_home_inline(
                 venta_x_unidad = ventas_mes_actual_monto / ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 0
                 proyeccion_anual = (ventas_mes_actual_monto / dias_transcurridos * 365) if dias_transcurridos > 0 else 0
 
-                with ui.element("div").style("flex:1;min-width:260px;flex-shrink:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:12px"):
+                with ui.element("div").style("flex:1;min-width:240px;flex-shrink:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:12px"):
                     ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
                     # Bloque 1 — Resultados a la fecha
                     with ui.element("div").style("border-left:3px solid #1d4ed8;background:#f8faff;border-radius:0 6px 6px 0;padding:8px 10px;margin-bottom:6px"):
