@@ -8163,6 +8163,7 @@ def build_tab_precios_detalle(container) -> None:
     ventas_por_periodo_ref: Dict[str, Dict[str, int]] = {}  # "historico"|"mes_actual"|"mes_anterior" -> {dedupe_key: ventas}
     filtro_stock_ref: Dict[str, str] = {"val": "todas"}
     filtro_awei_ref: Dict[str, str] = {"val": "no_incluye"}
+    filtro_ventas_ref: Dict[str, str] = {"val": "con_ventas"}
     include_paused_ref: Dict[str, bool] = {"val": True}  # Incluir pausadas para traer todos los productos
     vista_modo_ref: Dict[str, str] = {"val": "minimo"}
     sort_col_ref: Dict[str, str] = {"val": "ventas"}
@@ -8240,6 +8241,11 @@ def build_tab_precios_detalle(container) -> None:
                         {"incluye": "Incluye", "no_incluye": "No incluye"},
                         value=filtro_awei_ref.get("val", "no_incluye"),
                         label="Awei",
+                    ).classes("w-36")
+                    filtro_ventas = ui.select(
+                        {"con_ventas": "Con ventas", "sin_ventas": "Sin ventas", "todas": "Todas"},
+                        value=filtro_ventas_ref.get("val", "con_ventas"),
+                        label="Ventas",
                     ).classes("w-36")
                     btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
                     btn_calcular = ui.button("Calcular", color="secondary").props("icon=calculate")
@@ -8507,9 +8513,14 @@ def build_tab_precios_detalle(container) -> None:
                     row["ventas"] = sum(ventas_dict.get("id:" + vid, 0) for vid in grupo_ids if vid)
                 _filtrar_con_indicador()
 
+            def on_ventas_change(e):
+                filtro_ventas_ref["val"] = e.value
+                _filtrar_con_indicador()
+
             filtro_fecha.on_value_change(on_fecha_change)
             filtro_stock.on_value_change(on_stock_change)
             filtro_awei.on_value_change(on_awei_change)
+            filtro_ventas.on_value_change(on_ventas_change)
             btn_vista.on_click(toggle_vista)
 
         if not items_loaded:
@@ -9081,6 +9092,11 @@ def build_tab_precios_detalle(container) -> None:
         awei_val = filtro_awei_ref.get("val", "no_incluye")
         if awei_val == "no_incluye":
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
+        ventas_val = filtro_ventas_ref.get("val", "con_ventas")
+        if ventas_val == "con_ventas":
+            filtrados = [x for x in filtrados if (x.get("sold_quantity") or 0) > 0]
+        elif ventas_val == "sin_ventas":
+            filtrados = [x for x in filtrados if (x.get("sold_quantity") or 0) == 0]
         col_sort = sort_col_ref.get("val", "producto")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key(r, col_sort), reverse=not asc)
@@ -9546,6 +9562,7 @@ def build_tab_precios_detalle(container) -> None:
                 "producto": str(i.get("title") or ""),
                 "stock": stock,
                 "ventas": ventas,
+                "sold_quantity": int(i.get("sold_quantity") or 0),
                 "dedupe_key": dk_final,
                 "grupo_ids": grupo_ids or [str(i.get("id", ""))],
                 "tipo_publicacion": _tipo_publicacion_desde_item(i),
