@@ -8161,12 +8161,12 @@ def build_tab_precios_detalle(container) -> None:
     items_loaded: List[Dict[str, Any]] = []
     filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
     ventas_por_periodo_ref: Dict[str, Dict[str, int]] = {}  # "historico"|"mes_actual"|"mes_anterior" -> {dedupe_key: ventas}
-    filtro_stock_ref: Dict[str, str] = {"val": "con_stock"}
+    filtro_stock_ref: Dict[str, str] = {"val": "todas"}
     filtro_awei_ref: Dict[str, str] = {"val": "no_incluye"}
     include_paused_ref: Dict[str, bool] = {"val": True}  # Incluir pausadas para traer todos los productos
     vista_modo_ref: Dict[str, str] = {"val": "minimo"}
-    sort_col_ref: Dict[str, str] = {"val": "producto"}
-    sort_asc_ref: Dict[str, bool] = {"val": True}
+    sort_col_ref: Dict[str, str] = {"val": "ventas"}
+    sort_asc_ref: Dict[str, bool] = {"val": False}
     table_container_ref: Dict[str, Any] = {}
     cargar_listo_ref: Dict[str, Any] = {"listo": False, "error": None, "totales": 0, "con_stock": 0}
     seller_id_ref: Dict[str, Any] = {"val": None}
@@ -8233,7 +8233,7 @@ def build_tab_precios_detalle(container) -> None:
                     ).classes("w-36")
                     filtro_stock = ui.select(
                         {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
-                        value=filtro_stock_ref.get("val", "con_stock"),
+                        value=filtro_stock_ref.get("val", "todas"),
                         label="Stock",
                     ).classes("w-36")
                     filtro_awei = ui.select(
@@ -8598,7 +8598,7 @@ def build_tab_precios_detalle(container) -> None:
         return str(row.get(col) or "").lower()
 
     COLUMNAS_COMPLETO = [
-        ("id", "ID", "left", True),
+        ("seller_sku", "SKU", "left", True),
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
@@ -8621,7 +8621,7 @@ def build_tab_precios_detalle(container) -> None:
         ("margen_costo_pct", "Gan % Cos", "center", True),
     ]
     COLUMNAS_MINIMO = [
-        ("id", "ID", "left", True),
+        ("seller_sku", "SKU", "left", True),
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
@@ -8651,7 +8651,7 @@ def build_tab_precios_detalle(container) -> None:
                 bodies = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, [item_id], "id,listing_type_id,attributes,sale_terms")
                 cuotas_val = str(_cuotas_desde_item(bodies[0]) if bodies and bodies[0] else row.get("cuotas") or "x1").strip().lower()
                 row["cuotas"] = cuotas_val
-                _sku_dlg = str(row.get("seller_sku") or "").strip()
+                _sku_dlg = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
                 if _sku_dlg:
                     _conn_dlg = get_connection()
                     try:
@@ -8979,7 +8979,7 @@ def build_tab_precios_detalle(container) -> None:
     def _guardar_precio_popup(row: Dict[str, Any], inp_refs: Dict[str, Any], dlg) -> None:
         """Guarda precio, iva, costo: actualiza items_loaded, ML y la tabla."""
         item_id = str(row.get("id", ""))
-        sku_guardar = str(row.get("seller_sku") or "").strip()
+        sku_guardar = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
         if not item_id:
             ui.notify("ID de publicación no válido.", color="negative")
             return
@@ -9145,6 +9145,8 @@ def build_tab_precios_detalle(container) -> None:
                                                 lbl.classes(base_cls + "font-bold text-black")
                                             else:
                                                 lbl.classes(base_cls + "font-bold " + ("text-positive" if mp > 0 else "text-negative"))
+                                        elif field == "seller_sku":
+                                            ui.label(str(r.get("seller_sku") or r.get("id") or "—"))
                                         elif field == "stock":
                                             ui.label(str(val) if val is not None else "0")
                                         elif field == "ventas":
@@ -9435,7 +9437,7 @@ def build_tab_precios_detalle(container) -> None:
         seller_id_ref["val"] = seller_id_precios
 
         # Pre-fetch costos desde tabla productos para todos los SKUs del usuario
-        _skus_precios = list({str(i.get("seller_sku") or "").strip() for i in items_ordenados if i.get("seller_sku")})
+        _skus_precios = list({(str(i.get("seller_sku") or "").strip() or str(i.get("id") or "").strip()) for i in items_ordenados if (i.get("seller_sku") or i.get("id"))})
         _costos_sku_map: Dict[str, Dict[str, Any]] = {}
         if _skus_precios:
             _conn_prod = get_connection()
@@ -9509,7 +9511,8 @@ def build_tab_precios_detalle(container) -> None:
                 price_promo = (price_original * (1 - (promo_yo_pct or 0) / 100)) if tiene_promo and price_original is not None else None
             cuotas_val = str(item_id_to_cuotas_precios.get(item_id_str) or item_id_to_cuotas_precios.get(item_id_str.upper() or "") or item_id_to_cuotas_precios.get(item_id_str.lower() or "") or _cuotas_desde_item(i) or "x1").strip().lower()
             stock = int(i.get("available_quantity") or 0)
-            _prod_row = _costos_sku_map.get(seller_sku) if seller_sku else None
+            _sku_key = seller_sku or str(i.get("id") or "").strip()
+            _prod_row = _costos_sku_map.get(_sku_key) if _sku_key else None
             if _prod_row is not None:
                 costo = float(_prod_row["costo_usd"] or 0)
                 tipo_iva = float(_prod_row["tipo_iva"] or 0.105)
