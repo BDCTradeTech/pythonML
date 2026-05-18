@@ -7584,121 +7584,119 @@ def _mostrar_tabla_precios(
             sort_asc_ref["val"] = True
         filtrar_y_pintar()
 
-    def _generar_jpg_precios(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> List[str]:
-        """Genera JPGs A4 (2480x3508 @300dpi), una imagen por página. Retorna lista de paths."""
+    def _generar_pdf_stock(filtrados_actuales: List[Dict[str, Any]]) -> Optional[str]:
+        """Genera un PDF A4 con columnas Marca/Producto/Color/Stock, ordenado por Marca+Producto."""
         try:
-            from PIL import Image, ImageDraw, ImageFont
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.units import cm as rl_cm
+            from reportlab.pdfgen import canvas as rl_canvas
         except ImportError:
-            return []
+            return None
         if not filtrados_actuales:
-            return []
+            return None
 
-        PAGE_W, PAGE_H = 2480, 3508
-        PAD = 80
-        TITLE_H = 110
-        COL_HDR_H = 80
-        ROW_H = 54
-        FS = 32
-        FS_BOLD = 36
-        BLUE = (25, 118, 210)
-        WHITE = (255, 255, 255)
-        BLACK = (0, 0, 0)
-        GRAY = (210, 210, 210)
+        rows_sorted = sorted(
+            filtrados_actuales,
+            key=lambda x: (
+                (x.get("marca") or "").lower(),
+                (x.get("title") or "").lower(),
+            ),
+        )
 
-        font_paths = [
-            "arial.ttf", "Arial.ttf",
-            os.path.join(os.environ.get("WINDIR", ""), "Fonts", "arial.ttf"),
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        ]
-        font = font_bold = None
-        for fp in font_paths:
-            if not fp:
-                continue
-            try:
-                if os.path.isfile(fp):
-                    font      = ImageFont.truetype(fp, FS)
-                    font_bold = ImageFont.truetype(fp, FS_BOLD)
-                    break
-            except Exception:
-                continue
-        if font is None:
-            font = font_bold = ImageFont.load_default()
-
-        if include_ventas:
-            col_keys    = ["seller_sku", "marca",  "title",   "color",  "stock_fmt", "sold_quantity"]
-            col_headers = ["SKU",        "Marca",  "Producto","Color",  "Stock",     "Ventas"]
-            col_widths  = [220,          260,      1000,      260,      320,         260]
-            col_aligns  = ["center",     "center", "left",    "center", "center",    "center"]
-        else:
-            col_keys    = ["seller_sku", "marca",  "title",   "color",  "stock_fmt"]
-            col_headers = ["SKU",        "Marca",  "Producto","Color",  "Stock"]
-            col_widths  = [220,          290,      1220,      290,      300]
-            col_aligns  = ["center",     "center", "left",    "center", "center"]
-
-        rows_per_page = max(1, (PAGE_H - 2 * PAD - TITLE_H - COL_HDR_H) // ROW_H)
-        total = len(filtrados_actuales)
-        total_pages = max(1, (total + rows_per_page - 1) // rows_per_page)
         ahora = datetime.now()
-        fecha_str = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
+        _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
-        def _cell(drw, x, y, w, h, text, fnt, align, fg=BLACK, bg=None):
-            if bg:
-                drw.rectangle([x, y, x + w, y + h], fill=bg)
-            drw.rectangle([x, y, x + w, y + h], outline=GRAY, width=1)
-            text = str(text) if text is not None else ""
-            max_ch = max(1, int(w / (FS * 0.52)))
-            if len(text) > max_ch:
-                text = text[:max_ch - 1] + "…"
-            bb = drw.textbbox((0, 0), text, font=fnt)
-            tw, th = bb[2] - bb[0], bb[3] - bb[1]
-            tx = x + 10 if align == "left" else x + (w - tw) // 2
-            ty = y + (h - th) // 2
-            drw.text((tx, ty), text, fill=fg, font=fnt)
+        headers = ["Marca", "Producto", "Color", "Stock"]
+        data = [headers]
+        for r in rows_sorted:
+            stock_val = r.get("available_quantity")
+            stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
+            data.append([
+                str(r.get("marca") or "—"),
+                str(r.get("title") or "—"),
+                str(r.get("color") or "—"),
+                stock_str,
+            ])
 
-        paths: List[str] = []
-        for pg in range(total_pages):
-            page_rows = filtrados_actuales[pg * rows_per_page:(pg + 1) * rows_per_page]
-            img  = Image.new("RGB", (PAGE_W, PAGE_H), WHITE)
-            drw  = ImageDraw.Draw(img)
-            drw.rectangle([4, 4, PAGE_W - 5, PAGE_H - 5], outline=BLACK, width=4)
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
 
-            # Título + número de página
-            titulo = f"Stock {fecha_str}    Página {pg + 1} de {total_pages}"
-            bb = drw.textbbox((0, 0), titulo, font=font_bold)
-            drw.text((PAD, PAD + (TITLE_H - (bb[3] - bb[1])) // 2), titulo, fill=BLUE, font=font_bold)
+        page_w, page_h = A4
+        margin = 1.5 * rl_cm
 
-            # Cabecera de columnas
-            y = PAD + TITLE_H
-            x = PAD
-            for cw, ch in zip(col_widths, col_headers):
-                drw.rectangle([x, y, x + cw, y + COL_HDR_H], fill=BLUE, outline=WHITE, width=1)
-                bb = drw.textbbox((0, 0), ch, font=font_bold)
-                drw.text((x + (cw - (bb[2] - bb[0])) // 2, y + (COL_HDR_H - (bb[3] - bb[1])) // 2), ch, fill=WHITE, font=font_bold)
-                x += cw
+        class _PaginatedCanvas(rl_canvas.Canvas):
+            def __init__(self, *args, **kwargs):
+                rl_canvas.Canvas.__init__(self, *args, **kwargs)
+                self._saved_page_states = []
 
-            # Filas de datos
-            y += COL_HDR_H
-            for ri, r in enumerate(page_rows):
-                bg = (248, 248, 248) if ri % 2 == 0 else WHITE
-                x = PAD
-                for ck, cw, ca in zip(col_keys, col_widths, col_aligns):
-                    val = r.get(ck)
-                    if ck == "seller_sku":
-                        text = str(val) if val else "-"
-                    elif ck == "sold_quantity":
-                        text = fmt_miles(val) if val is not None else "0"
-                    else:
-                        text = str(val or "—") if val not in (None, "", "—") else "—"
-                    _cell(drw, x, y, cw, ROW_H, text, font, ca, bg=bg)
-                    x += cw
-                y += ROW_H
+            def showPage(self):
+                self._saved_page_states.append(dict(self.__dict__))
+                self._startPage()
 
-            out = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-            out.close()
-            img.save(out.name, "JPEG", quality=92)
-            paths.append(out.name)
+            def save(self):
+                num_pages = len(self._saved_page_states)
+                for state in self._saved_page_states:
+                    self.__dict__.update(state)
+                    self._draw_header(num_pages)
+                    rl_canvas.Canvas.showPage(self)
+                rl_canvas.Canvas.save(self)
 
-        return paths
+            def _draw_header(self, page_count):
+                self.saveState()
+                self.setFont("Helvetica-Bold", 11)
+                self.setFillColorRGB(0.098, 0.463, 0.824)
+                self.drawString(margin, page_h - margin + 4, f"Stock {_fecha}")
+                self.setFont("Helvetica", 9)
+                self.setFillColorRGB(0.4, 0.4, 0.4)
+                self.drawRightString(page_w - margin, page_h - margin + 4,
+                                     f"Página {self._pageNumber} de {page_count}")
+                self.restoreState()
+
+        doc = SimpleDocTemplate(
+            tmp.name,
+            pagesize=A4,
+            leftMargin=margin,
+            rightMargin=margin,
+            topMargin=margin + 0.9 * rl_cm,
+            bottomMargin=margin,
+        )
+
+        col_widths = [3 * rl_cm, 9.5 * rl_cm, 3 * rl_cm, 2.5 * rl_cm]
+
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+
+        BLUE = rl_colors.HexColor("#1976d2")
+        LIGHT_GRAY = rl_colors.HexColor("#f8f8f8")
+
+        ts = TableStyle([
+            ("BACKGROUND",   (0, 0), (-1,  0), BLUE),
+            ("TEXTCOLOR",    (0, 0), (-1,  0), rl_colors.white),
+            ("FONTNAME",     (0, 0), (-1,  0), "Helvetica-Bold"),
+            ("FONTSIZE",     (0, 0), (-1,  0), 9),
+            ("ALIGN",        (0, 0), (-1,  0), "CENTER"),
+            ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE",     (0, 1), (-1, -1), 8),
+            ("ALIGN",        (0, 1), ( 2, -1), "LEFT"),
+            ("ALIGN",        (3, 1), ( 3, -1), "RIGHT"),
+            ("GRID",         (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#dddddd")),
+            ("TOPPADDING",   (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
+            ("ROWBACKGROUND",(0, 1), (-1, -1), [LIGHT_GRAY, rl_colors.white]),
+        ])
+        table.setStyle(ts)
+
+        try:
+            doc.build([table], canvasmaker=_PaginatedCanvas)
+            return tmp.name
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+            return None
 
     def imprimir_tabla(include_ventas: bool = False) -> None:
         client = context.client
@@ -7718,28 +7716,22 @@ def _mostrar_tabla_precios(
                 with client:
                     ui.notify("No hay datos para imprimir. Aplicá filtros y volvé a intentar.", color="warning")
                 return
-            profile = await run.io_bound(ml_get_user_profile, access_token)
-            nickname = (profile or {}).get("nickname") or "Usuario"
-            safe_name = "".join(c for c in str(nickname) if c.isalnum() or c in "_-").strip() or "Usuario"
-            paths = _generar_jpg_precios(rows_to_print, include_ventas=imprimir_ventas)
-            if paths:
+            path = await run.io_bound(_generar_pdf_stock, rows_to_print)
+            if path:
                 ahora = datetime.now()
-                ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}-{ahora.hour:02d}-{ahora.minute:02d}"
+                ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
                 with client:
-                    for i, path in enumerate(paths):
-                        sufijo = f"_p{i + 1}" if len(paths) > 1 else ""
-                        ui.download(path, f"{safe_name}_{ts}{sufijo}.jpg")
-                    def _borrar_despues(pp=paths) -> None:
-                        for p in pp:
-                            try:
-                                if p and os.path.exists(p):
-                                    os.unlink(p)
-                            except Exception:
-                                pass
-                    ui.timer(5.0, _borrar_despues, once=True)
+                    ui.download(path, f"stock_{ts}.pdf")
+                    def _borrar(p=path) -> None:
+                        try:
+                            if p and os.path.exists(p):
+                                os.unlink(p)
+                        except Exception:
+                            pass
+                    ui.timer(5.0, _borrar, once=True)
             else:
                 with client:
-                    ui.notify("No se pudo generar la imagen. ¿Tenés Pillow instalado? (pip install Pillow)", color="negative")
+                    ui.notify("No se pudo generar el PDF.", color="negative")
 
         background_tasks.create(_imprimir_async())
 
