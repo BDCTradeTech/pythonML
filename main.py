@@ -7793,6 +7793,15 @@ def _mostrar_tabla_precios(
         current_filtrados.clear()
         current_filtrados.extend(filtrados)
 
+        lbl_totales.set_text(str(len(filtrados)))
+        lbl_con_stock.set_text(str(sum(1 for x in filtrados if (x.get("available_quantity") or 0) > 0)))
+        lbl_propias_stock.set_text(str(sum(1 for x in filtrados if x.get("tipo") == "Propia" and (x.get("available_quantity") or 0) > 0)))
+        lbl_catalogo_stock.set_text(str(sum(1 for x in filtrados if x.get("tipo") == "Catalogo" and (x.get("available_quantity") or 0) > 0)))
+        lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
+        _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
+        lbl_pesos.set_text(fmt_moneda(_pesos))
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "—")
+
         table_container.clear()
         with table_container:
             # Tabla custom (sin ui.table) para evitar error __call__ del slot; precio clickeable. Sin scroll interno (usa scroll de la página).
@@ -7842,29 +7851,25 @@ def _mostrar_tabla_precios(
             with ui.row().classes("w-full justify-around flex-wrap gap-4"):
                 with ui.column().classes("items-center"):
                     ui.label("Publicaciones Totales").classes("text-sm text-gray-600")
-                    ui.label(str(publicaciones_totales)).classes("text-2xl font-bold text-primary")
+                    lbl_totales = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Publicaciones con stock").classes("text-sm text-gray-600")
-                    ui.label(str(publicaciones_con_stock)).classes("text-2xl font-bold text-primary")
+                    lbl_con_stock = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Publicaciones propias con stock").classes("text-sm text-gray-600")
-                    ui.label(str(publicaciones_propias_con_stock)).classes("text-2xl font-bold text-primary")
+                    lbl_propias_stock = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Publicaciones catalogo con stock").classes("text-sm text-gray-600")
-                    ui.label(str(publicaciones_catalogo_con_stock)).classes("text-2xl font-bold text-primary")
+                    lbl_catalogo_stock = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Unidades propias en stock").classes("text-sm text-gray-600")
-                    ui.label(fmt_miles(unidades_propias_en_stock)).classes("text-2xl font-bold text-primary")
+                    lbl_unidades = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Total en $ (solo propias)").classes("text-sm text-gray-600")
-                    ui.label(fmt_moneda(total_pesos_propias)).classes("text-2xl font-bold text-primary")
+                    lbl_pesos = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
                     ui.label("Total en u$ (solo propias)").classes("text-sm text-gray-600")
-                    total_usd_label = (
-                        f"u$s {fmt_miles(int(round(total_dolares_propias)))}" if total_dolares_propias is not None
-                        else "—"
-                    )
-                    ui.label(total_usd_label).classes("text-2xl font-bold text-primary")
+                    lbl_usd = ui.label("—").classes("text-2xl font-bold text-primary")
         with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
             ui.label("Filtros:").classes("text-sm")
             filtro_stock = ui.select(
