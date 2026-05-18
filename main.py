@@ -7765,6 +7765,11 @@ def _mostrar_tabla_precios(
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) > 0]
         elif stock_val == "sin_stock":
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) == 0]
+        estado_val = getattr(filtro_estado, "value", "activas")
+        if estado_val == "activas":
+            filtrados = [x for x in filtrados if str(x.get("status") or "").lower() == "active"]
+        elif estado_val == "suspendidas":
+            filtrados = [x for x in filtrados if str(x.get("status") or "").lower() != "active"]
         awei_val = getattr(filtro_awei, "value", "no_incluye")
         if awei_val == "no_incluye":
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
@@ -7872,6 +7877,11 @@ def _mostrar_tabla_precios(
                 value="propias",
                 label="Tipo",
             ).classes("w-36")
+            filtro_estado = ui.select(
+                {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
+                value="activas",
+                label="Estado",
+            ).classes("w-36")
             filtro_awei = ui.select(
                 {"incluye": "Incluye", "no_incluye": "No incluye"},
                 value="no_incluye",
@@ -7901,6 +7911,7 @@ def _mostrar_tabla_precios(
 
     filtro_stock.on_value_change(on_filtro_stock_change)
     filtro_tipo.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_estado.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
