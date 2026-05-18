@@ -303,20 +303,6 @@ def init_db() -> None:
                 )
             cur.execute("DROP TABLE cotizador_datos_old")
 
-    # Precios por producto (tipo_iva y costo u$ por id de publicación ML, por usuario)
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS precios_producto (
-            id TEXT NOT NULL,
-            user_id INTEGER NOT NULL,
-            tipo_iva REAL NOT NULL,
-            costo_u REAL NOT NULL,
-            PRIMARY KEY (id, user_id),
-            FOREIGN KEY (user_id) REFERENCES users (id)
-        )
-        """
-    )
-
     # Filas de Importación guardadas (datos completos por fila)
     cur.execute(
         """
@@ -2853,35 +2839,6 @@ def set_setting(key: str, value: float) -> None:
         conn.close()
 
 
-def get_precios_producto(item_id: str, user_id: int) -> Optional[Dict[str, Any]]:
-    """Obtiene tipo_iva y costo_u guardados para un producto (por id ML)."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT tipo_iva, costo_u FROM precios_producto WHERE id = ? AND user_id = ?",
-            (item_id, user_id),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else None
-    finally:
-        conn.close()
-
-
-def set_precios_producto(item_id: str, user_id: int, tipo_iva: float, costo_u: float) -> None:
-    """Guarda tipo_iva y costo_u para un producto."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO precios_producto (id, user_id, tipo_iva, costo_u) VALUES (?, ?, ?, ?) ON CONFLICT(id, user_id) DO UPDATE SET tipo_iva=?, costo_u=?",
-            (item_id, user_id, tipo_iva, costo_u, tipo_iva, costo_u),
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-
 def get_cotizador_param(key: str, user_id: int) -> Optional[str]:
     """Obtiene un parámetro del cotizador (texto) para el usuario."""
     conn = get_connection()
@@ -3402,11 +3359,11 @@ def save_importacion_filas(user_id: int, rows: List[Dict[str, Any]]) -> None:
         conn.close()
 
 
-BACKUP_VERSION = 1
+BACKUP_VERSION = 2
 
 
 def export_user_db_data(user_id: int) -> bytes:
-    """Exporta solo datos operativos: cotizador (parámetros, tablas, pesos, gastos), precios por producto, importación. NO incluye credenciales, password, app id, client secret."""
+    """Exporta datos operativos: cotizador, catálogo de productos, publicaciones ML, importación. NO incluye credenciales, password, app id, client secret."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -3417,13 +3374,16 @@ def export_user_db_data(user_id: int) -> bytes:
             "fecha_descarga": ahora.strftime("%Y-%m-%d %H:%M"),
             "user_id_original": user_id,
             "cotizador_datos": [],
-            "precios_producto": [],
+            "productos": [],
+            "ml_publicaciones": [],
             "importacion_filas": [],
         }
         cur.execute("SELECT clave, valor FROM cotizador_datos WHERE user_id = ?", (user_id,))
         data["cotizador_datos"] = [{"clave": r["clave"], "valor": r["valor"]} for r in cur.fetchall()]
-        cur.execute("SELECT id, tipo_iva, costo_u FROM precios_producto WHERE user_id = ?", (user_id,))
-        data["precios_producto"] = [{"id": r["id"], "tipo_iva": r["tipo_iva"], "costo_u": r["costo_u"]} for r in cur.fetchall()]
+        cur.execute("SELECT sku, costo_usd, tipo_iva, costo_updated_at FROM productos WHERE user_id = ?", (user_id,))
+        data["productos"] = [{"sku": r["sku"], "costo_usd": r["costo_usd"], "tipo_iva": r["tipo_iva"], "costo_updated_at": r["costo_updated_at"]} for r in cur.fetchall()]
+        cur.execute("SELECT ml_id, sku, titulo, precio, stock, estado, catalog_listing, listing_type_id, sold_quantity, ultima_sync FROM ml_publicaciones WHERE user_id = ?", (user_id,))
+        data["ml_publicaciones"] = [dict(r) for r in cur.fetchall()]
         cur.execute("SELECT fila_orden, datos_json FROM importacion_filas WHERE user_id = ? ORDER BY fila_orden", (user_id,))
         data["importacion_filas"] = [{"fila_orden": r["fila_orden"], "datos_json": r["datos_json"]} for r in cur.fetchall()]
         return json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
@@ -3457,14 +3417,75 @@ def import_user_db_data(user_id: int, content: bytes) -> str:
                 else:
                     val_str = str(val_str) if val_str != "" else ""
                 cur.execute("INSERT INTO cotizador_datos (user_id, clave, valor) VALUES (?, ?, ?)", (uid, str(item["clave"]), val_str))
-        # precios_producto: borrar todo del usuario e insertar backup
-        cur.execute("DELETE FROM precios_producto WHERE user_id = ?", (uid,))
-        for item in data.get("precios_producto") or []:
-            if isinstance(item, dict) and item.get("id") is not None:
-                item_id = str(item["id"])
+        now_imp = datetime.now().isoformat()
+        if version >= 2:
+            # productos: upsert por (sku, user_id)
+            for item in data.get("productos") or []:
+                if not isinstance(item, dict) or not item.get("sku"):
+                    continue
+                cur.execute(
+                    """INSERT INTO productos (sku, user_id, costo_usd, tipo_iva, created_at, updated_at, costo_updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(sku, user_id) DO UPDATE SET
+                           costo_usd=excluded.costo_usd,
+                           tipo_iva=excluded.tipo_iva,
+                           costo_updated_at=excluded.costo_updated_at,
+                           updated_at=excluded.updated_at""",
+                    (str(item["sku"]), uid,
+                     item.get("costo_usd"), float(item.get("tipo_iva") or 0.105),
+                     now_imp, now_imp, item.get("costo_updated_at") or now_imp),
+                )
+            # ml_publicaciones: upsert por (ml_id, user_id)
+            for item in data.get("ml_publicaciones") or []:
+                if not isinstance(item, dict) or not item.get("ml_id"):
+                    continue
+                cur.execute(
+                    """INSERT INTO ml_publicaciones (ml_id, user_id, sku, titulo, precio, stock, estado, catalog_listing, listing_type_id, sold_quantity, ultima_sync)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(ml_id, user_id) DO UPDATE SET
+                           sku=excluded.sku, titulo=excluded.titulo, precio=excluded.precio,
+                           stock=excluded.stock, estado=excluded.estado,
+                           catalog_listing=excluded.catalog_listing,
+                           listing_type_id=excluded.listing_type_id,
+                           sold_quantity=excluded.sold_quantity,
+                           ultima_sync=excluded.ultima_sync""",
+                    (str(item["ml_id"]), uid, item.get("sku"), item.get("titulo"),
+                     item.get("precio"), item.get("stock"), item.get("estado"),
+                     int(item.get("catalog_listing") or 0), item.get("listing_type_id"),
+                     item.get("sold_quantity"), item.get("ultima_sync") or now_imp),
+                )
+        else:
+            # Migración legacy version=1: precios_producto → productos via ml_publicaciones
+            migrados = 0
+            sin_sku = 0
+            for item in data.get("precios_producto") or []:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                ml_id = str(item["id"])
                 tipo_iva = float(item.get("tipo_iva") or 0.105)
                 costo_u = float(item.get("costo_u") or 0)
-                cur.execute("INSERT INTO precios_producto (id, user_id, tipo_iva, costo_u) VALUES (?, ?, ?, ?)", (item_id, uid, tipo_iva, costo_u))
+                cur.execute(
+                    "SELECT sku FROM ml_publicaciones WHERE ml_id = ? AND user_id = ?",
+                    (ml_id, uid),
+                )
+                pub_row = cur.fetchone()
+                if pub_row and pub_row["sku"]:
+                    cur.execute(
+                        """INSERT INTO productos (sku, user_id, costo_usd, tipo_iva, created_at, updated_at, costo_updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(sku, user_id) DO UPDATE SET
+                               costo_usd=excluded.costo_usd,
+                               tipo_iva=excluded.tipo_iva,
+                               costo_updated_at=excluded.costo_updated_at,
+                               updated_at=excluded.updated_at""",
+                        (pub_row["sku"], uid, costo_u, tipo_iva, now_imp, now_imp, now_imp),
+                    )
+                    migrados += 1
+                else:
+                    sin_sku += 1
+            if sin_sku:
+                conn.commit()
+                return f"ok (legacy v1: {migrados} migrados, {sin_sku} sin SKU resuelto)"
         # importacion_filas: borrar todo del usuario e insertar backup
         cur.execute("DELETE FROM importacion_filas WHERE user_id = ?", (uid,))
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
@@ -3727,15 +3748,16 @@ def delete_user_and_all_data(target_user_id: int) -> Optional[str]:
             "user_qb_customer",
             "queries",
             "cotizador_datos",
-            "precios_producto",
+            "ml_publicaciones",
+            "productos",
             "importacion_filas",
             "user_tab_permissions",
         ]
         ALLOWED_USER_TABLES = {
             "ml_credentials", "qb_tokens", "ml_app_credentials",
             "qb_app_credentials", "user_qb_customer", "queries",
-            "cotizador_datos", "precios_producto", "importacion_filas",
-            "user_tab_permissions",
+            "cotizador_datos", "ml_publicaciones", "productos",
+            "importacion_filas", "user_tab_permissions",
         }
         for t in tables:
             if t not in ALLOWED_USER_TABLES:
@@ -8645,13 +8667,11 @@ def build_tab_precios_detalle(container) -> None:
                         costo = float(_prod_dlg["costo_usd"] or 0)
                         tipo_iva = float(_prod_dlg["tipo_iva"] or 0.105)
                     else:
-                        guardado = get_precios_producto(item_id, uid)
-                        costo = float(guardado["costo_u"]) if guardado else 0.0
-                        tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                        costo = 0.0
+                        tipo_iva = 0.105
                 else:
-                    guardado = get_precios_producto(item_id, uid)
-                    costo = float(guardado["costo_u"]) if guardado else 0.0
-                    tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                    costo = 0.0
+                    tipo_iva = 0.105
                 row["costo"] = costo
                 row["tipo_iva"] = tipo_iva
                 tiene_promo = False
@@ -8998,8 +9018,6 @@ def build_tab_precios_detalle(container) -> None:
                         finally:
                             conn.close()
                     await run.io_bound(_save_productos)
-                else:
-                    await run.io_bound(set_precios_producto, item_id, uid, nuevo_tipo_iva, nuevo_costo)
                 for it in items_loaded:
                     if str(it.get("id")) == item_id:
                         it["precio"] = nuevo_precio
@@ -9496,9 +9514,8 @@ def build_tab_precios_detalle(container) -> None:
                 costo = float(_prod_row["costo_usd"] or 0)
                 tipo_iva = float(_prod_row["tipo_iva"] or 0.105)
             else:
-                guardado = get_precios_producto(item_id_str, uid)
-                costo = float(guardado["costo_u"]) if guardado else 0.0
-                tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                costo = 0.0
+                tipo_iva = 0.105
             precio_calc = price_promo if tiene_promo and price_promo is not None else precio_real
             comision = precio_calc * ml_comision
             cobrado = precio_calc - comision
