@@ -8608,6 +8608,7 @@ def build_tab_precios_detalle(container) -> None:
 
     COLUMNAS_COMPLETO = [
         ("seller_sku", "SKU", "left", True),
+        ("id", "ID Meli", "left", False),
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
@@ -8631,6 +8632,7 @@ def build_tab_precios_detalle(container) -> None:
     ]
     COLUMNAS_MINIMO = [
         ("seller_sku", "SKU", "left", True),
+        ("id", "ID Meli", "left", False),
         ("marca", "Marca", "left", True),
         ("producto", "Producto", "left", True),
         ("stock", "Stock", "center", True),
@@ -9055,10 +9057,10 @@ def build_tab_precios_detalle(container) -> None:
             tab_cls = "border-collapse text-xs" if es_completo else "border-collapse text-sm"
             prod_width = "min-width: 120px; max-width: 180px;" if es_completo else "min-width: 220px;"
             cell_px = "px-1 py-0.5" if es_completo else "px-2 py-1"
-            with ui.element("div").classes("w-full overflow-x-auto"):
+            with ui.element("div").classes("w-full").style("overflow: auto; max-height: calc(100vh - 320px);"):
                 with ui.element("table").classes(tab_cls).style("table-layout: fixed; width: 100%; min-width: 100%" if es_completo else "width: max-content; min-width: 100%"):
-                    with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                    with ui.element("thead").style("position: sticky; top: 0; z-index: 2;"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
                             for field, label, align, sortable in cols:
                                 th_style = prod_width if field == "producto" else "min-width: 60px;" if es_completo else ""
                                 with ui.element("th").classes(f"{cell_px} border text-center whitespace-nowrap").style(th_style):
