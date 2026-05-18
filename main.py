@@ -7608,6 +7608,18 @@ def _mostrar_tabla_precios(
         ahora = datetime.now()
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
+        from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
+        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt − 12pt padding lateral
+
+        def _trunc(s):
+            if not s or s == "—":
+                return s or "—"
+            if _sw(s, "Helvetica", 8) <= _col_prod_pts:
+                return s
+            while len(s) > 0 and _sw(s + "...", "Helvetica", 8) > _col_prod_pts:
+                s = s[:-1]
+            return (s + "...") if s else "..."
+
         headers = ["Marca", "Producto", "Color", "Stock"]
         data = [headers]
         for r in rows_sorted:
@@ -7615,7 +7627,7 @@ def _mostrar_tabla_precios(
             stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
             data.append([
                 str(r.get("marca") or "—"),
-                str(r.get("title") or "—"),
+                _trunc(str(r.get("title") or "—")),
                 str(r.get("color") or "—"),
                 stock_str,
             ])
@@ -7624,7 +7636,9 @@ def _mostrar_tabla_precios(
         tmp.close()
 
         page_w, page_h = A4
-        margin = 1.5 * rl_cm
+        margin    = 1.5 * rl_cm   # referencia Y del header
+        margin_lr = 0.8 * rl_cm   # left/right documento + X header
+        margin_b  = 0.5 * rl_cm   # bottom documento
 
         class _PaginatedCanvas(rl_canvas.Canvas):
             def __init__(self, *args, **kwargs):
@@ -7647,23 +7661,23 @@ def _mostrar_tabla_precios(
                 self.saveState()
                 self.setFont("Helvetica-Bold", 11)
                 self.setFillColorRGB(0.098, 0.463, 0.824)
-                self.drawString(margin, page_h - margin + 4, f"Stock {_fecha}")
+                self.drawString(margin_lr, page_h - margin + 4, f"Stock {_fecha}")
                 self.setFont("Helvetica", 9)
                 self.setFillColorRGB(0.4, 0.4, 0.4)
-                self.drawRightString(page_w - margin, page_h - margin + 4,
+                self.drawRightString(page_w - margin_lr, page_h - margin + 4,
                                      f"Página {self._pageNumber} de {page_count}")
                 self.restoreState()
 
         doc = SimpleDocTemplate(
             tmp.name,
             pagesize=A4,
-            leftMargin=margin,
-            rightMargin=margin,
+            leftMargin=margin_lr,
+            rightMargin=margin_lr,
             topMargin=margin + 0.9 * rl_cm,
-            bottomMargin=margin,
+            bottomMargin=margin_b,
         )
 
-        col_widths = [3 * rl_cm, 9.5 * rl_cm, 3 * rl_cm, 2.5 * rl_cm]
+        col_widths = [2.5 * rl_cm, 11.5 * rl_cm, 2.5 * rl_cm, 2.0 * rl_cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
 
