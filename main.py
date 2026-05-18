@@ -7423,39 +7423,29 @@ def _mostrar_tabla_precios(
             ui.label("No tienes publicaciones en MercadoLibre o aún no se han cargado.").classes("text-gray-500")
         return
 
-    # Grupos de duplicados conocidos: solo fusionar estos (mismo producto en distintas cuotas/promos).
-    DUPLICATE_GROUPS = [
-        ["MLA2815562106", "MLA1674890445", "MLA2957178650"],
-        ["MLA2896534310", "MLA2896560238"],
-        ["MLA1674709457", "MLA1674787133", "MLA1658462387"],
-    ]
-    id_to_group: Dict[str, int] = {}
-    for gidx, grupo in enumerate(DUPLICATE_GROUPS):
-        for iid in grupo:
-            id_to_group[str(iid).strip().upper()] = gidx
-            id_to_group[str(iid).strip()] = gidx
-
-    grupos_merged: Dict[int, List[Dict[str, Any]]] = {}
-    items_sueltos: List[Dict[str, Any]] = []
+    # Agrupación dinámica por SKU (misma lógica que _mostrar_tabla_cuotas).
+    groups_sku: Dict[tuple, List[Dict[str, Any]]] = {}
     for i in items:
-        iid = str(i.get("id") or "").strip()
-        gidx = id_to_group.get(iid) or id_to_group.get(iid.upper())
-        if gidx is not None:
-            grupos_merged.setdefault(gidx, []).append(i)
-        else:
-            items_sueltos.append(i)
+        groups_sku.setdefault(_cuotas_key(i), []).append(i)
 
-    items_dedup: List[Dict[str, Any]] = list(items_sueltos)
-    for gidx, grupo in grupos_merged.items():
+    items_dedup: List[Dict[str, Any]] = []
+    for grupo in groups_sku.values():
         if len(grupo) == 1:
             items_dedup.append(grupo[0])
             continue
         total_stock = sum(int(x.get("available_quantity") or 0) for x in grupo)
-        total_sold = sum(int(x.get("sold_quantity") or 0) for x in grupo)
-        principal = max(grupo, key=lambda x: int(x.get("available_quantity") or 0))
+        total_sold  = sum(int(x.get("sold_quantity") or 0) for x in grupo)
+        principal = max(
+            grupo,
+            key=lambda x: (
+                1 if not x.get("catalog_listing") and
+                     str(x.get("listing_type_id") or "").lower() == "gold_special" else 0,
+                int(x.get("available_quantity") or 0),
+            ),
+        )
         fusionado = dict(principal)
         fusionado["available_quantity"] = total_stock
-        fusionado["sold_quantity"] = total_sold
+        fusionado["sold_quantity"]       = total_sold
         items_dedup.append(fusionado)
 
     items_loaded = []
