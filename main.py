@@ -428,6 +428,48 @@ def init_db() -> None:
         """
     )
 
+    # Productos: catálogo interno por SKU
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS productos (
+            sku          TEXT NOT NULL,
+            user_id      INTEGER NOT NULL,
+            marca        TEXT,
+            nombre       TEXT,
+            color        TEXT,
+            costo_usd    REAL,
+            tipo_iva     REAL DEFAULT 0.105,
+            notas        TEXT,
+            created_at   TEXT NOT NULL,
+            updated_at   TEXT NOT NULL,
+            costo_updated_at TEXT,
+            PRIMARY KEY (sku, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
+    # ML publicaciones: vínculo entre items de ML y SKU interno
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_publicaciones (
+            ml_id           TEXT NOT NULL,
+            user_id         INTEGER NOT NULL,
+            sku             TEXT,
+            titulo          TEXT,
+            precio          REAL,
+            stock           INTEGER,
+            estado          TEXT,
+            catalog_listing INTEGER DEFAULT 0,
+            listing_type_id TEXT,
+            sold_quantity   INTEGER,
+            ultima_sync     TEXT,
+            PRIMARY KEY (ml_id, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
     # Migración: agregar columna despachante a invoice_extra si no existe (tablas antiguas)
     cur.execute("PRAGMA table_info(invoice_extra)")
     inv_extra_cols = [r[1] for r in cur.fetchall()]
