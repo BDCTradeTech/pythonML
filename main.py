@@ -9094,9 +9094,9 @@ def build_tab_precios_detalle(container) -> None:
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
         ventas_val = filtro_ventas_ref.get("val", "con_ventas")
         if ventas_val == "con_ventas":
-            filtrados = [x for x in filtrados if (x.get("sold_quantity") or 0) > 0]
+            filtrados = [x for x in filtrados if (x.get("ventas") or 0) > 0]
         elif ventas_val == "sin_ventas":
-            filtrados = [x for x in filtrados if (x.get("sold_quantity") or 0) == 0]
+            filtrados = [x for x in filtrados if (x.get("ventas") or 0) == 0]
         col_sort = sort_col_ref.get("val", "producto")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key(r, col_sort), reverse=not asc)
