@@ -7791,6 +7791,9 @@ def _mostrar_tabla_precios(
                     x for x in filtrados
                     if x.get("fecha_ult_modif") and x["fecha_ult_modif"] >= desde.strftime("%Y-%m-%d")
                 ]
+        sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
+        if sku_txt:
+            filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
         col_sort = sort_col_ref.get("val", "title")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key_precios(r, col_sort), reverse=not asc)
@@ -7878,7 +7881,7 @@ def _mostrar_tabla_precios(
             ).classes("w-36")
             filtro_tipo = ui.select(
                 {"ambas": "Ambas", "propias": "Propias", "catalogo": "Catalogo", "combinadas": "Combinadas"},
-                value="combinadas",
+                value="propias",
                 label="Tipo",
             ).classes("w-36")
             filtro_awei = ui.select(
@@ -7891,6 +7894,7 @@ def _mostrar_tabla_precios(
                 value="historica",
                 label="Última modificación",
             ).classes("w-36")
+            filtro_sku = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-64")
             ui.button("Imprimir stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print")
             ui.button("Imprimir ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print")
         table_container = ui.column().classes("w-full")
@@ -7911,6 +7915,7 @@ def _mostrar_tabla_precios(
     filtro_tipo.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
 
 
