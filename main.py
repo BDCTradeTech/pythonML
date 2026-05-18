@@ -5951,7 +5951,28 @@ def _pintar_home_inline(
 
                 # Card Stock + Últimas ventas
                 items_list = (items_data or {}).get("results") or []
-                propias = [it for it in items_list if isinstance(it, dict) and it.get("catalog_listing") is not True]
+                # Deduplicar por SKU — misma lógica que Productos
+                _groups: Dict[tuple, list] = {}
+                for _it in items_list:
+                    if isinstance(_it, dict):
+                        _groups.setdefault(_cuotas_key(_it), []).append(_it)
+                items_list_dedup: list = []
+                for _grupo in _groups.values():
+                    if len(_grupo) == 1:
+                        items_list_dedup.append(_grupo[0])
+                    else:
+                        _principal = max(
+                            _grupo,
+                            key=lambda x: (
+                                1 if not x.get("catalog_listing") and
+                                     str(x.get("listing_type_id") or "").lower() == "gold_special" else 0,
+                                int(x.get("available_quantity") or 0),
+                            ),
+                        )
+                        _fusionado = dict(_principal)
+                        _fusionado["sold_quantity"] = sum(int(x.get("sold_quantity") or 0) for x in _grupo)
+                        items_list_dedup.append(_fusionado)
+                propias = [it for it in items_list_dedup if it.get("catalog_listing") is not True]
                 publicaciones_propias_con_stock = sum(1 for it in propias if (it.get("available_quantity") or 0) > 0)
                 unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
                 marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
@@ -7808,6 +7829,13 @@ def _mostrar_tabla_precios(
         _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
         lbl_pesos.set_text(fmt_moneda(_pesos))
         lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "—")
+        lbl_marcas.set_text(str(len({
+            str(x.get("marca") or "").strip()
+            for x in filtrados
+            if x.get("tipo") == "Propia"
+            and str(x.get("marca") or "").strip()
+            and str(x.get("marca") or "").strip() != "—"
+        })))
 
         table_container.clear()
         with table_container:
@@ -7870,6 +7898,9 @@ def _mostrar_tabla_precios(
                 with ui.column().classes("items-center"):
                     ui.label("Total en u$").classes("text-sm text-gray-600")
                     lbl_usd = ui.label("—").classes("text-2xl font-bold text-primary")
+                with ui.column().classes("items-center"):
+                    ui.label("Marcas").classes("text-sm text-gray-600")
+                    lbl_marcas = ui.label("—").classes("text-2xl font-bold text-primary")
         with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
             ui.label("Filtros:").classes("text-sm")
             filtro_stock = ui.select(
