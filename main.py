@@ -7383,6 +7383,12 @@ def build_tab_precios(container) -> None:
                 with area:
                     ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
                 return
+            n_items = len(data.get("results", []))
+            area.clear()
+            with area:
+                with ui.card().classes("w-full p-8 items-center gap-4"):
+                    ui.spinner(size="xl")
+                    ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
@@ -7722,7 +7728,8 @@ def _mostrar_tabla_precios(
     fmt_num_js = "(val) => val != null && val !== '' ? Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '0'"
     fmt_mon_js = "(val) => val != null && val !== '' ? '$' + Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '$0'"
     columns_precios = [
-        {"name": "id", "label": "ID", "field": "id", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
+        {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "id", "label": "Publicación", "field": "id", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 220px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
@@ -7839,6 +7846,8 @@ def _mostrar_tabla_precios(
                                             ui.label(fmt_miles(val) if val is not None else "0")
                                         elif col["name"] == "subtotal":
                                             ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        elif col["name"] == "seller_sku":
+                                            ui.label(str(val) if val else "-")
                                         elif col["name"] == "status":
                                             s = str(val or "").lower()
                                             ui.label("Activa" if s == "active" else "Suspendida")
