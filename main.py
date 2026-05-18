@@ -7389,7 +7389,7 @@ def build_tab_precios(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
-            await asyncio.sleep(0)
+            await asyncio.sleep(0.1)
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
@@ -7584,29 +7584,29 @@ def _mostrar_tabla_precios(
             sort_asc_ref["val"] = True
         filtrar_y_pintar()
 
-    def _generar_jpg_precios(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> Optional[str]:
-        """Genera un JPG con la tabla de stock. include_ventas=True agrega columna Ventas al final."""
+    def _generar_jpg_precios(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> List[str]:
+        """Genera JPGs A4 (2480x3508 @300dpi), una imagen por página. Retorna lista de paths."""
         try:
             from PIL import Image, ImageDraw, ImageFont
         except ImportError:
-            return None
+            return []
         if not filtrados_actuales:
-            return None
-        ahora = datetime.now()
-        header_nt = f"Stock {ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
-        # Columnas: Stock dd-mm-aa, Marca, Producto, Color, Stock [, Ventas]
-        col_widths = [160, 130, 520, 100, 100]
-        headers = [header_nt, "Marca", "Producto", "Color", "Stock"]
-        if include_ventas:
-            col_widths = [160, 130, 440, 100, 100, 100]
-            headers.append("Ventas")
-        row_h = 28
-        header_h = 36
-        pad = 12
-        font_size = 12
+            return []
+
+        PAGE_W, PAGE_H = 2480, 3508
+        PAD = 80
+        TITLE_H = 110
+        COL_HDR_H = 80
+        ROW_H = 54
+        FS = 32
+        FS_BOLD = 36
+        BLUE = (25, 118, 210)
+        WHITE = (255, 255, 255)
+        BLACK = (0, 0, 0)
+        GRAY = (210, 210, 210)
+
         font_paths = [
-            "arial.ttf",
-            "Arial.ttf",
+            "arial.ttf", "Arial.ttf",
             os.path.join(os.environ.get("WINDIR", ""), "Fonts", "arial.ttf"),
             "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         ]
@@ -7616,74 +7616,89 @@ def _mostrar_tabla_precios(
                 continue
             try:
                 if os.path.isfile(fp):
-                    font = ImageFont.truetype(fp, font_size)
-                    font_bold = font
+                    font      = ImageFont.truetype(fp, FS)
+                    font_bold = ImageFont.truetype(fp, FS_BOLD)
                     break
             except Exception:
                 continue
         if font is None:
-            font = ImageFont.load_default()
-            font_bold = font
+            font = font_bold = ImageFont.load_default()
 
-        def _draw_centered(dx: float, dy: float, cw: float, ch: float, text: str, fill_color, fnt) -> None:
-            bbox = draw.textbbox((0, 0), text, font=fnt)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            tx = dx + (cw - tw) / 2
-            ty = dy + (ch - th) / 2
-            draw.text((tx, ty), text, fill=fill_color, font=fnt)
+        if include_ventas:
+            col_keys    = ["seller_sku", "marca",  "title",   "color",  "stock_fmt", "sold_quantity"]
+            col_headers = ["SKU",        "Marca",  "Producto","Color",  "Stock",     "Ventas"]
+            col_widths  = [220,          260,      1000,      260,      320,         260]
+            col_aligns  = ["center",     "center", "left",    "center", "center",    "center"]
+        else:
+            col_keys    = ["seller_sku", "marca",  "title",   "color",  "stock_fmt"]
+            col_headers = ["SKU",        "Marca",  "Producto","Color",  "Stock"]
+            col_widths  = [220,          290,      1220,      290,      300]
+            col_aligns  = ["center",     "center", "left",    "center", "center"]
 
-        def _draw_left(dx: float, dy: float, cw: float, ch: float, text: str, fill_color, fnt) -> None:
-            bbox = draw.textbbox((0, 0), text, font=fnt)
-            th = bbox[3] - bbox[1]
-            tx = dx + 4
-            ty = dy + (ch - th) / 2
-            draw.text((tx, ty), text, fill=fill_color, font=fnt)
+        rows_per_page = max(1, (PAGE_H - 2 * PAD - TITLE_H - COL_HDR_H) // ROW_H)
+        total = len(filtrados_actuales)
+        total_pages = max(1, (total + rows_per_page - 1) // rows_per_page)
+        ahora = datetime.now()
+        fecha_str = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
 
-        w = sum(col_widths) + pad * 2
-        h = header_h + len(filtrados_actuales) * row_h + pad * 2
-        img = Image.new("RGB", (w, h), (255, 255, 255))
-        draw = ImageDraw.Draw(img)
-        border_thick = 3
-        draw.rectangle([border_thick, border_thick, w - 1 - border_thick, h - 1 - border_thick], outline=(0, 0, 0), width=border_thick)
-        header_border = 2
-        draw.rectangle([pad, pad, w - pad, pad + header_h], outline=(0, 0, 0), width=header_border)
-        x = pad
-        for cw, title in zip(col_widths, headers):
-            draw.rectangle([x, pad, x + cw, pad + header_h], fill=(25, 118, 210), outline=(0, 0, 0), width=header_border)
-            _draw_centered(x, pad, cw, header_h, str(title), (255, 255, 255), font_bold)
-            x += cw
-        y = pad + header_h
-        for r in filtrados_actuales:
-            x = pad
-            cells = [
-                str(r.get("id", ""))[:18],
-                str(r.get("marca", "—"))[:22],
-                (r.get("title") or "")[:70],
-                str(r.get("color", "—"))[:15],
-                r.get("stock_fmt", "0"),
-            ]
-            cell_align = ["center", "center", "left", "center", "center"]
-            if include_ventas:
-                ventas_val = r.get("sold_quantity")
-                try:
-                    ventas_str = fmt_miles(ventas_val) if ventas_val is not None else "0"
-                except Exception:
-                    ventas_str = "0"
-                cells.append(ventas_str)
-                cell_align.append("center")
-            for cw, cell, align in zip(col_widths, cells, cell_align):
-                draw.rectangle([x, y, x + cw, y + row_h], outline=(200, 200, 200))
-                if align == "left":
-                    _draw_left(x, y, cw, row_h, str(cell), (0, 0, 0), font)
-                else:
-                    _draw_centered(x, y, cw, row_h, str(cell), (0, 0, 0), font)
+        def _cell(drw, x, y, w, h, text, fnt, align, fg=BLACK, bg=None):
+            if bg:
+                drw.rectangle([x, y, x + w, y + h], fill=bg)
+            drw.rectangle([x, y, x + w, y + h], outline=GRAY, width=1)
+            text = str(text) if text is not None else ""
+            max_ch = max(1, int(w / (FS * 0.52)))
+            if len(text) > max_ch:
+                text = text[:max_ch - 1] + "…"
+            bb = drw.textbbox((0, 0), text, font=fnt)
+            tw, th = bb[2] - bb[0], bb[3] - bb[1]
+            tx = x + 10 if align == "left" else x + (w - tw) // 2
+            ty = y + (h - th) // 2
+            drw.text((tx, ty), text, fill=fg, font=fnt)
+
+        paths: List[str] = []
+        for pg in range(total_pages):
+            page_rows = filtrados_actuales[pg * rows_per_page:(pg + 1) * rows_per_page]
+            img  = Image.new("RGB", (PAGE_W, PAGE_H), WHITE)
+            drw  = ImageDraw.Draw(img)
+            drw.rectangle([4, 4, PAGE_W - 5, PAGE_H - 5], outline=BLACK, width=4)
+
+            # Título + número de página
+            titulo = f"Stock {fecha_str}    Página {pg + 1} de {total_pages}"
+            bb = drw.textbbox((0, 0), titulo, font=font_bold)
+            drw.text((PAD, PAD + (TITLE_H - (bb[3] - bb[1])) // 2), titulo, fill=BLUE, font=font_bold)
+
+            # Cabecera de columnas
+            y = PAD + TITLE_H
+            x = PAD
+            for cw, ch in zip(col_widths, col_headers):
+                drw.rectangle([x, y, x + cw, y + COL_HDR_H], fill=BLUE, outline=WHITE, width=1)
+                bb = drw.textbbox((0, 0), ch, font=font_bold)
+                drw.text((x + (cw - (bb[2] - bb[0])) // 2, y + (COL_HDR_H - (bb[3] - bb[1])) // 2), ch, fill=WHITE, font=font_bold)
                 x += cw
-            y += row_h
-        out = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
-        out.close()
-        img.save(out.name, "JPEG", quality=90)
-        return out.name
+
+            # Filas de datos
+            y += COL_HDR_H
+            for ri, r in enumerate(page_rows):
+                bg = (248, 248, 248) if ri % 2 == 0 else WHITE
+                x = PAD
+                for ck, cw, ca in zip(col_keys, col_widths, col_aligns):
+                    val = r.get(ck)
+                    if ck == "seller_sku":
+                        text = str(val) if val else "-"
+                    elif ck == "sold_quantity":
+                        text = fmt_miles(val) if val is not None else "0"
+                    else:
+                        text = str(val or "—") if val not in (None, "", "—") else "—"
+                    _cell(drw, x, y, cw, ROW_H, text, font, ca, bg=bg)
+                    x += cw
+                y += ROW_H
+
+            out = tempfile.NamedTemporaryFile(suffix=".jpg", delete=False)
+            out.close()
+            img.save(out.name, "JPEG", quality=92)
+            paths.append(out.name)
+
+        return paths
 
     def imprimir_tabla(include_ventas: bool = False) -> None:
         client = context.client
@@ -7706,18 +7721,21 @@ def _mostrar_tabla_precios(
             profile = await run.io_bound(ml_get_user_profile, access_token)
             nickname = (profile or {}).get("nickname") or "Usuario"
             safe_name = "".join(c for c in str(nickname) if c.isalnum() or c in "_-").strip() or "Usuario"
-            path = _generar_jpg_precios(rows_to_print, include_ventas=imprimir_ventas)
-            if path:
+            paths = _generar_jpg_precios(rows_to_print, include_ventas=imprimir_ventas)
+            if paths:
                 ahora = datetime.now()
-                nombre_archivo = f"{safe_name}_{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}-{ahora.hour:02d}-{ahora.minute:02d}.jpg"
+                ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}-{ahora.hour:02d}-{ahora.minute:02d}"
                 with client:
-                    ui.download(path, nombre_archivo)
-                    def _borrar_despues() -> None:
-                        try:
-                            if path and os.path.exists(path):
-                                os.unlink(path)
-                        except Exception:
-                            pass
+                    for i, path in enumerate(paths):
+                        sufijo = f"_p{i + 1}" if len(paths) > 1 else ""
+                        ui.download(path, f"{safe_name}_{ts}{sufijo}.jpg")
+                    def _borrar_despues(pp=paths) -> None:
+                        for p in pp:
+                            try:
+                                if p and os.path.exists(p):
+                                    os.unlink(p)
+                            except Exception:
+                                pass
                     ui.timer(5.0, _borrar_despues, once=True)
             else:
                 with client:
