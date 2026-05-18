@@ -7433,8 +7433,7 @@ def _mostrar_tabla_precios(
         if len(grupo) == 1:
             items_dedup.append(grupo[0])
             continue
-        total_stock = sum(int(x.get("available_quantity") or 0) for x in grupo)
-        total_sold  = sum(int(x.get("sold_quantity") or 0) for x in grupo)
+        total_sold = sum(int(x.get("sold_quantity") or 0) for x in grupo)
         principal = max(
             grupo,
             key=lambda x: (
@@ -7444,8 +7443,7 @@ def _mostrar_tabla_precios(
             ),
         )
         fusionado = dict(principal)
-        fusionado["available_quantity"] = total_stock
-        fusionado["sold_quantity"]       = total_sold
+        fusionado["sold_quantity"] = total_sold
         items_dedup.append(fusionado)
 
     items_loaded = []
