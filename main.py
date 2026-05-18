@@ -8629,9 +8629,29 @@ def build_tab_precios_detalle(container) -> None:
                 bodies = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, [item_id], "id,listing_type_id,attributes,sale_terms")
                 cuotas_val = str(_cuotas_desde_item(bodies[0]) if bodies and bodies[0] else row.get("cuotas") or "x1").strip().lower()
                 row["cuotas"] = cuotas_val
-                guardado = get_precios_producto(item_id, uid)
-                costo = float(guardado["costo_u"]) if guardado else 0.0
-                tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                _sku_dlg = str(row.get("seller_sku") or "").strip()
+                if _sku_dlg:
+                    _conn_dlg = get_connection()
+                    try:
+                        _cur_dlg = _conn_dlg.cursor()
+                        _cur_dlg.execute(
+                            "SELECT costo_usd, tipo_iva FROM productos WHERE sku = ? AND user_id = ?",
+                            (_sku_dlg, uid),
+                        )
+                        _prod_dlg = _cur_dlg.fetchone()
+                    finally:
+                        _conn_dlg.close()
+                    if _prod_dlg is not None:
+                        costo = float(_prod_dlg["costo_usd"] or 0)
+                        tipo_iva = float(_prod_dlg["tipo_iva"] or 0.105)
+                    else:
+                        guardado = get_precios_producto(item_id, uid)
+                        costo = float(guardado["costo_u"]) if guardado else 0.0
+                        tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+                else:
+                    guardado = get_precios_producto(item_id, uid)
+                    costo = float(guardado["costo_u"]) if guardado else 0.0
+                    tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
                 row["costo"] = costo
                 row["tipo_iva"] = tipo_iva
                 tiene_promo = False
@@ -8939,6 +8959,7 @@ def build_tab_precios_detalle(container) -> None:
     def _guardar_precio_popup(row: Dict[str, Any], inp_refs: Dict[str, Any], dlg) -> None:
         """Guarda precio, iva, costo: actualiza items_loaded, ML y la tabla."""
         item_id = str(row.get("id", ""))
+        sku_guardar = str(row.get("seller_sku") or "").strip()
         if not item_id:
             ui.notify("ID de publicación no válido.", color="negative")
             return
@@ -8958,7 +8979,27 @@ def build_tab_precios_detalle(container) -> None:
         async def _actualizar() -> None:
             try:
                 await run.io_bound(ml_update_item_price, access_token, item_id, nuevo_precio)
-                await run.io_bound(set_precios_producto, item_id, uid, nuevo_tipo_iva, nuevo_costo)
+                if sku_guardar:
+                    def _save_productos():
+                        now_str = datetime.now().isoformat()
+                        conn = get_connection()
+                        try:
+                            conn.execute(
+                                """INSERT INTO productos (sku, user_id, costo_usd, tipo_iva, created_at, updated_at, costo_updated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   ON CONFLICT(sku, user_id) DO UPDATE SET
+                                       costo_usd=excluded.costo_usd,
+                                       tipo_iva=excluded.tipo_iva,
+                                       costo_updated_at=excluded.costo_updated_at,
+                                       updated_at=excluded.updated_at""",
+                                (sku_guardar, uid, nuevo_costo, nuevo_tipo_iva, now_str, now_str, now_str),
+                            )
+                            conn.commit()
+                        finally:
+                            conn.close()
+                    await run.io_bound(_save_productos)
+                else:
+                    await run.io_bound(set_precios_producto, item_id, uid, nuevo_tipo_iva, nuevo_costo)
                 for it in items_loaded:
                     if str(it.get("id")) == item_id:
                         it["precio"] = nuevo_precio
@@ -9375,6 +9416,23 @@ def build_tab_precios_detalle(container) -> None:
 
         seller_id_ref["val"] = seller_id_precios
 
+        # Pre-fetch costos desde tabla productos para todos los SKUs del usuario
+        _skus_precios = list({str(i.get("seller_sku") or "").strip() for i in items_ordenados if i.get("seller_sku")})
+        _costos_sku_map: Dict[str, Dict[str, Any]] = {}
+        if _skus_precios:
+            _conn_prod = get_connection()
+            try:
+                _cur_prod = _conn_prod.cursor()
+                _ph = ",".join("?" * len(_skus_precios))
+                _cur_prod.execute(
+                    f"SELECT sku, costo_usd, tipo_iva FROM productos WHERE user_id = ? AND sku IN ({_ph})",
+                    [uid] + _skus_precios,
+                )
+                for _r in _cur_prod.fetchall():
+                    _costos_sku_map[_r["sku"]] = {"costo_usd": _r["costo_usd"], "tipo_iva": _r["tipo_iva"]}
+            finally:
+                _conn_prod.close()
+
         # Agrupar por dedupe_key; preferir catalog_listing=false (Propia), solo usar Catálogo si no hay Propia
         grupos_por_dedupe: Dict[str, List[Dict]] = {}
         for i in items_ordenados:
@@ -9433,9 +9491,14 @@ def build_tab_precios_detalle(container) -> None:
                 price_promo = (price_original * (1 - (promo_yo_pct or 0) / 100)) if tiene_promo and price_original is not None else None
             cuotas_val = str(item_id_to_cuotas_precios.get(item_id_str) or item_id_to_cuotas_precios.get(item_id_str.upper() or "") or item_id_to_cuotas_precios.get(item_id_str.lower() or "") or _cuotas_desde_item(i) or "x1").strip().lower()
             stock = int(i.get("available_quantity") or 0)
-            guardado = get_precios_producto(item_id_str, uid)
-            costo = float(guardado["costo_u"]) if guardado else 0.0
-            tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
+            _prod_row = _costos_sku_map.get(seller_sku) if seller_sku else None
+            if _prod_row is not None:
+                costo = float(_prod_row["costo_usd"] or 0)
+                tipo_iva = float(_prod_row["tipo_iva"] or 0.105)
+            else:
+                guardado = get_precios_producto(item_id_str, uid)
+                costo = float(guardado["costo_u"]) if guardado else 0.0
+                tipo_iva = float(guardado["tipo_iva"]) if guardado else 0.105
             precio_calc = price_promo if tiene_promo and price_promo is not None else precio_real
             comision = precio_calc * ml_comision
             cobrado = precio_calc - comision
@@ -9457,6 +9520,7 @@ def build_tab_precios_detalle(container) -> None:
             grupo_ids = [str(it_g.get("id", "")) for it_g in grupo_single if it_g.get("id")]
             items_list.append({
                 "id": str(i.get("id", "")),
+                "seller_sku": seller_sku,
                 "thumbnail": i.get("thumbnail") or "",
                 "marca": i.get("marca") or "—",
                 "producto": str(i.get("title") or ""),
