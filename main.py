@@ -7516,6 +7516,23 @@ def _mostrar_tabla_precios(
         fusionado["sold_quantity"] = total_sold
         items_dedup.append(fusionado)
 
+    _uid = user["id"]
+    _skus_dedup = [i.get("seller_sku") for i in items_dedup if i.get("seller_sku")]
+    _costos_map: Dict[str, Optional[float]] = {}
+    if _skus_dedup:
+        _conn_prod = get_connection()
+        try:
+            _cur_prod = _conn_prod.cursor()
+            _ph = ",".join("?" * len(_skus_dedup))
+            _cur_prod.execute(
+                f"SELECT sku, costo_usd FROM productos WHERE user_id = ? AND sku IN ({_ph})",
+                [_uid] + _skus_dedup,
+            )
+            for _r in _cur_prod.fetchall():
+                _costos_map[_r["sku"]] = _r["costo_usd"]
+        finally:
+            _conn_prod.close()
+
     items_loaded = []
     for i in items_dedup:
         precio = i.get("price") or 0
@@ -7538,6 +7555,8 @@ def _mostrar_tabla_precios(
         last_upd = i.get("last_updated")
         raw_fecha = last_upd[:10] if last_upd and isinstance(last_upd, str) and len(last_upd) >= 10 else None
         ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "—"
+        _item_sku = i.get("seller_sku") or None
+        _costo_usd = _costos_map.get(_item_sku) if _item_sku else None
         items_loaded.append({
             **i,
             "price_fmt": fmt_moneda(precio),
@@ -7552,6 +7571,7 @@ def _mostrar_tabla_precios(
             "title": str(i.get("title") or ""),
             "ult_modif_fmt": ult_modif_fmt,
             "fecha_ult_modif": raw_fecha or "",  # YYYY-MM-DD para ordenar; vacío si no hay
+            "costo_usd": _costo_usd,
         })
 
     publicaciones_totales = len(items_loaded)
@@ -7623,6 +7643,63 @@ def _mostrar_tabla_precios(
 
         dialog.open()
 
+    def abrir_editar_costo(row: Dict[str, Any]) -> None:
+        sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        if not sku:
+            ui.notify("No se puede identificar el producto.", color="warning")
+            return
+        titulo = str(row.get("title") or "")
+        costo_actual = row.get("costo_usd")
+        val_str = f"{costo_actual:.2f}" if costo_actual is not None else ""
+        dialog = ui.dialog()
+        with dialog:
+            with ui.card().classes("p-4 min-w-[320px]"):
+                ui.label("Editar costo").classes("text-lg font-semibold mb-2")
+                ui.label(titulo[:80] + ("..." if len(titulo) > 80 else "")).classes("text-sm text-gray-600 mb-2")
+                ui.label(f"SKU: {sku}").classes("text-xs text-gray-400 mb-2")
+                inp_costo = ui.input("Costo (u$s)", value=val_str).classes("w-full")
+                inp_costo.props("type=number min=0 step=0.01")
+
+                def guardar() -> None:
+                    raw = (inp_costo.value or "").strip()
+                    if raw == "":
+                        ui.notify("Ingresá un valor.", color="warning")
+                        return
+                    try:
+                        nuevo = float(raw)
+                    except (TypeError, ValueError):
+                        ui.notify("Costo inválido.", color="negative")
+                        return
+                    if nuevo < 0:
+                        ui.notify("El costo no puede ser negativo.", color="negative")
+                        return
+                    now_str = datetime.now().isoformat()
+                    try:
+                        conn = get_connection()
+                        conn.execute(
+                            """INSERT INTO productos (sku, user_id, costo_usd, tipo_iva, created_at, updated_at, costo_updated_at)
+                               VALUES (?, ?, ?, 0.105, ?, ?, ?)
+                               ON CONFLICT(sku, user_id) DO UPDATE SET
+                                   costo_usd=excluded.costo_usd,
+                                   costo_updated_at=excluded.costo_updated_at,
+                                   updated_at=excluded.updated_at""",
+                            (sku, user["id"], nuevo, now_str, now_str, now_str),
+                        )
+                        conn.commit()
+                        conn.close()
+                    except Exception as e:
+                        ui.notify(f"Error al guardar: {e}", color="negative")
+                        return
+                    row["costo_usd"] = nuevo
+                    dialog.close()
+                    ui.notify("Costo actualizado.", color="positive")
+                    filtrar_y_pintar()
+
+                with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
+                    ui.button("Guardar", on_click=guardar, color="primary")
+        dialog.open()
+
     current_filtrados: List[Dict[str, Any]] = []
     current_table: List[Any] = []
     sort_col_ref: Dict[str, Any] = {"val": "title"}
@@ -7630,7 +7707,7 @@ def _mostrar_tabla_precios(
 
     def _sort_key_precios(row: Dict[str, Any], col_name: str) -> Any:
         """Devuelve valor para ordenar según el tipo de columna."""
-        if col_name in ("price", "subtotal"):
+        if col_name in ("price", "subtotal", "costo_usd"):
             return float(row.get(col_name) or 0)
         if col_name in ("available_quantity", "sold_quantity"):
             return int(row.get(col_name) or 0)
@@ -7821,6 +7898,7 @@ def _mostrar_tabla_precios(
         {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 220px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
+        {"name": "costo_usd", "label": "Costo u$s", "field": "costo_usd", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "sale_price_fmt", "label": "Promo", "field": "sale_price_fmt", "sortable": False, "align": "right", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
@@ -7905,7 +7983,11 @@ def _mostrar_tabla_precios(
                                         val = row.get(col["name"])
                                     align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
                                     with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-sm"):
-                                        if col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
+                                        if col["name"] == "costo_usd":
+                                            costo_val = row.get("costo_usd")
+                                            costo_str = f"u$s {costo_val:,.2f}" if costo_val is not None else "—"
+                                            ui.button(costo_str, on_click=lambda r=row: abrir_editar_costo(r)).props("flat dense no-caps").classes("cursor-pointer font-medium text-primary hover:underline")
+                                        elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
                                             precio_str = fmt_moneda(val) if val is not None else "$0"
                                             ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer font-medium text-primary hover:underline")
                                         elif col["name"] == "price":
