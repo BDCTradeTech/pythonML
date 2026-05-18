@@ -8248,7 +8248,6 @@ def build_tab_precios_detalle(container) -> None:
                         label="Ventas",
                     ).classes("w-36")
                     btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
-                    btn_calcular = ui.button("Calcular", color="secondary").props("icon=calculate")
                 ui.space()
                 ui.button("QUIEBRE STOCK", on_click=lambda: _quiebre_stock_click(), color="primary").classes("uppercase").props("icon=print")
 
@@ -8447,7 +8446,6 @@ def build_tab_precios_detalle(container) -> None:
                             lbl.text = f"{margen_pct:.2f}%"
 
                 calcular_labels_ref["_calcular_fn"] = calcular_totales
-                btn_calcular.on_click(calcular_totales)
             # Wrapper con overlay de carga (permanece visible durante filtrar_y_pintar)
             with ui.column().classes("relative w-full").style("min-height: 200px;") as wrapper:
                 overlay = ui.element("div").classes("absolute inset-0 bg-white/90 flex items-start justify-center pt-12 z-10 gap-3").style("min-height: 150px;")
@@ -8776,11 +8774,9 @@ def build_tab_precios_detalle(container) -> None:
 
         def _recalcular() -> None:
             precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
-            costo_str = inp_refs.get("costo") and getattr(inp_refs["costo"], "value", None) or ""
-            tipo_iva_str = inp_refs.get("tipo_iva") and getattr(inp_refs["tipo_iva"], "value", None) or "0.105"
             precio = _parse_moneda(precio_str)
-            costo = _parse_usd(costo_str)
-            tipo_iva = float(tipo_iva_str) if tipo_iva_str else 0.105
+            costo = float(row.get("costo") or 0)
+            tipo_iva = float(row.get("tipo_iva") or 0.105)
             if precio < 1:
                 precio = float(row.get("precio") or 0) or 1
             tiene_promo = row.get("price_original") is not None and row.get("promo_yo_pct") is not None
@@ -8806,8 +8802,6 @@ def build_tab_precios_detalle(container) -> None:
                 margen_pesos = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
                 margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                 margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
-            if recalc_container_ref.get("costo_pesos_label"):
-                recalc_container_ref["costo_pesos_label"].text = fmt_moneda(costo_pesos)
             data = {"comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas, "iva_venta": iva_venta, "iva_total": iva_total,
                     "iva_meli": iva_meli, "iva_impor": iva_impor, "deb_cred": deb_cred, "iibb": iibb, "envio": envio,
                     "costo_pesos": costo_pesos, "margen_pesos": margen_pesos,
@@ -8874,7 +8868,8 @@ def build_tab_precios_detalle(container) -> None:
                         with ui.column().classes("w-24 h-24 rounded border bg-gray-100 items-center justify-center").style("min-width: 96px; min-height: 96px;"):
                             ui.label("Sin foto").classes("text-xs text-gray-500")
                     with ui.column().classes("flex-1 min-w-0 gap-2"):
-                        ui.label(str(row.get("id", "—"))).classes("text-sm font-mono text-gray-600")
+                        sku_txt = str(row.get("seller_sku") or row.get("id") or "")
+                        ui.label(f"{row.get('id', '—')}  —  {sku_txt}").classes("text-sm font-mono text-gray-600")
                         ui.label(str(row.get("marca", "—"))).classes("text-sm font-medium")
                         txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
                         ui.label(txt).classes("text-sm font-bold")
@@ -8887,66 +8882,16 @@ def build_tab_precios_detalle(container) -> None:
                     with ui.row().classes("w-full justify-between py-2 items-center"):
                         ui.label("Tipo IVA").classes("text-sm font-medium text-gray-600")
                         tipo_val = float(row.get("tipo_iva") or 0.105)
-                        sel = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=str(tipo_val)).classes("text-sm w-32").props("dense")
-                        inp_refs["tipo_iva"] = sel
+                        ui.label("21%" if abs(tipo_val - 0.21) < 0.001 else "10,5%").classes("text-sm")
                     with ui.row().classes("w-full justify-between py-2 items-center gap-4 border-b-2 border-gray-300"):
                         with ui.row().classes("items-center gap-2"):
                             ui.label("Costo +IVA u$").classes("text-sm font-medium text-gray-600")
                             _costo_val = row.get("costo")
-                            _costo_inicial = f"{float(_costo_val):.2f}".replace(".", ",") if _costo_val is not None else "0"
-                            _costo_wrap_id = f"costo-wrap-{row.get('id', 'x')}"
-                            with ui.element("div").style("display: inline-block").props(f'id={_costo_wrap_id}'):
-                                inp_costo = ui.input(value=_costo_inicial).classes("text-sm w-24").props("dense input-class=costo-usd-input")
-                            inp_refs["costo"] = inp_costo
-
-                            def _add_costo_filter():
-                                _wid = _costo_wrap_id
-                                ui.run_javascript(f'''
-                                    var wrapper = document.getElementById("{_wid}");
-                                    var inp = wrapper ? wrapper.querySelector("input") : null;
-                                    if (inp && !inp.dataset.costoFilter) {{
-                                        inp.dataset.costoFilter = "1";
-                                        inp.addEventListener("input", function() {{
-                                            var v = this.value;
-                                            var f = v.replace(/[^0-9,.]/g, "");
-                                            f = f.replace(/\\./g, ",");
-                                            var decimals = (f.match(/,/g) || []);
-                                            if (decimals.length > 1) {{
-                                                var first = f.indexOf(",");
-                                                f = f.substring(0, first+1) + f.substring(first+1).replace(/,/g, "");
-                                            }}
-                                            if (v !== f) {{ this.value = f; this.dispatchEvent(new Event("input", {{bubbles: true}})); }}
-                                        }});
-                                        inp.addEventListener("keypress", function(e) {{
-                                            var k = e.key;
-                                            if ((k === "," || k === ".") && /[,.]/.test(this.value)) {{ e.preventDefault(); return; }}
-                                            if (/[0-9,.]/.test(k)) return;
-                                            e.preventDefault();
-                                        }});
-                                    }}
-                                ''')
-
-                            ui.timer(0.15, _add_costo_filter, once=True)
-
-                            def _filtrar_costo_usd(e=None):
-                                ctrl = inp_refs.get("costo")
-                                if not ctrl:
-                                    return
-                                val = str(getattr(e, "value", None) or ctrl.value or "")
-                                filtrado = "".join(c for c in val if c in "0123456789,.")
-                                filtrado = filtrado.replace(".", ",")
-                                dec_count = filtrado.count(",")
-                                if dec_count > 1:
-                                    first_dec = filtrado.find(",")
-                                    filtrado = filtrado[: first_dec + 1] + filtrado[first_dec + 1 :].replace(",", "")
-                                if val != filtrado:
-                                    ctrl.value = filtrado
-
-                            inp_costo.on_value_change(lambda e: _filtrar_costo_usd(e))
+                            ui.label(fmt_usd(_costo_val) if _costo_val is not None else "u$0,00").classes("text-sm")
                         with ui.row().classes("items-center gap-2"):
                             ui.label("Costo $").classes("text-sm font-medium text-gray-600")
-                            costo_pesos = (float(row.get("costo") or 0) * dolar_oficial)
-                            recalc_container_ref["costo_pesos_label"] = ui.label(fmt_moneda(costo_pesos)).classes("text-sm")
+                            costo_pesos = float(row.get("costo") or 0) * dolar_oficial
+                            ui.label(fmt_moneda(costo_pesos)).classes("text-sm")
                     with ui.row().classes("w-full py-2 gap-6 border-b-2 border-gray-300 flex-wrap"):
                         with ui.column().classes("gap-0"):
                             ui.label("Cuotas").classes("text-xs text-gray-600")
@@ -8995,11 +8940,9 @@ def build_tab_precios_detalle(container) -> None:
             ui.notify("ID de publicación no válido.", color="negative")
             return
         precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
-        costo_str = inp_refs.get("costo") and getattr(inp_refs["costo"], "value", None) or ""
-        tipo_iva_str = inp_refs.get("tipo_iva") and getattr(inp_refs["tipo_iva"], "value", None) or "0.105"
         nuevo_precio = _parse_moneda(precio_str)
-        nuevo_costo = _parse_usd(costo_str)
-        nuevo_tipo_iva = float(tipo_iva_str) if tipo_iva_str else 0.105
+        nuevo_costo = float(row.get("costo") or 0)
+        nuevo_tipo_iva = float(row.get("tipo_iva") or 0.105)
         if nuevo_precio < 1:
             ui.notify("El precio debe ser al menos $1.", color="negative")
             return
