@@ -7389,6 +7389,7 @@ def build_tab_precios(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
+            await asyncio.sleep(0)
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
@@ -7745,28 +7746,6 @@ def _mostrar_tabla_precios(
 
     def filtrar_y_pintar() -> None:
         filtrados = list(items_loaded)
-        tipo_val = getattr(filtro_tipo, "value", None)
-        if tipo_val == "propias":
-            filtrados = [x for x in filtrados if x.get("tipo") == "Propia"]
-        elif tipo_val == "catalogo":
-            filtrados = [x for x in filtrados if x.get("tipo") == "Catalogo"]
-        elif tipo_val == "combinadas":
-            # Solo propias; ventas = propia + catálogo relacionado (mismo catalog_product_id)
-            catalogos = [x for x in items_loaded if x.get("tipo") == "Catalogo"]
-            ventas_por_catalog_id: Dict[str, int] = {}
-            for c in catalogos:
-                cpid = c.get("catalog_product_id")
-                if cpid:
-                    ventas_por_catalog_id[str(cpid)] = ventas_por_catalog_id.get(str(cpid), 0) + (c.get("sold_quantity") or 0)
-            propias = [x for x in filtrados if x.get("tipo") == "Propia"]
-            filtrados = []
-            for p in propias:
-                row = dict(p)
-                propia_ventas = p.get("sold_quantity") or 0
-                catalog_ventas = ventas_por_catalog_id.get(str(p.get("catalog_product_id") or ""), 0)
-                row["sold_quantity"] = propia_ventas + catalog_ventas
-                row["tipo"] = "Prop Comb"
-                filtrados.append(row)
         stock_val = getattr(filtro_stock, "value", "con_stock")
         if stock_val == "con_stock":
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) > 0]
@@ -7801,9 +7780,6 @@ def _mostrar_tabla_precios(
         current_filtrados.extend(filtrados)
 
         lbl_totales.set_text(str(len(filtrados)))
-        lbl_con_stock.set_text(str(sum(1 for x in filtrados if (x.get("available_quantity") or 0) > 0)))
-        lbl_propias_stock.set_text(str(sum(1 for x in filtrados if x.get("tipo") == "Propia" and (x.get("available_quantity") or 0) > 0)))
-        lbl_catalogo_stock.set_text(str(sum(1 for x in filtrados if x.get("tipo") == "Catalogo" and (x.get("available_quantity") or 0) > 0)))
         lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
         _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
         lbl_pesos.set_text(fmt_moneda(_pesos))
@@ -7862,22 +7838,13 @@ def _mostrar_tabla_precios(
                     ui.label("Publicaciones Totales").classes("text-sm text-gray-600")
                     lbl_totales = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
-                    ui.label("Publicaciones con stock").classes("text-sm text-gray-600")
-                    lbl_con_stock = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Publicaciones propias con stock").classes("text-sm text-gray-600")
-                    lbl_propias_stock = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Publicaciones catalogo con stock").classes("text-sm text-gray-600")
-                    lbl_catalogo_stock = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
                     ui.label("Unidades propias en stock").classes("text-sm text-gray-600")
                     lbl_unidades = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
-                    ui.label("Total en $ (solo propias)").classes("text-sm text-gray-600")
+                    ui.label("Total en $").classes("text-sm text-gray-600")
                     lbl_pesos = ui.label("—").classes("text-2xl font-bold text-primary")
                 with ui.column().classes("items-center"):
-                    ui.label("Total en u$ (solo propias)").classes("text-sm text-gray-600")
+                    ui.label("Total en u$").classes("text-sm text-gray-600")
                     lbl_usd = ui.label("—").classes("text-2xl font-bold text-primary")
         with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
             ui.label("Filtros:").classes("text-sm")
@@ -7885,11 +7852,6 @@ def _mostrar_tabla_precios(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
                 value=filtro_stock_ref.get("val", "con_stock") if filtro_stock_ref else "con_stock",
                 label="Stock",
-            ).classes("w-36")
-            filtro_tipo = ui.select(
-                {"ambas": "Ambas", "propias": "Propias", "catalogo": "Catalogo", "combinadas": "Combinadas"},
-                value="propias",
-                label="Tipo",
             ).classes("w-36")
             filtro_estado = ui.select(
                 {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
@@ -7924,7 +7886,6 @@ def _mostrar_tabla_precios(
         filtrar_y_pintar()
 
     filtro_stock.on_value_change(on_filtro_stock_change)
-    filtro_tipo.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_estado.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
