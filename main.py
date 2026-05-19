@@ -9596,6 +9596,11 @@ def build_tab_precios_detalle(container) -> None:
                         item_id_b = str(b.get("id") or "").strip()
                         if not item_id_b or item_id_b in ids_ya_incluidos:
                             continue
+                        if str(b.get("id", "")) == "MLA3298956270":
+                            _attrs_d = b.get("attributes") or []
+                            _sku_d = [a for a in _attrs_d if (a.get("id") or "").upper() == "SELLER_SKU"]
+                            print(f"[DEBUG2 MLA3298956270] attributes count={len(_attrs_d)} SELLER_SKU_attrs={_sku_d}", flush=True)
+                            print(f"[DEBUG2 MLA3298956270] seller_custom_field={b.get('seller_custom_field')}", flush=True)
                         item_norm = _item_from_body_export(b)
                         if str(item_norm.get("id", "")) == "MLA3298956270":
                             print(f"[DEBUG MLA3298956270] seller_sku='{item_norm.get('seller_sku')}' ruta=ruta_B", flush=True)
