@@ -5704,16 +5704,16 @@ def _pintar_home_inline(
                             ui.label(str(hoy_unidades)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
                             ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
-                            ui.label("FLEX HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#7c3aed;line-height:1.2")
+                            ui.label("MOTO FLEX HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("CORREO HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#0891b2;line-height:1.2")
+                            ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding-left:14px"):
                             ui.label("NO CONCRETADAS").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(no_concretadas)).style(f"font-size:22px;font-weight:600;color:{nc_color};line-height:1.2")
+                            ui.label(fmt_n(no_concretadas)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("cancel./pend.").style("font-size:11px;color:#6b7280")
 
                 # BLOQUE 3 — Facturación mes
@@ -5883,6 +5883,25 @@ def _pintar_home_inline(
                             "value": round(val_m, 0),
                             "itemStyle": {"color": bar_color},
                             "label": {"formatter": lbl_fmt},
+                        })
+                    _dias_t_est = (today_local - primer_dia_mes).days + 1
+                    _dias_m_est = calendar.monthrange(today_local.year, today_local.month)[1]
+                    if _dias_t_est < _dias_m_est and ventas_mes_actual_monto > 0:
+                        _venta_est = (ventas_mes_actual_monto / _dias_t_est) * _dias_m_est
+                        _val_act = por_mes.get(mes_actual_key, {}).get("total", 0)
+                        _monto_est_str = fmt_m(_venta_est)
+                        if _val_act > 0:
+                            _pct_est = (_venta_est - _val_act) / _val_act * 100
+                            _rich_est = "pctpos" if _pct_est >= 0 else "pctneg"
+                            _lbl_est = f"{{{_rich_est}|{_pct_est:+.1f}%}}\n{{monto|{_monto_est_str}}}"
+                        else:
+                            _lbl_est = f"{{monto|{_monto_est_str}}}"
+                        _mes_abr_est = meses_abr.get(today_local.strftime("%m"), today_local.strftime("%m"))
+                        chart_labels.append(f"{_mes_abr_est}-{today_local.strftime('%y')} Est.")
+                        chart_data.append({
+                            "value": round(_venta_est, 0),
+                            "itemStyle": {"color": "#86efac"},
+                            "label": {"formatter": _lbl_est},
                         })
                     chart_options = {
                         "backgroundColor": "transparent",
