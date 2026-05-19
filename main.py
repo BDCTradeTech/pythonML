@@ -5888,10 +5888,10 @@ def _pintar_home_inline(
                     _dias_m_est = calendar.monthrange(today_local.year, today_local.month)[1]
                     if _dias_t_est < _dias_m_est and ventas_mes_actual_monto > 0:
                         _venta_est = (ventas_mes_actual_monto / _dias_t_est) * _dias_m_est
-                        _val_act = por_mes.get(mes_actual_key, {}).get("total", 0)
+                        _val_mes_ant = por_mes[orden_rev[-2]]["total"] if len(orden_rev) >= 2 else 0
                         _monto_est_str = fmt_m(_venta_est)
-                        if _val_act > 0:
-                            _pct_est = (_venta_est - _val_act) / _val_act * 100
+                        if _val_mes_ant > 0:
+                            _pct_est = (_venta_est - _val_mes_ant) / _val_mes_ant * 100
                             _rich_est = "pctpos" if _pct_est >= 0 else "pctneg"
                             _lbl_est = f"{{{_rich_est}|{_pct_est:+.1f}%}}\n{{monto|{_monto_est_str}}}"
                         else:
