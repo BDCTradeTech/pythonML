@@ -9316,6 +9316,8 @@ def build_tab_precios_detalle(container) -> None:
                         for b in (bodies_extra or []):
                             if b and isinstance(b, dict):
                                 item_extra = _body_to_precios_item(b)
+                                if str(item_extra.get("id", "")) == "MLA3298956270":
+                                    print(f"[DEBUG MLA3298956270] seller_sku='{item_extra.get('seller_sku')}' ruta=ruta_A", flush=True)
                                 if item_extra.get("id"):
                                     items_ordenados.append(item_extra)
                                     iid = str(item_extra["id"])
@@ -9432,6 +9434,8 @@ def build_tab_precios_detalle(container) -> None:
                 items_a_mostrar.append((i, [i]))
         def _agregar_row(items_list: list, item_dict: Dict[str, Any], grupo_single: List[Dict]) -> None:
             i = item_dict
+            if str(i.get("id", "")) == "MLA3298956270":
+                print(f"[DEBUG MLA3298956270] seller_sku='{i.get('seller_sku')}' ruta=item_normal", flush=True)
             catalog_id = str(i.get("catalog_product_id") or "").strip()
             seller_sku = (i.get("seller_sku") or "").strip()
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
@@ -9593,6 +9597,8 @@ def build_tab_precios_detalle(container) -> None:
                         if not item_id_b or item_id_b in ids_ya_incluidos:
                             continue
                         item_norm = _item_from_body_export(b)
+                        if str(item_norm.get("id", "")) == "MLA3298956270":
+                            print(f"[DEBUG MLA3298956270] seller_sku='{item_norm.get('seller_sku')}' ruta=ruta_B", flush=True)
                         _agregar_row(items_loaded, item_norm, [item_norm])
                         ids_ya_incluidos.add(item_id_b)
             except Exception:
