@@ -9316,8 +9316,6 @@ def build_tab_precios_detalle(container) -> None:
                         for b in (bodies_extra or []):
                             if b and isinstance(b, dict):
                                 item_extra = _body_to_precios_item(b)
-                                if str(item_extra.get("id", "")) == "MLA3298956270":
-                                    print(f"[DEBUG MLA3298956270] seller_sku='{item_extra.get('seller_sku')}' ruta=ruta_A", flush=True)
                                 if item_extra.get("id"):
                                     items_ordenados.append(item_extra)
                                     iid = str(item_extra["id"])
@@ -9434,8 +9432,6 @@ def build_tab_precios_detalle(container) -> None:
                 items_a_mostrar.append((i, [i]))
         def _agregar_row(items_list: list, item_dict: Dict[str, Any], grupo_single: List[Dict]) -> None:
             i = item_dict
-            if str(i.get("id", "")) == "MLA3298956270":
-                print(f"[DEBUG MLA3298956270] seller_sku='{i.get('seller_sku')}' ruta=item_normal", flush=True)
             catalog_id = str(i.get("catalog_product_id") or "").strip()
             seller_sku = (i.get("seller_sku") or "").strip()
             dedupe_key = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "")
@@ -9549,13 +9545,14 @@ def build_tab_precios_detalle(container) -> None:
                     val = att.get("value_name") or att.get("value_id")
                     if val:
                         color = str(val)
-                        break
                 elif aid == "SELLER_SKU":
                     v = att.get("value_name") or att.get("value") or att.get("value_id")
                     if v is None and att.get("values"):
                         v = (att["values"][0] or {}).get("name") or (att["values"][0] or {}).get("value_name")
                     if v is not None:
                         seller_sku = str(v).strip()
+                if marca and color and seller_sku:
+                    break
             if not seller_sku:
                 seller_sku = (body.get("seller_custom_field") or "").strip()
             catalog_listing = body.get("catalog_listing") is True
@@ -9596,14 +9593,7 @@ def build_tab_precios_detalle(container) -> None:
                         item_id_b = str(b.get("id") or "").strip()
                         if not item_id_b or item_id_b in ids_ya_incluidos:
                             continue
-                        if str(b.get("id", "")) == "MLA3298956270":
-                            _attrs_d = b.get("attributes") or []
-                            _sku_d = [a for a in _attrs_d if (a.get("id") or "").upper() == "SELLER_SKU"]
-                            print(f"[DEBUG2 MLA3298956270] attributes count={len(_attrs_d)} SELLER_SKU_attrs={_sku_d}", flush=True)
-                            print(f"[DEBUG2 MLA3298956270] seller_custom_field={b.get('seller_custom_field')}", flush=True)
                         item_norm = _item_from_body_export(b)
-                        if str(item_norm.get("id", "")) == "MLA3298956270":
-                            print(f"[DEBUG MLA3298956270] seller_sku='{item_norm.get('seller_sku')}' ruta=ruta_B", flush=True)
                         _agregar_row(items_loaded, item_norm, [item_norm])
                         ids_ya_incluidos.add(item_id_b)
             except Exception:
