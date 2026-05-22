@@ -7088,7 +7088,7 @@ def build_tab_cuotas(container) -> None:
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
             try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data)
+                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container)
             except Exception as e:
                 result_area.clear()
                 with result_area:
@@ -7149,7 +7149,7 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
     return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
 
 
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None) -> None:
+def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
@@ -7276,20 +7276,32 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
 
     with result_area:
         with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
-            with ui.row().classes("items-center gap-4 flex-wrap"):
-                for label, count in [
-                    ("Publicaciones únicas", len(rows_all)),
-                    ("Propios",          n_propios),
-                    ("Catálogo",         n_catalogo),
-                    ("En 3 cuotas",      n_x3),
-                    ("En 6 cuotas",      n_x6),
-                    ("En promoción",     n_promos),
-                ]:
-                    with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
-                        ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
-                        ui.label(label).classes("text-xs text-gray-600 text-center")
+            with ui.row().classes("items-center gap-4 flex-wrap justify-between"):
+                with ui.row().classes("items-center gap-4 flex-wrap"):
+                    for label, count in [
+                        ("Publicaciones únicas", len(rows_all)),
+                        ("Propios",          n_propios),
+                        ("Catálogo",         n_catalogo),
+                        ("En 3 cuotas",      n_x3),
+                        ("En 6 cuotas",      n_x6),
+                        ("En promoción",     n_promos),
+                    ]:
+                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
+                            ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
+                            ui.label(label).classes("text-xs text-gray-600 text-center")
+                if container is not None:
+                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense").classes("ml-auto")
 
-        filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72 mb-3")
+        with ui.row().classes("items-center gap-3 mb-3"):
+            filtro_cuotas_sel = ui.select(
+                {"cualquiera": "Cualquiera", "sin_cuotas": "Sin cuotas", "con_cuotas": "Con cuotas"},
+                value="cualquiera", label="Cuotas"
+            ).classes("w-36").props("outlined dense")
+            filtro_promo_sel = ui.select(
+                {"cualquiera": "Cualquiera", "con_promo": "Con promoción", "sin_promo": "Sin promoción"},
+                value="cualquiera", label="Promos"
+            ).classes("w-36").props("outlined dense")
+            filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
         table_container = ui.element("div").style("width:100%;max-height:65vh;overflow:auto;position:relative")
 
@@ -7435,18 +7447,30 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             _render(_sort_rows(filtrados_ref["val"]))
 
         def _on_filtro(e) -> None:
-            txt = (getattr(e, "value", "") or "").strip().lower()
+            txt = (getattr(filtro_input, "value", "") or "").strip().lower()
+            cuotas_val = filtro_cuotas_sel.value
+            promo_val  = filtro_promo_sel.value
+            result = list(rows_all)
             if txt:
-                filtrados_ref["val"] = [
-                    r for r in rows_all
+                result = [
+                    r for r in result
                     if txt in (r.get("seller_sku") or "").lower()
                     or txt in r.get("title", "").lower()
                 ]
-            else:
-                filtrados_ref["val"] = list(rows_all)
+            if cuotas_val == "sin_cuotas":
+                result = [r for r in result if not r["x3"]["id"] and not r["x6"]["id"]]
+            elif cuotas_val == "con_cuotas":
+                result = [r for r in result if r["x3"]["id"] or r["x6"]["id"]]
+            if promo_val == "con_promo":
+                result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
+            elif promo_val == "sin_promo":
+                result = [r for r in result if r.get("promo", {}).get("price_promo") is None]
+            filtrados_ref["val"] = result
             _render(_sort_rows(filtrados_ref["val"]))
 
         filtro_input.on_value_change(_on_filtro)
+        filtro_cuotas_sel.on_value_change(lambda *a: _on_filtro(None))
+        filtro_promo_sel.on_value_change(lambda *a: _on_filtro(None))
         _render(_sort_rows(rows_all))
 
 
