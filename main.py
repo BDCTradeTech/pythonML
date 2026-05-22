@@ -7442,7 +7442,56 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                             ui.label("—").classes("text-gray-400")
                                     # Precio
                                     with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right"):
-                                        ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
+                                        if gkey != "catalogo" and item_id and price is not None:
+                                            def _abrir_editar_cuota(gk=gkey, iid=item_id, sl=slot, r=row) -> None:
+                                                dialog = ui.dialog()
+                                                with dialog:
+                                                    with ui.card().classes("p-4 min-w-[340px]"):
+                                                        ui.label(f"Editar precio — {gk.upper()} — {r.get('seller_sku', '')}").classes("text-lg font-semibold mb-2")
+                                                        ui.label(f"ID: {iid}").classes("text-sm text-gray-500 mb-3")
+                                                        try:
+                                                            precio_actual = float(sl["price"] or 0)
+                                                        except (TypeError, ValueError):
+                                                            precio_actual = 0.0
+                                                        inp_precio = ui.input("Nuevo precio ($)", value=str(int(precio_actual))).classes("w-full")
+                                                        inp_precio.props("type=number min=1 step=1")
+
+                                                        def guardar(d=dialog, inp=inp_precio, s=sl, i=iid) -> None:
+                                                            try:
+                                                                nuevo = float(inp.value or 0)
+                                                            except (TypeError, ValueError):
+                                                                ui.notify("Precio inválido.", color="negative")
+                                                                return
+                                                            if nuevo < 1:
+                                                                ui.notify("El precio debe ser al menos 1.", color="negative")
+                                                                return
+                                                            d.close()
+                                                            ui.notify("Actualizando precio...", color="info")
+                                                            cl = context.client
+
+                                                            async def _actualizar(client_=cl, s2=s, precio=nuevo, item=i) -> None:
+                                                                try:
+                                                                    await run.io_bound(ml_update_item_price, access_token, item, precio)
+                                                                    s2["price"] = precio
+                                                                    with client_:
+                                                                        ui.notify("Precio actualizado correctamente.", color="positive")
+                                                                        _render(_sort_rows(filtrados_ref["val"]))
+                                                                except requests.exceptions.HTTPError as err:
+                                                                    with client_:
+                                                                        ui.notify(f"Error al actualizar: {err}", color="negative")
+                                                                except Exception as err:
+                                                                    with client_:
+                                                                        ui.notify(f"Error: {err}", color="negative")
+
+                                                            background_tasks.create(_actualizar())
+
+                                                        with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                                                            ui.button("Cancelar", on_click=lambda d=dialog: d.close()).props("flat")
+                                                            ui.button("Guardar", on_click=guardar, color="primary")
+                                                dialog.open()
+                                            ui.button(fmt_moneda(price), on_click=_abrir_editar_cuota).props("flat dense").style("font-weight:600;font-size:10px;padding:0 4px;min-height:0;color:inherit")
+                                        else:
+                                            ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
                                     # % vs Propia (grupos) — positivo=verde, negativo=rojo
                                     if gkey != "propia":
                                         with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center"):
