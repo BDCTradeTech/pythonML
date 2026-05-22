@@ -7178,7 +7178,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         return {"id": str(it.get("id") or ""), "permalink": it.get("permalink") or "", "price": it.get("price")}
 
     def _build_row(group: List[Dict[str, Any]]) -> Dict[str, Any]:
-        propia = catalogo = x3 = x6 = None
+        propia = catalogo = x3 = x6 = x9 = x12 = None
         for it in group:
             cuotas = _cuotas_desde_item(it)
             is_cat = it.get("catalog_listing") is True
@@ -7195,6 +7195,12 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             if cuotas == "x6":
                 if x6 is None or _cuotas_score(it) > _cuotas_score(x6):
                     x6 = it
+            if cuotas == "x9":
+                if x9 is None or _cuotas_score(it) > _cuotas_score(x9):
+                    x9 = it
+            if cuotas == "x12":
+                if x12 is None or _cuotas_score(it) > _cuotas_score(x12):
+                    x12 = it
         rep = max(group, key=_cuotas_score)
         # SKU: usa el del representante; si vacío, busca en todos los items del grupo
         sku = (rep.get("seller_sku") or "").strip()
@@ -7230,6 +7236,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             "catalogo":      _slot(catalogo),
             "x3":            _slot(x3),
             "x6":            _slot(x6),
+            "x9":            _slot(x9),
+            "x12":           _slot(x12),
         }
 
     rows_all = [_build_row(g) for g in groups.values()]
@@ -7256,6 +7264,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         ("catalogo", "Catálogo",           "#F1F8F1", "#D6EDD6", "#B8D9B8"),
         ("x3",       "3 Cuotas",           "#FFFAF0", "#FFF0CC", "#FFE0B2"),
         ("x6",       "6 Cuotas",           "#FAF5FC", "#EDD9F5", "#E1BEE7"),
+        ("x9",       "9 Cuotas",           "#FFF5F5", "#FFE0E0", "#FFCCCC"),
+        ("x12",      "12 Cuotas",          "#F5F5FF", "#E0E0FF", "#CCCCFF"),
     ]
     PROMO_BG_EVEN = "#FFF8E1"
     PROMO_BG_ODD  = "#FFECB3"
@@ -7270,6 +7280,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         "catalogo_price": lambda r: r["catalogo"]["price"] if r["catalogo"]["price"] is not None else -1,
         "x3_price":       lambda r: r["x3"]["price"]       if r["x3"]["price"]       is not None else -1,
         "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
+        "x9_price":       lambda r: r["x9"]["price"]       if r["x9"]["price"]       is not None else -1,
+        "x12_price":      lambda r: r["x12"]["price"]      if r["x12"]["price"]      is not None else -1,
     }
 
     TH_HDR1 = "font-weight:700;font-size:11px;padding:5px 6px;border:1px solid #1565c0;background:#1976d2;color:white;letter-spacing:0.05em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,0.15)"
@@ -7280,6 +7292,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
     n_x3       = sum(1 for r in rows_all if r["x3"]["id"])
     n_x6       = sum(1 for r in rows_all if r["x6"]["id"])
+    n_x9       = sum(1 for r in rows_all if r["x9"]["id"])
+    n_x12      = sum(1 for r in rows_all if r["x12"]["id"])
     n_promos   = sum(1 for r in rows_all if r.get("promo", {}).get("price_promo") is not None)
 
     with result_area:
@@ -7292,6 +7306,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                         ("Catálogo",         n_catalogo),
                         ("En 3 cuotas",      n_x3),
                         ("En 6 cuotas",      n_x6),
+                        ("En 9 cuotas",      n_x9),
+                        ("En 12 cuotas",     n_x12),
                         ("En promoción",     n_promos),
                     ]:
                         with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
@@ -7355,26 +7371,28 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             with ui.element("th").props('colspan="4"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Promociones")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                cs = '2' if gkey == "propia" else '3'
-                                with ui.element("th").props(f'colspan="{cs}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
+                                with ui.element("th").props('colspan="2"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
                         # Fila 2: sub-columnas de cada grupo
                         with ui.element("tr"):
                             with ui.element("th").style(f"{TH_HDR2};width:5%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("Precio Promo")
-                            with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% Vend.")
-                            with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% vs Propia")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
-                                with ui.element("th").style(f"{TH_HDR2};width:5%;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
-                                    ui.label("Publicación")
-                                with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
-                                    ui.label("Precio" + _ind(pcol))
-                                if gkey != "propia":
+                                if gkey == "propia":
+                                    with ui.element("th").style(f"{TH_HDR2};width:5%;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
+                                        ui.label("Publicación")
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                        ui.label("Precio" + _ind(pcol))
+                                else:
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                        ui.label("Precio" + _ind(pcol))
                                     with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
                                         ui.label("% vs Propia")
                     # ── Cuerpo ────────────────────────────────────────────────
@@ -7432,16 +7450,18 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     permalink = slot["permalink"]
                                     price     = slot["price"]
                                     _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:10px"
-                                    # Publicación
-                                    with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:9px;font-family:monospace;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
-                                        if item_id and permalink:
-                                            ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
-                                        elif item_id:
-                                            ui.label(item_id)
-                                        else:
-                                            ui.label("—").classes("text-gray-400")
-                                    # Precio
-                                    with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right"):
+                                    # Publicación — solo Propia
+                                    if gkey == "propia":
+                                        with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:9px;font-family:monospace;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
+                                            if item_id and permalink:
+                                                ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
+                                            elif item_id:
+                                                ui.label(item_id)
+                                            else:
+                                                ui.label("—").classes("text-gray-400")
+                                    # Precio — todos (border-left en no-propia como separador de grupo)
+                                    _brd = "" if gkey == "propia" else f"border-left:2px solid {gborder};"
+                                    with ui.element("td").style(f"{_gb};{_brd}padding:3px 6px;font-weight:600;text-align:right"):
                                         if gkey != "catalogo" and item_id and price is not None:
                                             def _abrir_editar_cuota(gk=gkey, iid=item_id, sl=slot, r=row) -> None:
                                                 dialog = ui.dialog()
@@ -7492,7 +7512,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                             ui.button(fmt_moneda(price), on_click=_abrir_editar_cuota).props("flat dense").style("font-weight:600;font-size:10px;padding:0 4px;min-height:0;color:inherit")
                                         else:
                                             ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
-                                    # % vs Propia (grupos) — positivo=verde, negativo=rojo
+                                    # % vs Propia — todos menos Propia
                                     if gkey != "propia":
                                         with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center"):
                                             if price is not None and propia_price is not None and float(propia_price) != 0:
@@ -7526,9 +7546,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                     or txt in r.get("title", "").lower()
                 ]
             if cuotas_val == "sin_cuotas":
-                result = [r for r in result if not r["x3"]["id"] and not r["x6"]["id"]]
+                result = [r for r in result if not r["x3"]["id"] and not r["x6"]["id"] and not r["x9"]["id"] and not r["x12"]["id"]]
             elif cuotas_val == "con_cuotas":
-                result = [r for r in result if r["x3"]["id"] or r["x6"]["id"]]
+                result = [r for r in result if r["x3"]["id"] or r["x6"]["id"] or r["x9"]["id"] or r["x12"]["id"]]
             if promo_val == "con_promo":
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
             elif promo_val == "sin_promo":
