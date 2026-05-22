@@ -3954,6 +3954,7 @@ def _parse_ml_item_body(body: dict) -> dict:
         "catalog_product_id": body.get("catalog_product_id"),
         "catalog_listing": catalog_listing,
         "listing_type_id": body.get("listing_type_id"),
+        "category_id": body.get("category_id"),
         "sale_terms": body.get("sale_terms"),
         "seller_sku": seller_sku,
         "marca": marca or "—",
@@ -7126,8 +7127,6 @@ def build_tab_cuotas(container) -> None:
                         else:             has_x6  = True
             if gp_by_cat and not any([has_x3, has_x6, has_x9, has_x12]):
                 has_x6 = True
-            print(f"[DEBUG CUOTAS] items_raw count: {len(items_raw)}", flush=True)
-            print(f"[DEBUG CUOTAS] gp_by_cat: {list(gp_by_cat.keys())}", flush=True)
             _fees_list: list = []
             for _cat, _rep in gp_by_cat.items():
                 _fee = await run.io_bound(
@@ -7145,7 +7144,6 @@ def build_tab_cuotas(container) -> None:
                     if _fb_fee is not None:
                         _fees_list.append(_fb_fee)
                         has_x6 = True
-            print(f"[DEBUG CUOTAS] _fb_cat: {_fb_cat}", flush=True)
             _base_fee = max(_fees_list) if _fees_list else 0.0
             listing_fees = {
                 "x3":  _base_fee if _fees_list else None,
@@ -7153,8 +7151,6 @@ def build_tab_cuotas(container) -> None:
                 "x9":  _base_fee if has_x9 else None,
                 "x12": _base_fee if has_x12 else None,
             }
-            print(f"[DEBUG CUOTAS] _base_fee: {_base_fee}", flush=True)
-            print(f"[DEBUG CUOTAS] listing_fees: {listing_fees}", flush=True)
             try:
                 _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, listing_fees)
             except Exception as e:
