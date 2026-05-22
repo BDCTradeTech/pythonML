@@ -7133,10 +7133,19 @@ def build_tab_cuotas(container) -> None:
                 )
                 if _fee is not None:
                     _fees_list.append(_fee)
+            # fallback: si no hay gold_pro activos, consultar listing_prices con la primera categoría disponible
+            if not _fees_list:
+                _fb_cat = next((str(_it.get("category_id") or "") for _it in items_raw if _it.get("category_id")), None)
+                if _fb_cat:
+                    _fb_price = next((float(_it.get("price") or 100000) for _it in items_raw if _it.get("category_id") == _fb_cat), 100000.0)
+                    _fb_fee = await run.io_bound(_fetch_listing_prices_gp, access_token, _fb_price, _fb_cat)
+                    if _fb_fee is not None:
+                        _fees_list.append(_fb_fee)
+                        has_x6 = True
             _base_fee = max(_fees_list) if _fees_list else 0.0
             listing_fees = {
-                "x3":  _base_fee if gp_by_cat else None,
-                "x6":  _base_fee if gp_by_cat else None,
+                "x3":  _base_fee if _fees_list else None,
+                "x6":  _base_fee if _fees_list else None,
                 "x9":  _base_fee if has_x9 else None,
                 "x12": _base_fee if has_x12 else None,
             }
@@ -7355,6 +7364,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             ui.label(_display).classes("text-secondary text-xl font-bold leading-tight")
                             ui.label(_label).classes("text-xs text-gray-600 text-center")
                 if container is not None:
+                    ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
                     ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense")
 
         with ui.row().classes("items-center gap-3 mb-3"):
