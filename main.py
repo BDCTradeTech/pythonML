@@ -7088,7 +7088,7 @@ def build_tab_cuotas(container) -> None:
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
             try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container)
+                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
             except Exception as e:
                 result_area.clear()
                 with result_area:
@@ -7149,10 +7149,15 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
     return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
 
 
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None) -> None:
+def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id=None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
+
+    cuotas_3x  = float(get_cotizador_param("cuotas_3x",  user_id) or 0.094)
+    cuotas_6x  = float(get_cotizador_param("cuotas_6x",  user_id) or 0.151)
+    cuotas_9x  = float(get_cotizador_param("cuotas_9x",  user_id) or 0.207)
+    cuotas_12x = float(get_cotizador_param("cuotas_12x", user_id) or 0.259)
 
     if not items:
         with result_area:
@@ -7288,6 +7293,16 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                     ]:
                         with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
                             ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
+                            ui.label(label).classes("text-xs text-gray-600 text-center")
+                    ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
+                    for label, rate in [
+                        ("3x",  f"{cuotas_3x  * 100:.1f}%"),
+                        ("6x",  f"{cuotas_6x  * 100:.1f}%"),
+                        ("9x",  f"{cuotas_9x  * 100:.1f}%"),
+                        ("12x", f"{cuotas_12x * 100:.1f}%"),
+                    ]:
+                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:56px"):
+                            ui.label(rate).classes("text-secondary text-xl font-bold leading-tight")
                             ui.label(label).classes("text-xs text-gray-600 text-center")
                 if container is not None:
                     ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense").classes("ml-auto")
