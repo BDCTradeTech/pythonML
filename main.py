@@ -7295,20 +7295,25 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     n_x9       = sum(1 for r in rows_all if r["x9"]["id"])
     n_x12      = sum(1 for r in rows_all if r["x12"]["id"])
     n_promos   = sum(1 for r in rows_all if r.get("promo", {}).get("price_promo") is not None)
+    _tot = len(rows_all)
+    pct_x3  = n_x3  / _tot * 100 if _tot else 0
+    pct_x6  = n_x6  / _tot * 100 if _tot else 0
+    pct_x9  = n_x9  / _tot * 100 if _tot else 0
+    pct_x12 = n_x12 / _tot * 100 if _tot else 0
 
     with result_area:
         with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap justify-between"):
                 with ui.row().classes("items-center gap-4 flex-wrap"):
                     for label, count in [
-                        ("Publicaciones únicas", len(rows_all)),
-                        ("Propios",          n_propios),
-                        ("Catálogo",         n_catalogo),
-                        ("En 3 cuotas",      n_x3),
-                        ("En 6 cuotas",      n_x6),
-                        ("En 9 cuotas",      n_x9),
-                        ("En 12 cuotas",     n_x12),
-                        ("En promoción",     n_promos),
+                        ("Publicaciones únicas",          len(rows_all)),
+                        ("Propios",                       n_propios),
+                        ("Catálogo",                      n_catalogo),
+                        (f"En 3 cuotas ({pct_x3:.0f}%)",  n_x3),
+                        (f"En 6 cuotas ({pct_x6:.0f}%)",  n_x6),
+                        (f"En 9 cuotas ({pct_x9:.0f}%)",  n_x9),
+                        (f"En 12 cuotas ({pct_x12:.0f}%)", n_x12),
+                        ("En promoción",                  n_promos),
                     ]:
                         with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
                             ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
@@ -7368,16 +7373,15 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 ui.label("Nombre" + _ind("title"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
-                            with ui.element("th").props('colspan="4"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
+                            with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
                                 ui.label("Promociones")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                with ui.element("th").props('colspan="2"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
+                                _cspan = "3" if gkey not in ("propia", "catalogo") else "2"
+                                with ui.element("th").props(f'colspan="{_cspan}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
                                     ui.label(glabel)
                         # Fila 2: sub-columnas de cada grupo
                         with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};width:5%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:28px;z-index:10"):
-                                ui.label("Precio Promo")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% ML")
                             with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
                                 ui.label("% Vend.")
@@ -7395,6 +7399,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         ui.label("Precio" + _ind(pcol))
                                     with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
                                         ui.label("% vs Propia")
+                                    if gkey != "catalogo":
+                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
+                                            ui.label("Check%")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
@@ -7414,11 +7421,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
                                 promo_price = promo.get("price_promo")
                                 _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:10px"
-                                # Precio Promo
-                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;font-weight:600;text-align:right"):
-                                    ui.label(fmt_moneda(promo_price)).classes("" if promo_price is not None else "text-gray-400")
                                 # % ML
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center"):
+                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;text-align:center"):
                                     meli_pct = promo.get("meli_pct")
                                     if meli_pct is not None:
                                         ui.label(f"{meli_pct:.1f}%").style("color:#43a047;font-weight:500")
@@ -7523,6 +7527,21 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                     ui.label(f"+{pct:.1f}%").style("color:#43a047;font-weight:500")
                                                 else:
                                                     ui.label(f"{pct:.1f}%").style("color:#e53935;font-weight:500")
+                                            else:
+                                                ui.label("—").classes("text-gray-400")
+                                    # Check% — x3/x6/x9/x12
+                                    if gkey not in ("propia", "catalogo"):
+                                        with ui.element("td").style(f"{_gb};padding:3px 4px;text-align:center"):
+                                            if price is not None and propia_price is not None and float(propia_price) != 0:
+                                                _pct_c = (float(price) - float(propia_price)) / float(propia_price) * 100
+                                                _tasa  = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(gkey, 0) * 100
+                                                _diff  = _pct_c - _tasa
+                                                if abs(_diff) <= 0.5:
+                                                    ui.label("✓").style("color:#1976d2;font-weight:700;font-size:12px")
+                                                elif _diff > 0.5:
+                                                    ui.label("↑").style("color:#43a047;font-weight:700;font-size:12px")
+                                                else:
+                                                    ui.label("↓").style("color:#e53935;font-weight:700;font-size:12px")
                                             else:
                                                 ui.label("—").classes("text-gray-400")
 
