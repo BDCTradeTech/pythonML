@@ -7230,6 +7230,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             "marca":         rep.get("marca") or "—",
             "seller_sku":    sku,
             "title":         best.get("title") or "",
+            "thumbnail":     best.get("thumbnail") or "",
             "stock":         stock_val,
             "promo_item_id": str(best.get("id") or ""),
             "propia":        _slot(propia),
@@ -7341,9 +7342,13 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 {"cualquiera": "Cualquiera", "con_promo": "Con promoción", "sin_promo": "Sin promoción"},
                 value="cualquiera", label="Promos"
             ).classes("w-36").props("outlined dense")
+            filtro_check_sel = ui.select(
+                {"todos": "Todos", "ok": "OK", "alto": "Precio alto", "bajo": "Precio bajo"},
+                value="todos", label="Check%"
+            ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
-        table_container = ui.element("div").style("width:100%;max-height:65vh;overflow:auto;position:relative")
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto;position:relative")
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -7390,7 +7395,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
                                 if gkey == "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:5%;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
                                         ui.label("Publicación")
                                     with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
@@ -7412,7 +7417,73 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
                                     ui.label(row.get("seller_sku") or "—")
                                 with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0"):
-                                    ui.label(row.get("title") or "—")
+                                    title_text = row.get("title") or "—"
+                                    def _abrir_detalle(r=row) -> None:
+                                        dlg = ui.dialog()
+                                        with dlg:
+                                            with ui.card().classes("p-4 min-w-[500px] max-w-[700px]"):
+                                                with ui.row().classes("items-start gap-3 mb-3"):
+                                                    if r.get("thumbnail"):
+                                                        ui.image(r["thumbnail"]).classes("w-16 h-16 object-contain rounded border")
+                                                    with ui.column().classes("gap-1"):
+                                                        ui.label(r.get("marca") or "—").classes("text-xs text-gray-500 uppercase tracking-wide")
+                                                        ui.label(r.get("seller_sku") or "—").classes("text-sm font-mono text-gray-600")
+                                                        ui.label(r.get("title") or "—").classes("text-base font-semibold")
+                                                        sv = r.get("stock")
+                                                        ui.label(f"Stock: {sv if sv is not None else '—'}").classes("text-sm text-gray-500")
+                                                ui.separator().classes("my-2")
+                                                ui.label("Publicaciones").classes("text-xs font-bold text-gray-500 uppercase mb-1")
+                                                _pp = r["propia"]["price"]
+                                                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
+                                                    with ui.element("thead"):
+                                                        with ui.element("tr"):
+                                                            for _h in ["Tipo", "ID", "Precio", "% vs Propia"]:
+                                                                with ui.element("th").style("padding:4px 8px;background:#1976d2;color:white;text-align:left;font-weight:600"):
+                                                                    ui.label(_h)
+                                                    with ui.element("tbody"):
+                                                        for _tipo, _sk in [("Propia","propia"),("Catálogo","catalogo"),("3 Cuotas","x3"),("6 Cuotas","x6"),("9 Cuotas","x9"),("12 Cuotas","x12")]:
+                                                            _s = r[_sk]; _sid = _s["id"]; _sp = _s["price"]; _slink = _s["permalink"]
+                                                            with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
+                                                                with ui.element("td").style("padding:3px 8px;font-weight:500"):
+                                                                    ui.label(_tipo)
+                                                                with ui.element("td").style("padding:3px 8px;font-family:monospace;font-size:10px"):
+                                                                    if _sid and _slink:
+                                                                        ui.link(_sid, _slink, new_tab=True).classes("text-blue-700 hover:underline")
+                                                                    elif _sid:
+                                                                        ui.label(_sid)
+                                                                    else:
+                                                                        ui.label("—").classes("text-gray-400")
+                                                                with ui.element("td").style("padding:3px 8px;font-weight:600;text-align:right"):
+                                                                    ui.label(fmt_moneda(_sp)).classes("" if _sp is not None else "text-gray-400")
+                                                                with ui.element("td").style("padding:3px 8px;text-align:center"):
+                                                                    if _sk != "propia" and _sp is not None and _pp is not None and float(_pp) != 0:
+                                                                        _pct = (float(_sp) - float(_pp)) / float(_pp) * 100
+                                                                        if abs(_pct) < 0.05:
+                                                                            ui.label("=").style("color:#757575")
+                                                                        elif _pct > 0:
+                                                                            ui.label(f"+{_pct:.1f}%").style("color:#43a047;font-weight:500")
+                                                                        else:
+                                                                            ui.label(f"{_pct:.1f}%").style("color:#e53935;font-weight:500")
+                                                                    else:
+                                                                        ui.label("—").classes("text-gray-400")
+                                                promo_d = r.get("promo", {})
+                                                if promo_d.get("price_promo") is not None:
+                                                    ui.separator().classes("my-2")
+                                                    ui.label("Promoción").classes("text-xs font-bold text-gray-500 uppercase mb-1")
+                                                    with ui.row().classes("gap-4 text-sm"):
+                                                        ui.label(f"Precio promo: {fmt_moneda(promo_d['price_promo'])}").classes("font-semibold")
+                                                        if promo_d.get("meli_pct") is not None:
+                                                            ui.label(f"% ML: {promo_d['meli_pct']:.1f}%").style("color:#43a047")
+                                                        if promo_d.get("seller_pct") is not None:
+                                                            ui.label(f"% Vendedor: {promo_d['seller_pct']:.1f}%").style("color:#e65100")
+                                                ui.separator().classes("my-2")
+                                                with ui.row().classes("w-full justify-end"):
+                                                    ui.button("Cerrar", on_click=dlg.close).props("flat")
+                                        dlg.open()
+                                    ui.button(title_text, on_click=_abrir_detalle).props("flat dense align=left").style(
+                                        "font-size:10px;padding:0 2px;min-height:0;text-transform:none;color:inherit;"
+                                        "font-weight:normal;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left"
+                                    )
                                 with ui.element("td").style(f"{TD_BASE};text-align:center"):
                                     sv = row.get("stock")
                                     ui.label(str(sv) if sv is not None else "—")
@@ -7557,6 +7628,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             txt = (getattr(filtro_input, "value", "") or "").strip().lower()
             cuotas_val = filtro_cuotas_sel.value
             promo_val  = filtro_promo_sel.value
+            check_val  = filtro_check_sel.value
             result = list(rows_all)
             if txt:
                 result = [
@@ -7572,12 +7644,29 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
             elif promo_val == "sin_promo":
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is None]
+            if check_val != "todos":
+                _rates = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
+                def _check_match(r: dict, target: str) -> bool:
+                    pp = r["propia"]["price"]
+                    if pp is None or float(pp) == 0:
+                        return False
+                    for gk, tasa in _rates.items():
+                        p = r[gk]["price"]
+                        if p is None:
+                            continue
+                        diff = (float(p) - float(pp)) / float(pp) * 100 - tasa * 100
+                        if target == "ok"   and abs(diff) <= 0.5: return True
+                        if target == "alto" and diff >  0.5:       return True
+                        if target == "bajo" and diff < -0.5:       return True
+                    return False
+                result = [r for r in result if _check_match(r, check_val)]
             filtrados_ref["val"] = result
             _render(_sort_rows(filtrados_ref["val"]))
 
         filtro_input.on_value_change(_on_filtro)
         filtro_cuotas_sel.on_value_change(lambda *a: _on_filtro(None))
         filtro_promo_sel.on_value_change(lambda *a: _on_filtro(None))
+        filtro_check_sel.on_value_change(lambda *a: _on_filtro(None))
         _render(_sort_rows(rows_all))
 
 
