@@ -7015,6 +7015,26 @@ def build_tab_ventas(container) -> None:
         _cargar_ventas()
 
 
+def _fetch_listing_prices_gp(access_token: str, price: float, category_id: str) -> Optional[float]:
+    """Devuelve financing_add_on_fee para gold_pro desde listing_prices, o None si falla."""
+    try:
+        r = requests.get(
+            "https://api.mercadolibre.com/sites/MLA/listing_prices",
+            params={"price": price, "category_id": category_id},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if r.status_code == 200:
+            for entry in r.json():
+                if entry.get("listing_type_id") == "gold_pro":
+                    fee = (entry.get("sale_fee_details") or {}).get("financing_add_on_fee")
+                    if fee is not None:
+                        return float(fee)
+    except Exception:
+        pass
+    return None
+
+
 def build_tab_cuotas(container) -> None:
     """Pestaña Cuotas: lista deduplicada por SKU con info de cuotas de cada publicación."""
     container.clear()
@@ -7087,8 +7107,41 @@ def build_tab_cuotas(container) -> None:
                 promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
+            # ── financing_add_on_fee por categoría de gold_pro ────────────────
+            gp_by_cat: Dict[str, Any] = {}
+            has_x3 = has_x6 = has_x9 = has_x12 = False
+            for _it in items_raw:
+                if str(_it.get("listing_type_id") or "").lower() != "gold_pro":
+                    continue
+                _cat = _it.get("category_id") or ""
+                if _cat and _cat not in gp_by_cat:
+                    gp_by_cat[_cat] = _it
+                for _st in (_it.get("sale_terms") or []):
+                    if str(_st.get("id") or "").upper() == "INSTALLMENTS_CAMPAIGN":
+                        _vn = str(_st.get("value_name") or "").lower()
+                        if "12x" in _vn:  has_x12 = True
+                        elif "9x" in _vn: has_x9  = True
+                        elif "6x" in _vn: has_x6  = True
+                        elif "3x" in _vn: has_x3  = True
+                        else:             has_x6  = True
+            if gp_by_cat and not any([has_x3, has_x6, has_x9, has_x12]):
+                has_x6 = True
+            _fees_list: list = []
+            for _cat, _rep in gp_by_cat.items():
+                _fee = await run.io_bound(
+                    _fetch_listing_prices_gp, access_token, float(_rep.get("price") or 100000), _cat
+                )
+                if _fee is not None:
+                    _fees_list.append(_fee)
+            _base_fee = max(_fees_list) if _fees_list else 0.0
+            listing_fees = {
+                "x3":  _base_fee if gp_by_cat else None,
+                "x6":  _base_fee if gp_by_cat else None,
+                "x9":  _base_fee if has_x9 else None,
+                "x12": _base_fee if has_x12 else None,
+            }
             try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
+                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, listing_fees)
             except Exception as e:
                 result_area.clear()
                 with result_area:
@@ -7149,15 +7202,10 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
     return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
 
 
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id=None) -> None:
+def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, listing_fees: Optional[Dict[str, Any]] = None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
-
-    cuotas_3x  = float(get_cotizador_param("cuotas_3x",  user_id) or 0.094)
-    cuotas_6x  = float(get_cotizador_param("cuotas_6x",  user_id) or 0.151)
-    cuotas_9x  = float(get_cotizador_param("cuotas_9x",  user_id) or 0.207)
-    cuotas_12x = float(get_cotizador_param("cuotas_12x", user_id) or 0.259)
 
     if not items:
         with result_area:
@@ -7295,17 +7343,19 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
                             ui.label(label).classes("text-xs text-gray-600 text-center")
                     ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    for label, rate in [
-                        ("3x",  f"{cuotas_3x  * 100:.1f}%"),
-                        ("6x",  f"{cuotas_6x  * 100:.1f}%"),
-                        ("9x",  f"{cuotas_9x  * 100:.1f}%"),
-                        ("12x", f"{cuotas_12x * 100:.1f}%"),
+                    _lf = listing_fees or {}
+                    for _label, _val in [
+                        ("3x_campaign",  _lf.get("x3")),
+                        ("6x_campaign",  _lf.get("x6")),
+                        ("9x_campaign",  _lf.get("x9")),
+                        ("12x_campaign", _lf.get("x12")),
                     ]:
-                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:56px"):
-                            ui.label(rate).classes("text-secondary text-xl font-bold leading-tight")
-                            ui.label(label).classes("text-xs text-gray-600 text-center")
+                        _display = f"{_val:.1f}%" if _val is not None else "—"
+                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:70px"):
+                            ui.label(_display).classes("text-secondary text-xl font-bold leading-tight")
+                            ui.label(_label).classes("text-xs text-gray-600 text-center")
                 if container is not None:
-                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense").classes("ml-auto")
+                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense")
 
         with ui.row().classes("items-center gap-3 mb-3"):
             filtro_cuotas_sel = ui.select(
