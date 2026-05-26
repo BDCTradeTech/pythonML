@@ -6142,15 +6142,20 @@ def _pintar_home_inline(
                                 ui.label(str(marcas_distintas)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                         ui.label("ÚLTIMAS VENTAS").style(f"{_LBL};margin-bottom:4px")
                         if ultimas_5_ventas:
+                            _tz_arg = timezone(timedelta(hours=-3))
                             for v in ultimas_5_ventas:
                                 ds_raw = v.get("date_closed") or v.get("date_created") or v.get("date_last_updated") or ""
                                 try:
-                                    if "T" in ds_raw:
-                                        dt_v = datetime.strptime(ds_raw[:19], "%Y-%m-%dT%H:%M:%S")
-                                    elif " " in ds_raw:
-                                        dt_v = datetime.strptime(ds_raw[:16], "%Y-%m-%d %H:%M")
-                                    elif len(ds_raw) >= 10:
-                                        dt_v = datetime.strptime(ds_raw[:10], "%Y-%m-%d")
+                                    _s = re.sub(r'\.\d+', '', ds_raw)
+                                    if "T" in _s:
+                                        if re.search(r'[+-]\d{2}:\d{2}$', _s):
+                                            dt_v = datetime.fromisoformat(_s).astimezone(_tz_arg)
+                                        else:
+                                            dt_v = datetime.strptime(_s[:19], "%Y-%m-%dT%H:%M:%S")
+                                    elif " " in _s:
+                                        dt_v = datetime.strptime(_s[:16], "%Y-%m-%d %H:%M")
+                                    elif len(_s) >= 10:
+                                        dt_v = datetime.strptime(_s[:10], "%Y-%m-%d")
                                     else:
                                         dt_v = None
                                     hora_fmt = f"{dt_v.hour:02d}:{dt_v.minute:02d}" if dt_v else ""
