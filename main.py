@@ -9111,7 +9111,7 @@ def _mostrar_tabla_precios(
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
-        {"name": "dias_sin_modificar", "label": "Modificado", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "dias_sin_modificar", "label": "Ult. Mod.", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
@@ -9244,15 +9244,15 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
                                             if cs == "winning":
-                                                ui.label("Ganando").classes("text-positive font-medium")
+                                                ui.label("Ganando").classes("text-positive font-medium text-center")
                                             elif cs == "sharing_first_place":
-                                                ui.label("Empate 1ro").classes("text-blue-600 font-medium")
+                                                ui.label("Empate 1ro").classes("text-blue-600 font-medium text-center")
                                             elif cs == "competing":
-                                                ui.label("Perdiendo").classes("text-negative font-medium")
+                                                ui.label("Perdiendo").classes("text-negative font-medium text-center")
                                             elif cs == "listed":
-                                                ui.label("Listed").classes("text-gray-400")
+                                                ui.label("Listed").classes("text-gray-400 text-center")
                                             else:
-                                                ui.label("")
+                                                ui.label("").classes("text-center")
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
                                             ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
@@ -9320,13 +9320,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
-                                                ui.label("—").classes("text-gray-400")
+                                                ui.label("—").classes("text-gray-400 text-center")
                                             elif _dias == 0:
-                                                ui.label("hoy").classes("text-positive font-medium")
+                                                ui.label("hoy").classes("text-positive font-medium text-center")
                                             elif _dias <= 7:
-                                                ui.label(str(_dias)).classes("text-orange-500 font-medium")
+                                                ui.label(str(_dias)).classes("text-orange-500 font-medium text-center")
                                             else:
-                                                ui.label(str(_dias)).classes("text-negative font-medium")
+                                                ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
                                             ui.label(str(val) if val is not None else "—")
             current_table.clear()
@@ -9363,7 +9363,7 @@ def _mostrar_tabla_precios(
                 ui.label("Marcas:").classes("text-xs text-gray-500")
                 lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
             ui.space()
-            ui.button("Borrar", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
+            ui.button("Limpiar día", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
                 ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
