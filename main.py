@@ -9331,6 +9331,20 @@ def _mostrar_tabla_precios(
                                             ui.label(str(val) if val is not None else "—")
             current_table.clear()
 
+    def _blanquear_revisiones():
+        revisiones_hoy.clear()
+        conn = get_connection()
+        try:
+            conn.execute(
+                "DELETE FROM revisiones_diarias WHERE user_id=? AND fecha=date('now','localtime')",
+                (_uid,),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+        filtrar_y_pintar()
+        ui.notify("Revisiones del día borradas", color="info")
+
     with result_area:
         with ui.row().classes("w-full items-center gap-5 px-3 py-1 bg-grey-2 rounded mb-1"):
             with ui.row().classes("items-baseline gap-1"):
@@ -9349,6 +9363,7 @@ def _mostrar_tabla_precios(
                 ui.label("Marcas:").classes("text-xs text-gray-500")
                 lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
             ui.space()
+            ui.button(on_click=_blanquear_revisiones).props("icon=eraser dense flat color=warning").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
                 ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
