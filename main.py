@@ -4103,6 +4103,7 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
         "Content-Type": "application/json",
     }
     src = requests.get(f"{base}/items/{propia_id}", headers=headers, timeout=15)
+    print(f"[DEBUG CREAR] GET {propia_id} status={src.status_code}", flush=True)
     src.raise_for_status()
     item = src.json()
 
@@ -4123,7 +4124,7 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
         body["tags"] = tags
 
     resp = requests.post(f"{base}/items", headers=headers, json=body, timeout=15)
-    print(f"[DEBUG CREAR] status={resp.status_code} body={resp.text}")
+    print(f"[DEBUG CREAR] POST /items status={resp.status_code} body={resp.text}", flush=True)
     resp.raise_for_status()
     return resp.json()
 
@@ -7388,7 +7389,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
-        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto")
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto").props('id="cuotas_tc"')
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -7720,6 +7721,20 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                     ui.label("↓").style("color:#e53935;font-weight:700;font-size:12px")
                                             else:
                                                 ui.label("")
+            ui.run_javascript("""
+(function() {
+    var el = document.getElementById('cuotas_tc');
+    if (!el) return;
+    var thead = el.querySelector('thead');
+    if (!thead) return;
+    if (el._stickyListener) el.removeEventListener('scroll', el._stickyListener);
+    el._stickyListener = function() {
+        thead.style.transform = 'translateY(' + el.scrollTop + 'px)';
+        thead.style.zIndex = '10';
+    };
+    el.addEventListener('scroll', el._stickyListener, {passive: true});
+})();
+""")
 
         def _on_sort(col: str) -> None:
             if sort_col_ref["val"] == col:
