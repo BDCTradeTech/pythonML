@@ -8438,15 +8438,29 @@ def _mostrar_tabla_precios(
         _sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
         _fob_cur = row.get("fob_usd")
         _costo_cur = row.get("costo_usd")
+        if _fob_cur is None or _costo_cur is None:
+            _conn_tmp = get_connection()
+            try:
+                _r = _conn_tmp.execute(
+                    "SELECT fob_usd, costo_usd FROM productos WHERE sku = ? AND user_id = ?",
+                    (_sku, user["id"]),
+                ).fetchone()
+                if _r:
+                    if _fob_cur is None:
+                        _fob_cur = _r["fob_usd"]
+                    if _costo_cur is None:
+                        _costo_cur = _r["costo_usd"]
+            finally:
+                _conn_tmp.close()
         dialog = ui.dialog()
         with dialog:
-            with ui.card().classes("p-4 min-w-[320px]"):
-                ui.label("Editar FOB y Costo").classes("text-lg font-semibold mb-2")
-                ui.label((row.get("title") or "")[:80]).classes("text-sm text-gray-600 mb-2")
+            with ui.card().classes("p-3 min-w-[280px] max-w-[320px]"):
+                ui.label("Editar FOB y Costo").classes("text-sm font-semibold mb-1")
+                ui.label((row.get("title") or "")[:80]).classes("text-xs text-gray-600 mb-1")
                 inp_fob = ui.input("FOB u$", value=f"{_fob_cur:.2f}" if _fob_cur is not None else "").classes("w-full")
-                inp_fob.props("type=number min=0 step=0.01")
+                inp_fob.props("type=number min=0 step=0.01 dense")
                 inp_costo = ui.input("Costo u$ s/IVA", value=f"{_costo_cur:.2f}" if _costo_cur is not None else "").classes("w-full")
-                inp_costo.props("type=number min=0 step=0.01")
+                inp_costo.props("type=number min=0 step=0.01 dense")
 
                 def guardar() -> None:
                     fob_raw = (inp_fob.value or "").strip()
@@ -8468,12 +8482,12 @@ def _mostrar_tabla_precios(
                         conn = get_connection()
                         conn.execute(
                             """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, 0.105, ?, ?)
+                               VALUES (?, ?, ?, ?, ?, ?, ?)
                                ON CONFLICT(sku, user_id) DO UPDATE SET
                                    fob_usd=COALESCE(excluded.fob_usd, fob_usd),
                                    costo_usd=COALESCE(excluded.costo_usd, costo_usd),
                                    updated_at=excluded.updated_at""",
-                            (_sku, user["id"], nuevo_fob, nuevo_costo, now_str, now_str),
+                            (_sku, user["id"], nuevo_fob, nuevo_costo, row.get("tipo_iva") or 0.105, now_str, now_str),
                         )
                         conn.commit()
                         conn.close()
@@ -8486,9 +8500,9 @@ def _mostrar_tabla_precios(
                     dialog.close()
                     filtrar_y_pintar()
 
-                with ui.row().classes("w-full justify-end gap-2 mt-3"):
-                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
-                    ui.button("Guardar", on_click=guardar, color="primary")
+                with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat dense")
+                    ui.button("Guardar", on_click=guardar, color="primary").props("dense")
         dialog.open()
 
     def abrir_editar_iva(row: Dict[str, Any]) -> None:
@@ -8948,9 +8962,9 @@ def _mostrar_tabla_precios(
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 180px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "fob_usd",   "label": "FOB u$",   "field": "fob_usd",   "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 55px"},
-        {"name": "costo_usd", "label": "Costo u$", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
-        {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "quality_score", "label": "Calidad", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "catalog_price_to_win", "label": "Precio Ganador", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
