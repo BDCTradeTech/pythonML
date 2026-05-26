@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.53"
+VERSION = "2.26.05.26.54"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6678,6 +6678,10 @@ def build_tab_ventas(container) -> None:
                 net_rcv    = (pay_data.get("transaction_details") or {}).get("net_received_amount")
                 has_api    = bool(charges)
                 iibb_perc  = unit_price * ml_iibb
+                iva_venta  = unit_price * tipo_iva / (1 + tipo_iva)
+                iva_meli   = meli_fee * 0.21 / 1.21
+                iva_impor  = 0.09 * costo_usd * dolar
+                iva_total  = iva_venta - iva_meli - iva_impor
 
                 envio_real = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
                 if envio_real > 0:
@@ -6690,9 +6694,9 @@ def build_tab_ventas(container) -> None:
                 if has_api and has_calc:
                     cobrado_real = unit_price - meli_fee - cuotas_fee
                     if net_rcv is not None:
-                        gan_pesos = float(net_rcv) - costo_pesos - iibb_perc
+                        gan_pesos = float(net_rcv) - costo_pesos - iva_total - iibb_perc
                     else:
-                        gan_pesos = cobrado_real - envio_real - deb_cred - iibb_ret - sirtac - costo_pesos - iibb_perc
+                        gan_pesos = cobrado_real - envio_real - deb_cred - iibb_ret - sirtac - costo_pesos - iva_total - iibb_perc
                     gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                     mcls = "font-bold " + ("text-positive" if gan_pesos >= 0 else "text-negative")
@@ -6733,6 +6737,8 @@ def build_tab_ventas(container) -> None:
                                     for lbl_r, val_r, cls_r, show_r in [
                                         ("Comisión ML",  meli_fee,    "text-sm text-negative",  True),
                                         ("Costo Cuotas", cuotas_fee,  "text-sm text-negative",  cuotas_fee > 0),
+                                        ("IVA venta",    iva_venta,   "text-sm",                True),
+                                        ("IVA neto",     iva_total,   "text-sm text-negative",  True),
                                         ("Deb/Cred",     deb_cred,    "text-sm text-negative",  True),
                                         ("IIBB ret.",    iibb_ret,    "text-sm text-negative",  iibb_ret > 0),
                                         ("SIRTAC",       sirtac,      "text-sm text-negative",  sirtac > 0),
@@ -6747,6 +6753,14 @@ def build_tab_ventas(container) -> None:
                                                 if lbl_r == "IIBB perc.":
                                                     ui.label("est.").classes("text-xs text-gray-400 italic")
                                             ui.label(fmt_moneda(val_r)).classes(cls_r)
+                                        if lbl_r == "IVA neto":
+                                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                                with ui.row().classes("gap-4"):
+                                                    ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
+                                                    ui.label(fmt_moneda(iva_meli)).classes("text-sm")
+                                                with ui.row().classes("gap-4"):
+                                                    ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
+                                                    ui.label(fmt_moneda(iva_impor)).classes("text-sm")
                                     if has_calc:
                                         with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                                             ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
