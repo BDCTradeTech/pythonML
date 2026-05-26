@@ -4212,6 +4212,23 @@ def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[s
     return None
 
 
+def ml_get_item_performance(access_token: str, item_id: str) -> Dict[str, Any]:
+    """GET /item/{id}/performance — devuelve score (0-100) y level de calidad."""
+    if not access_token or not str(item_id).strip():
+        return {}
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/item/{item_id}/performance",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return {}
+
+
 def ml_get_promotion_item_discounts_by_user(
     access_token: Optional[str], item_id: str, user_id: str, total_discount_pct: float
 ) -> Optional[Dict[str, float]]:
@@ -8292,6 +8309,8 @@ def _mostrar_tabla_precios(
             "catalog_visit_share":  None,
             "catalog_reason":       None,
             "catalog_competitors":  None,
+            "quality_score":        None,
+            "quality_level":        None,
         })
 
     publicaciones_totales = len(items_loaded)
@@ -8331,6 +8350,32 @@ def _mostrar_tabla_precios(
                 r["catalog_visit_share"]  = d.get("visit_share")
                 r["catalog_reason"]       = d.get("reason")
                 r["catalog_competitors"]  = d.get("competitors")
+
+    _items_para_quality = [
+        r for r in items_loaded
+        if str(r.get("status") or "").lower() == "active"
+        and str(r.get("id") or "").strip()
+    ]
+    _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
+    if _quality_ids and access_token:
+        def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
+            res: Dict[str, Dict] = {}
+            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
+                for fut in as_completed(futures):
+                    iid = futures[fut]
+                    try:
+                        res[iid] = fut.result()
+                    except Exception:
+                        res[iid] = {}
+            return res
+        _quality_map = _fetch_quality(_quality_ids)
+        for r in items_loaded:
+            _qid = str(r.get("id") or "")
+            if _qid in _quality_map:
+                d = _quality_map[_qid] or {}
+                r["quality_score"] = d.get("score")
+                r["quality_level"] = d.get("level")
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
@@ -8617,7 +8662,7 @@ def _mostrar_tabla_precios(
 
     def _sort_key_precios(row: Dict[str, Any], col_name: str) -> Any:
         """Devuelve valor para ordenar según el tipo de columna."""
-        if col_name in ("price", "subtotal", "costo_usd", "margen_pesos", "margen_venta_pct"):
+        if col_name in ("price", "subtotal", "costo_usd", "margen_pesos", "margen_venta_pct", "quality_score"):
             return float(row.get(col_name) or 0)
         if col_name in ("available_quantity", "sold_quantity"):
             return int(row.get(col_name) or 0)
@@ -8820,6 +8865,7 @@ def _mostrar_tabla_precios(
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
+        {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
     ]
 
     def _build_colgroup_precios() -> None:
@@ -8829,6 +8875,7 @@ def _mostrar_tabla_precios(
             "catalog_pos": "60px", "catalog_price_to_win": "90px", "catalog_visit_share": "70px",
             "price": "100px", "margen_pesos": "90px", "margen_venta_pct": "80px",
             "available_quantity": "70px", "sold_quantity": "70px", "subtotal": "90px", "status": "80px",
+            "quality_score": "60px",
         }
         with ui.element("colgroup"):
             for col in columns_precios:
@@ -8980,53 +9027,60 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "status":
                                             s = str(val or "").lower()
                                             ui.label("Activa" if s == "active" else "Suspendida")
+                                        elif col["name"] == "quality_score":
+                                            qs = row.get("quality_score")
+                                            if qs is None:
+                                                ui.label("")
+                                            else:
+                                                qs_i = int(qs)
+                                                c = "text-positive font-medium" if qs_i >= 75 else "text-orange-500 font-medium" if qs_i >= 50 else "text-negative font-medium"
+                                                ui.label(str(qs_i)).classes(c)
                                         else:
                                             ui.label(str(val) if val is not None else "—")
             current_table.clear()
 
     with result_area:
-        with ui.card().classes("w-full mb-4 p-4 bg-grey-2"):
-            with ui.row().classes("w-full justify-around flex-wrap gap-4"):
-                with ui.column().classes("items-center"):
-                    ui.label("Publicaciones Totales").classes("text-sm text-gray-600")
-                    lbl_totales = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Unidades propias en stock").classes("text-sm text-gray-600")
-                    lbl_unidades = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Total en $").classes("text-sm text-gray-600")
-                    lbl_pesos = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Total en u$").classes("text-sm text-gray-600")
-                    lbl_usd = ui.label("—").classes("text-2xl font-bold text-primary")
-                with ui.column().classes("items-center"):
-                    ui.label("Marcas").classes("text-sm text-gray-600")
-                    lbl_marcas = ui.label("—").classes("text-2xl font-bold text-primary")
-        with ui.row().classes("items-center gap-4 mb-3 flex-wrap"):
-            ui.label("Filtros:").classes("text-sm")
+        with ui.row().classes("w-full items-center gap-5 px-3 py-1 bg-grey-2 rounded mb-1"):
+            with ui.row().classes("items-baseline gap-1"):
+                ui.label("Publicaciones:").classes("text-xs text-gray-500")
+                lbl_totales = ui.label("—").classes("text-sm font-bold text-primary")
+            with ui.row().classes("items-baseline gap-1"):
+                ui.label("Unidades:").classes("text-xs text-gray-500")
+                lbl_unidades = ui.label("—").classes("text-sm font-bold text-primary")
+            with ui.row().classes("items-baseline gap-1"):
+                ui.label("Total $:").classes("text-xs text-gray-500")
+                lbl_pesos = ui.label("—").classes("text-sm font-bold text-primary")
+            with ui.row().classes("items-baseline gap-1"):
+                ui.label("Total u$s:").classes("text-xs text-gray-500")
+                lbl_usd = ui.label("—").classes("text-sm font-bold text-primary")
+            with ui.row().classes("items-baseline gap-1"):
+                ui.label("Marcas:").classes("text-xs text-gray-500")
+                lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
+            ui.space()
+            ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
+            ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
+        with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
                 value=filtro_stock_ref.get("val", "con_stock") if filtro_stock_ref else "con_stock",
                 label="Stock",
-            ).classes("w-36")
+            ).classes("w-32").props("dense")
             filtro_estado = ui.select(
                 {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
                 value="activas",
                 label="Estado",
-            ).classes("w-36")
+            ).classes("w-32").props("dense")
             filtro_awei = ui.select(
                 {"incluye": "Incluye", "no_incluye": "No incluye"},
                 value="no_incluye",
                 label="Awei",
-            ).classes("w-36")
+            ).classes("w-28").props("dense")
             filtro_periodo = ui.select(
                 {"historica": "Histórica", "1_mes": "1 mes", "3_meses": "3 meses", "6_meses": "6 meses", "1_anio": "1 año"},
                 value="historica",
-                label="Última modificación",
-            ).classes("w-36")
-            filtro_sku = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-64")
-            ui.button("Imprimir stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print")
-            ui.button("Imprimir ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print")
+                label="Fecha",
+            ).classes("w-32").props("dense")
+            filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
         _hid_p = header_div_precios.id
