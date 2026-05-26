@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.49"
+VERSION = "2.26.05.26.50"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6316,6 +6316,7 @@ def build_tab_ventas(container) -> None:
     filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
     filtro_tipo_ref: Dict[str, str] = {"val": "todas"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
+    filtro_texto_ref: Dict[str, str] = {"val": ""}
     agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
     ganancia_neta_ref: Dict[str, float] = {"val": 0.0}
@@ -6868,6 +6869,12 @@ def build_tab_ventas(container) -> None:
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "promo"]
             elif tipo_val == "regular":
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "regular"]
+            texto_val = (filtro_texto_ref.get("val") or "").strip().lower()
+            if texto_val:
+                ventas_filtradas = [v for v in ventas_filtradas if
+                    texto_val in (v.get("productos") or "").lower() or
+                    texto_val in (v.get("title") or "").lower() or
+                    texto_val in (v.get("item_id") or "").lower()]
             ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
             hoy = datetime.now().date()
             primer_dia = hoy.replace(day=1)
@@ -7029,6 +7036,7 @@ def build_tab_ventas(container) -> None:
                                         cols_ventas = [
                                             ("#", "#", "text-center"),
                                             ("dt", "Fecha", "text-center"),
+                                            ("order_id", "Order ID", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
@@ -7054,6 +7062,8 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(str(idx))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v["fecha"])
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                ui.label(v.get("order_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v.get("item_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -7400,6 +7410,9 @@ def build_tab_ventas(container) -> None:
                     label="Estado",
                 ).classes("w-36").bind_value(filtro_estado_ref, "val")
                 filtro_estado.on_value_change(lambda: _pintar_tabla())
+                filtro_texto = ui.input(placeholder="Buscar producto...").props("outlined dense clearable").classes("w-64")
+                filtro_texto.bind_value(filtro_texto_ref, "val")
+                filtro_texto.on_value_change(lambda: _pintar_tabla())
                 btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
                 _update_btn_agrupar()
                 ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
