@@ -9287,11 +9287,27 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
-                                                ui.label("")
+                                                ui.label("—").classes("text-gray-400 text-center w-full")
                                             else:
                                                 qs_i = int(qs)
-                                                c = "text-positive font-medium" if qs_i >= 65 else "text-orange-500 font-medium"
-                                                ui.label(str(qs_i)).classes(c)
+                                                _filled = round(qs_i / 20)
+                                                if qs_i >= 65:
+                                                    _cs, _cm, _ce, _cn = "#639922", "#C0DD97", "#EAF3DE", "#27500A"
+                                                elif qs_i >= 50:
+                                                    _cs, _cm, _ce, _cn = "#EF9F27", "#FAC775", "#FAEEDA", "#633806"
+                                                else:
+                                                    _cs, _cm, _ce, _cn = "#E24B4A", "#F09595", "#FCEBEB", "#791F1F"
+                                                with ui.element("div").style("display:flex;align-items:center;gap:4px;width:100%"):
+                                                    with ui.element("div").style("display:flex;gap:2px;flex:1"):
+                                                        for _si in range(5):
+                                                            if _si >= _filled:
+                                                                _sc = _ce
+                                                            elif _si == _filled - 1 and qs_i % 20 != 0:
+                                                                _sc = _cm
+                                                            else:
+                                                                _sc = _cs
+                                                            ui.element("div").style(f"height:8px;border-radius:1px;flex:1;background:{_sc}")
+                                                    ui.label(str(qs_i)).style(f"font-size:11px;font-weight:500;color:{_cn};min-width:20px;text-align:right")
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
