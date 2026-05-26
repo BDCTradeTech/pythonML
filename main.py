@@ -4094,6 +4094,26 @@ def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[
     return resp.json()
 
 
+def ml_relist_as_gold_pro(access_token: str, item_id: str, tags: Optional[list] = None) -> Dict[str, Any]:
+    """POST /items/{id}/relist: crea publicación gold_pro independiente basada en item_id."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {"listing_type_id": "gold_pro"}
+    if tags:
+        body["tags"] = tags
+    resp = requests.post(
+        f"https://api.mercadolibre.com/items/{item_id}/relist",
+        headers=headers,
+        json=body,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:
     """Obtiene el JSON completo de una publicación de ejemplo (la primera) para mostrar qué datos devuelve ML."""
     base = "https://api.mercadolibre.com"
@@ -5355,7 +5375,7 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")
 
-            with ui.tab_panel(tab_cuotas):
+            with ui.tab_panel(tab_cuotas).style("overflow:visible"):
                 cuotas_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_config):
@@ -7441,6 +7461,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                 with ui.element("th").style("padding:4px 8px;background:#1976d2;color:white;text-align:left;font-weight:600"):
                                                                     ui.label(_h)
                                                     with ui.element("tbody"):
+                                                        _CUOTA_TAGS = {"x3": ["3x_campaign"], "x6": None}
                                                         for _tipo, _sk in [("Propia","propia"),("Catálogo","catalogo"),("3 Cuotas","x3"),("6 Cuotas","x6"),("9 Cuotas","x9"),("12 Cuotas","x12")]:
                                                             _s = r[_sk]; _sid = _s["id"]; _sp = _s["price"]; _slink = _s["permalink"]
                                                             with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
@@ -7451,6 +7472,25 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                         ui.link(_sid, _slink, new_tab=True).classes("text-blue-700 hover:underline")
                                                                     elif _sid:
                                                                         ui.label(_sid)
+                                                                    elif _sk in ("x3", "x6"):
+                                                                        def _crear_pub(sk=_sk, d=dlg, c=container, pid=r["propia"]["id"]) -> None:
+                                                                            d.close()
+                                                                            ui.notify("Creando publicación gold_pro...", color="info")
+                                                                            cl = context.client
+                                                                            _t = _CUOTA_TAGS[sk]
+                                                                            async def _do(client_=cl, iid=pid, tags=_t, cont=c) -> None:
+                                                                                try:
+                                                                                    await run.io_bound(ml_relist_as_gold_pro, access_token, iid, tags)
+                                                                                    with client_:
+                                                                                        ui.notify("Publicación gold_pro creada (nueva publicación independiente)", color="positive")
+                                                                                        build_tab_cuotas(cont)
+                                                                                except Exception as err:
+                                                                                    with client_:
+                                                                                        ui.notify(f"Error ML: {err}", color="negative")
+                                                                            background_tasks.create(_do())
+                                                                        ui.button("Crear", on_click=_crear_pub).props("flat dense color=primary").style("font-size:10px;padding:0 4px;min-height:0")
+                                                                    elif _sk in ("x9", "x12"):
+                                                                        ui.label("No disponible vía API").classes("text-gray-400 text-xs italic")
                                                                     else:
                                                                         ui.label("—").classes("text-gray-400")
                                                                 with ui.element("td").style("padding:3px 8px;font-weight:600;text-align:right"):
