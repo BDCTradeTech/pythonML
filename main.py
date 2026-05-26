@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.50"
+VERSION = "2.26.05.26.52"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6666,32 +6666,34 @@ def build_tab_ventas(container) -> None:
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
-                def _get_ship(tok, sid):
-                    r = requests.get(f"https://api.mercadolibre.com/shipments/{sid}",
-                                     headers={"Authorization": f"Bearer {tok}"}, timeout=15)
-                    return r.json() if r.status_code == 200 else {}
-
-                pay_data  = await run.io_bound(_get_pay,  access_token, payment_id)  if payment_id  else {}
-                ship_data = await run.io_bound(_get_ship, access_token, shipping_id) if shipping_id else {}
+                pay_data   = await run.io_bound(_get_pay, access_token, payment_id) if payment_id else {}
 
                 charges    = pay_data.get("charges_details") or []
-                meli_fee   = sum(c["amounts"]["original"] for c in charges if c.get("name") == "meli_percentage_fee")
-                cuotas_fee = sum(c["amounts"]["original"] for c in charges if c.get("name") == "financing_add_on_fee")
-                deb_cred   = sum(c["amounts"]["original"] for c in charges if "debitos_creditos" in (c.get("name") or ""))
-                iibb_ret   = sum(c["amounts"]["original"] for c in charges if "iibb" in (c.get("name") or "").lower())
-                sirtac     = sum(c["amounts"]["original"] for c in charges if "sirtac" in (c.get("name") or "").lower())
+                meli_fee   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "meli_percentage_fee")
+                cuotas_fee = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "financing_add_on_fee")
+                deb_cred   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "debitos_creditos" in (c.get("name") or ""))
+                iibb_ret   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "iibb" in (c.get("name") or "").lower())
+                sirtac     = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "sirtac" in (c.get("name") or "").lower())
                 net_rcv    = (pay_data.get("transaction_details") or {}).get("net_received_amount")
-                envio_real = float(ship_data.get("base_cost") or 0)
                 has_api    = bool(charges)
                 iibb_perc  = unit_price * ml_iibb
+
+                envio_real = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                if envio_real > 0:
+                    envio_lbl = "Envío Flex"
+                else:
+                    envio_real = float(p.get("ml_envios") or 6271)
+                    envio_lbl  = "Envío (est.)"
 
                 cobrado_real = gan_pesos = gan_vta_pct = gan_cos_pct = mcls = None
                 if has_api and has_calc:
                     cobrado_real = unit_price - meli_fee - cuotas_fee
-                    gan_base     = net_rcv if net_rcv is not None else cobrado_real
-                    gan_pesos    = gan_base - envio_real - costo_pesos - iibb_perc
-                    gan_vta_pct  = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
-                    gan_cos_pct  = (gan_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
+                    if net_rcv is not None:
+                        gan_pesos = float(net_rcv) - costo_pesos - iibb_perc
+                    else:
+                        gan_pesos = cobrado_real - envio_real - deb_cred - iibb_ret - sirtac - costo_pesos - iibb_perc
+                    gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
+                    gan_cos_pct = (gan_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                     mcls = "font-bold " + ("text-positive" if gan_pesos >= 0 else "text-negative")
 
                 with cl:
@@ -6734,10 +6736,10 @@ def build_tab_ventas(container) -> None:
                                         ("IIBB ret.",    iibb_ret,    "text-sm text-negative",  iibb_ret > 0),
                                         ("SIRTAC",       sirtac,      "text-sm text-negative",  sirtac > 0),
                                         ("IIBB perc.",   iibb_perc,   "text-sm text-negative",  True),
-                                        ("Envío",        envio_real,  "text-sm text-negative",  True),
+                                        (envio_lbl,      envio_real,  "text-sm text-negative",  True),
                                     ]:
                                         if not show_r: continue
-                                        border = " border-b-2 border-gray-300" if lbl_r == "Envío" else ""
+                                        border = " border-b-2 border-gray-300" if lbl_r == envio_lbl else ""
                                         with ui.row().classes(f"w-full justify-between py-0.5 gap-4{border}"):
                                             with ui.row().classes("items-center gap-1"):
                                                 ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
