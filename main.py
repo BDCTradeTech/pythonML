@@ -8434,6 +8434,63 @@ def _mostrar_tabla_precios(
 
         dialog.open()
 
+    def abrir_editar_fob_costo(row: Dict[str, Any]) -> None:
+        _sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        _fob_cur = row.get("fob_usd")
+        _costo_cur = row.get("costo_usd")
+        dialog = ui.dialog()
+        with dialog:
+            with ui.card().classes("p-4 min-w-[320px]"):
+                ui.label("Editar FOB y Costo").classes("text-lg font-semibold mb-2")
+                ui.label((row.get("title") or "")[:80]).classes("text-sm text-gray-600 mb-2")
+                inp_fob = ui.input("FOB u$", value=f"{_fob_cur:.2f}" if _fob_cur is not None else "").classes("w-full")
+                inp_fob.props("type=number min=0 step=0.01")
+                inp_costo = ui.input("Costo u$ s/IVA", value=f"{_costo_cur:.2f}" if _costo_cur is not None else "").classes("w-full")
+                inp_costo.props("type=number min=0 step=0.01")
+
+                def guardar() -> None:
+                    fob_raw = (inp_fob.value or "").strip()
+                    costo_raw = (inp_costo.value or "").strip()
+                    try:
+                        nuevo_fob = float(fob_raw) if fob_raw else None
+                    except (TypeError, ValueError):
+                        ui.notify("FOB inválido.", color="negative"); return
+                    try:
+                        nuevo_costo = float(costo_raw) if costo_raw else None
+                    except (TypeError, ValueError):
+                        ui.notify("Costo inválido.", color="negative"); return
+                    if nuevo_fob is not None and nuevo_fob < 0:
+                        ui.notify("El FOB no puede ser negativo.", color="negative"); return
+                    if nuevo_costo is not None and nuevo_costo < 0:
+                        ui.notify("El Costo no puede ser negativo.", color="negative"); return
+                    now_str = datetime.now().isoformat()
+                    try:
+                        conn = get_connection()
+                        conn.execute(
+                            """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, 0.105, ?, ?)
+                               ON CONFLICT(sku, user_id) DO UPDATE SET
+                                   fob_usd=COALESCE(excluded.fob_usd, fob_usd),
+                                   costo_usd=COALESCE(excluded.costo_usd, costo_usd),
+                                   updated_at=excluded.updated_at""",
+                            (_sku, user["id"], nuevo_fob, nuevo_costo, now_str, now_str),
+                        )
+                        conn.commit()
+                        conn.close()
+                    except Exception as e:
+                        ui.notify(f"Error: {e}", color="negative"); return
+                    if nuevo_fob is not None:
+                        row["fob_usd"] = nuevo_fob
+                    if nuevo_costo is not None:
+                        row["costo_usd"] = nuevo_costo
+                    dialog.close()
+                    filtrar_y_pintar()
+
+                with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
+                    ui.button("Guardar", on_click=guardar, color="primary")
+        dialog.open()
+
     def _on_costo_blur(evt, sku_key: str, inp, row: Dict) -> None:
         raw = (inp.value or "").strip()
         if not raw:
@@ -8848,7 +8905,7 @@ def _mostrar_tabla_precios(
     fmt_num_js = "(val) => val != null && val !== '' ? Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '0'"
     fmt_mon_js = "(val) => val != null && val !== '' ? '$' + Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '$0'"
     columns_precios = [
-        {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 180px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 90px"},
@@ -8941,7 +8998,7 @@ def _mostrar_tabla_precios(
                         for col in columns_precios:
                             col_name = col.get("name", col.get("field", ""))
                             sortable  = col.get("sortable", True)
-                            align = "text-center"
+                            align = "text-left" if col.get("align") == "left" else "text-center"
                             with ui.element("th").classes(f"px-2 py-2 border {align}"):
                                 if sortable:
                                     ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
@@ -8973,13 +9030,12 @@ def _mostrar_tabla_precios(
                                     with _td_el:
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
-                                            ui.label(f"{_fob_val:.2f}" if _fob_val is not None else "—")
+                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "—"
+                                            ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "costo_usd":
                                             _costo_val = row.get("costo_usd")
-                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else ""
-                                            inp_costo = ui.input(value=_costo_str).classes("w-24").props("dense type=number min=0 step=0.01")
-                                            inp_costo.on("blur",          lambda evt, sk=_sku_key, inp=inp_costo, r=row: _on_costo_blur(evt, sk, inp, r))
-                                            inp_costo.on("keydown.enter", lambda evt, sk=_sku_key, inp=inp_costo, r=row: _on_costo_blur(evt, sk, inp, r))
+                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "—"
+                                            ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
                                             ui.label("21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%")
