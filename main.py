@@ -8848,32 +8848,32 @@ def _mostrar_tabla_precios(
     fmt_num_js = "(val) => val != null && val !== '' ? Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '0'"
     fmt_mon_js = "(val) => val != null && val !== '' ? '$' + Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '$0'"
     columns_precios = [
-        {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 80px"},
-        {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 60px"},
+        {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 180px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
-        {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
+        {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "fob_usd",   "label": "FOB u$",   "field": "fob_usd",   "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "costo_usd", "label": "Costo u$", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
-        {"name": "catalog_pos", "label": "Pos.", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 35px"},
-        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
+        {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "catalog_visit_share",  "label": "Visit",   "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
         {"name": "margen_venta_pct", "label": "Gan%",   "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 50px"},
-        {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
-        {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
+        {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
+        {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
-        {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
+        {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
     def _build_colgroup_precios() -> None:
         _col_w = {
             "seller_sku": "80px", "marca": "60px", "title": "180px", "color": "60px",
             "fob_usd": "55px", "costo_usd": "80px", "tipo_iva": "40px",
-            "quality_score": "38px", "catalog_pos": "35px",
-            "catalog_price_to_win": "70px", "catalog_visit_share": "38px",
+            "quality_score": "38px", "catalog_pos": "55px",
+            "catalog_visit_share": "38px", "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
         }
@@ -8896,17 +8896,20 @@ def _mostrar_tabla_precios(
         awei_val = getattr(filtro_awei, "value", "no_incluye")
         if awei_val == "no_incluye":
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
-        period_val = getattr(filtro_periodo, "value", "historica")
-        if period_val and period_val != "historica":
-            hoy = datetime.now().date()
-            dias_map = {"1_mes": 30, "3_meses": 90, "6_meses": 180, "1_anio": 365}
-            dias = dias_map.get(period_val, 0)
-            if dias > 0:
-                desde = hoy - timedelta(days=dias)
-                filtrados = [
-                    x for x in filtrados
-                    if x.get("fecha_ult_modif") and x["fecha_ult_modif"] >= desde.strftime("%Y-%m-%d")
-                ]
+        ganando_val = getattr(filtro_ganando, "value", "todos")
+        if ganando_val == "ganando":
+            filtrados = [x for x in filtrados if x.get("catalog_status") == "winning"]
+        elif ganando_val == "empatando":
+            filtrados = [x for x in filtrados if x.get("catalog_status") == "sharing_first_place"]
+        elif ganando_val == "perdiendo":
+            filtrados = [x for x in filtrados if x.get("catalog_status") in ("competing", "listed")]
+        visitas_val = getattr(filtro_visitas, "value", "todos")
+        if visitas_val == "maxima":
+            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "maximum"]
+        elif visitas_val == "media":
+            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "medium"]
+        elif visitas_val == "minima":
+            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "minimum"]
         sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
         if sku_txt:
             filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
@@ -8938,7 +8941,7 @@ def _mostrar_tabla_precios(
                         for col in columns_precios:
                             col_name = col.get("name", col.get("field", ""))
                             sortable  = col.get("sortable", True)
-                            align = "text-left" if col.get("align") == "left" else "text-right" if col.get("align") == "right" else "text-center"
+                            align = "text-center"
                             with ui.element("th").classes(f"px-2 py-2 border {align}"):
                                 if sortable:
                                     ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
@@ -8962,6 +8965,8 @@ def _mostrar_tabla_precios(
                                     else:
                                         align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
                                     if col["name"] == "title":
+                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align}").style("font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
+                                    elif col["name"] == "seller_sku":
                                         _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
                                     else:
                                         _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs")
@@ -8981,13 +8986,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
                                             if cs == "winning":
-                                                ui.label("✓").classes("text-positive font-bold text-base")
+                                                ui.label("Victoria").classes("text-positive font-medium")
                                             elif cs == "sharing_first_place":
-                                                ui.label("=").classes("text-blue-600 font-bold text-base")
+                                                ui.label("Empate").classes("text-blue-600 font-medium")
                                             elif cs == "competing":
-                                                ui.label("↓").classes("text-orange-500 font-bold text-base")
+                                                ui.label("Perdiendo").classes("text-negative font-medium")
                                             elif cs == "listed":
-                                                ui.label("—").classes("text-gray-400")
+                                                ui.label("Listed").classes("text-gray-400")
                                             else:
                                                 ui.label("")
                                         elif col["name"] == "catalog_price_to_win":
@@ -9079,11 +9084,16 @@ def _mostrar_tabla_precios(
                 value="no_incluye",
                 label="Awei",
             ).classes("w-28").props("dense")
-            filtro_periodo = ui.select(
-                {"historica": "Histórica", "1_mes": "1 mes", "3_meses": "3 meses", "6_meses": "6 meses", "1_anio": "1 año"},
-                value="historica",
-                label="Fecha",
-            ).classes("w-32").props("dense")
+            filtro_ganando = ui.select(
+                {"todos": "Todos", "ganando": "Victoria", "empatando": "Empate", "perdiendo": "Perdiendo"},
+                value="todos",
+                label="Ganando",
+            ).classes("w-36").props("outlined dense")
+            filtro_visitas = ui.select(
+                {"todos": "Todos", "maxima": "Máxima", "media": "Media", "minima": "Mínima"},
+                value="todos",
+                label="Visitas",
+            ).classes("w-36").props("outlined dense")
             filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
@@ -9117,7 +9127,8 @@ def _mostrar_tabla_precios(
     filtro_stock.on_value_change(on_filtro_stock_change)
     filtro_estado.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_periodo.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_ganando.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_visitas.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
 
