@@ -8965,7 +8965,7 @@ def _mostrar_tabla_precios(
                                     else:
                                         align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
                                     if col["name"] == "title":
-                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align}").style("font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
+                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
                                     elif col["name"] == "seller_sku":
                                         _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
                                     else:
@@ -9005,14 +9005,14 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "title":
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps").classes("text-left text-primary cursor-pointer hover:underline font-normal w-full")
+                                                ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
                                             elif row.get("tipo") == "Catalogo":
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps").classes("text-left text-blue-700 cursor-pointer hover:underline font-normal w-full")
+                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps").classes("text-left text-xs text-blue-700 cursor-pointer hover:underline font-normal w-full")
                                             else:
-                                                ui.label(_ttxt[:80]).classes("text-left w-full")
+                                                ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
                                         elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
                                             precio_str = fmt_moneda(val) if val is not None else "$0"
-                                            ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer font-medium text-primary hover:underline")
+                                            ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "price":
                                             ui.label(fmt_moneda(val) if val is not None else "$0")
                                         elif col["name"] == "margen_pesos":
@@ -9093,7 +9093,7 @@ def _mostrar_tabla_precios(
                 {"incluye": "Incluye", "no_incluye": "No incluye"},
                 value="no_incluye",
                 label="Awei",
-            ).classes("w-28").props("outlined dense")
+            ).classes("w-40").props("outlined dense")
             filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
