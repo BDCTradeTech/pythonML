@@ -7909,8 +7909,9 @@ def _show_item_detail_dialog(
     def _recalcular():
         precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
         precio = _parse_moneda(precio_str)
+        _iva_sel = inp_refs.get("tipo_iva")
+        tipo_iva = float(getattr(_iva_sel, "value", None) or row.get("tipo_iva") or 0.105)
         costo    = float(row.get("costo") or 0)
-        tipo_iva = float(row.get("tipo_iva") or 0.105)
         if precio < 1:
             precio = float(row.get("precio") or 0) or 1
         tiene_promo = row.get("price_original") is not None and row.get("promo_yo_pct") is not None
@@ -7953,28 +7954,28 @@ def _show_item_detail_dialog(
                 ("Cobrado",   "cobrado",   "text-sm font-bold text-primary"),
                 ("Costo Cuotas", "costo_cuotas", "text-sm text-negative"),
                 ("IVA venta", "iva_venta", "text-sm"),
-                ("IVA total (iva venta - iva meli - iva impor)", "iva_total", "text-sm text-negative"),
+                ("IVA neto", "iva_total", "text-sm text-negative"),
                 ("Deb-Cred",  "deb_cred",  "text-sm text-negative"),
                 ("IIBB",      "iibb",      "text-sm text-negative"),
                 ("Envío",     "envio",     "text-sm text-negative"),
             ]:
-                with ui.row().classes("w-full justify-between py-1 gap-4" + (" border-b-2 border-gray-300" if lbl_r == "Envío" else "")):
+                with ui.row().classes("w-full justify-between py-0.5 gap-4" + (" border-b-2 border-gray-300" if lbl_r == "Envío" else "")):
                     ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get(key_r))).classes(cls_r)
-            with ui.row().classes("w-full justify-between py-1 gap-4"):
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("gap-4"):
                     ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("iva_meli"))).classes("text-sm")
                 with ui.row().classes("gap-4"):
                     ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get("iva_impor"))).classes("text-sm")
-            with ui.row().classes("w-full justify-between py-2 gap-4"):
+            with ui.row().classes("w-full justify-between py-1 gap-4"):
                 ui.label("Gan $").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("margen_pesos"))).classes(mcls)
-            with ui.row().classes("w-full justify-between py-1 gap-4"):
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_pct2(data.get("margen_venta_pct"))).classes(mcls)
-            with ui.row().classes("w-full justify-between py-1 gap-4"):
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_pct2(data.get("margen_costo_pct"))).classes(mcls)
 
@@ -8061,13 +8062,13 @@ def _show_item_detail_dialog(
         background_tasks.create(_actualizar(), name="guardar_precio_popup")
 
     with d:
-        with ui.card().classes("p-6 min-w-[400px] max-w-[560px]"):
-            with ui.row().classes("w-full gap-4 mb-4"):
+        with ui.card().classes("p-4 min-w-[400px] max-w-[540px]"):
+            with ui.row().classes("w-full gap-3 mb-2"):
                 thumb_url = row.get("thumbnail") or ""
                 if thumb_url:
-                    ui.image(thumb_url).classes("w-24 h-24 object-contain rounded border").style("min-width: 96px; min-height: 96px;")
+                    ui.image(thumb_url).classes("w-16 h-16 object-contain rounded border").style("min-width: 64px; min-height: 64px;")
                 else:
-                    with ui.column().classes("w-24 h-24 rounded border bg-gray-100 items-center justify-center").style("min-width: 96px; min-height: 96px;"):
+                    with ui.column().classes("w-16 h-16 rounded border bg-gray-100 items-center justify-center").style("min-width: 64px; min-height: 64px;"):
                         ui.label("Sin foto").classes("text-xs text-gray-500")
                 with ui.column().classes("flex-1 min-w-0 gap-2"):
                     sku_txt = str(row.get("seller_sku") or row.get("id") or "")
@@ -8077,22 +8078,34 @@ def _show_item_detail_dialog(
                     ui.label(txt).classes("text-sm font-bold")
                     ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
             with ui.column().classes("w-full gap-0 border-b-2 border-gray-300 pb-3"):
-                with ui.row().classes("w-full justify-between py-2 items-center"):
+                with ui.row().classes("w-full justify-between py-1 items-center"):
                     ui.label("FOB u$").classes("text-sm font-medium text-gray-600")
-                    _fob_init    = row.get("fob_usd")
+                    _fob_init = row.get("fob_usd")
+                    if _fob_init is None:
+                        _sku_dlg = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+                        _conn_tmp = get_connection()
+                        try:
+                            _r_dlg = _conn_tmp.execute(
+                                "SELECT fob_usd FROM productos WHERE sku = ? AND user_id = ?",
+                                (_sku_dlg, uid),
+                            ).fetchone()
+                            if _r_dlg and _r_dlg["fob_usd"] is not None:
+                                _fob_init = _r_dlg["fob_usd"]
+                        finally:
+                            _conn_tmp.close()
                     _fob_str_dlg = f"{_fob_init:.2f}" if _fob_init is not None else ""
                     inp_fob_dlg  = ui.input(value=_fob_str_dlg).classes("text-sm w-24").props("dense type=number min=0 step=0.01")
                     inp_refs["fob_usd"] = inp_fob_dlg
-                with ui.row().classes("w-full justify-between py-2 items-center"):
+                with ui.row().classes("w-full justify-between py-1 items-center"):
                     ui.label("Precio").classes("text-sm font-medium text-gray-600")
-                    inp_precio = ui.input(value=fmt_moneda(row.get("precio"))).classes("text-sm w-32").props("dense")
+                    inp_precio = ui.input(value=fmt_moneda(row.get("precio")), on_change=lambda _: _recalcular()).classes("text-sm w-32").props("dense")
                     inp_refs["precio"] = inp_precio
-                with ui.row().classes("w-full justify-between py-2 items-center"):
+                with ui.row().classes("w-full justify-between py-1 items-center"):
                     ui.label("Tipo IVA").classes("text-sm font-medium text-gray-600")
                     tipo_val = float(row.get("tipo_iva") or 0.105)
-                    sel_iva  = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=("0.21" if abs(tipo_val - 0.21) < 0.001 else "0.105")).classes("text-sm w-24").props("dense")
+                    sel_iva  = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=("0.21" if abs(tipo_val - 0.21) < 0.001 else "0.105"), on_change=lambda _: _recalcular()).classes("text-sm w-24").props("dense")
                     inp_refs["tipo_iva"] = sel_iva
-                with ui.row().classes("w-full justify-between py-2 items-center gap-4 border-b-2 border-gray-300"):
+                with ui.row().classes("w-full justify-between py-1 items-center gap-4 border-b-2 border-gray-300"):
                     with ui.row().classes("items-center gap-2"):
                         ui.label("Costo +IVA u$").classes("text-sm font-medium text-gray-600")
                         _cv = row.get("costo")
@@ -8100,7 +8113,7 @@ def _show_item_detail_dialog(
                     with ui.row().classes("items-center gap-2"):
                         ui.label("Costo $").classes("text-sm font-medium text-gray-600")
                         ui.label(fmt_moneda(float(row.get("costo") or 0) * dolar_oficial)).classes("text-sm")
-                with ui.row().classes("w-full py-2 gap-6 border-b-2 border-gray-300 flex-wrap"):
+                with ui.row().classes("w-full py-1 gap-4 border-b-2 border-gray-300 flex-wrap"):
                     for lbl_p, key_p, fmt_p in [
                         ("Cuotas",          "cuotas",         lambda v: str(v or "x1")),
                         ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "—"),
@@ -8117,7 +8130,7 @@ def _show_item_detail_dialog(
                         ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "—").classes("text-sm font-medium")
                 recalc_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
             _recalcular()
-            with ui.row().classes("w-full justify-end gap-2 mt-4"):
+            with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button("Cerrar",   on_click=lambda: d.close(),   color="secondary").props("flat")
                 ui.button("Calcular", on_click=_recalcular,         color="secondary")
                 ui.button("Guardar",  on_click=lambda: _guardar(d), color="primary")
