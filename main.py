@@ -8142,6 +8142,43 @@ def _mostrar_tabla_precios(
         finally:
             _conn_prod.close()
 
+    dolar_str = get_cotizador_param("dolar_oficial", user["id"]) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
+    dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
+    if dolar_oficial <= 0:
+        dolar_oficial = 1475.0
+
+    def _parse_rate_p(s: Any) -> float:
+        if s is None or s == "":
+            return 0.0
+        try:
+            v = float(str(s).strip().replace(",", "."))
+            return v if v <= 1.5 else v / 100.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    def _parse_float_p(s: Any) -> float:
+        if s is None or s == "":
+            return 0.0
+        try:
+            return float(str(s).replace(".", "").replace(",", ".").strip()) or 0.0
+        except (ValueError, TypeError):
+            return 0.0
+
+    _uid_m       = user["id"]
+    ml_comision_p  = _parse_rate_p(get_cotizador_param("ml_comision",         _uid_m) or COTIZADOR_DEFAULTS.get("ml_comision",         "0.15"))
+    cuotas_3x_p    = _parse_rate_p(get_cotizador_param("cuotas_3x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_3x",           "0.094"))
+    cuotas_6x_p    = _parse_rate_p(get_cotizador_param("cuotas_6x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_6x",           "0.151"))
+    cuotas_9x_p    = _parse_rate_p(get_cotizador_param("cuotas_9x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_9x",           "0.207"))
+    cuotas_12x_p   = _parse_rate_p(get_cotizador_param("cuotas_12x",          _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_12x",          "0.259"))
+    ml_iibb_per_p  = _parse_rate_p(get_cotizador_param("ml_iibb_per",         _uid_m) or COTIZADOR_DEFAULTS.get("ml_iibb_per",         "0.055"))
+    ml_debcre_p    = _parse_rate_p(get_cotizador_param("ml_debcre",           _uid_m) or COTIZADOR_DEFAULTS.get("ml_debcre",           "0.006"))
+    ml_envios_p    = _parse_float_p(get_cotizador_param("ml_envios",          _uid_m) or COTIZADOR_DEFAULTS.get("ml_envios",           "5823"))
+    if ml_envios_p <= 100:
+        ml_envios_p = 5823.0
+    ml_envios_grat_p = _parse_float_p(get_cotizador_param("ml_envios_gratuitos", _uid_m) or COTIZADOR_DEFAULTS.get("ml_envios_gratuitos", "33000"))
+    if ml_envios_grat_p <= 0:
+        ml_envios_grat_p = 33000.0
+
     items_loaded = []
     for i in items_dedup:
         precio = i.get("price") or 0
@@ -8216,43 +8253,7 @@ def _mostrar_tabla_precios(
     publicaciones_catalogo_con_stock = sum(1 for i in items_loaded if i.get("tipo") == "Catalogo" and (i.get("available_quantity") or 0) > 0)
     unidades_propias_en_stock = sum(i.get("available_quantity") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_pesos_propias = sum(i.get("subtotal") or 0 for i in items_loaded if i.get("tipo") == "Propia")
-    dolar_str = get_cotizador_param("dolar_oficial", user["id"]) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
-    dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
-    if dolar_oficial <= 0:
-        dolar_oficial = 1475.0
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
-
-    def _parse_rate_p(s: Any) -> float:
-        if s is None or s == "":
-            return 0.0
-        try:
-            v = float(str(s).strip().replace(",", "."))
-            return v if v <= 1.5 else v / 100.0
-        except (ValueError, TypeError):
-            return 0.0
-
-    def _parse_float_p(s: Any) -> float:
-        if s is None or s == "":
-            return 0.0
-        try:
-            return float(str(s).replace(".", "").replace(",", ".").strip()) or 0.0
-        except (ValueError, TypeError):
-            return 0.0
-
-    _uid_m       = user["id"]
-    ml_comision_p  = _parse_rate_p(get_cotizador_param("ml_comision",         _uid_m) or COTIZADOR_DEFAULTS.get("ml_comision",         "0.15"))
-    cuotas_3x_p    = _parse_rate_p(get_cotizador_param("cuotas_3x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_3x",           "0.094"))
-    cuotas_6x_p    = _parse_rate_p(get_cotizador_param("cuotas_6x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_6x",           "0.151"))
-    cuotas_9x_p    = _parse_rate_p(get_cotizador_param("cuotas_9x",           _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_9x",           "0.207"))
-    cuotas_12x_p   = _parse_rate_p(get_cotizador_param("cuotas_12x",          _uid_m) or COTIZADOR_DEFAULTS.get("cuotas_12x",          "0.259"))
-    ml_iibb_per_p  = _parse_rate_p(get_cotizador_param("ml_iibb_per",         _uid_m) or COTIZADOR_DEFAULTS.get("ml_iibb_per",         "0.055"))
-    ml_debcre_p    = _parse_rate_p(get_cotizador_param("ml_debcre",           _uid_m) or COTIZADOR_DEFAULTS.get("ml_debcre",           "0.006"))
-    ml_envios_p    = _parse_float_p(get_cotizador_param("ml_envios",          _uid_m) or COTIZADOR_DEFAULTS.get("ml_envios",           "5823"))
-    if ml_envios_p <= 100:
-        ml_envios_p = 5823.0
-    ml_envios_grat_p = _parse_float_p(get_cotizador_param("ml_envios_gratuitos", _uid_m) or COTIZADOR_DEFAULTS.get("ml_envios_gratuitos", "33000"))
-    if ml_envios_grat_p <= 0:
-        ml_envios_grat_p = 33000.0
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
