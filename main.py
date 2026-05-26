@@ -8927,8 +8927,8 @@ def _mostrar_tabla_precios(
 
     def _build_colgroup_precios() -> None:
         _col_w = {
-            "seller_sku": "80px", "marca": "60px", "title": "180px", "color": "60px",
-            "fob_usd": "55px", "costo_usd": "80px", "tipo_iva": "40px",
+            "seller_sku": "80px", "marca": "60px", "title": "220px", "color": "60px",
+            "fob_usd": "55px", "costo_usd": "70px", "tipo_iva": "40px",
             "quality_score": "38px", "catalog_pos": "55px",
             "catalog_visit_share": "45px", "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
@@ -8945,7 +8945,7 @@ def _mostrar_tabla_precios(
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) > 0]
         elif stock_val == "sin_stock":
             filtrados = [x for x in filtrados if (x.get("available_quantity") or 0) == 0]
-        estado_val = getattr(filtro_estado, "value", "activas")
+        estado_val = getattr(filtro_estado, "value", "todas")
         if estado_val == "activas":
             filtrados = [x for x in filtrados if str(x.get("status") or "").lower() == "active"]
         elif estado_val == "suspendidas":
@@ -8998,7 +8998,7 @@ def _mostrar_tabla_precios(
                         for col in columns_precios:
                             col_name = col.get("name", col.get("field", ""))
                             sortable  = col.get("sortable", True)
-                            align = "text-left" if col.get("align") == "left" else "text-center"
+                            align = "text-center"
                             with ui.element("th").classes(f"px-2 py-2 border {align}"):
                                 if sortable:
                                     ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
@@ -9084,14 +9084,17 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] in ("available_quantity", "sold_quantity"):
-                                            ui.label(fmt_miles(val) if val is not None else "0")
+                                            ui.label(fmt_miles(val) if val is not None else "0").classes("text-center")
                                         elif col["name"] == "subtotal":
                                             ui.label(fmt_moneda(val) if val is not None else "$0")
                                         elif col["name"] == "seller_sku":
                                             ui.label(str(val) if val else "-")
                                         elif col["name"] == "status":
                                             s = str(val or "").lower()
-                                            ui.label("Activa" if s == "active" else "Suspendida")
+                                            if s == "active":
+                                                ui.label("Activa").classes("text-center")
+                                            else:
+                                                ui.label("Suspendida").classes("text-center text-red-500")
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
@@ -9132,7 +9135,7 @@ def _mostrar_tabla_precios(
             ).classes("w-32").props("outlined dense")
             filtro_estado = ui.select(
                 {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
-                value="activas",
+                value="todas",
                 label="Estado",
             ).classes("w-32").props("outlined dense")
             filtro_ganando = ui.select(
