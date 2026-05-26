@@ -7348,7 +7348,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
-        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto;position:relative")
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto")
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -7365,7 +7365,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 if not rows:
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
                     return
-                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:collapse"):
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
                     # ── Cabecera dos niveles ──────────────────────────────────
                     with ui.element("thead"):
                         # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
@@ -7386,26 +7386,26 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     ui.label(glabel)
                         # Fila 2: sub-columnas de cada grupo
                         with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:26px;z-index:10"):
                                 ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
                                 ui.label("% Vend.")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
                                 ui.label("% vs Propia")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
                                 if gkey == "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center;position:sticky;top:28px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center;position:sticky;top:26px;z-index:10"):
                                         ui.label("Publicación")
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:26px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
                                 else:
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer;position:sticky;top:28px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer;position:sticky;top:26px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
-                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:28px;z-index:10"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:26px;z-index:10"):
                                         ui.label("% vs Propia")
                                     if gkey != "catalogo":
-                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:28px;z-index:10"):
+                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
                                             ui.label("Check%")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
@@ -7454,7 +7454,52 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                     else:
                                                                         ui.label("—").classes("text-gray-400")
                                                                 with ui.element("td").style("padding:3px 8px;font-weight:600;text-align:right"):
-                                                                    ui.label(fmt_moneda(_sp)).classes("" if _sp is not None else "text-gray-400")
+                                                                    if _sk != "catalogo" and _sid and _sp is not None:
+                                                                        def _edit_price(s2=_s, iid=_sid, tipo=_tipo, d_main=dlg, rr_main=r, af=_abrir_detalle) -> None:
+                                                                            subdlg = ui.dialog()
+                                                                            with subdlg:
+                                                                                with ui.card().classes("p-4 min-w-[300px]"):
+                                                                                    ui.label(f"Editar precio — {tipo}").classes("text-base font-semibold mb-2")
+                                                                                    try:
+                                                                                        _pa = float(s2["price"] or 0)
+                                                                                    except (TypeError, ValueError):
+                                                                                        _pa = 0.0
+                                                                                    _inp = ui.input("Nuevo precio ($)", value=str(int(_pa))).classes("w-full")
+                                                                                    _inp.props("type=number min=1 step=1")
+                                                                                    def _guardar(sd=subdlg, i=_inp, s3=s2, item=iid, dm=d_main, rr=rr_main, afn=af) -> None:
+                                                                                        try:
+                                                                                            nuevo = float(i.value or 0)
+                                                                                        except (TypeError, ValueError):
+                                                                                            ui.notify("Precio inválido.", color="negative")
+                                                                                            return
+                                                                                        if nuevo < 1:
+                                                                                            ui.notify("El precio debe ser al menos 1.", color="negative")
+                                                                                            return
+                                                                                        sd.close()
+                                                                                        dm.close()
+                                                                                        ui.notify("Actualizando precio...", color="info")
+                                                                                        cl = context.client
+                                                                                        async def _act(client_=cl, s4=s3, precio=nuevo, item2=item, rr2=rr, af2=afn) -> None:
+                                                                                            try:
+                                                                                                await run.io_bound(ml_update_item_price, access_token, item2, precio)
+                                                                                                s4["price"] = precio
+                                                                                                with client_:
+                                                                                                    _render(_sort_rows(filtrados_ref["val"]))
+                                                                                                    ui.notify("Precio actualizado.", color="positive")
+                                                                                                    af2(rr2)
+                                                                                            except Exception as err:
+                                                                                                with client_:
+                                                                                                    ui.notify(f"Error: {err}", color="negative")
+                                                                                        background_tasks.create(_act())
+                                                                                    with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                                                                                        ui.button("Cancelar", on_click=lambda sd=subdlg: sd.close()).props("flat")
+                                                                                        ui.button("Guardar", on_click=_guardar, color="primary")
+                                                                            subdlg.open()
+                                                                        ui.button(fmt_moneda(_sp), on_click=_edit_price).props("flat dense").style(
+                                                                            "font-weight:600;font-size:11px;padding:0 4px;min-height:0;color:inherit"
+                                                                        )
+                                                                    else:
+                                                                        ui.label(fmt_moneda(_sp)).classes("" if _sp is not None else "text-gray-400")
                                                                 with ui.element("td").style("padding:3px 8px;text-align:center"):
                                                                     if _sk != "propia" and _sp is not None and _pp is not None and float(_pp) != 0:
                                                                         _pct = (float(_sp) - float(_pp)) / float(_pp) * 100
@@ -7486,7 +7531,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     )
                                 with ui.element("td").style(f"{TD_BASE};text-align:center"):
                                     sv = row.get("stock")
-                                    ui.label(str(sv) if sv is not None else "—")
+                                    ui.label(str(sv) if sv is not None else "")
                                 propia_price = row["propia"]["price"]
                                 promo = row.get("promo", {})
                                 promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
@@ -7498,14 +7543,14 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     if meli_pct is not None:
                                         ui.label(f"{meli_pct:.1f}%").style("color:#43a047;font-weight:500")
                                     else:
-                                        ui.label("—").classes("text-gray-400")
+                                        ui.label("")
                                 # % Vendedor
                                 with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center"):
                                     seller_pct = promo.get("seller_pct")
                                     if seller_pct is not None:
                                         ui.label(f"{seller_pct:.1f}%").style("color:#e65100;font-weight:500")
                                     else:
-                                        ui.label("—").classes("text-gray-400")
+                                        ui.label("")
                                 # % vs Propia (Promos) — positivo=verde, negativo=rojo
                                 with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center"):
                                     if promo_price is not None and propia_price is not None and float(propia_price) != 0:
@@ -7517,7 +7562,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         else:
                                             ui.label(f"{pct_p:.1f}%").style("color:#e53935;font-weight:500")
                                     else:
-                                        ui.label("—").classes("text-gray-400")
+                                        ui.label("")
                                 for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                     gbg = gbg_e if idx % 2 == 0 else gbg_o
                                     slot = row[gkey]
@@ -7533,7 +7578,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                             elif item_id:
                                                 ui.label(item_id)
                                             else:
-                                                ui.label("—").classes("text-gray-400")
+                                                ui.label("")
                                     # Precio — todos (border-left en no-propia como separador de grupo)
                                     _brd = "" if gkey == "propia" else f"border-left:2px solid {gborder};"
                                     with ui.element("td").style(f"{_gb};{_brd}padding:3px 6px;font-weight:600;text-align:right"):
@@ -7586,7 +7631,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 dialog.open()
                                             ui.button(fmt_moneda(price), on_click=_abrir_editar_cuota).props("flat dense").style("font-weight:600;font-size:10px;padding:0 4px;min-height:0;color:inherit")
                                         else:
-                                            ui.label(fmt_moneda(price)).classes("" if price is not None else "text-gray-400")
+                                            ui.label(fmt_moneda(price) if price is not None else "")
                                     # % vs Propia — todos menos Propia
                                     if gkey != "propia":
                                         with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center"):
@@ -7599,7 +7644,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 else:
                                                     ui.label(f"{pct:.1f}%").style("color:#e53935;font-weight:500")
                                             else:
-                                                ui.label("—").classes("text-gray-400")
+                                                ui.label("")
                                     # Check% — x3/x6/x9/x12
                                     if gkey not in ("propia", "catalogo"):
                                         with ui.element("td").style(f"{_gb};padding:3px 4px;text-align:center"):
@@ -7614,7 +7659,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 else:
                                                     ui.label("↓").style("color:#e53935;font-weight:700;font-size:12px")
                                             else:
-                                                ui.label("—").classes("text-gray-400")
+                                                ui.label("")
 
         def _on_sort(col: str) -> None:
             if sort_col_ref["val"] == col:
