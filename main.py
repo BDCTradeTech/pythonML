@@ -4120,6 +4120,12 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
     }
     if item.get("warranty"):
         body["warranty"] = item["warranty"]
+    if item.get("family_name"):
+        body["family_name"] = item["family_name"]
+    if item.get("seller_custom_field"):
+        body["seller_custom_field"] = item["seller_custom_field"]
+    if item.get("sale_terms"):
+        body["sale_terms"] = item["sale_terms"]
     if tags:
         body["tags"] = tags
 
@@ -5119,12 +5125,6 @@ def show_main_layout(container) -> None:
         qb_tokens = get_qb_tokens(user["id"])
         qb_linked = bool(qb_tokens and qb_tokens.get("access_token"))
 
-        ui.add_css("""
-            .q-tab-panels, .q-tab-panels__slider, .q-tab-panel {
-                overflow: visible !important;
-            }
-        """)
-
         # Tabs ocultos (solo para binding con tab_panels)
         with ui.element("div").classes("hidden"):
             with ui.tabs() as tabs:
@@ -5396,7 +5396,7 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")
 
-            with ui.tab_panel(tab_cuotas).style("overflow:visible"):
+            with ui.tab_panel(tab_cuotas):
                 cuotas_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_config):
@@ -7389,7 +7389,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
-        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto").props('id="cuotas_tc"')
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto")
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -7721,20 +7721,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                     ui.label("↓").style("color:#e53935;font-weight:700;font-size:12px")
                                             else:
                                                 ui.label("")
-            ui.run_javascript("""
-(function() {
-    var el = document.getElementById('cuotas_tc');
-    if (!el) return;
-    var thead = el.querySelector('thead');
-    if (!thead) return;
-    if (el._stickyListener) el.removeEventListener('scroll', el._stickyListener);
-    el._stickyListener = function() {
-        thead.style.transform = 'translateY(' + el.scrollTop + 'px)';
-        thead.style.zIndex = '10';
-    };
-    el.addEventListener('scroll', el._stickyListener, {passive: true});
-})();
-""")
 
         def _on_sort(col: str) -> None:
             if sort_col_ref["val"] == col:
