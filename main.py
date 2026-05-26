@@ -9243,16 +9243,15 @@ def _mostrar_tabla_precios(
                                             ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
-                                            if cs == "winning":
-                                                ui.label("Ganando").classes("text-positive font-medium text-center")
-                                            elif cs == "sharing_first_place":
-                                                ui.label("Empate 1ro").classes("text-blue-600 font-medium text-center")
-                                            elif cs == "competing":
-                                                ui.label("Perdiendo").classes("text-negative font-medium text-center")
-                                            elif cs == "listed":
-                                                ui.label("Listed").classes("text-gray-400 text-center")
-                                            else:
-                                                ui.label("").classes("text-center")
+                                            _chip_map = {
+                                                "winning":             ("ti-trophy",        "#EAF3DE", "#27500A", "Ganando"),
+                                                "sharing_first_place": ("ti-equal",         "#E6F1FB", "#0C447C", "Empatando"),
+                                                "competing":           ("ti-trending-down", "#FCEBEB", "#791F1F", "Perdiendo"),
+                                                "listed":              ("ti-minus",         "var(--color-background-secondary)", "var(--color-text-secondary)", "Listed"),
+                                            }
+                                            if cs in _chip_map:
+                                                _ico, _bg, _fg, _txt = _chip_map[cs]
+                                                ui.html(f'<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;font-size:11px;font-weight:500;background:{_bg};color:{_fg}"><i class="ti {_ico}" style="font-size:12px"></i> {_txt}</span>')
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
                                             ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
