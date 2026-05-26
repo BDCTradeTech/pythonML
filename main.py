@@ -4094,22 +4094,35 @@ def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[
     return resp.json()
 
 
-def ml_relist_as_gold_pro(access_token: str, item_id: str, tags: Optional[list] = None) -> Dict[str, Any]:
-    """POST /items/{id}/relist: crea publicación gold_pro independiente basada en item_id."""
+def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = None) -> Dict[str, Any]:
+    """Crea una nueva publicación gold_pro copiando datos de propia_id. POST /items."""
+    base = "https://api.mercadolibre.com"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    body: Dict[str, Any] = {"listing_type_id": "gold_pro"}
+    src = requests.get(f"{base}/items/{propia_id}", headers=headers, timeout=15)
+    src.raise_for_status()
+    item = src.json()
+
+    body: Dict[str, Any] = {
+        "title":              item["title"],
+        "category_id":        item["category_id"],
+        "price":              item["price"],
+        "currency_id":        item.get("currency_id", "ARS"),
+        "available_quantity": item.get("available_quantity", 1),
+        "buying_mode":        item.get("buying_mode", "buy_it_now"),
+        "condition":          item.get("condition", "new"),
+        "listing_type_id":    "gold_pro",
+        "pictures":           [{"source": p["secure_url"]} for p in item.get("pictures", [])],
+    }
+    if item.get("warranty"):
+        body["warranty"] = item["warranty"]
     if tags:
         body["tags"] = tags
-    resp = requests.post(
-        f"https://api.mercadolibre.com/items/{item_id}/relist",
-        headers=headers,
-        json=body,
-        timeout=15,
-    )
+
+    resp = requests.post(f"{base}/items", headers=headers, json=body, timeout=15)
     resp.raise_for_status()
     return resp.json()
 
@@ -5103,6 +5116,12 @@ def show_main_layout(container) -> None:
         ml_linked = bool(get_ml_access_token(user["id"]))
         qb_tokens = get_qb_tokens(user["id"])
         qb_linked = bool(qb_tokens and qb_tokens.get("access_token"))
+
+        ui.add_css("""
+            .q-tab-panels, .q-tab-panels__slider, .q-tab-panel {
+                overflow: visible !important;
+            }
+        """)
 
         # Tabs ocultos (solo para binding con tab_panels)
         with ui.element("div").classes("hidden"):
@@ -7480,7 +7499,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                             _t = _CUOTA_TAGS[sk]
                                                                             async def _do(client_=cl, iid=pid, tags=_t, cont=c) -> None:
                                                                                 try:
-                                                                                    await run.io_bound(ml_relist_as_gold_pro, access_token, iid, tags)
+                                                                                    await run.io_bound(ml_crear_gold_pro, access_token, iid, tags)
                                                                                     with client_:
                                                                                         ui.notify("Publicación gold_pro creada (nueva publicación independiente)", color="positive")
                                                                                         build_tab_cuotas(cont)
