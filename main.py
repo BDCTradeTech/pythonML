@@ -8240,14 +8240,15 @@ def _mostrar_tabla_precios(
             _cur_prod = _conn_prod.cursor()
             _ph = ",".join("?" * len(_skus_dedup))
             _cur_prod.execute(
-                f"SELECT sku, costo_usd, fob_usd, tipo_iva FROM productos WHERE user_id = ? AND sku IN ({_ph})",
+                f"SELECT sku, costo_usd, fob_usd, tipo_iva, price_updated_at FROM productos WHERE user_id = ? AND sku IN ({_ph})",
                 [_uid] + _skus_dedup,
             )
             for _r in _cur_prod.fetchall():
                 _prod_map[_r["sku"]] = {
-                    "costo_usd": _r["costo_usd"],
-                    "fob_usd":   _r["fob_usd"],
-                    "tipo_iva":  _r["tipo_iva"],
+                    "costo_usd":        _r["costo_usd"],
+                    "fob_usd":          _r["fob_usd"],
+                    "tipo_iva":         _r["tipo_iva"],
+                    "price_updated_at": _r["price_updated_at"],
                 }
         finally:
             _conn_prod.close()
@@ -8336,6 +8337,19 @@ def _mostrar_tabla_precios(
         else:
             _mgn_c  = None
             _mvta_c = None
+        _price_upd_at = _prod_row["price_updated_at"] if _prod_row else None
+        _dias_sin_modif: Optional[int] = None
+        _hoy_dt = datetime.now().date()
+        if _price_upd_at:
+            try:
+                _dias_sin_modif = (_hoy_dt - datetime.strptime(_price_upd_at[:10], "%Y-%m-%d").date()).days
+            except Exception:
+                pass
+        if _dias_sin_modif is None and raw_fecha:
+            try:
+                _dias_sin_modif = (_hoy_dt - datetime.strptime(raw_fecha, "%Y-%m-%d").date()).days
+            except Exception:
+                pass
         items_loaded.append({
             **i,
             "price_fmt": fmt_moneda(precio),
@@ -8362,6 +8376,8 @@ def _mostrar_tabla_precios(
             "catalog_competitors":  None,
             "quality_score":        None,
             "quality_level":        None,
+            "price_updated_at":     _price_upd_at,
+            "dias_sin_modificar":   _dias_sin_modif,
         })
 
     publicaciones_totales = len(items_loaded)
@@ -8431,7 +8447,8 @@ def _mostrar_tabla_precios(
     _hoy_str = datetime.now().strftime("%Y-%m-%d")
     _conn_rev_clean = get_connection()
     try:
-        _conn_rev_clean.execute("DELETE FROM revisiones_diarias WHERE fecha < ?", (_hoy_str,))
+        _fecha_limite_rev = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        _conn_rev_clean.execute("DELETE FROM revisiones_diarias WHERE fecha < ?", (_fecha_limite_rev,))
         _conn_rev_clean.commit()
     finally:
         _conn_rev_clean.close()
@@ -8482,6 +8499,28 @@ def _mostrar_tabla_precios(
                     async def _actualizar_precio() -> None:
                         try:
                             await run.io_bound(ml_update_item_price, access_token, item_id, nuevo)
+                            _sku_cel = str(row.get("seller_sku") or "").strip()
+                            if _sku_cel:
+                                def _save_rev_cel() -> None:
+                                    _now = datetime.now()
+                                    _conn_cel = get_connection()
+                                    try:
+                                        _conn_cel.execute(
+                                            """INSERT INTO revisiones_diarias (sku, user_id, fecha, precio_cambiado) VALUES (?, ?, ?, 1)
+                                               ON CONFLICT(sku, user_id, fecha) DO UPDATE SET precio_cambiado=1""",
+                                            (_sku_cel, _uid, _now.strftime("%Y-%m-%d")),
+                                        )
+                                        _conn_cel.execute(
+                                            "UPDATE productos SET price_updated_at=?, updated_at=? WHERE sku=? AND user_id=?",
+                                            (_now.isoformat(), _now.isoformat(), _sku_cel, _uid),
+                                        )
+                                        _conn_cel.commit()
+                                    finally:
+                                        _conn_cel.close()
+                                    revisiones_hoy[_sku_cel] = True
+                                    row["dias_sin_modificar"] = 0
+                                    row["price_updated_at"] = _now.isoformat()
+                                await run.io_bound(_save_rev_cel)
                             with client:
                                 ui.notify("Precio actualizado correctamente. Refrescando...", color="positive")
                                 if on_actualizar:
@@ -9063,6 +9102,7 @@ def _mostrar_tabla_precios(
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
+        {"name": "dias_sin_modificar", "label": "Días", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
@@ -9073,7 +9113,7 @@ def _mostrar_tabla_precios(
             "quality_score": "55px", "catalog_pos": "55px",
             "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
-            "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
+            "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "dias_sin_modificar": "38px", "status": "48px",
         }
         with ui.element("colgroup"):
             for col in columns_precios:
@@ -9104,6 +9144,16 @@ def _mostrar_tabla_precios(
         sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
         if sku_txt:
             filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
+        rev_val = getattr(filtro_revision, "value", "todos")
+        if rev_val != "todos":
+            def _sku_rev_key(x):
+                return str(x.get("seller_sku") or "").strip() or str(x.get("id") or "").strip()
+            if rev_val == "pendientes":
+                filtrados = [x for x in filtrados if _sku_rev_key(x) not in revisiones_hoy]
+            elif rev_val == "revisados":
+                filtrados = [x for x in filtrados if _sku_rev_key(x) in revisiones_hoy and not revisiones_hoy.get(_sku_rev_key(x), False)]
+            elif rev_val == "precio_ok":
+                filtrados = [x for x in filtrados if revisiones_hoy.get(_sku_rev_key(x), False)]
         col_sort = sort_col_ref.get("val", "title")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key_precios(r, col_sort), reverse=not asc)
@@ -9242,6 +9292,16 @@ def _mostrar_tabla_precios(
                                                 qs_i = int(qs)
                                                 c = "text-positive font-medium" if qs_i >= 65 else "text-orange-500 font-medium"
                                                 ui.label(str(qs_i)).classes(c)
+                                        elif col["name"] == "dias_sin_modificar":
+                                            _dias = row.get("dias_sin_modificar")
+                                            if _dias is None:
+                                                ui.label("—").classes("text-gray-400")
+                                            elif _dias == 0:
+                                                ui.label("hoy").classes("text-positive font-medium")
+                                            elif _dias <= 7:
+                                                ui.label(str(_dias)).classes("text-orange-500 font-medium")
+                                            else:
+                                                ui.label(str(_dias)).classes("text-negative font-medium")
                                         else:
                                             ui.label(str(val) if val is not None else "—")
             current_table.clear()
@@ -9288,6 +9348,11 @@ def _mostrar_tabla_precios(
                 label="Awei",
             ).classes("w-40").props("outlined dense")
             filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
+            filtro_revision = ui.select(
+                {"todos": "Todos", "pendientes": "Sin revisar", "revisados": "Revisados", "precio_ok": "Precio cambiado"},
+                value="todos",
+                label="Revisión",
+            ).classes("w-44").props("outlined dense")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
         _hid_p = header_div_precios.id
@@ -9322,6 +9387,7 @@ def _mostrar_tabla_precios(
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_ganando.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_revision.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
 
 
