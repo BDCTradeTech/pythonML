@@ -8914,7 +8914,6 @@ def _mostrar_tabla_precios(
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
-        {"name": "catalog_visit_share",  "label": "Visitas", "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 45px"},
         {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
@@ -8927,10 +8926,10 @@ def _mostrar_tabla_precios(
 
     def _build_colgroup_precios() -> None:
         _col_w = {
-            "seller_sku": "80px", "marca": "60px", "title": "220px", "color": "60px",
+            "seller_sku": "80px", "marca": "60px", "title": "265px", "color": "60px",
             "fob_usd": "55px", "costo_usd": "70px", "tipo_iva": "40px",
             "quality_score": "38px", "catalog_pos": "55px",
-            "catalog_visit_share": "45px", "catalog_price_to_win": "70px",
+            "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
         }
@@ -8960,13 +8959,6 @@ def _mostrar_tabla_precios(
             filtrados = [x for x in filtrados if x.get("catalog_status") == "sharing_first_place"]
         elif ganando_val == "perdiendo":
             filtrados = [x for x in filtrados if x.get("catalog_status") in ("competing", "listed")]
-        visitas_val = getattr(filtro_visitas, "value", "todos")
-        if visitas_val == "maxima":
-            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "maximum"]
-        elif visitas_val == "media":
-            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "medium"]
-        elif visitas_val == "minima":
-            filtrados = [x for x in filtrados if x.get("catalog_visit_share") == "minimum"]
         sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
         if sku_txt:
             filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
@@ -9054,16 +9046,12 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
                                             ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
-                                        elif col["name"] == "catalog_visit_share":
-                                            vs = str(row.get("catalog_visit_share") or "").lower()
-                                            _vs_lbl = {"maximum": "Máximo", "medium": "Medio", "minimum": "Mínimo"}.get(vs, "")
-                                            ui.label(_vs_lbl).classes("" if _vs_lbl else "text-gray-400")
                                         elif col["name"] == "title":
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
+                                                ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
                                             elif row.get("tipo") == "Catalogo":
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps").classes("text-left text-xs text-blue-700 cursor-pointer hover:underline font-normal w-full")
+                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-700 cursor-pointer hover:underline font-normal w-full")
                                             else:
                                                 ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
                                         elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
@@ -9088,7 +9076,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "subtotal":
                                             ui.label(fmt_moneda(val) if val is not None else "$0")
                                         elif col["name"] == "seller_sku":
-                                            ui.label(str(val) if val else "-")
+                                            ui.label(str(val) if val else "-").classes("text-xs")
                                         elif col["name"] == "status":
                                             s = str(val or "").lower()
                                             if s == "active":
@@ -9143,11 +9131,6 @@ def _mostrar_tabla_precios(
                 value="todos",
                 label="Ganando",
             ).classes("w-36").props("outlined dense")
-            filtro_visitas = ui.select(
-                {"todos": "Todos", "maxima": "Máxima", "media": "Media", "minima": "Mínima"},
-                value="todos",
-                label="Visitas",
-            ).classes("w-36").props("outlined dense")
             filtro_awei = ui.select(
                 {"incluye": "Incluye", "no_incluye": "No incluye"},
                 value="no_incluye",
@@ -9187,7 +9170,6 @@ def _mostrar_tabla_precios(
     filtro_estado.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_ganando.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_visitas.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
     filtrar_y_pintar()
 
