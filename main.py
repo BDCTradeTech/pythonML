@@ -440,6 +440,20 @@ def init_db() -> None:
     _prod_cols = [r[1] for r in cur.fetchall()]
     if "fob_usd" not in _prod_cols:
         cur.execute("ALTER TABLE productos ADD COLUMN fob_usd REAL DEFAULT NULL")
+    if "price_updated_at" not in _prod_cols:
+        cur.execute("ALTER TABLE productos ADD COLUMN price_updated_at TEXT")
+
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS revisiones_diarias (
+            sku             TEXT NOT NULL,
+            user_id         INTEGER NOT NULL,
+            fecha           TEXT NOT NULL,
+            precio_cambiado INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (sku, user_id, fecha)
+        )
+        """
+    )
 
     # ML publicaciones: vínculo entre items de ML y SKU interno
     cur.execute(
@@ -7872,6 +7886,7 @@ def _show_item_detail_dialog(
     uid: int,
     items_loaded: List[Dict[str, Any]],
     on_saved=None,
+    revisiones_hoy: Optional[Dict[str, bool]] = None,
 ) -> None:
     def fmt_moneda(val):
         if val is None: return "$0"
@@ -7903,6 +7918,20 @@ def _show_item_detail_dialog(
         return 0.0 if precio < ml_envios_gratuitos else ml_envios
 
     d = ui.dialog()
+    _sku_rev = str(row.get("seller_sku") or row.get("id") or "").strip()
+    _fecha_hoy = datetime.now().strftime("%Y-%m-%d")
+    if revisiones_hoy is not None:
+        _conn_r = get_connection()
+        try:
+            _conn_r.execute(
+                "INSERT OR IGNORE INTO revisiones_diarias (sku, user_id, fecha, precio_cambiado) VALUES (?, ?, ?, 0)",
+                (_sku_rev, uid, _fecha_hoy),
+            )
+            _conn_r.commit()
+        finally:
+            _conn_r.close()
+        if _sku_rev not in revisiones_hoy:
+            revisiones_hoy[_sku_rev] = False
     inp_refs: Dict[str, Any] = {}
     recalc_ref: Dict[str, Any] = {}
 
@@ -8009,17 +8038,26 @@ def _show_item_detail_dialog(
                         conn = get_connection()
                         try:
                             conn.execute(
-                                """INSERT INTO productos (sku, user_id, costo_usd, fob_usd, tipo_iva, created_at, updated_at, costo_updated_at)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                                """INSERT INTO productos (sku, user_id, costo_usd, fob_usd, tipo_iva, created_at, updated_at, costo_updated_at, price_updated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                                    ON CONFLICT(sku, user_id) DO UPDATE SET
                                        costo_usd=excluded.costo_usd, fob_usd=excluded.fob_usd, tipo_iva=excluded.tipo_iva,
-                                       costo_updated_at=excluded.costo_updated_at, updated_at=excluded.updated_at""",
-                                (sku_grd, uid, nuevo_costo, nuevo_fob, nuevo_tipo_iva, now_str, now_str, now_str),
+                                       costo_updated_at=excluded.costo_updated_at, updated_at=excluded.updated_at,
+                                       price_updated_at=excluded.price_updated_at""",
+                                (sku_grd, uid, nuevo_costo, nuevo_fob, nuevo_tipo_iva, now_str, now_str, now_str, now_str),
                             )
+                            if revisiones_hoy is not None:
+                                conn.execute(
+                                    """INSERT INTO revisiones_diarias (sku, user_id, fecha, precio_cambiado) VALUES (?, ?, ?, 1)
+                                       ON CONFLICT(sku, user_id, fecha) DO UPDATE SET precio_cambiado=1""",
+                                    (sku_grd, uid, datetime.now().strftime("%Y-%m-%d")),
+                                )
                             conn.commit()
                         finally:
                             conn.close()
                     await run.io_bound(_save_db)
+                    if revisiones_hoy is not None:
+                        revisiones_hoy[sku_grd] = True
                 for it in items_loaded:
                     if str(it.get("id")) == item_id:
                         it["precio"]    = nuevo_precio
@@ -8389,6 +8427,25 @@ def _mostrar_tabla_precios(
                 d = _quality_map[_qid] or {}
                 r["quality_score"] = d.get("score")
                 r["quality_level"] = d.get("level")
+
+    _hoy_str = datetime.now().strftime("%Y-%m-%d")
+    _conn_rev_clean = get_connection()
+    try:
+        _conn_rev_clean.execute("DELETE FROM revisiones_diarias WHERE fecha < ?", (_hoy_str,))
+        _conn_rev_clean.commit()
+    finally:
+        _conn_rev_clean.close()
+
+    revisiones_hoy: Dict[str, bool] = {}
+    _conn_rev_init = get_connection()
+    try:
+        _rows_rev = _conn_rev_init.execute(
+            "SELECT sku, precio_cambiado FROM revisiones_diarias WHERE user_id = ? AND fecha = ?",
+            (_uid, _hoy_str),
+        ).fetchall()
+        revisiones_hoy = {r["sku"]: bool(r["precio_cambiado"]) for r in _rows_rev}
+    finally:
+        _conn_rev_init.close()
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
@@ -8797,6 +8854,7 @@ def _mostrar_tabla_precios(
                     dolar_oficial=dolar_oficial, access_token=access_token,
                     uid=user["id"], items_loaded=items_loaded,
                     on_saved=filtrar_y_pintar,
+                    revisiones_hoy=revisiones_hoy,
                 )
 
         background_tasks.create(_fetch_det(), name="fetch_productos_detalle")
@@ -9087,7 +9145,15 @@ def _mostrar_tabla_precios(
                 with ui.element("tbody"):
                     for row in filtrados:
                             _sku_key = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
-                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                            _precio_ok_r = revisiones_hoy.get(_sku_key, False)
+                            _revisado_r  = _sku_key in revisiones_hoy
+                            if _precio_ok_r:
+                                _row_bg = "bg-green-50"
+                            elif _revisado_r:
+                                _row_bg = "bg-yellow-50"
+                            else:
+                                _row_bg = ""
+                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}"):
                                 for col in columns_precios:
                                     field = col.get("field", col["name"])
                                     val = row.get(field)
