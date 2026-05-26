@@ -9117,11 +9117,11 @@ def _mostrar_tabla_precios(
 
     def _build_colgroup_precios() -> None:
         _col_w = {
-            "seller_sku": "95px", "marca": "60px", "title": "265px", "color": "60px",
-            "fob_usd": "55px", "costo_usd": "68px", "tipo_iva": "40px",
+            "seller_sku": "95px", "marca": "60px", "title": "265px", "color": "50px",
+            "fob_usd": "50px", "costo_usd": "60px", "tipo_iva": "40px",
             "quality_score": "55px", "catalog_pos": "55px",
-            "catalog_price_to_win": "72px",
-            "price": "70px", "margen_pesos": "62px", "margen_venta_pct": "50px",
+            "catalog_price_to_win": "65px",
+            "price": "65px", "margen_pesos": "60px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "dias_sin_modificar": "38px", "status": "48px",
         }
         with ui.element("colgroup"):
