@@ -8857,7 +8857,7 @@ def _mostrar_tabla_precios(
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
-        {"name": "catalog_visit_share",  "label": "Visit",   "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "catalog_visit_share",  "label": "Visitas", "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 45px"},
         {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
@@ -8873,7 +8873,7 @@ def _mostrar_tabla_precios(
             "seller_sku": "80px", "marca": "60px", "title": "180px", "color": "60px",
             "fob_usd": "55px", "costo_usd": "80px", "tipo_iva": "40px",
             "quality_score": "38px", "catalog_pos": "55px",
-            "catalog_visit_share": "38px", "catalog_price_to_win": "70px",
+            "catalog_visit_share": "45px", "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
         }
@@ -8986,9 +8986,9 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
                                             if cs == "winning":
-                                                ui.label("Victoria").classes("text-positive font-medium")
+                                                ui.label("Ganando").classes("text-positive font-medium")
                                             elif cs == "sharing_first_place":
-                                                ui.label("Empate").classes("text-blue-600 font-medium")
+                                                ui.label("Empate 1ro").classes("text-blue-600 font-medium")
                                             elif cs == "competing":
                                                 ui.label("Perdiendo").classes("text-negative font-medium")
                                             elif cs == "listed":
@@ -9000,8 +9000,8 @@ def _mostrar_tabla_precios(
                                             ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
                                         elif col["name"] == "catalog_visit_share":
                                             vs = str(row.get("catalog_visit_share") or "").lower()
-                                            _vs_lbl = {"maximum": "máx", "medium": "med", "minimum": "mín"}.get(vs, "—")
-                                            ui.label(_vs_lbl).classes("" if vs else "text-gray-400")
+                                            _vs_lbl = {"maximum": "Máximo", "medium": "Medio", "minimum": "Mínimo"}.get(vs, "")
+                                            ui.label(_vs_lbl).classes("" if _vs_lbl else "text-gray-400")
                                         elif col["name"] == "title":
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
@@ -9042,7 +9042,7 @@ def _mostrar_tabla_precios(
                                                 ui.label("")
                                             else:
                                                 qs_i = int(qs)
-                                                c = "text-positive font-medium" if qs_i >= 75 else "text-orange-500 font-medium" if qs_i >= 50 else "text-negative font-medium"
+                                                c = "text-positive font-medium" if qs_i >= 65 else "text-orange-500 font-medium"
                                                 ui.label(str(qs_i)).classes(c)
                                         else:
                                             ui.label(str(val) if val is not None else "—")
@@ -9073,19 +9073,14 @@ def _mostrar_tabla_precios(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
                 value=filtro_stock_ref.get("val", "con_stock") if filtro_stock_ref else "con_stock",
                 label="Stock",
-            ).classes("w-32").props("dense")
+            ).classes("w-32").props("outlined dense")
             filtro_estado = ui.select(
                 {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
                 value="activas",
                 label="Estado",
-            ).classes("w-32").props("dense")
-            filtro_awei = ui.select(
-                {"incluye": "Incluye", "no_incluye": "No incluye"},
-                value="no_incluye",
-                label="Awei",
-            ).classes("w-28").props("dense")
+            ).classes("w-32").props("outlined dense")
             filtro_ganando = ui.select(
-                {"todos": "Todos", "ganando": "Victoria", "empatando": "Empate", "perdiendo": "Perdiendo"},
+                {"todos": "Todos", "ganando": "Ganando", "empatando": "Empate 1ro", "perdiendo": "Perdiendo"},
                 value="todos",
                 label="Ganando",
             ).classes("w-36").props("outlined dense")
@@ -9094,6 +9089,11 @@ def _mostrar_tabla_precios(
                 value="todos",
                 label="Visitas",
             ).classes("w-36").props("outlined dense")
+            filtro_awei = ui.select(
+                {"incluye": "Incluye", "no_incluye": "No incluye"},
+                value="no_incluye",
+                label="Awei",
+            ).classes("w-28").props("outlined dense")
             filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
