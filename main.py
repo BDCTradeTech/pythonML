@@ -7389,7 +7389,22 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
+        header_div = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto")
+        _hid = header_div.id
+        _cid = table_container.id
+        async def _setup_sync_once() -> None:
+            await ui.run_javascript(
+                f"(function(){{"
+                f"var body=document.getElementById('c{_cid}');"
+                f"var hdr=document.getElementById('c{_hid}');"
+                f"if(!body||!hdr)return;"
+                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                f"_sg();new ResizeObserver(_sg).observe(body);"
+                f"}})();"
+            )
+        ui.timer(0.1, _setup_sync_once, once=True)
 
         def _sort_rows(rows: list) -> list:
             key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
@@ -7401,53 +7416,53 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             return " ▲" if sort_asc_ref["val"] else " ▼"
 
         def _render(rows: list) -> None:
+            header_div.clear()
             table_container.clear()
+            with header_div:
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    with ui.element("thead"):
+                        with ui.element("tr"):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:4%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("marca")):
+                                ui.label("Marca" + _ind("marca"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:7%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("seller_sku")):
+                                ui.label("SKU" + _ind("seller_sku"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:18%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
+                                ui.label("Nombre" + _ind("title"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("stock")):
+                                ui.label("Stock" + _ind("stock"))
+                            with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center"):
+                                ui.label("Promociones")
+                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
+                                _cspan = "3" if gkey not in ("propia", "catalogo") else "2"
+                                with ui.element("th").props(f'colspan="{_cspan}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center"):
+                                    ui.label(glabel)
+                        with ui.element("tr"):
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center"):
+                                ui.label("% ML")
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
+                                ui.label("% Vend.")
+                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
+                                ui.label("% vs Propia")
+                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
+                                pcol = f"{gkey}_price"
+                                if gkey == "propia":
+                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center"):
+                                        ui.label("Publicación")
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
+                                        ui.label("Precio" + _ind(pcol))
+                                else:
+                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
+                                        ui.label("Precio" + _ind(pcol))
+                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center"):
+                                        ui.label("% vs Propia")
+                                    if gkey != "catalogo":
+                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
+                                            ui.label("Check%")
             with table_container:
                 if not rows:
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
                     return
                 with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
-                    # ── Cabecera dos niveles ──────────────────────────────────
-                    with ui.element("thead"):
-                        # Fila 1: Marca / SKU / Nombre / Stock (rowspan=2) + grupos
-                        with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:4%;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("marca")):
-                                ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:7%;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("seller_sku")):
-                                ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:18%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("title")):
-                                ui.label("Nombre" + _ind("title"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer;position:sticky;top:0;z-index:11").on("click", lambda: _on_sort("stock")):
-                                ui.label("Stock" + _ind("stock"))
-                            with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:0;z-index:11"):
-                                ui.label("Promociones")
-                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                _cspan = "3" if gkey not in ("propia", "catalogo") else "2"
-                                with ui.element("th").props(f'colspan="{_cspan}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center;position:sticky;top:0;z-index:11"):
-                                    ui.label(glabel)
-                        # Fila 2: sub-columnas de cada grupo
-                        with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center;position:sticky;top:26px;z-index:10"):
-                                ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
-                                ui.label("% Vend.")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
-                                ui.label("% vs Propia")
-                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                pcol = f"{gkey}_price"
-                                if gkey == "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center;position:sticky;top:26px;z-index:10"):
-                                        ui.label("Publicación")
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer;position:sticky;top:26px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
-                                        ui.label("Precio" + _ind(pcol))
-                                else:
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer;position:sticky;top:26px;z-index:10").on("click", lambda pk=pcol: _on_sort(pk)):
-                                        ui.label("Precio" + _ind(pcol))
-                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center;position:sticky;top:26px;z-index:10"):
-                                        ui.label("% vs Propia")
-                                    if gkey != "catalogo":
-                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center;position:sticky;top:26px;z-index:10"):
-                                            ui.label("Check%")
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
