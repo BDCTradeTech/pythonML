@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.07"
+VERSION = "2.26.05.26.08"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -4132,7 +4132,7 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
     if tags:
         body["tags"] = tags
 
-    print(f"[DEBUG CREAR] POST body={json.dumps(body, ensure_ascii=False)[:500]}", flush=True)
+    print(f"[DEBUG CREAR] POST body keys={list(body.keys())} catalog_product_id={body.get('catalog_product_id')} title={body.get('title','NO_TITLE')}", flush=True)
     resp = requests.post(f"{base}/items", headers=headers, json=body, timeout=15)
     print(f"[DEBUG CREAR] POST /items status={resp.status_code} body={resp.text}", flush=True)
     resp.raise_for_status()
