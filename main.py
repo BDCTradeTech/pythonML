@@ -7932,6 +7932,15 @@ def _show_item_detail_dialog(
             _conn_r.close()
         if _sku_rev not in revisiones_hoy:
             revisiones_hoy[_sku_rev] = False
+            _cl_rev = context.client
+
+            async def _refrescar_highlights():
+                await asyncio.sleep(0.1)
+                with _cl_rev:
+                    if on_saved:
+                        on_saved()
+
+            background_tasks.create(_refrescar_highlights())
     inp_refs: Dict[str, Any] = {}
     recalc_ref: Dict[str, Any] = {}
 
@@ -9340,6 +9349,8 @@ def _mostrar_tabla_precios(
                 ui.label("Marcas:").classes("text-xs text-gray-500")
                 lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
             ui.space()
+            if on_actualizar:
+                ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
             ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
         with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
