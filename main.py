@@ -9117,10 +9117,10 @@ def _mostrar_tabla_precios(
 
     def _build_colgroup_precios() -> None:
         _col_w = {
-            "seller_sku": "80px", "marca": "60px", "title": "265px", "color": "60px",
-            "fob_usd": "55px", "costo_usd": "70px", "tipo_iva": "40px",
+            "seller_sku": "95px", "marca": "60px", "title": "265px", "color": "60px",
+            "fob_usd": "55px", "costo_usd": "72px", "tipo_iva": "40px",
             "quality_score": "55px", "catalog_pos": "55px",
-            "catalog_price_to_win": "70px",
+            "catalog_price_to_win": "80px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "dias_sin_modificar": "38px", "status": "48px",
         }
