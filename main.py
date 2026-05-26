@@ -4188,8 +4188,8 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
     return None
 
 
-def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[str]:
-    """GET /items/{id}/price_to_win — status competitivo: winning/sharing_first_place/competing/listed."""
+def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
+    """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason, competitors."""
     if not access_token or not str(item_id).strip():
         return None
     try:
@@ -4199,7 +4199,14 @@ def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[str]:
             timeout=10,
         )
         if resp.status_code == 200:
-            return resp.json().get("status")
+            d = resp.json()
+            return {
+                "status":       d.get("status"),
+                "price_to_win": d.get("price_to_win"),
+                "visit_share":  d.get("visit_share"),
+                "reason":       d.get("reason"),
+                "competitors":  d.get("competitors_sharing_first_place"),
+            }
     except Exception:
         pass
     return None
@@ -8278,7 +8285,11 @@ def _mostrar_tabla_precios(
             "tipo_iva":  _prod_row["tipo_iva"]   if _prod_row else 0.105,
             "margen_pesos":     _mgn_c,
             "margen_venta_pct": _mvta_c,
-            "catalog_status":   None,
+            "catalog_status":       None,
+            "catalog_price_to_win": None,
+            "catalog_visit_share":  None,
+            "catalog_reason":       None,
+            "catalog_competitors":  None,
         })
 
     publicaciones_totales = len(items_loaded)
@@ -8292,13 +8303,13 @@ def _mostrar_tabla_precios(
     _cat_ids = [
         str(r.get("id") or "")
         for r in items_loaded
-        if r.get("catalog_listing") is True
+        if (r.get("catalog_listing") is True or bool(r.get("catalog_product_id")))
         and str(r.get("status") or "").lower() == "active"
         and str(r.get("id") or "").strip()
     ]
     if _cat_ids and access_token:
-        def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[str]]:
-            res: Dict[str, Optional[str]] = {}
+        def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
+            res: Dict[str, Optional[Dict]] = {}
             with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
                 futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
                 for fut in as_completed(futures):
@@ -8312,7 +8323,12 @@ def _mostrar_tabla_precios(
         for r in items_loaded:
             _rid = str(r.get("id") or "")
             if _rid in _cat_pos_map:
-                r["catalog_status"] = _cat_pos_map[_rid]
+                d = _cat_pos_map[_rid] or {}
+                r["catalog_status"]       = d.get("status")
+                r["catalog_price_to_win"] = d.get("price_to_win")
+                r["catalog_visit_share"]  = d.get("visit_share")
+                r["catalog_reason"]       = d.get("reason")
+                r["catalog_competitors"]  = d.get("competitors")
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
@@ -8451,6 +8467,82 @@ def _mostrar_tabla_precios(
             row["tipo_iva"] = nuevo_iva
         except Exception as e:
             ui.notify(f"Error: {e}", color="negative")
+
+    def _abrir_detalle_catalogo(row: Dict[str, Any]) -> None:
+        _STATUS_MAP = {
+            "winning":             ("✓", "Ganando",               "text-positive font-bold"),
+            "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
+            "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
+            "listed":              ("—", "Publicado sin ganar",   "text-gray-500"),
+        }
+        _REASON_ES = {
+            "PRICE":           "Precio",
+            "QUALITY":         "Calidad de publicación",
+            "REVIEWS":         "Reseñas",
+            "SALES":           "Ventas históricas",
+            "SHIPPING":        "Envío",
+            "REPUTATION":      "Reputación del vendedor",
+            "CATALOG_QUALITY": "Calidad del catálogo",
+            "CATALOG_SCORE":   "Puntuación en catálogo",
+        }
+        cs      = row.get("catalog_status")
+        ptw     = row.get("catalog_price_to_win")
+        vs      = row.get("catalog_visit_share")
+        comps   = row.get("catalog_competitors")
+        reasons = row.get("catalog_reason") or []
+
+        d = ui.dialog()
+        with d:
+            with ui.card().classes("p-6 min-w-[380px] max-w-[520px] gap-0"):
+                with ui.row().classes("w-full gap-4 mb-3"):
+                    thumb = row.get("thumbnail") or ""
+                    if thumb:
+                        ui.image(thumb).classes("w-20 h-20 object-contain rounded border").style("min-width:80px;min-height:80px;")
+                    else:
+                        with ui.column().classes("w-20 h-20 rounded border bg-gray-100 items-center justify-center").style("min-width:80px;min-height:80px;"):
+                            ui.label("Sin foto").classes("text-xs text-gray-500")
+                    with ui.column().classes("flex-1 min-w-0 gap-1"):
+                        sku_txt = str(row.get("seller_sku") or row.get("id") or "")
+                        ui.label(f"{row.get('id','—')}  —  {sku_txt}").classes("text-xs font-mono text-gray-500")
+                        ui.label(str(row.get("marca") or "—")).classes("text-sm font-medium")
+                        ui.label((str(row.get("title") or ""))[:100]).classes("text-sm font-bold")
+                        ui.label(f"Stock: {row.get('available_quantity', 0)}").classes("text-sm text-gray-500")
+                ui.separator()
+                with ui.row().classes("w-full justify-between py-2"):
+                    ui.label("Precio actual").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(row.get("price"))).classes("text-sm font-bold")
+                with ui.row().classes("w-full justify-between py-2"):
+                    ui.label("Posición").classes("text-sm font-medium text-gray-600")
+                    if cs and cs in _STATUS_MAP:
+                        ico, lbl, cls = _STATUS_MAP[cs]
+                        ui.label(f"{ico}  {lbl}").classes(f"text-sm {cls}")
+                    else:
+                        ui.label("Sin datos").classes("text-sm text-gray-400")
+                if ptw is not None:
+                    with ui.row().classes("w-full justify-between py-2"):
+                        ui.label("Precio sugerido para ganar").classes("text-sm font-medium text-gray-600")
+                        ui.label(fmt_moneda(ptw)).classes("text-sm font-bold text-orange-600")
+                if vs is not None:
+                    with ui.row().classes("w-full justify-between py-2"):
+                        ui.label("Visibilidad (visit share)").classes("text-sm font-medium text-gray-600")
+                        try:
+                            ui.label(f"{float(vs) * 100:.1f}%".replace(".", ",")).classes("text-sm")
+                        except (TypeError, ValueError):
+                            ui.label(str(vs)).classes("text-sm")
+                if comps is not None:
+                    with ui.row().classes("w-full justify-between py-2"):
+                        ui.label("Competidores compartiendo 1°").classes("text-sm font-medium text-gray-600")
+                        ui.label(str(comps)).classes("text-sm")
+                if reasons:
+                    ui.separator()
+                    ui.label("Razones").classes("text-xs font-medium text-gray-500 mt-1")
+                    for rsn in (reasons if isinstance(reasons, list) else [reasons]):
+                        r_es = _REASON_ES.get(str(rsn).upper(), str(rsn))
+                        ui.label(f"• {r_es}").classes("text-sm text-gray-700")
+                ui.separator()
+                with ui.row().classes("w-full justify-end mt-2"):
+                    ui.button("Cerrar", on_click=d.close).props("flat").classes("text-gray-600")
+        d.open()
 
     current_filtrados: List[Dict[str, Any]] = []
     current_table: List[Any] = []
@@ -8834,6 +8926,8 @@ def _mostrar_tabla_precios(
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
                                                 ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps").classes("text-left text-primary cursor-pointer hover:underline font-normal w-full")
+                                            elif row.get("tipo") == "Catalogo":
+                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps").classes("text-left text-blue-700 cursor-pointer hover:underline font-normal w-full")
                                             else:
                                                 ui.label(_ttxt[:80]).classes("text-left w-full")
                                         elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
