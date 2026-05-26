@@ -9327,6 +9327,15 @@ def _mostrar_tabla_precios(
                                                 ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
                                             ui.label(str(val) if val is not None else "—")
+            async def _recalc_padding() -> None:
+                await ui.run_javascript(
+                    f"(function(){{"
+                    f"var body=document.getElementById('c{_cid_p}');"
+                    f"var hdr=document.getElementById('c{_hid_p}');"
+                    f"if(body&&hdr){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                    f"}})();"
+                )
+            background_tasks.create(_recalc_padding())
             current_table.clear()
 
     def _blanquear_revisiones():
