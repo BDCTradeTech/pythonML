@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.09"
+VERSION = "2.26.05.26.10"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -4094,25 +4094,6 @@ def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[
     return resp.json()
 
 
-def ml_cambiar_listing_type(access_token: str, item_id: str, listing_type_id: str, tags: Optional[list] = None) -> Dict[str, Any]:
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    body: Dict[str, Any] = {"id": listing_type_id}
-    if tags:
-        body["tags"] = tags
-    resp = requests.post(
-        f"https://api.mercadolibre.com/items/{item_id}/listing_type",
-        headers=headers,
-        json=body,
-        timeout=15,
-    )
-    resp.raise_for_status()
-    return resp.json()
-
-
 def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:
     """Obtiene el JSON completo de una publicación de ejemplo (la primera) para mostrar qué datos devuelve ML."""
     base = "https://api.mercadolibre.com"
@@ -7193,12 +7174,11 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
 
     def _slot(it: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if not it:
-            return {"id": "", "permalink": "", "price": None, "listing_type_id": ""}
+            return {"id": "", "permalink": "", "price": None}
         return {
             "id": str(it.get("id") or ""),
             "permalink": it.get("permalink") or "",
             "price": it.get("price"),
-            "listing_type_id": str(it.get("listing_type_id") or ""),
         }
 
     def _build_row(group: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -7513,10 +7493,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                         ui.link(_sid, _slink, new_tab=True).classes("text-blue-700 hover:underline")
                                                                     elif _sid:
                                                                         ui.label(_sid)
-                                                                    elif _sk in ("x3", "x6"):
-                                                                        ui.label("Crear desde ML").classes("text-gray-400 text-xs italic")
-                                                                    elif _sk in ("x9", "x12"):
-                                                                        ui.label("No disponible vía API").classes("text-gray-400 text-xs italic")
+                                                                    elif _sk in ("x3", "x6", "x9", "x12"):
+                                                                        ui.label("Crear desde panel ML").classes("text-gray-400 text-xs italic")
                                                                     else:
                                                                         ui.label("—").classes("text-gray-400")
                                                                 with ui.element("td").style("padding:3px 8px;font-weight:600;text-align:right"):
@@ -7566,53 +7544,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                         )
                                                                     else:
                                                                         ui.label(fmt_moneda(_sp)).classes("" if _sp is not None else "text-gray-400")
-                                                                    if _sk == "propia" and _sid:
-                                                                        _lt = _s.get("listing_type_id", "")
-                                                                        with ui.row().classes("gap-1 mt-1 justify-end flex-wrap"):
-                                                                            if _lt == "gold_special":
-                                                                                def _a3(d=dlg, c=container, pid=_sid) -> None:
-                                                                                    d.close()
-                                                                                    cl = context.client
-                                                                                    async def _do(client_=cl, iid=pid, cont=c) -> None:
-                                                                                        try:
-                                                                                            await run.io_bound(ml_cambiar_listing_type, access_token, iid, "gold_pro", ["3x_campaign"])
-                                                                                            with client_:
-                                                                                                ui.notify("Cambiado a gold_pro 3 cuotas", color="positive")
-                                                                                                build_tab_cuotas(cont)
-                                                                                        except Exception as err:
-                                                                                            with client_:
-                                                                                                ui.notify(f"Error ML: {err}", color="negative")
-                                                                                    background_tasks.create(_do())
-                                                                                def _a6(d=dlg, c=container, pid=_sid) -> None:
-                                                                                    d.close()
-                                                                                    cl = context.client
-                                                                                    async def _do(client_=cl, iid=pid, cont=c) -> None:
-                                                                                        try:
-                                                                                            await run.io_bound(ml_cambiar_listing_type, access_token, iid, "gold_pro")
-                                                                                            with client_:
-                                                                                                ui.notify("Cambiado a gold_pro 6 cuotas", color="positive")
-                                                                                                build_tab_cuotas(cont)
-                                                                                        except Exception as err:
-                                                                                            with client_:
-                                                                                                ui.notify(f"Error ML: {err}", color="negative")
-                                                                                    background_tasks.create(_do())
-                                                                                ui.button("→ 3 cuotas", on_click=_a3).props("flat dense color=orange").style("font-size:9px;padding:0 3px;min-height:0")
-                                                                                ui.button("→ 6 cuotas", on_click=_a6).props("flat dense color=deep-purple").style("font-size:9px;padding:0 3px;min-height:0")
-                                                                            elif _lt == "gold_pro":
-                                                                                def _asc(d=dlg, c=container, pid=_sid) -> None:
-                                                                                    d.close()
-                                                                                    cl = context.client
-                                                                                    async def _do(client_=cl, iid=pid, cont=c) -> None:
-                                                                                        try:
-                                                                                            await run.io_bound(ml_cambiar_listing_type, access_token, iid, "gold_special")
-                                                                                            with client_:
-                                                                                                ui.notify("Cambiado a gold_special (sin cuotas)", color="positive")
-                                                                                                build_tab_cuotas(cont)
-                                                                                        except Exception as err:
-                                                                                            with client_:
-                                                                                                ui.notify(f"Error ML: {err}", color="negative")
-                                                                                    background_tasks.create(_do())
-                                                                                ui.button("→ sin cuotas", on_click=_asc).props("flat dense color=grey").style("font-size:9px;padding:0 3px;min-height:0")
                                                                 with ui.element("td").style("padding:3px 8px;text-align:center"):
                                                                     if _sk != "propia" and _sp is not None and _pp is not None and float(_pp) != 0:
                                                                         _pct = (float(_sp) - float(_pp)) / float(_pp) * 100
