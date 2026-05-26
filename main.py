@@ -8548,6 +8548,25 @@ def _mostrar_tabla_precios(
                     except Exception as e:
                         ui.notify(f"Error: {e}", color="negative"); return
                     row["tipo_iva"] = nuevo_iva
+                    _pc_r    = float(row.get("price") or row.get("precio") or 0)
+                    _costo_r = float(row.get("costo_usd") or 0)
+                    _lt_r    = str(row.get("listing_type_id") or "").lower()
+                    _tasa_r  = cuotas_6x_p if _lt_r == "gold_pro" else 0.0
+                    if _costo_r > 0 and _pc_r > 0:
+                        _com_r   = _pc_r * ml_comision_p
+                        _cob_r   = _pc_r - _com_r
+                        _ivav_r  = _pc_r * nuevo_iva / (1 + nuevo_iva)
+                        _ivam_r  = _com_r * 0.21 / 1.21
+                        _ivai_r  = 0.09 * _costo_r * dolar_oficial
+                        _ivat_r  = _ivav_r - _ivam_r - _ivai_r
+                        _deb_r   = _pc_r * ml_debcre_p
+                        _iibb_r  = _pc_r * ml_iibb_per_p
+                        _env_r   = ml_envios_p if _pc_r >= ml_envios_grat_p else 0.0
+                        _ccuot_r = _pc_r * _tasa_r if _tasa_r else 0.0
+                        _cp_r    = _costo_r * dolar_oficial
+                        _mgn_r   = _cob_r - _cp_r - _ivat_r - _iibb_r - _deb_r - _env_r - _ccuot_r
+                        row["margen_pesos"]     = _mgn_r
+                        row["margen_venta_pct"] = (_mgn_r / _pc_r * 100) if _pc_r > 0 else 0.0
                     dialog.close()
                     filtrar_y_pintar()
 
@@ -8993,7 +9012,7 @@ def _mostrar_tabla_precios(
         _col_w = {
             "seller_sku": "80px", "marca": "60px", "title": "265px", "color": "60px",
             "fob_usd": "55px", "costo_usd": "70px", "tipo_iva": "40px",
-            "quality_score": "38px", "catalog_pos": "55px",
+            "quality_score": "55px", "catalog_pos": "55px",
             "catalog_price_to_win": "70px",
             "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
