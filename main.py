@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.54"
+VERSION = "2.26.05.26.55"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6637,11 +6637,9 @@ def build_tab_ventas(container) -> None:
             with d:
                 with ui.card().classes("p-4 min-w-[400px] max-w-[540px]"):
                     with ui.row().classes("w-full gap-3 mb-2"):
-                        if thumb_url:
-                            ui.image(thumb_url).classes("w-16 h-16 object-contain rounded border").style("min-width: 64px; min-height: 64px;")
-                        else:
-                            with ui.column().classes("w-16 h-16 rounded border bg-gray-100 items-center justify-center").style("min-width: 64px; min-height: 64px;"):
-                                ui.label("Sin foto").classes("text-xs text-gray-500")
+                        thumb_col = ui.column().classes("w-16 h-16 rounded border bg-gray-100 items-center justify-center").style("min-width: 64px; min-height: 64px;")
+                        with thumb_col:
+                            ui.label("...").classes("text-xs text-gray-400")
                         with ui.column().classes("flex-1 min-w-0 gap-2"):
                             _sku_txt = str(row.get("seller_sku") or "")
                             _iid_txt = str(row.get("item_id") or "—")
@@ -6667,7 +6665,23 @@ def build_tab_ventas(container) -> None:
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
-                pay_data   = await run.io_bound(_get_pay, access_token, payment_id) if payment_id else {}
+                def _get_item(tok, iid):
+                    r = requests.get(f"https://api.mercadolibre.com/items/{iid}?attributes=thumbnail,pictures",
+                                     headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+                    return r.json() if r.status_code == 200 else {}
+
+                async def _noop():
+                    return {}
+
+                pay_coro  = run.io_bound(_get_pay,  access_token, payment_id) if payment_id else _noop()
+                item_coro = run.io_bound(_get_item, access_token, _iid)        if _iid       else _noop()
+                pay_data, item_data = await asyncio.gather(pay_coro, item_coro)
+
+                thumb_real = item_data.get("thumbnail") or ""
+                if not thumb_real:
+                    _pics = item_data.get("pictures") or []
+                    if _pics:
+                        thumb_real = _pics[0].get("secure_url") or _pics[0].get("url") or ""
 
                 charges    = pay_data.get("charges_details") or []
                 meli_fee   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "meli_percentage_fee")
@@ -6702,6 +6716,10 @@ def build_tab_ventas(container) -> None:
                     mcls = "font-bold " + ("text-positive" if gan_pesos >= 0 else "text-negative")
 
                 with cl:
+                    if thumb_real:
+                        thumb_col.clear()
+                        with thumb_col:
+                            ui.image(thumb_real).classes("w-16 h-16 object-contain rounded border").style("min-width: 64px; min-height: 64px;")
                     body_col.clear()
                     with body_col:
                         with ui.column().classes("w-full gap-0 border-b-2 border-gray-300 pb-3"):
@@ -7055,7 +7073,6 @@ def build_tab_ventas(container) -> None:
                                             ("dt", "Fecha", "text-center"),
                                             ("order_id", "Order ID", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
-                                            ("logistic_type", "Envío", "text-center"),
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
                                             ("tipo", "Tipo", "text-center"),
@@ -7084,9 +7101,6 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("order_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("item_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                _lt_lbl = {"xd_drop_off": "Flex", "me1": "Correo", "fulfillment": "Full"}.get(v.get("logistic_type", ""), "—")
-                                                ui.label(_lt_lbl)
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("tipo_venta", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
