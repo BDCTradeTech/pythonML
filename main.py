@@ -8849,33 +8849,33 @@ def _mostrar_tabla_precios(
     fmt_mon_js = "(val) => val != null && val !== '' ? '$' + Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '$0'"
     columns_precios = [
         {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 80px"},
-        {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 100px"},
-        {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 220px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
+        {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 60px"},
+        {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 180px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
-        {"name": "fob_usd",   "label": "FOB u$",        "field": "fob_usd",   "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 100px"},
-        {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 110px"},
-        {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
-        {"name": "catalog_pos", "label": "Pos.", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
-        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 90px"},
-        {"name": "catalog_visit_share",  "label": "Visit",   "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 70px"},
+        {"name": "fob_usd",   "label": "FOB u$",   "field": "fob_usd",   "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 55px"},
+        {"name": "costo_usd", "label": "Costo u$", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
+        {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "catalog_pos", "label": "Pos.", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 35px"},
+        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
+        {"name": "catalog_visit_share",  "label": "Visit",   "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
-        {"name": "margen_pesos",     "label": "Gan $",    "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 90px"},
-        {"name": "margen_venta_pct", "label": "Gan Vta%", "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
+        {"name": "margen_venta_pct", "label": "Gan%",   "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 50px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
-        {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
     ]
 
     def _build_colgroup_precios() -> None:
         _col_w = {
-            "seller_sku": "80px", "marca": "100px", "title": "220px", "color": "90px",
-            "fob_usd": "100px", "costo_usd": "110px", "tipo_iva": "80px",
-            "catalog_pos": "60px", "catalog_price_to_win": "90px", "catalog_visit_share": "70px",
-            "price": "100px", "margen_pesos": "90px", "margen_venta_pct": "80px",
-            "available_quantity": "70px", "sold_quantity": "70px", "subtotal": "90px", "status": "80px",
-            "quality_score": "60px",
+            "seller_sku": "80px", "marca": "60px", "title": "180px", "color": "60px",
+            "fob_usd": "55px", "costo_usd": "80px", "tipo_iva": "40px",
+            "quality_score": "38px", "catalog_pos": "35px",
+            "catalog_price_to_win": "70px", "catalog_visit_share": "38px",
+            "price": "75px", "margen_pesos": "65px", "margen_venta_pct": "50px",
+            "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "status": "48px",
         }
         with ui.element("colgroup"):
             for col in columns_precios:
@@ -8961,7 +8961,11 @@ def _mostrar_tabla_precios(
                                         align = "text-left"
                                     else:
                                         align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
-                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs"):
+                                    if col["name"] == "title":
+                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
+                                    else:
+                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs")
+                                    with _td_el:
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
                                             ui.label(f"{_fob_val:.2f}" if _fob_val is not None else "—")
