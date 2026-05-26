@@ -6319,6 +6319,8 @@ def build_tab_ventas(container) -> None:
     agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
     ganancia_neta_ref: Dict[str, float] = {"val": 0.0}
+    params_ventas_ref: Dict[str, Any] = {}
+    costos_sku_ref: Dict[str, Dict[str, Any]] = {}
 
     sort_col_ventas: Dict[str, str] = {"val": "dt"}
     sort_asc_ventas: Dict[str, bool] = {"val": False}  # Fecha más reciente primero
@@ -6393,6 +6395,44 @@ def build_tab_ventas(container) -> None:
                 total += cantidad * margen
             ganancia_neta_ref["val"] = total
             _pintar_tabla()
+
+        def _calc_gan_row(unit_price: float, sku: str, cuotas_val: str) -> tuple:
+            p = params_ventas_ref
+            if not p:
+                return None, None
+            prod = costos_sku_ref.get(sku)
+            if not prod or not prod.get("costo_usd"):
+                return None, None
+            costo_usd = float(prod["costo_usd"])
+            tipo_iva = float(prod.get("tipo_iva") or 0.105)
+            dolar = float(p.get("dolar_oficial") or 1475)
+            ml_com = float(p.get("ml_comision") or 0.15)
+            ml_deb = float(p.get("ml_debcre") or 0.006)
+            ml_iibb = float(p.get("ml_iibb_per") or 0.055)
+            ml_env = float(p.get("ml_envios") or 5823)
+            ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
+            tasa_cuotas = {
+                "x3": float(p.get("cuotas_3x") or 0),
+                "x6": float(p.get("cuotas_6x") or 0),
+                "x9": float(p.get("cuotas_9x") or 0),
+                "x12": float(p.get("cuotas_12x") or 0),
+            }.get(cuotas_val, 0.0)
+            if unit_price <= 0:
+                return None, None
+            comision = unit_price * ml_com
+            cobrado = unit_price - comision
+            iva_venta = unit_price * tipo_iva / (1 + tipo_iva)
+            iva_meli = comision * 0.21 / 1.21
+            iva_impor = 0.09 * costo_usd * dolar
+            iva_total = iva_venta - iva_meli - iva_impor
+            deb_cred = unit_price * ml_deb
+            iibb_monto = unit_price * ml_iibb
+            envio = 0.0 if unit_price < ml_env_grat else ml_env
+            costo_pesos = costo_usd * dolar
+            costo_cuotas = unit_price * tasa_cuotas
+            gan_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio - costo_cuotas
+            gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
+            return gan_pesos, gan_vta_pct
 
         def _order_in_range(o: Dict, start: datetime.date, end: datetime.date) -> bool:
             dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
@@ -6527,14 +6567,55 @@ def build_tab_ventas(container) -> None:
                     tipo_oferta, tipo_display = _tipo_oferta_desde_order_item(it, item_id, item_id_to_tipo_oferta)
                     if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                         tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
+                    _gan_p2, _gan_v2 = _calc_gan_row(unit_price, sku, cuotas) if sku else (None, None)
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "productos": titulo[:100], "title": titulo[:100],
                         "tipo_venta": tipo, "cuotas": cuotas, "tipo": tipo_oferta, "tipo_oferta": tipo_oferta,
                         "tipo_display": tipo_display or tipo_oferta,
                         "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
                         "status": status_display, "status_raw": status_raw, "agrupar_key": agrupar_key, "item_id": item_id or "—",
+                        "unit_price": unit_price,
+                        "seller_sku": sku,
+                        "order_id": str(ord_item.get("id", "") or ""),
+                        "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
+                        "gan_pesos": _gan_p2,
+                        "gan_vta_pct": _gan_v2,
                     })
             ventas_raw = ventas_mes
+
+        def _abrir_popup_venta(row: Dict[str, Any]) -> None:
+            with ui.dialog() as dlg, ui.card().classes("p-4 min-w-[360px]"):
+                with ui.column().classes("gap-2 w-full"):
+                    ui.label("Detalle de venta").classes("text-base font-bold")
+                    with ui.column().classes("gap-0 text-sm w-full"):
+                        ui.label(f"Order ID: {row.get('order_id') or '—'}")
+                        ui.label(f"Fecha: {row.get('fecha', '—')}")
+                        ui.label(f"Comprador: {row.get('buyer') or '—'}")
+                        ui.separator().classes("my-1")
+                        ui.label(f"Producto: {row.get('title') or row.get('productos', '—')}")
+                        ui.label(f"ID publicación: {row.get('item_id', '—')}")
+                        if row.get("seller_sku"):
+                            ui.label(f"SKU: {row['seller_sku']}")
+                        ui.separator().classes("my-1")
+                        ui.label(f"Cantidad: {row.get('cantidad', '—')}")
+                        _up = row.get("unit_price")
+                        if _up is not None:
+                            ui.label(f"Precio unitario: $ {_up:,.0f}".replace(",", "."))
+                        ui.label(f"Monto total: {row.get('monto_fmt', '—')}")
+                        ui.separator().classes("my-1")
+                        ui.label(f"Cuotas: {row.get('cuotas', '—')}")
+                        ui.label(f"Tipo: {row.get('tipo_display') or row.get('tipo', '—')}")
+                        ui.label(f"Publicación: {row.get('tipo_venta', '—')}")
+                        ui.label(f"Estado: {row.get('status', '—')}")
+                        _gp = row.get("gan_pesos")
+                        _gvp = row.get("gan_vta_pct")
+                        if _gp is not None:
+                            ui.separator().classes("my-1")
+                            ui.label(f"Gan $: $ {_gp:,.0f}".replace(",", ".")).classes("text-positive" if _gp >= 0 else "text-negative")
+                            if _gvp is not None:
+                                ui.label(f"Gan Vta%: {_gvp:.1f}%".replace(".", ",")).classes("text-positive" if _gvp >= 0 else "text-negative")
+                    ui.button("Cerrar", on_click=dlg.close, color="primary").props("no-caps").classes("self-end")
+            dlg.open()
 
         def _cargar_ventas() -> None:
             if filtro_controls_ref:
@@ -6766,6 +6847,8 @@ def build_tab_ventas(container) -> None:
                                             ("productos", "Producto", "text-center"),
                                             ("cantidad", "Cant.", "text-center"),
                                             ("monto", "Monto", "text-center"),
+                                            ("gan_pesos", "Gan $", "text-center"),
+                                            ("gan_vta_pct", "Gan Vta%", "text-center"),
                                             ("status", "Estado", "text-center"),
                                         ]
                                         for col_key, h, align in cols_ventas:
@@ -6791,11 +6874,24 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v.get("tipo_display", v.get("tipo", v.get("tipo_oferta", "Regular"))))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
-                                                ui.label(v.get("productos", v.get("title", "—"))[:80]).classes("truncate")
+                                                _titulo = v.get("productos", v.get("title", "—"))[:80]
+                                                ui.button(_titulo, on_click=lambda row=v: _abrir_popup_venta(row)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-600 hover:underline cursor-pointer w-full truncate")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(str(v["cantidad"]))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
                                                 ui.label(v["monto_fmt"])
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
+                                                _gp = v.get("gan_pesos")
+                                                if _gp is None:
+                                                    ui.label("—").classes("text-gray-400 text-xs")
+                                                else:
+                                                    ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
+                                                _gvp = v.get("gan_vta_pct")
+                                                if _gvp is None:
+                                                    ui.label("—").classes("text-gray-400 text-xs")
+                                                else:
+                                                    ui.label(f"{_gvp:.1f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                                 ui.label(v["status"])
 
@@ -6952,6 +7048,45 @@ def build_tab_ventas(container) -> None:
             all_orders_ref["item_id_to_tipo_venta"] = item_id_to_tipo_venta
             all_orders_ref["item_id_to_cuotas"] = item_id_to_cuotas
             all_orders_ref["item_id_to_tipo_oferta"] = item_id_to_tipo_oferta
+            # Cargar cotizador params y costos para cálculo Gan$
+            def _vp_parse_rate(s) -> float:
+                if s is None or s == "": return 0.0
+                try:
+                    v = float(str(s).strip().replace(",", "."))
+                    return v if v <= 1.5 else v / 100.0
+                except (ValueError, TypeError): return 0.0
+            def _vp_parse_float(s) -> float:
+                if s is None or s == "": return 0.0
+                try:
+                    return float(str(s).replace(".", "").replace(",", ".").strip() or 0)
+                except (ValueError, TypeError): return 0.0
+            _uid_v = user["id"]
+            params_ventas_ref.update({
+                "dolar_oficial": _vp_parse_float(get_cotizador_param("dolar_oficial", _uid_v) or "1475") or 1475.0,
+                "ml_comision": _vp_parse_rate(get_cotizador_param("ml_comision", _uid_v) or "0.15"),
+                "ml_debcre": _vp_parse_rate(get_cotizador_param("ml_debcre", _uid_v) or "0.006"),
+                "ml_iibb_per": _vp_parse_rate(get_cotizador_param("ml_iibb_per", _uid_v) or "0.055"),
+                "ml_envios": _vp_parse_float(get_cotizador_param("ml_envios", _uid_v) or "5823") or 5823.0,
+                "ml_envios_gratuitos": _vp_parse_float(get_cotizador_param("ml_envios_gratuitos", _uid_v) or "33000") or 33000.0,
+                "cuotas_3x": _vp_parse_rate(get_cotizador_param("cuotas_3x", _uid_v) or "0.094"),
+                "cuotas_6x": _vp_parse_rate(get_cotizador_param("cuotas_6x", _uid_v) or "0.151"),
+                "cuotas_9x": _vp_parse_rate(get_cotizador_param("cuotas_9x", _uid_v) or "0.207"),
+                "cuotas_12x": _vp_parse_rate(get_cotizador_param("cuotas_12x", _uid_v) or "0.259"),
+            })
+            _all_skus_v = [s for s in item_id_to_sku.values() if s]
+            if _all_skus_v:
+                _conn_v = get_connection()
+                try:
+                    _cur_v = _conn_v.cursor()
+                    _ph_v = ",".join("?" * len(_all_skus_v))
+                    _cur_v.execute(
+                        f"SELECT sku, costo_usd, tipo_iva FROM productos WHERE user_id = ? AND sku IN ({_ph_v})",
+                        [_uid_v] + _all_skus_v,
+                    )
+                    for _r_v in _cur_v.fetchall():
+                        costos_sku_ref[_r_v["sku"]] = {"costo_usd": float(_r_v["costo_usd"] or 0), "tipo_iva": float(_r_v["tipo_iva"] or 0.105)}
+                finally:
+                    _conn_v.close()
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             dia_ini, dia_fin = (primer_dia, hoy) if fecha_val == "mes_actual" else (primer_dia_anterior, ultimo_mes) if fecha_val == "mes_anterior" else (None, None)
@@ -7009,6 +7144,7 @@ def build_tab_ventas(container) -> None:
                     tipo_oferta, tipo_display = _tipo_oferta_desde_order_item(it, item_id, item_id_to_tipo_oferta)
                     if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                         tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
+                    _gan_p, _gan_v = _calc_gan_row(unit_price, sku, cuotas) if sku else (None, None)
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
@@ -7026,6 +7162,12 @@ def build_tab_ventas(container) -> None:
                         "status_raw": status_raw,
                         "agrupar_key": agrupar_key,
                         "item_id": item_id or "—",
+                        "unit_price": unit_price,
+                        "seller_sku": sku,
+                        "order_id": str(ord_item.get("id", "") or ""),
+                        "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
+                        "gan_pesos": _gan_p,
+                        "gan_vta_pct": _gan_v,
                     })
             ventas_raw = ventas_mes
             if filtro_controls_ref:
