@@ -8491,6 +8491,44 @@ def _mostrar_tabla_precios(
                     ui.button("Guardar", on_click=guardar, color="primary")
         dialog.open()
 
+    def abrir_editar_iva(row: Dict[str, Any]) -> None:
+        _sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        _iva_cur = row.get("tipo_iva") or 0.105
+        _iva_str = "0.21" if abs(_iva_cur - 0.21) < 0.001 else "0.105"
+        dialog = ui.dialog()
+        with dialog:
+            with ui.card().classes("p-4 min-w-[280px]"):
+                ui.label("Editar tipo de IVA").classes("text-lg font-semibold mb-2")
+                ui.label((row.get("title") or "")[:80]).classes("text-sm text-gray-600 mb-2")
+                ui.label("Tipo de IVA para cálculo de margen").classes("text-xs text-gray-500 mb-2")
+                sel_iva = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=_iva_str).classes("w-full")
+
+                def guardar() -> None:
+                    nuevo_iva = float(sel_iva.value or "0.105")
+                    now_str = datetime.now().isoformat()
+                    try:
+                        conn = get_connection()
+                        conn.execute(
+                            """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
+                               VALUES (?, ?, NULL, NULL, ?, ?, ?)
+                               ON CONFLICT(sku, user_id) DO UPDATE SET
+                                   tipo_iva=excluded.tipo_iva,
+                                   updated_at=excluded.updated_at""",
+                            (_sku, user["id"], nuevo_iva, now_str, now_str),
+                        )
+                        conn.commit()
+                        conn.close()
+                    except Exception as e:
+                        ui.notify(f"Error: {e}", color="negative"); return
+                    row["tipo_iva"] = nuevo_iva
+                    dialog.close()
+                    filtrar_y_pintar()
+
+                with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                    ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
+                    ui.button("Guardar", on_click=guardar, color="primary")
+        dialog.open()
+
     def _on_costo_blur(evt, sku_key: str, inp, row: Dict) -> None:
         raw = (inp.value or "").strip()
         if not raw:
@@ -8914,10 +8952,10 @@ def _mostrar_tabla_precios(
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Cal%", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
-        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
+        {"name": "catalog_price_to_win", "label": "Precio Ganador", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
-        {"name": "margen_venta_pct", "label": "Gan%",   "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 50px"},
+        {"name": "margen_venta_pct", "label": "Gan Vta%", "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 50px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
@@ -9030,7 +9068,8 @@ def _mostrar_tabla_precios(
                                             ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
-                                            ui.label("21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%")
+                                            _iva_lbl = "21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%"
+                                            ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
                                             if cs == "winning":
