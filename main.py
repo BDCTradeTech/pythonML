@@ -4103,9 +4103,9 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
         "Content-Type": "application/json",
     }
     src = requests.get(f"{base}/items/{propia_id}", headers=headers, timeout=15)
-    print(f"[DEBUG CREAR] GET {propia_id} status={src.status_code}", flush=True)
     src.raise_for_status()
     item = src.json()
+    print(f"[DEBUG CREAR] GET {propia_id} catalog_listing={item.get('catalog_listing')} catalog_product_id={item.get('catalog_product_id')} title='{item.get('title','')[:50]}'", flush=True)
 
     body: Dict[str, Any] = {
         "title":              item["title"],
