@@ -9111,7 +9111,7 @@ def _mostrar_tabla_precios(
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
-        {"name": "dias_sin_modificar", "label": "Días", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "dias_sin_modificar", "label": "Modificado", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
@@ -9363,7 +9363,7 @@ def _mostrar_tabla_precios(
                 ui.label("Marcas:").classes("text-xs text-gray-500")
                 lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
             ui.space()
-            ui.button(on_click=_blanquear_revisiones).props("icon=eraser dense flat color=warning").tooltip("Blanquear revisiones de hoy")
+            ui.button("Borrar", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
                 ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
