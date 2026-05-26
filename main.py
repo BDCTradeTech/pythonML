@@ -4188,6 +4188,23 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
     return None
 
 
+def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[str]:
+    """GET /items/{id}/price_to_win — status competitivo: winning/sharing_first_place/competing/listed."""
+    if not access_token or not str(item_id).strip():
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/price_to_win",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return resp.json().get("status")
+    except Exception:
+        pass
+    return None
+
+
 def ml_get_promotion_item_discounts_by_user(
     access_token: Optional[str], item_id: str, user_id: str, total_discount_pct: float
 ) -> Optional[Dict[str, float]]:
@@ -8245,6 +8262,7 @@ def _mostrar_tabla_precios(
             "tipo_iva":  _prod_row["tipo_iva"]   if _prod_row else 0.105,
             "margen_pesos":     _mgn_c,
             "margen_venta_pct": _mvta_c,
+            "catalog_status":   None,
         })
 
     publicaciones_totales = len(items_loaded)
@@ -8254,6 +8272,31 @@ def _mostrar_tabla_precios(
     unidades_propias_en_stock = sum(i.get("available_quantity") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_pesos_propias = sum(i.get("subtotal") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
+
+    _cat_ids = [
+        str(r.get("id") or "")
+        for r in items_loaded
+        if r.get("catalog_listing") is True
+        and str(r.get("status") or "").lower() == "active"
+        and str(r.get("id") or "").strip()
+    ]
+    if _cat_ids and access_token:
+        def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[str]]:
+            res: Dict[str, Optional[str]] = {}
+            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
+                for fut in as_completed(futures):
+                    iid = futures[fut]
+                    try:
+                        res[iid] = fut.result()
+                    except Exception:
+                        res[iid] = None
+            return res
+        _cat_pos_map = _fetch_catalog_pos(_cat_ids)
+        for r in items_loaded:
+            _rid = str(r.get("id") or "")
+            if _rid in _cat_pos_map:
+                r["catalog_status"] = _cat_pos_map[_rid]
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
@@ -8657,7 +8700,8 @@ def _mostrar_tabla_precios(
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "fob_usd",   "label": "FOB u$",        "field": "fob_usd",   "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 110px"},
-        {"name": "tipo_iva",  "label": "IVA",            "field": "tipo_iva",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
+        {"name": "catalog_pos", "label": "Pos.", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",    "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "margen_venta_pct", "label": "Gan Vta%", "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 80px"},
@@ -8724,7 +8768,7 @@ def _mostrar_tabla_precios(
                     with ui.element("thead"):
                         with ui.element("tr").classes("bg-primary text-white font-semibold"):
                             for col in columns_precios:
-                                align = "text-right" if col.get("align") == "right" else "text-left"
+                                align = "text-center"
                                 col_name = col.get("name", col.get("field", ""))
                                 sortable = col.get("sortable", True)
                                 with ui.element("th").classes(f"px-2 py-2 border {align}"):
@@ -8757,15 +8801,25 @@ def _mostrar_tabla_precios(
                                             inp_costo.on("keydown.enter", lambda evt, sk=_sku_key, inp=inp_costo, r=row: _on_costo_blur(evt, sk, inp, r))
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
-                                            _iva_key = "0.21" if abs(_iva_val - 0.21) < 0.001 else "0.105"
-                                            ui.select({"0.105": "10,5%", "0.21": "21%"}, value=_iva_key,
-                                                      on_change=lambda e, sk=_sku_key, r=row: _on_iva_change(e, sk, r)).classes("w-20").props("dense")
+                                            ui.label("21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%")
+                                        elif col["name"] == "catalog_pos":
+                                            cs = row.get("catalog_status")
+                                            if cs == "winning":
+                                                ui.label("✓").classes("text-positive font-bold text-base")
+                                            elif cs == "sharing_first_place":
+                                                ui.label("=").classes("text-blue-600 font-bold text-base")
+                                            elif cs == "competing":
+                                                ui.label("↓").classes("text-orange-500 font-bold text-base")
+                                            elif cs == "listed":
+                                                ui.label("—").classes("text-gray-400")
+                                            else:
+                                                ui.label("")
                                         elif col["name"] == "title":
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
                                                 ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps").classes("text-left text-primary cursor-pointer hover:underline font-normal w-full")
                                             else:
-                                                ui.label(_ttxt[:80])
+                                                ui.label(_ttxt[:80]).classes("text-left w-full")
                                         elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
                                             precio_str = fmt_moneda(val) if val is not None else "$0"
                                             ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer font-medium text-primary hover:underline")
