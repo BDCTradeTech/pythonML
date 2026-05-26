@@ -4108,7 +4108,6 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
     print(f"[DEBUG CREAR] GET {propia_id} catalog_listing={item.get('catalog_listing')} catalog_product_id={item.get('catalog_product_id')} title='{item.get('title','')[:50]}'", flush=True)
 
     body: Dict[str, Any] = {
-        "title":              item["title"],
         "category_id":        item["category_id"],
         "price":              item["price"],
         "currency_id":        item.get("currency_id", "ARS"),
@@ -4118,6 +4117,10 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
         "listing_type_id":    "gold_pro",
         "pictures":           [{"source": p["secure_url"]} for p in item.get("pictures", [])],
     }
+    if item.get("catalog_product_id"):
+        body["catalog_product_id"] = item["catalog_product_id"]
+    else:
+        body["title"] = item["title"]
     if item.get("warranty"):
         body["warranty"] = item["warranty"]
     if item.get("family_name"):
@@ -7390,7 +7393,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
         header_div = ui.element("div").style("width:100%;overflow:hidden")
-        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:auto;overflow-x:auto")
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
         _hid = header_div.id
         _cid = table_container.id
         async def _setup_sync_once() -> None:
@@ -7415,11 +7418,33 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 return ""
             return " ▲" if sort_asc_ref["val"] else " ▼"
 
+        def _build_colgroup() -> None:
+            with ui.element("colgroup"):
+                ui.element("col").style("width:4%")
+                ui.element("col").style("width:7%")
+                ui.element("col").style("width:18%")
+                ui.element("col").style("width:3%")
+                ui.element("col").style("width:2%")
+                ui.element("col").style("width:2%")
+                ui.element("col").style("width:2%")
+                for gkey, *_ in GROUPS:
+                    if gkey == "propia":
+                        ui.element("col").style("width:9%")
+                        ui.element("col").style("width:4%")
+                    elif gkey == "catalogo":
+                        ui.element("col").style("width:4%")
+                        ui.element("col").style("width:3%")
+                    else:
+                        ui.element("col").style("width:4%")
+                        ui.element("col").style("width:3%")
+                        ui.element("col").style("width:2%")
+
         def _render(rows: list) -> None:
             header_div.clear()
             table_container.clear()
             with header_div:
                 with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup()
                     with ui.element("thead"):
                         with ui.element("tr"):
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:4%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("marca")):
@@ -7463,6 +7488,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
                     return
                 with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup()
                     # ── Cuerpo ────────────────────────────────────────────────
                     with ui.element("tbody"):
                         for idx, row in enumerate(rows):
