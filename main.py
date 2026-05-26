@@ -4123,6 +4123,7 @@ def ml_crear_gold_pro(access_token: str, propia_id: str, tags: Optional[list] = 
         body["tags"] = tags
 
     resp = requests.post(f"{base}/items", headers=headers, json=body, timeout=15)
+    print(f"[DEBUG CREAR] status={resp.status_code} body={resp.text}")
     resp.raise_for_status()
     return resp.json()
 
