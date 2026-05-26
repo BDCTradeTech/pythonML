@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.52"
+VERSION = "2.26.05.26.53"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6578,6 +6578,7 @@ def build_tab_ventas(container) -> None:
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
+                        "logistic_type": (ord_item.get("shipping") or {}).get("logistic_type") or "",
                         "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
                         "gan_pesos": _gan_p2,
                         "gan_vta_pct": _gan_v2,
@@ -7040,6 +7041,7 @@ def build_tab_ventas(container) -> None:
                                             ("dt", "Fecha", "text-center"),
                                             ("order_id", "Order ID", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
+                                            ("logistic_type", "Envío", "text-center"),
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
                                             ("tipo", "Tipo", "text-center"),
@@ -7060,40 +7062,43 @@ def build_tab_ventas(container) -> None:
                                 with ui.element("tbody"):
                                     for idx, v in enumerate(ventas_orden, 1):
                                         with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(str(idx))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v["fecha"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("order_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("item_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                _lt_lbl = {"xd_drop_off": "Flex", "me1": "Correo", "fulfillment": "Full"}.get(v.get("logistic_type", ""), "—")
+                                                ui.label(_lt_lbl)
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("tipo_venta", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("cuotas", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("tipo_display", v.get("tipo", v.get("tipo_oferta", "Regular"))))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px]"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px] text-xs"):
                                                 _titulo = v.get("productos", v.get("title", "—"))[:80]
                                                 ui.button(_titulo, on_click=lambda row=v: _abrir_popup_venta(row)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-600 hover:underline cursor-pointer w-full truncate")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(str(v["cantidad"]))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs"):
                                                 ui.label(v["monto_fmt"])
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
                                                 _gp = v.get("gan_pesos")
                                                 if _gp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
                                                     ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
                                                 _gvp = v.get("gan_vta_pct")
                                                 if _gvp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
                                                     ui.label(f"{_gvp:.1f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v["status"])
 
         async def _cargar_ventas_async() -> None:
@@ -7366,6 +7371,7 @@ def build_tab_ventas(container) -> None:
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
+                        "logistic_type": (ord_item.get("shipping") or {}).get("logistic_type") or "",
                         "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
                         "gan_pesos": _gan_p,
                         "gan_vta_pct": _gan_v,
