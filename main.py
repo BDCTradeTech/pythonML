@@ -9118,10 +9118,10 @@ def _mostrar_tabla_precios(
     def _build_colgroup_precios() -> None:
         _col_w = {
             "seller_sku": "95px", "marca": "60px", "title": "265px", "color": "60px",
-            "fob_usd": "55px", "costo_usd": "72px", "tipo_iva": "40px",
+            "fob_usd": "55px", "costo_usd": "68px", "tipo_iva": "40px",
             "quality_score": "55px", "catalog_pos": "55px",
             "catalog_price_to_win": "72px",
-            "price": "75px", "margen_pesos": "62px", "margen_venta_pct": "50px",
+            "price": "70px", "margen_pesos": "62px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "dias_sin_modificar": "38px", "status": "48px",
         }
         with ui.element("colgroup"):
@@ -9243,15 +9243,14 @@ def _mostrar_tabla_precios(
                                             ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "catalog_pos":
                                             cs = row.get("catalog_status")
-                                            _chip_map = {
-                                                "winning":             ("ti-trophy",        "#EAF3DE", "#27500A", "Ganando"),
-                                                "sharing_first_place": ("ti-equal",         "#E6F1FB", "#0C447C", "Empatando"),
-                                                "competing":           ("ti-trending-down", "#FCEBEB", "#791F1F", "Perdiendo"),
-                                                "listed":              ("ti-minus",         "var(--color-background-secondary)", "var(--color-text-secondary)", "Listed"),
-                                            }
-                                            if cs in _chip_map:
-                                                _ico, _bg, _fg, _txt = _chip_map[cs]
-                                                ui.html(f'<span style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:8px;font-size:11px;font-weight:500;background:{_bg};color:{_fg}"><i class="ti {_ico}" style="font-size:12px"></i> {_txt}</span>')
+                                            if cs == "winning":
+                                                ui.label("Ganando").style("color:#27500A;font-size:11px;font-weight:500")
+                                            elif cs == "sharing_first_place":
+                                                ui.label("Empatando").style("color:#0C447C;font-size:11px;font-weight:500")
+                                            elif cs == "competing":
+                                                ui.label("Perdiendo").style("color:#791F1F;font-size:11px;font-weight:500")
+                                            elif cs == "listed":
+                                                ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
                                             ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
