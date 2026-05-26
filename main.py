@@ -8009,8 +8009,7 @@ def _show_item_detail_dialog(
                         it["tipo_iva"]  = nuevo_tipo_iva
                         it["costo"]     = nuevo_costo
                         it["costo_usd"] = nuevo_costo
-                        if nuevo_fob is not None:
-                            it["fob_usd"] = nuevo_fob
+                        it["fob_usd"] = nuevo_fob
                         tiene_promo = it.get("price_original") is not None and it.get("promo_yo_pct") is not None
                         pc2 = nuevo_precio
                         if tiene_promo:
@@ -8802,7 +8801,6 @@ def _mostrar_tabla_precios(
     fmt_mon_js = "(val) => val != null && val !== '' ? '$' + Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '$0'"
     columns_precios = [
         {"name": "seller_sku", "label": "SKU", "field": "seller_sku", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 80px"},
-        {"name": "id", "label": "Publicación", "field": "id", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "marca", "label": "Marca", "field": "marca", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 100px"},
         {"name": "title", "label": "Producto", "field": "title", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 220px", ":classes": "(val, row) => (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer' : ''", ":sort": "(a, b, rowA, rowB) => (String(rowA.title||'').toLowerCase()).localeCompare(String(rowB.title||'').toLowerCase(), 'en')"},
         {"name": "color", "label": "Color", "field": "color", "sortable": True, "align": "left", "headerStyle": header_style, "style": "min-width: 90px"},
@@ -8810,13 +8808,14 @@ def _mostrar_tabla_precios(
         {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 110px"},
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "catalog_pos", "label": "Pos.", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 60px"},
+        {"name": "catalog_price_to_win", "label": "P.Ganar", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 90px"},
+        {"name": "catalog_visit_share",  "label": "Visit",   "field": "catalog_visit_share",  "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
         {"name": "margen_pesos",     "label": "Gan $",    "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 90px"},
         {"name": "margen_venta_pct", "label": "Gan Vta%", "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
-        {"name": "tipo", "label": "Tipo", "field": "tipo", "sortable": True, "align": "left", "headerStyle": header_style},
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
@@ -8897,7 +8896,7 @@ def _mostrar_tabla_precios(
                                         align = "text-left"
                                     else:
                                         align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
-                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-sm"):
+                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs"):
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
                                             ui.label(f"{_fob_val:.2f}" if _fob_val is not None else "—")
@@ -8922,6 +8921,13 @@ def _mostrar_tabla_precios(
                                                 ui.label("—").classes("text-gray-400")
                                             else:
                                                 ui.label("")
+                                        elif col["name"] == "catalog_price_to_win":
+                                            ptw = row.get("catalog_price_to_win")
+                                            ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
+                                        elif col["name"] == "catalog_visit_share":
+                                            vs = str(row.get("catalog_visit_share") or "").lower()
+                                            _vs_lbl = {"maximum": "máx", "medium": "med", "minimum": "mín"}.get(vs, "—")
+                                            ui.label(_vs_lbl).classes("" if vs else "text-gray-400")
                                         elif col["name"] == "title":
                                             _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
