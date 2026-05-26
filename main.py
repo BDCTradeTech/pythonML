@@ -8158,6 +8158,9 @@ def _mostrar_tabla_precios(
         )
         fusionado = dict(principal)
         fusionado["sold_quantity"] = total_sold
+        catalog_item = next((x for x in grupo if x.get("catalog_listing") is True), None)
+        fusionado["catalog_item_id"] = catalog_item["id"] if catalog_item else None
+        fusionado["catalog_product_id"] = catalog_item.get("catalog_product_id") if catalog_item else principal.get("catalog_product_id")
         items_dedup.append(fusionado)
 
     _uid = user["id"]
@@ -8299,13 +8302,13 @@ def _mostrar_tabla_precios(
     total_pesos_propias = sum(i.get("subtotal") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
 
-    _cat_ids = [
-        str(r.get("id") or "")
-        for r in items_loaded
-        if (r.get("catalog_listing") is True or bool(r.get("catalog_product_id")))
+    _items_para_ptw = [
+        r for r in items_loaded
+        if (r.get("catalog_listing") is True or r.get("catalog_item_id") or bool(r.get("catalog_product_id")))
         and str(r.get("status") or "").lower() == "active"
-        and str(r.get("id") or "").strip()
+        and str(r.get("catalog_item_id") or r.get("id") or "").strip()
     ]
+    _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
     if _cat_ids and access_token:
         def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
             res: Dict[str, Optional[Dict]] = {}
@@ -8320,7 +8323,7 @@ def _mostrar_tabla_precios(
             return res
         _cat_pos_map = _fetch_catalog_pos(_cat_ids)
         for r in items_loaded:
-            _rid = str(r.get("id") or "")
+            _rid = str(r.get("catalog_item_id") or r.get("id") or "")
             if _rid in _cat_pos_map:
                 d = _cat_pos_map[_rid] or {}
                 r["catalog_status"]       = d.get("status")
@@ -8819,6 +8822,18 @@ def _mostrar_tabla_precios(
         {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "left", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
     ]
 
+    def _build_colgroup_precios() -> None:
+        _col_w = {
+            "seller_sku": "80px", "marca": "100px", "title": "220px", "color": "90px",
+            "fob_usd": "100px", "costo_usd": "110px", "tipo_iva": "80px",
+            "catalog_pos": "60px", "catalog_price_to_win": "90px", "catalog_visit_share": "70px",
+            "price": "100px", "margen_pesos": "90px", "margen_venta_pct": "80px",
+            "available_quantity": "70px", "sold_quantity": "70px", "subtotal": "90px", "status": "80px",
+        }
+        with ui.element("colgroup"):
+            for col in columns_precios:
+                ui.element("col").style(f"width:{_col_w.get(col['name'], '80px')}")
+
     def filtrar_y_pintar() -> None:
         filtrados = list(items_loaded)
         stock_val = getattr(filtro_stock, "value", "con_stock")
@@ -8867,24 +8882,27 @@ def _mostrar_tabla_precios(
             and str(x.get("marca") or "").strip() != "—"
         })))
 
+        header_div_precios.clear()
+        with header_div_precios:
+            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                _build_colgroup_precios()
+                with ui.element("thead"):
+                    with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                        for col in columns_precios:
+                            col_name = col.get("name", col.get("field", ""))
+                            sortable  = col.get("sortable", True)
+                            align = "text-left" if col.get("align") == "left" else "text-right" if col.get("align") == "right" else "text-center"
+                            with ui.element("th").classes(f"px-2 py-2 border {align}"):
+                                if sortable:
+                                    ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                else:
+                                    ui.label(col["label"])
         table_container.clear()
         with table_container:
-            # Tabla custom (sin ui.table) para evitar error __call__ del slot; precio clickeable. Sin scroll interno (usa scroll de la página).
-            with ui.element("div").classes("w-full"):
-                with ui.element("table").classes("w-full border-collapse text-sm"):
-                    with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                            for col in columns_precios:
-                                align = "text-center"
-                                col_name = col.get("name", col.get("field", ""))
-                                sortable = col.get("sortable", True)
-                                with ui.element("th").classes(f"px-2 py-2 border {align}"):
-                                    if sortable:
-                                        ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
-                                    else:
-                                        ui.label(col["label"])
-                    with ui.element("tbody"):
-                        for row in filtrados:
+            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                _build_colgroup_precios()
+                with ui.element("tbody"):
+                    for row in filtrados:
                             _sku_key = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
                             with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
                                 for col in columns_precios:
@@ -9009,7 +9027,22 @@ def _mostrar_tabla_precios(
             filtro_sku = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-64")
             ui.button("Imprimir stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print")
             ui.button("Imprimir ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print")
-        table_container = ui.column().classes("w-full")
+        header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
+        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
+        _hid_p = header_div_precios.id
+        _cid_p = table_container.id
+        async def _setup_sync_precios() -> None:
+            await ui.run_javascript(
+                f"(function(){{"
+                f"var body=document.getElementById('c{_cid_p}');"
+                f"var hdr=document.getElementById('c{_hid_p}');"
+                f"if(!body||!hdr)return;"
+                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                f"_sg();new ResizeObserver(_sg).observe(body);"
+                f"}})();"
+            )
+        background_tasks.create(_setup_sync_precios())
 
     def on_filtro_stock_change(*args):
         e = args[0] if args else None
