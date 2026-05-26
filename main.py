@@ -7961,7 +7961,14 @@ def _show_item_detail_dialog(
             ui.notify("ID de publicación no válido.", color="negative"); return
         nuevo_precio   = _parse_moneda(getattr(inp_refs.get("precio"), "value", "") or "")
         nuevo_costo    = float(row.get("costo") or 0)
-        nuevo_tipo_iva = float(row.get("tipo_iva") or 0.105)
+        _iva_ref       = inp_refs.get("tipo_iva")
+        nuevo_tipo_iva = float(getattr(_iva_ref, "value", None) or row.get("tipo_iva") or 0.105)
+        _fob_ref       = inp_refs.get("fob_usd")
+        _fob_raw       = (getattr(_fob_ref, "value", "") or "").strip()
+        try:
+            nuevo_fob = float(_fob_raw) if _fob_raw else None
+        except (ValueError, TypeError):
+            nuevo_fob = None
         if nuevo_precio < 1:
             ui.notify("El precio debe ser al menos $1.", color="negative"); return
         dlg.close()
@@ -7977,12 +7984,12 @@ def _show_item_detail_dialog(
                         conn = get_connection()
                         try:
                             conn.execute(
-                                """INSERT INTO productos (sku, user_id, costo_usd, tipo_iva, created_at, updated_at, costo_updated_at)
-                                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                                """INSERT INTO productos (sku, user_id, costo_usd, fob_usd, tipo_iva, created_at, updated_at, costo_updated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                                    ON CONFLICT(sku, user_id) DO UPDATE SET
-                                       costo_usd=excluded.costo_usd, tipo_iva=excluded.tipo_iva,
+                                       costo_usd=excluded.costo_usd, fob_usd=excluded.fob_usd, tipo_iva=excluded.tipo_iva,
                                        costo_updated_at=excluded.costo_updated_at, updated_at=excluded.updated_at""",
-                                (sku_grd, uid, nuevo_costo, nuevo_tipo_iva, now_str, now_str, now_str),
+                                (sku_grd, uid, nuevo_costo, nuevo_fob, nuevo_tipo_iva, now_str, now_str, now_str),
                             )
                             conn.commit()
                         finally:
@@ -7995,6 +8002,8 @@ def _show_item_detail_dialog(
                         it["tipo_iva"]  = nuevo_tipo_iva
                         it["costo"]     = nuevo_costo
                         it["costo_usd"] = nuevo_costo
+                        if nuevo_fob is not None:
+                            it["fob_usd"] = nuevo_fob
                         tiene_promo = it.get("price_original") is not None and it.get("promo_yo_pct") is not None
                         pc2 = nuevo_precio
                         if tiene_promo:
@@ -8046,13 +8055,20 @@ def _show_item_detail_dialog(
                     ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
             with ui.column().classes("w-full gap-0 border-b-2 border-gray-300 pb-3"):
                 with ui.row().classes("w-full justify-between py-2 items-center"):
+                    ui.label("FOB u$").classes("text-sm font-medium text-gray-600")
+                    _fob_init    = row.get("fob_usd")
+                    _fob_str_dlg = f"{_fob_init:.2f}" if _fob_init is not None else ""
+                    inp_fob_dlg  = ui.input(value=_fob_str_dlg).classes("text-sm w-24").props("dense type=number min=0 step=0.01")
+                    inp_refs["fob_usd"] = inp_fob_dlg
+                with ui.row().classes("w-full justify-between py-2 items-center"):
                     ui.label("Precio").classes("text-sm font-medium text-gray-600")
                     inp_precio = ui.input(value=fmt_moneda(row.get("precio"))).classes("text-sm w-32").props("dense")
                     inp_refs["precio"] = inp_precio
                 with ui.row().classes("w-full justify-between py-2 items-center"):
                     ui.label("Tipo IVA").classes("text-sm font-medium text-gray-600")
                     tipo_val = float(row.get("tipo_iva") or 0.105)
-                    ui.label("21%" if abs(tipo_val - 0.21) < 0.001 else "10,5%").classes("text-sm")
+                    sel_iva  = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=("0.21" if abs(tipo_val - 0.21) < 0.001 else "0.105")).classes("text-sm w-24").props("dense")
+                    inp_refs["tipo_iva"] = sel_iva
                 with ui.row().classes("w-full justify-between py-2 items-center gap-4 border-b-2 border-gray-300"):
                     with ui.row().classes("items-center gap-2"):
                         ui.label("Costo +IVA u$").classes("text-sm font-medium text-gray-600")
@@ -8785,14 +8801,14 @@ def _mostrar_tabla_precios(
                                     val = row.get(field)
                                     if val is None:
                                         val = row.get(col["name"])
-                                    align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
+                                    if col["name"] == "title":
+                                        align = "text-left"
+                                    else:
+                                        align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
                                     with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-sm"):
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
-                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else ""
-                                            inp_fob = ui.input(value=_fob_str).classes("w-24").props("dense type=number min=0 step=0.01")
-                                            inp_fob.on("blur",          lambda evt, sk=_sku_key, inp=inp_fob, r=row: _on_fob_blur(evt, sk, inp, r))
-                                            inp_fob.on("keydown.enter", lambda evt, sk=_sku_key, inp=inp_fob, r=row: _on_fob_blur(evt, sk, inp, r))
+                                            ui.label(f"{_fob_val:.2f}" if _fob_val is not None else "—")
                                         elif col["name"] == "costo_usd":
                                             _costo_val = row.get("costo_usd")
                                             _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else ""
