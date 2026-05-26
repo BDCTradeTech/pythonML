@@ -6584,38 +6584,88 @@ def build_tab_ventas(container) -> None:
             ventas_raw = ventas_mes
 
         def _abrir_popup_venta(row: Dict[str, Any]) -> None:
-            with ui.dialog() as dlg, ui.card().classes("p-4 min-w-[360px]"):
-                with ui.column().classes("gap-2 w-full"):
-                    ui.label("Detalle de venta").classes("text-base font-bold")
-                    with ui.column().classes("gap-0 text-sm w-full"):
-                        ui.label(f"Order ID: {row.get('order_id') or '—'}")
-                        ui.label(f"Fecha: {row.get('fecha', '—')}")
-                        ui.label(f"Comprador: {row.get('buyer') or '—'}")
+            def _fmt_m(val):
+                if val is None: return "—"
+                try: return "$ " + f"{int(float(val)):,}".replace(",", ".")
+                except (TypeError, ValueError): return "—"
+            def _fmt_pct(val):
+                if val is None: return "—"
+                try: return f"{float(val):.1f}%".replace(".", ",")
+                except (TypeError, ValueError): return "—"
+            thumb_url = ""
+            _oid = row.get("order_id", "")
+            _iid = str(row.get("item_id") or "")
+            for _ord in all_orders_ref.get("orders") or []:
+                if str(_ord.get("id", "")) == _oid:
+                    for _oit in _ord.get("order_items") or _ord.get("items") or []:
+                        if not isinstance(_oit, dict):
+                            continue
+                        _obj = _oit.get("item") or _oit
+                        _iidd = str(_obj.get("id") or _oit.get("item_id") or "").strip() if isinstance(_obj, dict) else ""
+                        if _iidd == _iid:
+                            thumb_url = (_obj.get("thumbnail") or _obj.get("picture_url") or "") if isinstance(_obj, dict) else ""
+                            break
+                    break
+            d = ui.dialog()
+            with d:
+                with ui.card().classes("p-4 min-w-[400px] max-w-[540px]"):
+                    with ui.row().classes("w-full gap-3 mb-2"):
+                        if thumb_url:
+                            ui.image(thumb_url).classes("w-16 h-16 object-contain rounded border").style("min-width: 64px; min-height: 64px;")
+                        else:
+                            with ui.column().classes("w-16 h-16 rounded border bg-gray-100 items-center justify-center").style("min-width: 64px; min-height: 64px;"):
+                                ui.label("Sin foto").classes("text-xs text-gray-500")
+                        with ui.column().classes("flex-1 min-w-0 gap-1"):
+                            _sku_txt = str(row.get("seller_sku") or "")
+                            _iid_txt = str(row.get("item_id") or "—")
+                            ui.label(f"{_iid_txt}  —  {_sku_txt}" if _sku_txt else _iid_txt).classes("text-sm font-mono text-gray-600")
+                            _txt = str(row.get("title") or row.get("productos") or "—")
+                            _txt = _txt[:120] + ("..." if len(_txt) > 120 else "")
+                            ui.label(_txt).classes("text-sm font-bold")
+                    ui.separator().classes("my-2")
+                    with ui.column().classes("w-full gap-0 text-sm"):
+                        for _lbl, _val in [
+                            ("Fecha",     row.get("fecha") or "—"),
+                            ("Comprador", row.get("buyer") or "—"),
+                            ("Order ID",  row.get("order_id") or "—"),
+                        ]:
+                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                ui.label(_lbl).classes("font-medium text-gray-600")
+                                ui.label(str(_val)).classes("text-right")
                         ui.separator().classes("my-1")
-                        ui.label(f"Producto: {row.get('title') or row.get('productos', '—')}")
-                        ui.label(f"ID publicación: {row.get('item_id', '—')}")
-                        if row.get("seller_sku"):
-                            ui.label(f"SKU: {row['seller_sku']}")
+                        for _lbl, _val in [
+                            ("Cantidad",        str(row.get("cantidad") or "—")),
+                            ("Precio unitario", _fmt_m(row.get("unit_price"))),
+                            ("Monto total",     _fmt_m(row.get("monto"))),
+                        ]:
+                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                ui.label(_lbl).classes("font-medium text-gray-600")
+                                ui.label(_val).classes("text-right")
                         ui.separator().classes("my-1")
-                        ui.label(f"Cantidad: {row.get('cantidad', '—')}")
-                        _up = row.get("unit_price")
-                        if _up is not None:
-                            ui.label(f"Precio unitario: $ {_up:,.0f}".replace(",", "."))
-                        ui.label(f"Monto total: {row.get('monto_fmt', '—')}")
-                        ui.separator().classes("my-1")
-                        ui.label(f"Cuotas: {row.get('cuotas', '—')}")
-                        ui.label(f"Tipo: {row.get('tipo_display') or row.get('tipo', '—')}")
-                        ui.label(f"Publicación: {row.get('tipo_venta', '—')}")
-                        ui.label(f"Estado: {row.get('status', '—')}")
-                        _gp = row.get("gan_pesos")
-                        _gvp = row.get("gan_vta_pct")
-                        if _gp is not None:
-                            ui.separator().classes("my-1")
-                            ui.label(f"Gan $: $ {_gp:,.0f}".replace(",", ".")).classes("text-positive" if _gp >= 0 else "text-negative")
+                        for _lbl, _val in [
+                            ("Cuotas",      str(row.get("cuotas") or "—")),
+                            ("Tipo",        str(row.get("tipo_display") or row.get("tipo") or "—")),
+                            ("Publicación", str(row.get("tipo_venta") or "—")),
+                            ("Estado",      str(row.get("status") or "—")),
+                        ]:
+                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                ui.label(_lbl).classes("font-medium text-gray-600")
+                                ui.label(_val).classes("text-right")
+                    _gp = row.get("gan_pesos")
+                    _gvp = row.get("gan_vta_pct")
+                    if _gp is not None:
+                        ui.separator().classes("my-2")
+                        with ui.column().classes("w-full gap-0 text-sm"):
+                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                ui.label("Gan $").classes("font-medium text-gray-600")
+                                ui.label(_fmt_m(_gp)).classes("font-bold text-right " + ("text-positive" if _gp >= 0 else "text-negative"))
                             if _gvp is not None:
-                                ui.label(f"Gan Vta%: {_gvp:.1f}%".replace(".", ",")).classes("text-positive" if _gvp >= 0 else "text-negative")
-                    ui.button("Cerrar", on_click=dlg.close, color="primary").props("no-caps").classes("self-end")
-            dlg.open()
+                                with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                    ui.label("Gan Vta%").classes("font-medium text-gray-600")
+                                    ui.label(_fmt_pct(_gvp)).classes("font-bold text-right " + ("text-positive" if _gvp >= 0 else "text-negative"))
+                    with ui.row().classes("w-full justify-end mt-3"):
+                        ui.button("Cerrar", on_click=d.close, color="primary").props("no-caps")
+            d.open()
 
         def _cargar_ventas() -> None:
             if filtro_controls_ref:
