@@ -7437,14 +7437,14 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             with ui.element("colgroup"):
                 ui.element("col").style("width:4%")
                 ui.element("col").style("width:7%")
-                ui.element("col").style("width:18%")
+                ui.element("col").style("width:20%")
                 ui.element("col").style("width:3%")
                 ui.element("col").style("width:2%")
                 ui.element("col").style("width:2%")
                 ui.element("col").style("width:2%")
                 for gkey, *_ in GROUPS:
                     if gkey == "propia":
-                        ui.element("col").style("width:9%")
+                        ui.element("col").style("width:7%")
                         ui.element("col").style("width:4%")
                     elif gkey == "catalogo":
                         ui.element("col").style("width:4%")
@@ -7466,7 +7466,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 ui.label("Marca" + _ind("marca"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:7%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:18%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:20%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
@@ -7486,7 +7486,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 pcol = f"{gkey}_price"
                                 if gkey == "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:9%;border-left:2px solid {gborder};text-align:center"):
+                                    with ui.element("th").style(f"{TH_HDR2};width:7%;border-left:2px solid {gborder};text-align:center"):
                                         ui.label("Publicación")
                                     with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
@@ -7497,7 +7497,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         ui.label("% vs Propia")
                                     if gkey != "catalogo":
                                         with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
-                                            ui.label("Check%")
+                                            ui.label("Check %")
             with table_container:
                 if not rows:
                     ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
