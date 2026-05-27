@@ -50,6 +50,29 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import app, background_tasks, context, run, ui
 
+# --- Compatibilidad Fase 1: funciones de DB movidas a db.py ---
+from db import (
+    get_connection, init_db, save_query,
+    get_ml_app_credentials, set_ml_app_credentials,
+    get_qb_app_credentials, set_qb_app_credentials,
+    get_qb_tokens, get_user_qb_customer, set_user_qb_customer,
+    get_setting, set_setting,
+    get_cotizador_param, set_cotizador_param, delete_cotizador_param,
+    get_cotizador_tabla, set_cotizador_tabla,
+    list_users_excluding, get_all_users,
+    get_user_tab_permissions, set_user_tab_permission,
+    user_can_access_tab,
+    get_compras_lista, get_compras_lista_all, get_compras_lista_row,
+    insert_compras_lista, update_compras_lista_row, delete_compras_lista_row,
+    get_pedidos_lista, insert_pedidos_lista, update_pedidos_lista_row, delete_pedidos_lista_row,
+    get_marcas, insert_marca, update_marca, delete_marca,
+    get_despachantes, insert_despachante, update_despachante, delete_despachante,
+    get_invoice_extras, upsert_invoice_extra,
+    copy_cotizador_datos,
+    get_importacion_filas, save_importacion_filas,
+    export_user_db_data, import_user_db_data,
+)
+
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
