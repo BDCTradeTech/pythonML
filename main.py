@@ -7126,6 +7126,7 @@ def build_tab_ventas(container) -> None:
                                             ("dt", "Fecha", "text-center"),
                                             ("order_id", "Order ID", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
+                                            ("envio_tipo", "Envío", "text-center"),
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
                                             ("tipo", "Tipo", "text-center"),
@@ -7154,6 +7155,16 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("order_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("item_id", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                _lt = (v.get("logistic_type") or "").lower()
+                                                if _lt in ("self_service", "flex"):
+                                                    ui.label("Flex").classes("text-green-600 font-medium text-xs")
+                                                elif _lt == "fulfillment":
+                                                    ui.label("Full").classes("text-blue-600 font-medium text-xs")
+                                                elif _lt in ("cross_docking", "xd_drop_off", "drop_off", "me2"):
+                                                    ui.label("Correo").classes("text-orange-600 font-medium text-xs")
+                                                else:
+                                                    ui.label("—").classes("text-gray-400 text-xs")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("tipo_venta", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
@@ -7306,6 +7317,7 @@ def build_tab_ventas(container) -> None:
                     v["gan_pesos"] = calc["gan_pesos"]
                     v["gan_vta_pct"] = calc["gan_vta_pct"]
                     v["gan_cos_pct"] = calc["gan_cos_pct"]
+                    v["logistic_type"] = calc["logistic_type"]
                     ventas_cache_ref[pid] = db_row
 
                 if db_rows:
@@ -7643,6 +7655,7 @@ def build_tab_ventas(container) -> None:
                 btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
                 _update_btn_agrupar()
                 ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
+                ui.button("Completar datos", on_click=lambda: background_tasks.create(_enriquecer_ventas_async(context.client))).props("icon=download dense flat no-caps color=primary").classes("text-xs")
 
         _cargar_ventas()
 
