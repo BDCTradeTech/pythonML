@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.56"
+VERSION = "2.26.05.27.01"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6695,10 +6695,7 @@ def build_tab_ventas(container) -> None:
                 cobrado_real = gan_pesos = gan_vta_pct = gan_cos_pct = mcls = None
                 if has_api and has_calc:
                     cobrado_real = unit_price - meli_fee - cuotas_fee
-                    if net_rcv is not None:
-                        gan_pesos = float(net_rcv) - costo_pesos - iva_total - iibb_perc
-                    else:
-                        gan_pesos = cobrado_real - envio_real - deb_cred - iibb_ret - sirtac - costo_pesos - iva_total - iibb_perc
+                    gan_pesos = unit_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - costo_pesos
                     gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
                     mcls = "font-bold " + ("text-positive" if gan_pesos >= 0 else "text-negative")
@@ -6741,15 +6738,28 @@ def build_tab_ventas(container) -> None:
                             if has_api:
                                 with ui.column().classes("w-full gap-0 pt-3"):
                                     for lbl_r, val_r, cls_r, show_r in [
-                                        ("Comisión ML",  meli_fee,    "text-sm text-negative",  True),
-                                        ("Costo Cuotas", cuotas_fee,  "text-sm text-negative",  cuotas_fee > 0),
-                                        ("IVA venta",    iva_venta,   "text-sm",                True),
-                                        ("IVA neto",     iva_total,   "text-sm text-negative",  True),
-                                        ("Deb/Cred",     deb_cred,    "text-sm text-negative",  True),
-                                        ("IIBB ret.",    iibb_ret,    "text-sm text-negative",  iibb_ret > 0),
-                                        ("SIRTAC",       sirtac,      "text-sm text-negative",  sirtac > 0),
-                                        ("IIBB perc.",   iibb_perc,   "text-sm text-negative",  True),
-                                        (envio_lbl,      envio_real,  "text-sm text-negative",  True),
+                                        ("Comisión ML",  meli_fee,   "text-sm text-negative", True),
+                                        ("Costo Cuotas", cuotas_fee, "text-sm text-negative", cuotas_fee > 0),
+                                    ]:
+                                        if not show_r: continue
+                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                            ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
+                                            ui.label(fmt_moneda(val_r)).classes(cls_r)
+                                    with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                                        with ui.row().classes("gap-4"):
+                                            ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
+                                            ui.label(fmt_moneda(iva_meli)).classes("text-sm")
+                                        with ui.row().classes("gap-4"):
+                                            ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
+                                            ui.label(fmt_moneda(iva_impor)).classes("text-sm")
+                                    for lbl_r, val_r, cls_r, show_r in [
+                                        ("IVA venta",  iva_venta,  "text-sm",               True),
+                                        ("IVA neto",   iva_total,  "text-sm text-negative", True),
+                                        ("Deb/Cred",   deb_cred,   "text-sm text-negative", True),
+                                        ("IIBB ret.",  iibb_ret,   "text-sm text-negative", iibb_ret > 0),
+                                        ("SIRTAC",     sirtac,     "text-sm text-negative", sirtac > 0),
+                                        ("IIBB perc.", iibb_perc,  "text-sm text-negative", True),
+                                        (envio_lbl,    envio_real, "text-sm text-negative", True),
                                     ]:
                                         if not show_r: continue
                                         border = " border-b-2 border-gray-300" if lbl_r == envio_lbl else ""
@@ -6759,14 +6769,6 @@ def build_tab_ventas(container) -> None:
                                                 if lbl_r == "IIBB perc.":
                                                     ui.label("est.").classes("text-xs text-gray-400 italic")
                                             ui.label(fmt_moneda(val_r)).classes(cls_r)
-                                        if lbl_r == "IVA neto":
-                                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                                with ui.row().classes("gap-4"):
-                                                    ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
-                                                    ui.label(fmt_moneda(iva_meli)).classes("text-sm")
-                                                with ui.row().classes("gap-4"):
-                                                    ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
-                                                    ui.label(fmt_moneda(iva_impor)).classes("text-sm")
                                     if has_calc:
                                         with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                                             ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
