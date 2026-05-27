@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-# Polyfill asyncio.to_thread para Python 3.8 (agregado en 3.9). Evita AttributeError en Históricos y otras búsquedas.
+# Polyfill asyncio.to_thread para Python 3.8 (agregado en 3.9). Evita AttributeError en HistÃ³ricos y otras bÃºsquedas.
 if not hasattr(asyncio, "to_thread"):
     def _to_thread_compat(fn, *args, **kwargs):
         import functools
@@ -111,23 +111,24 @@ from db import (
     COTIZADOR_DEFAULTS,
 )
 
-# --- Fase 3: tabs extraídos a módulos separados ---
+# --- Fase 3: tabs extraÃ­dos a mÃ³dulos separados ---
 from tabs.pedidos import build_tab_pedidos
 from tabs.estadisticas import build_tab_estadisticas
 from tabs.config import build_tab_config
 from tabs.compras import build_tab_compras
 from tabs.ventas import build_tab_ventas
+from tabs.cuotas import build_tab_cuotas, _cuotas_key
 
 DB_PATH = Path(__file__).with_name("app.db")
 
-# Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.28"
+# VersiÃ³n del sistema: formato 2.aa.mm.dd.hh (aa=aÃ±o, mm=mes, dd=dÃ­a, hh=hora 00-23). Ej.: 2.26.04.14.12
+VERSION = "2.26.05.27.29"
 
-# Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
-# compras_lista (Compras) se quitó de la tabla de permisos.
+# PestaÃ±as del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
+# compras_lista (Compras) se quitÃ³ de la tabla de permisos.
 TAB_KEYS = [
     ("home", "Home"),
-    ("estadisticas", "Estadísticas"),
+    ("estadisticas", "EstadÃ­sticas"),
     ("ventas", "Ventas"),
     ("productos", "Productos"),
     ("precios", "Precios"),
@@ -138,11 +139,11 @@ TAB_KEYS = [
     ("stock", "Stock"),
     ("compras_lista", "Compras"),
     ("pedidos", "Pedidos"),
-    ("historicos", "Históricos"),
+    ("historicos", "HistÃ³ricos"),
     ("importacion", "Importacion"),
     ("pesos", "Pesos"),
     ("datos", "Datos"),
-    ("configuracion", "Configuración"),
+    ("configuracion", "ConfiguraciÃ³n"),
     ("admin", "Admin"),
 ]
 
@@ -153,7 +154,7 @@ TABS_QB   = {"compras", "compras_lista"}
 
 
 # ==========================
-# ENCRIPTACIÓN DE SECRETS
+# ENCRIPTACIÃ“N DE SECRETS
 # ==========================
 
 
@@ -170,7 +171,7 @@ def _encrypt_secret(plain: str) -> str:
 
 def _decrypt_secret(token: str) -> str:
     if not token.startswith("gAAAAA"):
-        return token  # plaintext legacy: aún no migrado
+        return token  # plaintext legacy: aÃºn no migrado
     return _get_fernet().decrypt(token.encode()).decode()
 
 
@@ -226,7 +227,7 @@ def _invoice_line_patch_specs(
     user_id: Optional[int] = None,
     item_detail_cache: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Un dict por línea de venta: description, sku, qty, rate, amount (números en API)."""
+    """Un dict por lÃ­nea de venta: description, sku, qty, rate, amount (nÃºmeros en API)."""
     item_cache: Dict[str, Dict[str, Any]] = item_detail_cache if item_detail_cache is not None else {}
     lines = inv_obj.get("Line") or []
     if isinstance(lines, dict):
@@ -248,7 +249,7 @@ def _invoice_line_patch_specs(
         name = str(ref.get("name", "") if isinstance(ref, dict) else "").strip()
         item_id = str(ref.get("value", "") if isinstance(ref, dict) else "").strip()
         desc = str(lin.get("Description") or name or "").strip()
-        if idx == n - 1 and desc in ("-", "—", ""):
+        if idx == n - 1 and desc in ("-", "â€”", ""):
             continue
         if not desc or desc == "Total":
             continue
@@ -301,7 +302,7 @@ def _pdf_description_search_variants(old: str) -> List[str]:
     seen: set[str] = set()
     o = str(old).strip()
     words = o.split()
-    # PDF a veces usa guiones distintos o saltos; la API manda una sola línea
+    # PDF a veces usa guiones distintos o saltos; la API manda una sola lÃ­nea
     o_hyphen = re.sub(r"[\u2010\u2011\u2012\u2013\u2014\u2212]", "-", o)
     o_flat = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", o_hyphen)).strip()
 
@@ -323,25 +324,25 @@ def _pdf_description_search_variants(old: str) -> List[str]:
 
 
 _PDF_ROW_Y_TOL = 5.0
-# Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2–3 líneas de descripción,
+# Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2â€“3 lÃ­neas de descripciÃ³n,
 # pero sin el exceso anterior (~100) que mezclaba columnas de filas vecinas.
 _PDF_INVOICE_ROW_Y_SPAN = 40.0
-# Separación mínima entre “filas de ítem” al agrupar rects de search_for (más que el interlineado ~11–12).
+# SeparaciÃ³n mÃ­nima entre â€œfilas de Ã­temâ€ al agrupar rects de search_for (mÃ¡s que el interlineado ~11â€“12).
 _PDF_DESC_CLUSTER_ROW_SEP = 16.0
-# Debajo del texto SKU/DESCRIPTION/… de cabecera: aire para la franja gris antes de borrar ítems.
+# Debajo del texto SKU/DESCRIPTION/â€¦ de cabecera: aire para la franja gris antes de borrar Ã­tems.
 _PDF_TABLE_BODY_TOP_BELOW_HEADER_PT = 14.0
-# Afinado visual al redibujar tabla (pt): SKU más izq., descripción más der., QTY bajo el título.
+# Afinado visual al redibujar tabla (pt): SKU mÃ¡s izq., descripciÃ³n mÃ¡s der., QTY bajo el tÃ­tulo.
 _PDF_TABLE_NUDGE_SKU_LEFT = 7.0
 _PDF_TABLE_NUDGE_DESC_RIGHT = 6.0
 # Resta al borde derecho de anclaje de QTY (texto alineado a la derecha en x_qty_right).
 _PDF_TABLE_NUDGE_QTY_LEFT = 5.0
 _PDF_SKU_REDACT_PAD = 7.0
 _PDF_SKU_REDACT_PAD_BOTTOM_EXTRA = 8.0
-# Al parchear invoice PDF: misma tipografía en SKU, descripción, cant., rate y amount
+# Al parchear invoice PDF: misma tipografÃ­a en SKU, descripciÃ³n, cant., rate y amount
 _PDF_PATCH_FONTNAME = "helv"
 _PDF_PATCH_FONTSIZE = 9.5
 _PDF_PATCH_SKU_FS_MIN = 7.8
-# SKU: correr el inicio a la izquierda (pt) para una sola línea con más aire
+# SKU: correr el inicio a la izquierda (pt) para una sola lÃ­nea con mÃ¡s aire
 _PDF_PATCH_SKU_SHIFT_LEFT = 14.0
 
 
@@ -354,20 +355,20 @@ def _qb_invoice_pdf_download_basename(doc: Any) -> str:
 
 
 def _sku_display_every_other_from_first(s: str) -> str:
-    """Solo caracteres en posiciones 1ª, 3ª, 5ª… (índices 0, 2, 4…); la 2ª, 4ª… se omiten."""
+    """Solo caracteres en posiciones 1Âª, 3Âª, 5Âªâ€¦ (Ã­ndices 0, 2, 4â€¦); la 2Âª, 4Âªâ€¦ se omiten."""
     t = str(s)
     return "".join(t[i] for i in range(0, len(t), 2))
 
 
 def _pdf_find_first_rect_global(doc: Any, variants: List[str]) -> Optional[tuple[int, Any]]:
-    """Primera coincidencia en orden página, y0, x0 (lectura típica). Retorna (page_index, Rect) o None."""
+    """Primera coincidencia en orden pÃ¡gina, y0, x0 (lectura tÃ­pica). Retorna (page_index, Rect) o None."""
     return _pdf_find_first_rect_global_after_row(doc, variants, 0, 0.0)
 
 
 def _pdf_find_first_rect_global_after_y(
     doc: Any, variants: List[str], y_min: float
 ) -> Optional[tuple[int, Any]]:
-    """Compat: solo y global (falla en multi-página). Preferir _pdf_find_first_rect_global_after_row."""
+    """Compat: solo y global (falla en multi-pÃ¡gina). Preferir _pdf_find_first_rect_global_after_row."""
     return _pdf_find_first_rect_global_after_row(doc, variants, 0, float(y_min))
 
 
@@ -378,10 +379,10 @@ def _pdf_find_first_rect_global_after_row(
     min_y: float,
     min_variant_len: int = 3,
 ) -> Optional[tuple[int, Any]]:
-    """Primera fila siguiente: prueba cada variante por separado, de la más larga a la más corta.
+    """Primera fila siguiente: prueba cada variante por separado, de la mÃ¡s larga a la mÃ¡s corta.
 
-    Si se mezclan todas las variantes y se toma el mínimo global, prefijos cortos (p. ej. 4 palabras
-    iguales en varios ítems) vuelven a coincidir con filas ya procesadas y destruyen el PDF.
+    Si se mezclan todas las variantes y se toma el mÃ­nimo global, prefijos cortos (p. ej. 4 palabras
+    iguales en varios Ã­tems) vuelven a coincidir con filas ya procesadas y destruyen el PDF.
     """
     import fitz  # pymupdf
 
@@ -394,7 +395,7 @@ def _pdf_find_first_rect_global_after_row(
         if len(v) >= int(min_variant_len) and v not in seen:
             seen.add(v)
             uniq.append(v)
-    # Más específico primero (misma longitud: orden estable del caller)
+    # MÃ¡s especÃ­fico primero (misma longitud: orden estable del caller)
     sorted_v = sorted(uniq, key=len, reverse=True)
     mp = int(min_page)
     floor = float(min_y)
@@ -422,7 +423,7 @@ def _pdf_find_first_rect_global_after_row(
 def _pdf_duplicate_description_skip_count(
     specs: List[Dict[str, Any]], line_idx: int
 ) -> int:
-    """Cuántas líneas anteriores tienen la misma descripción (p. ej. dos ítems Apple idénticos en el PDF)."""
+    """CuÃ¡ntas lÃ­neas anteriores tienen la misma descripciÃ³n (p. ej. dos Ã­tems Apple idÃ©nticos en el PDF)."""
     d = str(specs[line_idx].get("description") or "").strip()
     if not d:
         return 0
@@ -434,7 +435,7 @@ def _pdf_duplicate_description_skip_count(
 
 
 def _pdf_duplicate_sku_skip_count(specs: List[Dict[str, Any]], line_idx: int) -> int:
-    """Cuántas líneas anteriores tienen el mismo SKU (p. ej. MR9U3LL/A en fila 1 y 2)."""
+    """CuÃ¡ntas lÃ­neas anteriores tienen el mismo SKU (p. ej. MR9U3LL/A en fila 1 y 2)."""
     s = str(specs[line_idx].get("sku") or "").strip()
     if not s:
         return 0
@@ -448,7 +449,7 @@ def _pdf_duplicate_sku_skip_count(specs: List[Dict[str, Any]], line_idx: int) ->
 def _pdf_cluster_search_hits_into_rows(
     hits: List[tuple[int, float, float, Any]], y_sep: Optional[float] = None
 ) -> List[List[tuple[int, float, float, Any]]]:
-    """Agrupa rectángulos de search_for en filas de tabla (una descripción multilínea = una fila)."""
+    """Agrupa rectÃ¡ngulos de search_for en filas de tabla (una descripciÃ³n multilÃ­nea = una fila)."""
     if not hits:
         return []
     sep = float(y_sep) if y_sep is not None else float(_PDF_DESC_CLUSTER_ROW_SEP)
@@ -474,9 +475,9 @@ def _pdf_find_rect_global_after_row_skip_occurrence(
     skip: int,
     min_variant_len: int = 3,
 ) -> Optional[tuple[int, Any]]:
-    """Como _pdf_find_first_rect_global_after_row pero salta filas enteras con la misma descripción.
+    """Como _pdf_find_first_rect_global_after_row pero salta filas enteras con la misma descripciÃ³n.
 
-    search_for devuelve un rect por línea de texto; skip debe contar filas de ítem, no fragmentos.
+    search_for devuelve un rect por lÃ­nea de texto; skip debe contar filas de Ã­tem, no fragmentos.
     """
     import fitz  # pymupdf
 
@@ -516,7 +517,7 @@ def _pdf_find_rect_global_after_row_skip_occurrence(
 def _pdf_description_redact_rect(
     d_rect: Any, qty_rect: Optional[Any], extra_right_pt: float = 28.0
 ) -> Any:
-    """Amplía el rect de descripción hacia la derecha para cubrir texto largo hasta antes de QTY."""
+    """AmplÃ­a el rect de descripciÃ³n hacia la derecha para cubrir texto largo hasta antes de QTY."""
     import fitz  # pymupdf
 
     r = fitz.Rect(d_rect)
@@ -536,7 +537,7 @@ def _pdf_description_full_redact_rect(
     y_max: Optional[float] = None,
     x_hi_cap: Optional[float] = None,
 ) -> Any:
-    """Unión de todo el bloque de descripción (varias líneas y continuaciones sin SKU) hasta la siguiente fila."""
+    """UniÃ³n de todo el bloque de descripciÃ³n (varias lÃ­neas y continuaciones sin SKU) hasta la siguiente fila."""
     import fitz  # pymupdf
 
     d = fitz.Rect(d_rect)
@@ -546,7 +547,7 @@ def _pdf_description_full_redact_rect(
         x_hi = float(d.x1) + float(extra_right_if_no_qty)
         if x_hi_cap is not None:
             x_hi = min(x_hi, float(x_hi_cap))
-    # Borde izquierdo de la columna DESCRIPCIÓN (nunca invadir columna SKU)
+    # Borde izquierdo de la columna DESCRIPCIÃ“N (nunca invadir columna SKU)
     desc_x_min = max(float(page.rect.x0) + 6.0, float(d.x0) - 3.0)
 
     next_sku_y: Optional[float] = None
@@ -605,7 +606,7 @@ def _pdf_description_full_redact_rect(
 
 
 def _pdf_next_row_content_y_floor(page: Any, d_rect: Any, min_step: float = 12.0) -> Optional[float]:
-    """Menor y0 de texto en columna de descripción (x >= d.x0) por debajo de esta fila; separa filas del PDF."""
+    """Menor y0 de texto en columna de descripciÃ³n (x >= d.x0) por debajo de esta fila; separa filas del PDF."""
     import fitz  # pymupdf
 
     d = fitz.Rect(d_rect)
@@ -658,7 +659,7 @@ def _pdf_sku_variants_from_aliases(aliases: List[str]) -> List[str]:
 
 
 def _pdf_sku_multiline_search_parts(s: str) -> List[str]:
-    """Fragmentos que el PDF puede partir en varias líneas (p. ej. 'SM-' y 'X620NLBETPA')."""
+    """Fragmentos que el PDF puede partir en varias lÃ­neas (p. ej. 'SM-' y 'X620NLBETPA')."""
     s = str(s).strip()
     if not s:
         return []
@@ -704,7 +705,7 @@ def _pdf_sku_all_search_strings(aliases: List[str]) -> List[str]:
 
 
 def _pdf_cluster_sku_rects_one_row(found: List[Any], d_rect: Any) -> List[Any]:
-    """Mantiene solo fragmentos de la misma celda SKU (2 líneas), no la fila siguiente."""
+    """Mantiene solo fragmentos de la misma celda SKU (2 lÃ­neas), no la fila siguiente."""
     import fitz  # pymupdf
 
     if not found:
@@ -734,11 +735,11 @@ def _pdf_find_sku_column_union(
     x_min: float = 0.0,
     x_max: Optional[float] = None,
 ) -> Optional[Any]:
-    """Une rectángulos de fragmentos del SKU en la misma celda (varias líneas), sin invadir la fila de abajo."""
+    """Une rectÃ¡ngulos de fragmentos del SKU en la misma celda (varias lÃ­neas), sin invadir la fila de abajo."""
     import fitz  # pymupdf
 
     d = fitz.Rect(d_rect)
-    # SKU queda a la izquierda del texto de descripción; límite derecho = borde izq. descripción (no +28 que invadía poco o mal)
+    # SKU queda a la izquierda del texto de descripciÃ³n; lÃ­mite derecho = borde izq. descripciÃ³n (no +28 que invadÃ­a poco o mal)
     right_lim = float(x_max) if x_max is not None else float(d.x0) - 4.0
     y_lo = float(y_ref) - 14.0
     next_line = _pdf_next_row_content_y_floor(page, d_rect)
@@ -777,7 +778,7 @@ def _pdf_find_sku_column_union(
 
 
 def _pdf_split_sku_two_lines(text: str) -> tuple[str, str]:
-    """Divide SKU en dos líneas: guión más cercano al centro (evita cortes tipo '...D' + 'OT5-')."""
+    """Divide SKU en dos lÃ­neas: guiÃ³n mÃ¡s cercano al centro (evita cortes tipo '...D' + 'OT5-')."""
     t = str(text).strip()
     if len(t) <= 22:
         return t, ""
@@ -803,7 +804,7 @@ def _pdf_insert_sku_in_union(
     text: str,
     y_row_align: Optional[float] = None,
 ) -> None:
-    """Redibuja el SKU en ≤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
+    """Redibuja el SKU en â‰¤2 lÃ­neas. y_row_align = d_rect.y0 alinea con la primera lÃ­nea de descripciÃ³n (mismo baseline que el texto de descripciÃ³n)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -869,7 +870,7 @@ def _pdf_horiz_overlap(a: Any, b: Any) -> float:
 
 
 def _pdf_rect_matches_description_block(rr: Any, d_rect: Any) -> bool:
-    """Evita confundir el bloque de descripción con la celda SKU (mismo texto)."""
+    """Evita confundir el bloque de descripciÃ³n con la celda SKU (mismo texto)."""
     import fitz  # pymupdf
 
     r = fitz.Rect(rr)
@@ -923,7 +924,7 @@ def _pdf_rect_inflate_clipped(rect: Any, pad: float, page_rect: Any) -> Any:
 
 
 def _pdf_inflate_sku_for_redact(rect: Any, page_rect: Any) -> Any:
-    """Borrado SKU: padding uniforme + extra abajo para guiones/partículas residuales."""
+    """Borrado SKU: padding uniforme + extra abajo para guiones/partÃ­culas residuales."""
     import fitz  # pymupdf
 
     r = _pdf_rect_inflate_clipped(rect, float(_PDF_SKU_REDACT_PAD), page_rect)
@@ -940,7 +941,7 @@ def _pdf_find_rect_right_band(
     y_prefer: Optional[float] = None,
     max_y_dist: Optional[float] = None,
 ) -> Optional[Any]:
-    """A la derecha de x_min en [y_lo,y_hi]: prioriza cercanía a y_prefer; max_y_dist evita tomar 142.11/amount de la fila de abajo."""
+    """A la derecha de x_min en [y_lo,y_hi]: prioriza cercanÃ­a a y_prefer; max_y_dist evita tomar 142.11/amount de la fila de abajo."""
     import fitz  # pymupdf
 
     y_mid = (float(y_lo) + float(y_hi)) * 0.5
@@ -1001,7 +1002,7 @@ def _pdf_find_rect_row_after(
 
 
 def _pdf_sku_anchor_search_variants(spec: Dict[str, Any], sku_parts: List[str]) -> List[str]:
-    """Strings de búsqueda para anclar fila por SKU: aliases completos primero; nunca fragmentos tipo 'MX'."""
+    """Strings de bÃºsqueda para anclar fila por SKU: aliases completos primero; nunca fragmentos tipo 'MX'."""
     seen: set[str] = set()
     out: List[str] = []
 
@@ -1034,7 +1035,7 @@ def _pdf_try_anchor_row_from_sku(
     desc_col_x0: Optional[float],
     sku_occurrence_skip: int = 0,
 ) -> Optional[tuple[int, Any]]:
-    """Si la descripción no aparece como en la API (texto partido), ancla la fila por el SKU y arma un rect de descripción."""
+    """Si la descripciÃ³n no aparece como en la API (texto partido), ancla la fila por el SKU y arma un rect de descripciÃ³n."""
     import fitz  # pymupdf
 
     cand = _pdf_sku_anchor_search_variants(spec, sku_parts)
@@ -1100,7 +1101,7 @@ def _pdf_try_anchor_row_from_sku(
 def _pdf_find_rect_row_before(
     page: Any, y_ref: float, variants: List[str], x_max: float
 ) -> Optional[Any]:
-    """Última coincidencia a la izquierda de x_max en la misma fila (p. ej. SKU)."""
+    """Ãšltima coincidencia a la izquierda de x_max en la misma fila (p. ej. SKU)."""
     import fitz  # pymupdf
 
     best: Optional[Any] = None
@@ -1266,7 +1267,7 @@ def _pdf_find_items_block_y_end(page: Any, y_min: float) -> float:
 def _pdf_table_layout_from_first_data_row(
     doc: Any, specs: List[Dict[str, Any]]
 ) -> Optional[tuple[int, Dict[str, Any]]]:
-    """Si no hay cabecera reconocible, usa la1ª línea de ítem para columnas X y tope superior."""
+    """Si no hay cabecera reconocible, usa la1Âª lÃ­nea de Ã­tem para columnas X y tope superior."""
     import fitz  # pymupdf
 
     if not specs:
@@ -1344,7 +1345,7 @@ def _pdf_table_layout_from_first_data_row(
         "x_rate_left": float(rr.x0),
         "x_amt_left": float(ar.x0),
         "x_amt_right": float(ar.x1),
-        # Primera fila de datos: no subir el borrado (evita comer cabecera si el match sube de más).
+        # Primera fila de datos: no subir el borrado (evita comer cabecera si el match sube de mÃ¡s).
         "y_data_start": float(dr.y0) + 5.0,
         "x_margin_l": max(float(pr.x0) + 4.0, x_sku - 4.0),
         "x_margin_r": min(float(pr.x1) - 6.0, float(ar.x1) + 14.0),
@@ -1359,7 +1360,7 @@ def _patch_invoice_pdf_items_table_rewrite(
     user_id: Optional[int],
     sku_interleaved_display: bool = False,
 ) -> tuple[Optional[bytes], Optional[str]]:
-    """Borra el bloque de la tabla de ítems y redibuja todas las filas con datos de la API."""
+    """Borra el bloque de la tabla de Ã­tems y redibuja todas las filas con datos de la API."""
     try:
         import fitz  # pymupdf
     except ImportError:
@@ -1399,7 +1400,7 @@ def _patch_invoice_pdf_items_table_rewrite(
         x_desc = float(layout["x_desc"]) + float(_PDF_TABLE_NUDGE_DESC_RIGHT)
         x0 = min(float(layout["x_margin_l"]), x_sku - 3.0)
         x1 = float(layout["x_margin_r"])
-        # Sin y0-6: ese margen subía el rect y borraba la franja gris y los títulos de columna.
+        # Sin y0-6: ese margen subÃ­a el rect y borraba la franja gris y los tÃ­tulos de columna.
         red = fitz.Rect(x0, y0, x1, y1)
         page.add_redact_annot(red, fill=(1, 1, 1))
         page.apply_redactions()
@@ -1450,7 +1451,7 @@ def _patch_invoice_pdf_items_table_rewrite(
                 row_extra = fs * 1.15
             desc_txt = str(new_description).strip()
             if desc_max_w > 50 and len(desc_txt) > 90:
-                desc_txt = desc_txt[:87] + "…"
+                desc_txt = desc_txt[:87] + "â€¦"
             page.insert_text(
                 fitz.Point(x_desc, y_base),
                 desc_txt,
@@ -1471,7 +1472,7 @@ def _patch_invoice_pdf_items_table_rewrite(
 
         return (
             doc.tobytes(deflate=True),
-            "Tabla de ítems regenerada desde QuickBooks (bloque único).",
+            "Tabla de Ã­tems regenerada desde QuickBooks (bloque Ãºnico).",
         )
     finally:
         doc.close()
@@ -1506,7 +1507,7 @@ def _patch_invoice_pdf_items_table_rewrite(
 
 
 def _enable_tabs_for_user(user_id: int, tab_set: set) -> None:
-    """Habilita un conjunto de tabs para un usuario solo si actualmente están en 0."""
+    """Habilita un conjunto de tabs para un usuario solo si actualmente estÃ¡n en 0."""
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -1604,7 +1605,7 @@ _email_lock = threading.Lock()
 
 
 # ==========================
-# INTEGRACIÓN MERCADOLIBRE
+# INTEGRACIÃ“N MERCADOLIBRE
 # ==========================
 
 
@@ -1701,7 +1702,7 @@ ORDERS_MAX_OFFSET = 100000  # ML puede limitar offset; si devuelve 400 se detien
 
 
 # ==========================
-# SESIÓN DE USUARIO (NiceGUI)
+# SESIÃ“N DE USUARIO (NiceGUI)
 # ==========================
 
 
@@ -1719,7 +1720,7 @@ def set_current_user(user: Optional[Dict[str, Any]]) -> None:
 def require_login() -> Optional[Dict[str, Any]]:
     user = get_current_user()
     if not user:
-        ui.notify("Debes iniciar sesión para continuar", color="negative")
+        ui.notify("Debes iniciar sesiÃ³n para continuar", color="negative")
     return user
 
 
@@ -1733,16 +1734,16 @@ def show_login_screen(container) -> None:
     container.clear()
 
     with container:
-        # Fila a ancho completo, contenido centrado horizontalmente y más cerca del borde superior
+        # Fila a ancho completo, contenido centrado horizontalmente y mÃ¡s cerca del borde superior
         with ui.row().classes("w-full justify-center q-mt-xl"):
             with ui.column().classes("items-center gap-6"):
                 ui.label("BDC systems").classes("text-3xl font-bold")
 
                 with ui.card().classes("w-full max-w-md"):
-                    ui.label("Iniciar sesión").classes("text-xl font-semibold mb-4")
+                    ui.label("Iniciar sesiÃ³n").classes("text-xl font-semibold mb-4")
                     username = ui.input("Usuario").classes("w-full")
                     password = ui.input(
-                        "Contraseña",
+                        "ContraseÃ±a",
                         password=True,
                         password_toggle_button=True,
                     ).classes("w-full")
@@ -1750,11 +1751,11 @@ def show_login_screen(container) -> None:
                     with ui.row().classes("justify-between w-full mt-4"):
                         def on_login() -> None:
                             if not username.value or not password.value:
-                                ui.notify("Completa usuario y contraseña", color="negative")
+                                ui.notify("Completa usuario y contraseÃ±a", color="negative")
                                 return
                             user = authenticate_user(username.value, password.value)
                             if not user:
-                                ui.notify("Credenciales inválidas", color="negative")
+                                ui.notify("Credenciales invÃ¡lidas", color="negative")
                                 return
                             set_current_user(user)
                             ui.notify(f"Bienvenido {user['username']}", color="positive")
@@ -1770,7 +1771,7 @@ def show_login_screen(container) -> None:
                                     def _submit_reg() -> None:
                                         e = (reg_email.value or "").strip()
                                         if not e or "@" not in e:
-                                            ui.notify("Ingresá un email válido", color="negative")
+                                            ui.notify("IngresÃ¡ un email vÃ¡lido", color="negative")
                                             return
                                         err, new_pwd = create_user(e)
                                         if err:
@@ -1781,7 +1782,7 @@ def show_login_screen(container) -> None:
                                                     with ui.card().classes("p-6 min-w-[400px]"):
                                                         ui.label("Error al enviar el email").classes("text-lg font-semibold text-warning")
                                                         ui.label(err).classes("text-sm text-gray-600 mt-2")
-                                                        ui.label("Tu contraseña provisoria (copiala para iniciar sesión):").classes("text-sm font-medium mt-4")
+                                                        ui.label("Tu contraseÃ±a provisoria (copiala para iniciar sesiÃ³n):").classes("text-sm font-medium mt-4")
                                                         with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
                                                             ui.label(new_pwd)
                                                         ui.button("Cerrar popup", on_click=popup.close).props("flat color=primary").classes("mt-4")
@@ -1791,7 +1792,7 @@ def show_login_screen(container) -> None:
                                             return
                                         dlg.close()
                                         ui.notify(
-                                            "Te enviamos un email con tu contraseña provisoria. Iniciá sesión y cambiá tu contraseña en Configuración.",
+                                            "Te enviamos un email con tu contraseÃ±a provisoria. IniciÃ¡ sesiÃ³n y cambiÃ¡ tu contraseÃ±a en ConfiguraciÃ³n.",
                                             color="positive",
                                         )
 
@@ -1823,7 +1824,7 @@ def show_main_layout(container) -> None:
         with ui.element("div").classes("hidden"):
             with ui.tabs() as tabs:
                 tab_home = ui.tab("Home")
-                tab_estadisticas = ui.tab("Estadísticas")
+                tab_estadisticas = ui.tab("EstadÃ­sticas")
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
                 tab_precios_detalle = ui.tab("Precios")
@@ -1832,18 +1833,18 @@ def show_main_layout(container) -> None:
                 tab_stock = ui.tab("Stock")
                 tab_compras_lista = ui.tab("Compras")
                 tab_pedidos = ui.tab("Pedidos")
-                tab_historicos = ui.tab("Históricos")
-                tab_busqueda = ui.tab("Búsqueda")
+                tab_historicos = ui.tab("HistÃ³ricos")
+                tab_busqueda = ui.tab("BÃºsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
                 tab_balance = ui.tab("Balance")
-                tab_config = ui.tab("Configuración")
+                tab_config = ui.tab("ConfiguraciÃ³n")
                 tab_admin = ui.tab("Admin")
 
         tab_map = {
             "Home": tab_home,
-            "Estadísticas": tab_estadisticas,
+            "EstadÃ­sticas": tab_estadisticas,
             "Ventas": tab_ventas,
             "Productos": tab_precios,
             "Precios": tab_precios_detalle,
@@ -1852,16 +1853,16 @@ def show_main_layout(container) -> None:
             "Stock": tab_stock,
             "Compras": tab_compras_lista,
             "Pedidos": tab_pedidos,
-            "Históricos": tab_historicos,
-            "Búsqueda": tab_busqueda,
+            "HistÃ³ricos": tab_historicos,
+            "BÃºsqueda": tab_busqueda,
             "Importacion": tab_importacion,
             "Datos": tab_datos,
             "Pesos": tab_pesos,
             "Balance": tab_balance,
-            "Configuración": tab_config,
+            "ConfiguraciÃ³n": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "EstadÃ­sticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "HistÃ³ricos": "historicos", "BÃºsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "ConfiguraciÃ³n": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -1902,13 +1903,13 @@ def show_main_layout(container) -> None:
             elif val == "Ventas" and not ventas_cargado[0]:
                 ventas_cargado[0] = True
                 build_tab_ventas(ventas_container)
-            elif val == "Estadísticas" and not estadisticas_cargado[0]:
+            elif val == "EstadÃ­sticas" and not estadisticas_cargado[0]:
                 estadisticas_cargado[0] = True
                 build_tab_estadisticas(estadisticas_container)
             elif val == "Balance" and not balance_cargado[0]:
                 balance_cargado[0] = True
                 build_tab_balance(balance_container)
-            elif val == "Históricos" and not historicos_cargado[0]:
+            elif val == "HistÃ³ricos" and not historicos_cargado[0]:
                 historicos_cargado[0] = True
                 build_tab_historicos(historicos_container)
             elif val == "Admin" and not admin_cargado[0]:
@@ -1925,10 +1926,10 @@ def show_main_layout(container) -> None:
                 _lazy_load(lbl)
             return f
 
-        # Barra gris: navegación principal + secundaria | semáforos, versión, usuario
-        # Menús secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
-        # Se cierran al seleccionar una opción o al hacer clic fuera (Quasar).
-        _open_menus: List[Any] = []  # Referencias a menús abiertos para cerrar otros al abrir uno nuevo
+        # Barra gris: navegaciÃ³n principal + secundaria | semÃ¡foros, versiÃ³n, usuario
+        # MenÃºs secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
+        # Se cierran al seleccionar una opciÃ³n o al hacer clic fuera (Quasar).
+        _open_menus: List[Any] = []  # Referencias a menÃºs abiertos para cerrar otros al abrir uno nuevo
 
         def _open_and_close_others(menu_obj: Any) -> None:
             for m in _open_menus:
@@ -1946,7 +1947,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("ESTADÃSTICAS", "EstadÃ­sticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("BÃšSQUEDA", "BÃºsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -1988,10 +1989,10 @@ def show_main_layout(container) -> None:
                                     ui.menu_item("PEDIDOS", _pedidos_click)
                                 if perms.get("historicos", True):
                                     def _historicos_click():
-                                        _lazy_load("Históricos")
+                                        _lazy_load("HistÃ³ricos")
                                         tab_panels.value = tab_historicos
-                                        app.storage.user["last_tab"] = "Históricos"
-                                    ui.menu_item("HISTÓRICOS", _historicos_click)
+                                        app.storage.user["last_tab"] = "HistÃ³ricos"
+                                    ui.menu_item("HISTÃ“RICOS", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -2020,10 +2021,10 @@ def show_main_layout(container) -> None:
                                     ui.menu_item("DATOS", _datos_click)
                                 if perms.get("configuracion", True):
                                     def _config_click():
-                                        _lazy_load("Configuración")
+                                        _lazy_load("ConfiguraciÃ³n")
                                         tab_panels.value = tab_config
-                                        app.storage.user["last_tab"] = "Configuración"
-                                    ui.menu_item("CONFIGURACIÓN", _config_click)
+                                        app.storage.user["last_tab"] = "ConfiguraciÃ³n"
+                                    ui.menu_item("CONFIGURACIÃ“N", _config_click)
                 if perms.get("admin", False):
                     ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
             ui.space()
@@ -2038,9 +2039,9 @@ def show_main_layout(container) -> None:
                 ui.label(user["username"]).classes("text-sm font-medium")
                 def logout() -> None:
                     set_current_user(None)
-                    ui.notify("Sesión cerrada", color="positive")
+                    ui.notify("SesiÃ³n cerrada", color="positive")
                     show_login_screen(container)
-                ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
+                ui.button("Cerrar sesiÃ³n", on_click=logout, color="negative").props("flat dense")
 
         tab_panels = ui.tab_panels(tabs, value=tab_map.get(tab_inicial, tab_home)).classes("w-full")
 
@@ -2110,50 +2111,50 @@ def show_main_layout(container) -> None:
 
 
 # ==========================
-# CONTENIDO DE PESTAÑAS
+# CONTENIDO DE PESTAÃ‘AS
 # ==========================
 
 
-# Mapeo tab_key -> (label visible, descripción para Home). Usado para mostrar solo lo que el usuario puede hacer.
+# Mapeo tab_key -> (label visible, descripciÃ³n para Home). Usado para mostrar solo lo que el usuario puede hacer.
 TAB_DESCRIPTIONS: Dict[str, str] = {
-    "estadisticas": "ver reputación en MercadoLibre, ventas hoy/ayer/semana/mes.",
-    "ventas": "gestión de ventas y órdenes.",
-    "productos": "catálogo de productos.",
-    "precios": "gestión de precios.",
-    "busqueda": "buscar productos en el catálogo.",
+    "estadisticas": "ver reputaciÃ³n en MercadoLibre, ventas hoy/ayer/semana/mes.",
+    "ventas": "gestiÃ³n de ventas y Ã³rdenes.",
+    "productos": "catÃ¡logo de productos.",
+    "precios": "gestiÃ³n de precios.",
+    "busqueda": "buscar productos en el catÃ¡logo.",
     "balance": "gastos, ingresos y resultados.",
     "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
     "stock": "inventario de QuickBooks (Items con cantidad disponible).",
     "compras_lista": "cargar y gestionar compras a cotizar (marca, producto, SKU, cantidad, precio).",
     "pedidos": "ver consolidado de compras de todos los clientes.",
     "importacion": "cargar datos desde archivos.",
-    "pesos": "cotización del dólar.",
-    "datos": "configuración de marcas, despachantes y otros datos.",
+    "pesos": "cotizaciÃ³n del dÃ³lar.",
+    "datos": "configuraciÃ³n de marcas, despachantes y otros datos.",
     "configuracion": "vincular MercadoLibre, QuickBooks y configurar email.",
-    "admin": "gestión de usuarios y permisos (solo administradores).",
+    "admin": "gestiÃ³n de usuarios y permisos (solo administradores).",
 }
 
 LABEL_BY_TAB: Dict[str, str] = {
-    "estadisticas": "Estadísticas",
+    "estadisticas": "EstadÃ­sticas",
     "ventas": "Ventas",
     "productos": "Productos",
     "precios": "Precios",
-    "busqueda": "Búsqueda",
+    "busqueda": "BÃºsqueda",
     "balance": "Balance",
     "compras": "Invoices",
     "stock": "Stock",
     "compras_lista": "Compras",
     "pedidos": "Pedidos",
-    "importacion": "Importación",
+    "importacion": "ImportaciÃ³n",
     "pesos": "Pesos",
     "datos": "Datos",
-    "configuracion": "Configuración",
+    "configuracion": "ConfiguraciÃ³n",
     "admin": "Admin",
 }
 
 
 def build_tab_home_welcome(container) -> None:
-    """Pestaña Home: bienvenida. Muestra qué puede hacer según permisos del usuario."""
+    """PestaÃ±a Home: bienvenida. Muestra quÃ© puede hacer segÃºn permisos del usuario."""
     user = require_login()
     if not user:
         return
@@ -2166,761 +2167,19 @@ def build_tab_home_welcome(container) -> None:
             label = LABEL_BY_TAB.get(tab_key, tab_key)
             desc = TAB_DESCRIPTIONS.get(tab_key, "")
             if desc:
-                lineas.append(f"• {label}: {desc}")
-    texto = "\n".join(lineas) if lineas else "No tenés permisos asignados. Contactá al administrador."
+                lineas.append(f"â€¢ {label}: {desc}")
+    texto = "\n".join(lineas) if lineas else "No tenÃ©s permisos asignados. ContactÃ¡ al administrador."
     with container:
         ui.label("Bienvenido").classes("text-3xl font-bold text-primary mb-4")
         ui.label(f"Hola, {user.get('username', 'Usuario')}").classes("text-xl text-gray-700 mb-2")
         with ui.column().classes("text-gray-600 mb-4 gap-2 max-w-2xl"):
-            ui.label("¿Qué podés hacer en el sistema?").classes("text-base font-semibold text-gray-700")
+            ui.label("Â¿QuÃ© podÃ©s hacer en el sistema?").classes("text-base font-semibold text-gray-700")
             ui.label(texto).classes("text-sm whitespace-pre-line")
 
 
 
-def build_tab_cuotas(container) -> None:
-    """Pestaña Cuotas: lista deduplicada por SKU con info de cuotas de cada publicación."""
-    container.clear()
-    user = require_login()
-    if not user:
-        return
-
-    with container:
-        access_token = get_ml_access_token(user["id"])
-        if not access_token:
-            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
-            return
-
-        result_area = ui.column().classes("w-full gap-2")
-
-        with result_area:
-            with ui.card().classes("w-full p-8 items-center gap-4"):
-                ui.spinner(size="xl")
-                ui.label("Cargando cuotas...").classes("text-xl text-gray-700")
-
-        async def _cargar_cuotas_async() -> None:
-            try:
-                data = await run.io_bound(ml_get_my_items, access_token, False)
-            except requests.exceptions.HTTPError as e:
-                result_area.clear()
-                with result_area:
-                    ui.label(f"❌ Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
-                return
-            except Exception as e:
-                result_area.clear()
-                with result_area:
-                    ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
-                return
-            # Construir grupos para identificar el item representante por grupo
-            items_raw = data.get("results", [])
-            grps: Dict[tuple, list] = {}
-            for _it in items_raw:
-                grps.setdefault(_cuotas_key(_it), []).append(_it)
-            rep_ids: list = []
-            for _g in grps.values():
-                _rid = ""
-                for _it in _g:
-                    if not _it.get("catalog_listing") and str(_it.get("listing_type_id") or "").lower() == "gold_special":
-                        _rid = str(_it.get("id") or "")
-                        break
-                if not _rid:
-                    for _it in _g:
-                        if _it.get("catalog_listing"):
-                            _rid = str(_it.get("id") or "")
-                            break
-                if not _rid and _g:
-                    _rid = str(_g[0].get("id") or "")
-                if _rid:
-                    rep_ids.append(_rid)
-            seller_id = ""
-            try:
-                profile = await run.io_bound(ml_get_user_profile, access_token)
-                seller_id = str((profile or {}).get("id") or "")
-            except Exception:
-                pass
-            total_grupos = len(rep_ids)
-            result_area.clear()
-            promo_lbl = None
-            with result_area:
-                with ui.card().classes("w-full p-8 items-center gap-4"):
-                    ui.spinner(size="xl")
-                    promo_lbl = ui.label(f"Cargando promociones 0/{total_grupos}...").classes("text-xl text-gray-700")
-            promo_data: Dict[str, Dict] = {}
-            for _i, _iid in enumerate(rep_ids):
-                promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
-                if promo_lbl:
-                    promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
-            try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
-            except Exception as e:
-                result_area.clear()
-                with result_area:
-                    ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
-
-        background_tasks.create(_cargar_cuotas_async(), name="cargar_cuotas")
-
-
-def _cuotas_key(it: dict) -> tuple:
-    sku = (it.get("seller_sku") or "").strip()
-    if sku:
-        return ("sku", sku)
-    cpid = (it.get("catalog_product_id") or "").strip()
-    if cpid:
-        return ("catalog", cpid)
-    return ("id", str(it.get("id") or ""))
-
-
-def _cuotas_score(it: dict) -> tuple:
-    status_score = {"active": 2, "paused": 1, "closed": 0}.get(
-        str(it.get("status") or "").lower(), 0)
-    cuotas_score = 1 if str(it.get("listing_type_id") or "").lower() == "gold_pro" else 0
-    stock_score = int(it.get("available_quantity") or 0)
-    return (status_score, cuotas_score, stock_score)
-
-
-def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dict:
-    """Obtiene precio promo, % ML y % vendedor. Misma cascada de 3 intentos que el popup de precios."""
-    empty: dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
-    sp = ml_get_item_sale_price_full(access_token, item_id)
-    if not sp or sp.get("amount") is None:
-        return empty
-    amt_f = float(sp["amount"])
-    reg = sp.get("regular_amount")
-    if reg is None or float(reg) <= 0 or abs(float(reg) - amt_f) <= 0.01:
-        return empty
-    reg_f = float(reg)
-    total_pct = (reg_f - amt_f) / reg_f * 100
-    cid = sp.get("campaign_id")
-    pid = sp.get("promotion_id")
-    pt  = (sp.get("promotion_type") or "").strip().upper()
-    d = None
-    if cid:
-        d = ml_get_promotion_item_discounts_by_campaign(
-            access_token, str(cid), item_id, total_pct,
-            seller_id, promotion_type_hint=pt
-        )
-    if d is None and pid and pt and not str(pid).upper().startswith("OFFER-"):
-        d = ml_get_promotion_item_discounts(
-            access_token, str(pid), pt, item_id, total_pct
-        )
-    if d is None and seller_id:
-        d = ml_get_promotion_item_discounts_by_user(
-            access_token, item_id, seller_id, total_pct
-        )
-    if d:
-        return {"price_promo": amt_f, "meli_pct": d.get("meli_pct"), "seller_pct": d.get("seller_pct")}
-    return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
-
-
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None) -> None:
-    """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
-    items = data.get("results", [])
-    result_area.clear()
-
-    if not items:
-        with result_area:
-            ui.label("No se encontraron publicaciones activas.").classes("text-gray-600")
-        return
-
-    uid = user_id or 1
-    cuotas_3x  = float(get_cotizador_param("cuotas_3x",  uid) or 0.084)
-    cuotas_6x  = float(get_cotizador_param("cuotas_6x",  uid) or 0.123)
-    cuotas_9x  = float(get_cotizador_param("cuotas_9x",  uid) or 0.157)
-    cuotas_12x = float(get_cotizador_param("cuotas_12x", uid) or 0.192)
-
-    # ── Agrupación ────────────────────────────────────────────────────────────
-    groups: Dict[tuple, List[Dict[str, Any]]] = {}
-    for it in items:
-        groups.setdefault(_cuotas_key(it), []).append(it)
-
-    def _slot(it: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        if not it:
-            return {"id": "", "permalink": "", "price": None}
-        return {
-            "id": str(it.get("id") or ""),
-            "permalink": it.get("permalink") or "",
-            "price": it.get("price"),
-        }
-
-    def _build_row(group: List[Dict[str, Any]]) -> Dict[str, Any]:
-        propia = catalogo = x3 = x6 = x9 = x12 = None
-        for it in group:
-            cuotas = _cuotas_desde_item(it)
-            is_cat = it.get("catalog_listing") is True
-            lt = str(it.get("listing_type_id") or "").lower()
-            if not is_cat and lt == "gold_special":
-                if propia is None or _cuotas_score(it) > _cuotas_score(propia):
-                    propia = it
-            if is_cat:
-                if catalogo is None or _cuotas_score(it) > _cuotas_score(catalogo):
-                    catalogo = it
-            if cuotas == "x3":
-                if x3 is None or _cuotas_score(it) > _cuotas_score(x3):
-                    x3 = it
-            if cuotas == "x6":
-                if x6 is None or _cuotas_score(it) > _cuotas_score(x6):
-                    x6 = it
-            if cuotas == "x9":
-                if x9 is None or _cuotas_score(it) > _cuotas_score(x9):
-                    x9 = it
-            if cuotas == "x12":
-                if x12 is None or _cuotas_score(it) > _cuotas_score(x12):
-                    x12 = it
-        rep = max(group, key=_cuotas_score)
-        # SKU: usa el del representante; si vacío, busca en todos los items del grupo
-        sku = (rep.get("seller_sku") or "").strip()
-        if not sku:
-            for it in group:
-                candidate = (it.get("seller_sku") or "").strip()
-                if not candidate:
-                    candidate = (it.get("seller_custom_field") or "").strip()
-                if not candidate:
-                    for att in (it.get("attributes") or []):
-                        if (att.get("id") or "").strip().upper() == "SELLER_SKU":
-                            v = att.get("value_name") or att.get("value") or att.get("value_id")
-                            if v:
-                                candidate = str(v).strip()
-                                break
-                if candidate:
-                    sku = candidate
-                    break
-        # Stock: prefiere propia, fallback catálogo
-        stock_val = None
-        if propia is not None:
-            stock_val = propia.get("available_quantity")
-        elif catalogo is not None:
-            stock_val = catalogo.get("available_quantity")
-        best = propia or catalogo or rep
-        return {
-            "marca":         rep.get("marca") or "—",
-            "seller_sku":    sku,
-            "title":         best.get("title") or "",
-            "thumbnail":     best.get("thumbnail") or "",
-            "stock":         stock_val,
-            "promo_item_id": str(best.get("id") or ""),
-            "propia":        _slot(propia),
-            "catalogo":      _slot(catalogo),
-            "x3":            _slot(x3),
-            "x6":            _slot(x6),
-            "x9":            _slot(x9),
-            "x12":           _slot(x12),
-        }
-
-    rows_all = [_build_row(g) for g in groups.values()]
-    rows_all.sort(key=lambda r: r.get("title", "").lower())
-    _pd = promo_data or {}
-    for _row in rows_all:
-        _row["promo"] = _pd.get(_row.get("promo_item_id", ""), {"price_promo": None, "meli_pct": None, "seller_pct": None})
-
-    filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
-    sort_col_ref:  Dict[str, str]   = {"val": "title"}
-    sort_asc_ref:  Dict[str, bool]  = {"val": True}
-
-    def fmt_moneda(val: Any) -> str:
-        if val is None:
-            return "—"
-        try:
-            return "$" + f"{int(float(val)):,}".replace(",", ".")
-        except (TypeError, ValueError):
-            return "—"
-
-    # (gkey, grupo_label, bg_even, bg_odd, border_color)
-    GROUPS = [
-        ("propia",   "Publicación Propia", "#F0F7FF", "#DCEEFB", "#C5DCFA"),
-        ("catalogo", "Catálogo",           "#F1F8F1", "#D6EDD6", "#B8D9B8"),
-        ("x3",       "3 Cuotas",           "#FFFAF0", "#FFF0CC", "#FFE0B2"),
-        ("x6",       "6 Cuotas",           "#FAF5FC", "#EDD9F5", "#E1BEE7"),
-        ("x9",       "9 Cuotas",           "#FFF5F5", "#FFE0E0", "#FFCCCC"),
-        ("x12",      "12 Cuotas",          "#F5F5FF", "#E0E0FF", "#CCCCFF"),
-    ]
-    PROMO_BG_EVEN = "#FFF8E1"
-    PROMO_BG_ODD  = "#FFECB3"
-    PROMO_BORDER  = "#FFD54F"
-
-    SORT_KEY: Dict[str, Any] = {
-        "marca":          lambda r: (r.get("marca") or "").lower(),
-        "seller_sku":     lambda r: (r.get("seller_sku") or "").lower(),
-        "title":          lambda r: r.get("title", "").lower(),
-        "stock":          lambda r: int(r.get("stock") or 0),
-        "propia_price":   lambda r: r["propia"]["price"]   if r["propia"]["price"]   is not None else -1,
-        "catalogo_price": lambda r: r["catalogo"]["price"] if r["catalogo"]["price"] is not None else -1,
-        "x3_price":       lambda r: r["x3"]["price"]       if r["x3"]["price"]       is not None else -1,
-        "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
-        "x9_price":       lambda r: r["x9"]["price"]       if r["x9"]["price"]       is not None else -1,
-        "x12_price":      lambda r: r["x12"]["price"]      if r["x12"]["price"]      is not None else -1,
-    }
-
-    TH_HDR1 = "font-weight:700;font-size:11px;padding:5px 6px;border:1px solid #1565c0;background:#1976d2;color:white;letter-spacing:0.05em;text-transform:uppercase;box-shadow:0 2px 4px rgba(0,0,0,0.15)"
-    TH_HDR2 = "font-weight:500;font-size:10px;padding:4px 5px;border:1px solid #1565c0;background:#1565c0;color:rgba(255,255,255,0.85)"
-    TD_BASE = "padding:3px 6px;border-bottom:1px solid #e5e7eb;font-size:10px"
-
-    n_propios  = sum(1 for r in rows_all if r["propia"]["id"])
-    n_catalogo = sum(1 for r in rows_all if r["catalogo"]["id"])
-    n_x3       = sum(1 for r in rows_all if r["x3"]["id"])
-    n_x6       = sum(1 for r in rows_all if r["x6"]["id"])
-    n_x9       = sum(1 for r in rows_all if r["x9"]["id"])
-    n_x12      = sum(1 for r in rows_all if r["x12"]["id"])
-    n_promos   = sum(1 for r in rows_all if r.get("promo", {}).get("price_promo") is not None)
-    _tot = len(rows_all)
-    pct_x3  = n_x3  / _tot * 100 if _tot else 0
-    pct_x6  = n_x6  / _tot * 100 if _tot else 0
-    pct_x9  = n_x9  / _tot * 100 if _tot else 0
-    pct_x12 = n_x12 / _tot * 100 if _tot else 0
-
-    with result_area:
-        with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
-            with ui.row().classes("items-center gap-4 flex-wrap justify-between"):
-                with ui.row().classes("items-center gap-4 flex-wrap"):
-                    for label, count in [
-                        ("Publicaciones únicas",          len(rows_all)),
-                        ("Propios",                       n_propios),
-                        ("Catálogo",                      n_catalogo),
-                        (f"En 3 cuotas ({pct_x3:.0f}%)",  n_x3),
-                        (f"En 6 cuotas ({pct_x6:.0f}%)",  n_x6),
-                        (f"En 9 cuotas ({pct_x9:.0f}%)",  n_x9),
-                        (f"En 12 cuotas ({pct_x12:.0f}%)", n_x12),
-                        ("En promoción",                  n_promos),
-                    ]:
-                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
-                            ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
-                            ui.label(label).classes("text-xs text-gray-600 text-center")
-                    ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    for _label, _rate in [
-                        ("3x_campaign",  cuotas_3x),
-                        ("6x_campaign",  cuotas_6x),
-                        ("9x_campaign",  cuotas_9x),
-                        ("12x_campaign", cuotas_12x),
-                    ]:
-                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:70px"):
-                            ui.label(f"{_rate*100:.1f}%").classes("text-secondary text-xl font-bold leading-tight")
-                            ui.label(_label).classes("text-xs text-gray-600 text-center")
-                if container is not None:
-                    ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense")
-
-        with ui.row().classes("items-center gap-3 mb-3"):
-            filtro_cuotas_sel = ui.select(
-                {"cualquiera": "Cualquiera", "sin_cuotas": "Sin cuotas", "con_cuotas": "Con cuotas"},
-                value="cualquiera", label="Cuotas"
-            ).classes("w-36").props("outlined dense")
-            filtro_promo_sel = ui.select(
-                {"cualquiera": "Cualquiera", "con_promo": "Con promoción", "sin_promo": "Sin promoción"},
-                value="cualquiera", label="Promos"
-            ).classes("w-36").props("outlined dense")
-            filtro_check_sel = ui.select(
-                {"todos": "Todos", "ok": "OK", "alto": "Precio alto", "bajo": "Precio bajo"},
-                value="todos", label="Check%"
-            ).classes("w-36").props("outlined dense")
-            filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
-
-        header_div = ui.element("div").style("width:100%;overflow:hidden")
-        table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
-        _hid = header_div.id
-        _cid = table_container.id
-        async def _setup_sync_once() -> None:
-            await ui.run_javascript(
-                f"(function(){{"
-                f"var body=document.getElementById('c{_cid}');"
-                f"var hdr=document.getElementById('c{_hid}');"
-                f"if(!body||!hdr)return;"
-                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
-                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
-                f"_sg();new ResizeObserver(_sg).observe(body);"
-                f"}})();"
-            )
-        ui.timer(0.1, _setup_sync_once, once=True)
-
-        def _sort_rows(rows: list) -> list:
-            key_fn = SORT_KEY.get(sort_col_ref["val"], lambda r: r.get("title", "").lower())
-            return sorted(rows, key=key_fn, reverse=not sort_asc_ref["val"])
-
-        def _ind(col: str) -> str:
-            if sort_col_ref["val"] != col:
-                return ""
-            return " ▲" if sort_asc_ref["val"] else " ▼"
-
-        def _build_colgroup() -> None:
-            with ui.element("colgroup"):
-                ui.element("col").style("width:4%")
-                ui.element("col").style("width:7%")
-                ui.element("col").style("width:20%")
-                ui.element("col").style("width:3%")
-                ui.element("col").style("width:2%")
-                ui.element("col").style("width:2%")
-                ui.element("col").style("width:2%")
-                for gkey, *_ in GROUPS:
-                    if gkey == "propia":
-                        ui.element("col").style("width:7%")
-                        ui.element("col").style("width:4%")
-                    elif gkey == "catalogo":
-                        ui.element("col").style("width:4%")
-                        ui.element("col").style("width:3%")
-                    else:
-                        ui.element("col").style("width:4%")
-                        ui.element("col").style("width:3%")
-                        ui.element("col").style("width:2%")
-
-        def _render(rows: list) -> None:
-            header_div.clear()
-            table_container.clear()
-            with header_div:
-                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
-                    _build_colgroup()
-                    with ui.element("thead"):
-                        with ui.element("tr"):
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:4%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("marca")):
-                                ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:7%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("seller_sku")):
-                                ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:20%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
-                                ui.label("Nombre" + _ind("title"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("stock")):
-                                ui.label("Stock" + _ind("stock"))
-                            with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center"):
-                                ui.label("Promociones")
-                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                _cspan = "3" if gkey not in ("propia", "catalogo") else "2"
-                                with ui.element("th").props(f'colspan="{_cspan}"').style(f"{TH_HDR1};border-left:2px solid {gborder};text-align:center"):
-                                    ui.label(glabel)
-                        with ui.element("tr"):
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {PROMO_BORDER};text-align:center"):
-                                ui.label("% ML")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
-                                ui.label("% Vend.")
-                            with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
-                                ui.label("% vs Propia")
-                            for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                pcol = f"{gkey}_price"
-                                if gkey == "propia":
-                                    with ui.element("th").style(f"{TH_HDR2};width:7%;border-left:2px solid {gborder};text-align:center"):
-                                        ui.label("Publicación")
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
-                                        ui.label("Precio" + _ind(pcol))
-                                else:
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
-                                        ui.label("Precio" + _ind(pcol))
-                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center"):
-                                        ui.label("% vs Propia")
-                                    if gkey != "catalogo":
-                                        with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
-                                            ui.label("Check %")
-            with table_container:
-                if not rows:
-                    ui.label("Sin resultados para el filtro aplicado.").classes("text-gray-500 mt-2")
-                    return
-                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
-                    _build_colgroup()
-                    # ── Cuerpo ────────────────────────────────────────────────
-                    with ui.element("tbody"):
-                        for idx, row in enumerate(rows):
-                            base_bg = "background:#ffffff" if idx % 2 == 0 else "background:#fafafa"
-                            with ui.element("tr").style(base_bg).classes("hover:bg-blue-50"):
-                                with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
-                                    ui.label(row.get("marca") or "—")
-                                with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
-                                    ui.label(row.get("seller_sku") or "—")
-                                with ui.element("td").style(f"{TD_BASE};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:0"):
-                                    title_text = row.get("title") or "—"
-                                    def _abrir_detalle(r=row) -> None:
-                                        dlg = ui.dialog()
-                                        with dlg:
-                                            with ui.card().classes("p-4 min-w-[500px] max-w-[700px]"):
-                                                with ui.row().classes("items-start gap-3 mb-3"):
-                                                    if r.get("thumbnail"):
-                                                        ui.image(r["thumbnail"]).classes("w-16 h-16 object-contain rounded border")
-                                                    with ui.column().classes("gap-1"):
-                                                        ui.label(r.get("marca") or "—").classes("text-xs text-gray-500 uppercase tracking-wide")
-                                                        ui.label(r.get("seller_sku") or "—").classes("text-sm font-mono text-gray-600")
-                                                        ui.label(r.get("title") or "—").classes("text-base font-semibold")
-                                                        sv = r.get("stock")
-                                                        ui.label(f"Stock: {sv if sv is not None else '—'}").classes("text-sm text-gray-500")
-                                                ui.separator().classes("my-2")
-                                                ui.label("Publicaciones").classes("text-xs font-bold text-gray-500 uppercase mb-1")
-                                                _pp = r["propia"]["price"]
-                                                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
-                                                    with ui.element("thead"):
-                                                        with ui.element("tr"):
-                                                            for _h in ["Tipo", "ID", "Precio", "% vs Propia"]:
-                                                                with ui.element("th").style("padding:4px 8px;background:#1976d2;color:white;text-align:left;font-weight:600"):
-                                                                    ui.label(_h)
-                                                    with ui.element("tbody"):
-                                                        for _tipo, _sk in [("Propia","propia"),("Catálogo","catalogo"),("3 Cuotas","x3"),("6 Cuotas","x6"),("9 Cuotas","x9"),("12 Cuotas","x12")]:
-                                                            _s = r[_sk]; _sid = _s["id"]; _sp = _s["price"]; _slink = _s["permalink"]
-                                                            with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
-                                                                with ui.element("td").style("padding:3px 8px;font-weight:500"):
-                                                                    ui.label(_tipo)
-                                                                with ui.element("td").style("padding:3px 8px;font-family:monospace;font-size:10px"):
-                                                                    if _sid and _slink:
-                                                                        ui.link(_sid, _slink, new_tab=True).classes("text-blue-700 hover:underline")
-                                                                    elif _sid:
-                                                                        ui.label(_sid)
-                                                                    elif _sk in ("x3", "x6", "x9", "x12"):
-                                                                        ui.label("Crear desde panel ML").classes("text-gray-400 text-xs italic")
-                                                                    else:
-                                                                        ui.label("—").classes("text-gray-400")
-                                                                with ui.element("td").style("padding:3px 8px;font-weight:600;text-align:right"):
-                                                                    if _sk != "catalogo" and _sid and _sp is not None:
-                                                                        def _edit_price(s2=_s, iid=_sid, tipo=_tipo, d_main=dlg, rr_main=r, af=_abrir_detalle) -> None:
-                                                                            subdlg = ui.dialog()
-                                                                            with subdlg:
-                                                                                with ui.card().classes("p-4 min-w-[300px]"):
-                                                                                    ui.label(f"Editar precio — {tipo}").classes("text-base font-semibold mb-2")
-                                                                                    try:
-                                                                                        _pa = float(s2["price"] or 0)
-                                                                                    except (TypeError, ValueError):
-                                                                                        _pa = 0.0
-                                                                                    _inp = ui.input("Nuevo precio ($)", value=str(int(_pa))).classes("w-full")
-                                                                                    _inp.props("type=number min=1 step=1")
-                                                                                    def _guardar(sd=subdlg, i=_inp, s3=s2, item=iid, dm=d_main, rr=rr_main, afn=af) -> None:
-                                                                                        try:
-                                                                                            nuevo = float(i.value or 0)
-                                                                                        except (TypeError, ValueError):
-                                                                                            ui.notify("Precio inválido.", color="negative")
-                                                                                            return
-                                                                                        if nuevo < 1:
-                                                                                            ui.notify("El precio debe ser al menos 1.", color="negative")
-                                                                                            return
-                                                                                        sd.close()
-                                                                                        dm.close()
-                                                                                        ui.notify("Actualizando precio...", color="info")
-                                                                                        cl = context.client
-                                                                                        async def _act(client_=cl, s4=s3, precio=nuevo, item2=item, rr2=rr, af2=afn) -> None:
-                                                                                            try:
-                                                                                                await run.io_bound(ml_update_item_price, access_token, item2, precio)
-                                                                                                s4["price"] = precio
-                                                                                                with client_:
-                                                                                                    _render(_sort_rows(filtrados_ref["val"]))
-                                                                                                    ui.notify("Precio actualizado.", color="positive")
-                                                                                                    af2(rr2)
-                                                                                            except Exception as err:
-                                                                                                with client_:
-                                                                                                    ui.notify(f"Error: {err}", color="negative")
-                                                                                        background_tasks.create(_act())
-                                                                                    with ui.row().classes("w-full justify-end gap-2 mt-3"):
-                                                                                        ui.button("Cancelar", on_click=lambda sd=subdlg: sd.close()).props("flat")
-                                                                                        ui.button("Guardar", on_click=_guardar, color="primary")
-                                                                            subdlg.open()
-                                                                        ui.button(fmt_moneda(_sp), on_click=_edit_price).props("flat dense").style(
-                                                                            "font-weight:600;font-size:11px;padding:0 4px;min-height:0;color:inherit"
-                                                                        )
-                                                                    else:
-                                                                        ui.label(fmt_moneda(_sp)).classes("" if _sp is not None else "text-gray-400")
-                                                                with ui.element("td").style("padding:3px 8px;text-align:center"):
-                                                                    if _sk != "propia" and _sp is not None and _pp is not None and float(_pp) != 0:
-                                                                        _pct = (float(_sp) - float(_pp)) / float(_pp) * 100
-                                                                        if abs(_pct) < 0.05:
-                                                                            ui.label("=").style("color:#757575")
-                                                                        elif _pct > 0:
-                                                                            ui.label(f"+{_pct:.1f}%").style("color:#43a047;font-weight:500")
-                                                                        else:
-                                                                            ui.label(f"{_pct:.1f}%").style("color:#e53935;font-weight:500")
-                                                                    else:
-                                                                        ui.label("—").classes("text-gray-400")
-                                                promo_d = r.get("promo", {})
-                                                if promo_d.get("price_promo") is not None:
-                                                    ui.separator().classes("my-2")
-                                                    ui.label("Promoción").classes("text-xs font-bold text-gray-500 uppercase mb-1")
-                                                    with ui.row().classes("gap-4 text-sm"):
-                                                        ui.label(f"Precio promo: {fmt_moneda(promo_d['price_promo'])}").classes("font-semibold")
-                                                        if promo_d.get("meli_pct") is not None:
-                                                            ui.label(f"% ML: {promo_d['meli_pct']:.1f}%").style("color:#43a047")
-                                                        if promo_d.get("seller_pct") is not None:
-                                                            ui.label(f"% Vendedor: {promo_d['seller_pct']:.1f}%").style("color:#e65100")
-                                                ui.separator().classes("my-2")
-                                                with ui.row().classes("w-full justify-end"):
-                                                    ui.button("Cerrar", on_click=dlg.close).props("flat")
-                                        dlg.open()
-                                    ui.button(title_text, on_click=_abrir_detalle).props("flat dense align=left").style(
-                                        "font-size:10px;padding:0 2px;min-height:0;text-transform:none;color:inherit;"
-                                        "font-weight:normal;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left"
-                                    )
-                                with ui.element("td").style(f"{TD_BASE};text-align:center"):
-                                    sv = row.get("stock")
-                                    ui.label(str(sv) if sv is not None else "")
-                                propia_price = row["propia"]["price"]
-                                promo = row.get("promo", {})
-                                promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
-                                promo_price = promo.get("price_promo")
-                                _pb = f"background:{promo_bg};border-bottom:1px solid #e5e7eb;font-size:10px"
-                                # % ML
-                                with ui.element("td").style(f"{_pb};border-left:2px solid {PROMO_BORDER};padding:3px 6px;text-align:center"):
-                                    meli_pct = promo.get("meli_pct")
-                                    if meli_pct is not None:
-                                        ui.label(f"{meli_pct:.1f}%").style("color:#43a047;font-weight:500")
-                                    else:
-                                        ui.label("")
-                                # % Vendedor
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center"):
-                                    seller_pct = promo.get("seller_pct")
-                                    if seller_pct is not None:
-                                        ui.label(f"{seller_pct:.1f}%").style("color:#e65100;font-weight:500")
-                                    else:
-                                        ui.label("")
-                                # % vs Propia (Promos) — positivo=verde, negativo=rojo
-                                with ui.element("td").style(f"{_pb};padding:3px 6px;text-align:center"):
-                                    if promo_price is not None and propia_price is not None and float(propia_price) != 0:
-                                        pct_p = (float(promo_price) - float(propia_price)) / float(propia_price) * 100
-                                        if abs(pct_p) < 0.05:
-                                            ui.label("=").style("color:#757575")
-                                        elif pct_p > 0:
-                                            ui.label(f"+{pct_p:.1f}%").style("color:#43a047;font-weight:500")
-                                        else:
-                                            ui.label(f"{pct_p:.1f}%").style("color:#e53935;font-weight:500")
-                                    else:
-                                        ui.label("")
-                                for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
-                                    gbg = gbg_e if idx % 2 == 0 else gbg_o
-                                    slot = row[gkey]
-                                    item_id   = slot["id"]
-                                    permalink = slot["permalink"]
-                                    price     = slot["price"]
-                                    _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:10px"
-                                    # Publicación — solo Propia
-                                    if gkey == "propia":
-                                        with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;font-size:9px;font-family:monospace;text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"):
-                                            if item_id and permalink:
-                                                ui.link(item_id, permalink, new_tab=True).classes("text-blue-700 hover:underline")
-                                            elif item_id:
-                                                ui.label(item_id)
-                                            else:
-                                                ui.label("")
-                                    # Precio — todos (border-left en no-propia como separador de grupo)
-                                    _brd = "" if gkey == "propia" else f"border-left:2px solid {gborder};"
-                                    with ui.element("td").style(f"{_gb};{_brd}padding:3px 6px;font-weight:600;text-align:right"):
-                                        if gkey != "catalogo" and item_id and price is not None:
-                                            def _abrir_editar_cuota(gk=gkey, iid=item_id, sl=slot, r=row) -> None:
-                                                dialog = ui.dialog()
-                                                with dialog:
-                                                    with ui.card().classes("p-4 min-w-[340px]"):
-                                                        ui.label(f"Editar precio — {gk.upper()} — {r.get('seller_sku', '')}").classes("text-lg font-semibold mb-2")
-                                                        ui.label(f"ID: {iid}").classes("text-sm text-gray-500 mb-3")
-                                                        try:
-                                                            precio_actual = float(sl["price"] or 0)
-                                                        except (TypeError, ValueError):
-                                                            precio_actual = 0.0
-                                                        inp_precio = ui.input("Nuevo precio ($)", value=str(int(precio_actual))).classes("w-full")
-                                                        inp_precio.props("type=number min=1 step=1")
-
-                                                        def guardar(d=dialog, inp=inp_precio, s=sl, i=iid) -> None:
-                                                            try:
-                                                                nuevo = float(inp.value or 0)
-                                                            except (TypeError, ValueError):
-                                                                ui.notify("Precio inválido.", color="negative")
-                                                                return
-                                                            if nuevo < 1:
-                                                                ui.notify("El precio debe ser al menos 1.", color="negative")
-                                                                return
-                                                            d.close()
-                                                            ui.notify("Actualizando precio...", color="info")
-                                                            cl = context.client
-
-                                                            async def _actualizar(client_=cl, s2=s, precio=nuevo, item=i) -> None:
-                                                                try:
-                                                                    await run.io_bound(ml_update_item_price, access_token, item, precio)
-                                                                    s2["price"] = precio
-                                                                    with client_:
-                                                                        ui.notify("Precio actualizado correctamente.", color="positive")
-                                                                        _render(_sort_rows(filtrados_ref["val"]))
-                                                                except requests.exceptions.HTTPError as err:
-                                                                    with client_:
-                                                                        ui.notify(f"Error al actualizar: {err}", color="negative")
-                                                                except Exception as err:
-                                                                    with client_:
-                                                                        ui.notify(f"Error: {err}", color="negative")
-
-                                                            background_tasks.create(_actualizar())
-
-                                                        with ui.row().classes("w-full justify-end gap-2 mt-3"):
-                                                            ui.button("Cancelar", on_click=lambda d=dialog: d.close()).props("flat")
-                                                            ui.button("Guardar", on_click=guardar, color="primary")
-                                                dialog.open()
-                                            ui.button(fmt_moneda(price), on_click=_abrir_editar_cuota).props("flat dense").style("font-weight:600;font-size:10px;padding:0 4px;min-height:0;color:inherit")
-                                        else:
-                                            ui.label(fmt_moneda(price) if price is not None else "")
-                                    # % vs Propia — todos menos Propia
-                                    if gkey != "propia":
-                                        with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center"):
-                                            if price is not None and propia_price is not None and float(propia_price) != 0:
-                                                pct = (float(price) - float(propia_price)) / float(propia_price) * 100
-                                                if abs(pct) < 0.05:
-                                                    ui.label("=").style("color:#757575")
-                                                elif pct > 0:
-                                                    ui.label(f"+{pct:.1f}%").style("color:#43a047;font-weight:500")
-                                                else:
-                                                    ui.label(f"{pct:.1f}%").style("color:#e53935;font-weight:500")
-                                            else:
-                                                ui.label("")
-                                    # Check% — x3/x6/x9/x12
-                                    if gkey not in ("propia", "catalogo"):
-                                        with ui.element("td").style(f"{_gb};padding:3px 4px;text-align:center"):
-                                            if price is not None and propia_price is not None and float(propia_price) != 0:
-                                                _pct_c = (float(price) - float(propia_price)) / float(propia_price) * 100
-                                                _tasa  = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(gkey, 0) * 100
-                                                _diff  = _pct_c - _tasa
-                                                if abs(_diff) <= 0.5:
-                                                    ui.label("✓").style("color:#1976d2;font-weight:700;font-size:12px")
-                                                elif _diff > 0.5:
-                                                    ui.label("↑").style("color:#43a047;font-weight:700;font-size:12px")
-                                                else:
-                                                    ui.label("↓").style("color:#e53935;font-weight:700;font-size:12px")
-                                            else:
-                                                ui.label("")
-
-        def _on_sort(col: str) -> None:
-            if sort_col_ref["val"] == col:
-                sort_asc_ref["val"] = not sort_asc_ref["val"]
-            else:
-                sort_col_ref["val"] = col
-                sort_asc_ref["val"] = True
-            _render(_sort_rows(filtrados_ref["val"]))
-
-        def _on_filtro(e) -> None:
-            txt = (getattr(filtro_input, "value", "") or "").strip().lower()
-            cuotas_val = filtro_cuotas_sel.value
-            promo_val  = filtro_promo_sel.value
-            check_val  = filtro_check_sel.value
-            result = list(rows_all)
-            if txt:
-                result = [
-                    r for r in result
-                    if txt in (r.get("seller_sku") or "").lower()
-                    or txt in r.get("title", "").lower()
-                ]
-            if cuotas_val == "sin_cuotas":
-                result = [r for r in result if not r["x3"]["id"] and not r["x6"]["id"] and not r["x9"]["id"] and not r["x12"]["id"]]
-            elif cuotas_val == "con_cuotas":
-                result = [r for r in result if r["x3"]["id"] or r["x6"]["id"] or r["x9"]["id"] or r["x12"]["id"]]
-            if promo_val == "con_promo":
-                result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
-            elif promo_val == "sin_promo":
-                result = [r for r in result if r.get("promo", {}).get("price_promo") is None]
-            if check_val != "todos":
-                _rates = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
-                def _check_match(r: dict, target: str) -> bool:
-                    pp = r["propia"]["price"]
-                    if pp is None or float(pp) == 0:
-                        return False
-                    for gk, tasa in _rates.items():
-                        p = r[gk]["price"]
-                        if p is None:
-                            continue
-                        diff = (float(p) - float(pp)) / float(pp) * 100 - tasa * 100
-                        if target == "ok"   and abs(diff) <= 0.5: return True
-                        if target == "alto" and diff >  0.5:       return True
-                        if target == "bajo" and diff < -0.5:       return True
-                    return False
-                result = [r for r in result if _check_match(r, check_val)]
-            filtrados_ref["val"] = result
-            _render(_sort_rows(filtrados_ref["val"]))
-
-        filtro_input.on_value_change(_on_filtro)
-        filtro_cuotas_sel.on_value_change(lambda *a: _on_filtro(None))
-        filtro_promo_sel.on_value_change(lambda *a: _on_filtro(None))
-        filtro_check_sel.on_value_change(lambda *a: _on_filtro(None))
-        _render(_sort_rows(rows_all))
-
-
 def build_tab_precios(container) -> None:
-    """Pestaña Productos: clic en el cuadradito de la fila para editar precio."""
+    """PestaÃ±a Productos: clic en el cuadradito de la fila para editar precio."""
     container.clear()
     user = require_login()
     if not user:
@@ -2929,7 +2188,7 @@ def build_tab_precios(container) -> None:
     with container:
         access_token = get_ml_access_token(user["id"])
         if not access_token:
-            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+            ui.label("âš ï¸ No tienes MercadoLibre vinculado. Ve a ConfiguraciÃ³n y conecta tu cuenta.").classes("text-warning mb-4")
             return
 
         result_area = ui.column().classes("w-full gap-2")
@@ -2955,12 +2214,12 @@ def build_tab_precios(container) -> None:
             except requests.exceptions.HTTPError as e:
                 area.clear()
                 with area:
-                    ui.label(f"❌ Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
+                    ui.label(f"âŒ Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
                 return
             except Exception as e:
                 area.clear()
                 with area:
-                    ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
+                    ui.label(f"âŒ Error al conectar: {e}").classes("text-negative")
                 return
             n_items = len(data.get("results", []))
             area.clear()
@@ -2974,7 +2233,7 @@ def build_tab_precios(container) -> None:
             except Exception as e:
                 area.clear()
                 with area:
-                    ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
+                    ui.label(f"âŒ Error al mostrar datos: {e}").classes("text-negative")
 
         background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
 
@@ -3093,16 +2352,16 @@ def _show_item_detail_dialog(
         cont.clear()
         with cont:
             for lbl_r, key_r, cls_r in [
-                ("Comisión",  "comision",  "text-sm text-negative"),
+                ("ComisiÃ³n",  "comision",  "text-sm text-negative"),
                 ("Cobrado",   "cobrado",   "text-sm font-bold text-primary"),
                 ("Costo Cuotas", "costo_cuotas", "text-sm text-negative"),
                 ("IVA venta", "iva_venta", "text-sm"),
                 ("IVA neto", "iva_total", "text-sm text-negative"),
                 ("Deb-Cred",  "deb_cred",  "text-sm text-negative"),
                 ("IIBB",      "iibb",      "text-sm text-negative"),
-                ("Envío",     "envio",     "text-sm text-negative"),
+                ("EnvÃ­o",     "envio",     "text-sm text-negative"),
             ]:
-                with ui.row().classes("w-full justify-between py-0.5 gap-4" + (" border-b-2 border-gray-300" if lbl_r == "Envío" else "")):
+                with ui.row().classes("w-full justify-between py-0.5 gap-4" + (" border-b-2 border-gray-300" if lbl_r == "EnvÃ­o" else "")):
                     ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(data.get(key_r))).classes(cls_r)
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
@@ -3126,7 +2385,7 @@ def _show_item_detail_dialog(
         item_id  = str(row.get("id", ""))
         sku_grd  = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
         if not item_id:
-            ui.notify("ID de publicación no válido.", color="negative"); return
+            ui.notify("ID de publicaciÃ³n no vÃ¡lido.", color="negative"); return
         nuevo_precio   = _parse_moneda(getattr(inp_refs.get("precio"), "value", "") or "")
         nuevo_costo    = float(row.get("costo") or 0)
         _iva_ref       = inp_refs.get("tipo_iva")
@@ -3224,8 +2483,8 @@ def _show_item_detail_dialog(
                         ui.label("Sin foto").classes("text-xs text-gray-500")
                 with ui.column().classes("flex-1 min-w-0 gap-2"):
                     sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                    ui.label(f"{row.get('id', '—')}  —  {sku_txt}").classes("text-sm font-mono text-gray-600")
-                    ui.label(str(row.get("marca", "—"))).classes("text-sm font-medium")
+                    ui.label(f"{row.get('id', 'â€”')}  â€”  {sku_txt}").classes("text-sm font-mono text-gray-600")
+                    ui.label(str(row.get("marca", "â€”"))).classes("text-sm font-medium")
                     txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
                     ui.label(txt).classes("text-sm font-bold")
                     ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
@@ -3268,10 +2527,10 @@ def _show_item_detail_dialog(
                 with ui.row().classes("w-full py-1 gap-4 border-b-2 border-gray-300 flex-wrap"):
                     for lbl_p, key_p, fmt_p in [
                         ("Cuotas",          "cuotas",         lambda v: str(v or "x1")),
-                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "—"),
-                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "—"),
-                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "—"),
-                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "—"),
+                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "â€”"),
+                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "â€”"),
+                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "â€”"),
+                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "â€”"),
                     ]:
                         with ui.column().classes("gap-0"):
                             ui.label(lbl_p).classes("text-xs text-gray-600")
@@ -3279,7 +2538,7 @@ def _show_item_detail_dialog(
                     with ui.column().classes("gap-0"):
                         ui.label("Promo Yo $").classes("text-xs text-gray-600")
                         _pyo = row.get("promo_yo_pct"); _por = row.get("price_original")
-                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "—").classes("text-sm font-medium")
+                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "â€”").classes("text-sm font-medium")
                 recalc_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
             _recalcular()
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -3316,10 +2575,10 @@ def _mostrar_tabla_precios(
     result_area.clear()
     if not items:
         with result_area:
-            ui.label("No tienes publicaciones en MercadoLibre o aún no se han cargado.").classes("text-gray-500")
+            ui.label("No tienes publicaciones en MercadoLibre o aÃºn no se han cargado.").classes("text-gray-500")
         return
 
-    # Agrupación dinámica por SKU (misma lógica que _mostrar_tabla_cuotas).
+    # AgrupaciÃ³n dinÃ¡mica por SKU (misma lÃ³gica que _mostrar_tabla_cuotas).
     groups_sku: Dict[tuple, List[Dict[str, Any]]] = {}
     for i in items:
         groups_sku.setdefault(_cuotas_key(i), []).append(i)
@@ -3413,19 +2672,19 @@ def _mostrar_tabla_precios(
         subtotal = precio * stock
         tipo = "Catalogo" if i.get("catalog_listing") is True else "Propia"
         tiene_promo = sale_price is not None and abs(float(sale_price) - float(precio or 0)) > 0.01
-        # Última modificación: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
+        # Ãšltima modificaciÃ³n: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
         def _fmt_fecha(s: Any) -> str:
             if not s or not isinstance(s, str):
-                return "—"
+                return "â€”"
             try:
                 dt = datetime.strptime(s[:10], "%Y-%m-%d")
                 return dt.strftime("%d/%m/%Y")
             except Exception:
-                return str(s)[:10] if s else "—"
+                return str(s)[:10] if s else "â€”"
 
         last_upd = i.get("last_updated")
         raw_fecha = last_upd[:10] if last_upd and isinstance(last_upd, str) and len(last_upd) >= 10 else None
-        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "—"
+        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "â€”"
         _item_sku = i.get("seller_sku") or None
         _prod_row = _prod_map.get(_item_sku) if _item_sku else None
         # Calcular Gan $ y Gan Vta%
@@ -3473,8 +2732,8 @@ def _mostrar_tabla_precios(
             "subtotal": subtotal,
             "subtotal_fmt": fmt_moneda(subtotal),
             "tipo": tipo,
-            "marca": i.get("marca") or "—",
-            "color": i.get("color") or "—",
+            "marca": i.get("marca") or "â€”",
+            "color": i.get("color") or "â€”",
             "title": str(i.get("title") or ""),
             "ult_modif_fmt": ult_modif_fmt,
             "fecha_ult_modif": raw_fecha or "",
@@ -3601,7 +2860,7 @@ def _mostrar_tabla_precios(
                     try:
                         nuevo = float(inp_precio.value or 0)
                     except (TypeError, ValueError):
-                        ui.notify("Precio inválido.", color="negative")
+                        ui.notify("Precio invÃ¡lido.", color="negative")
                         return
                     if nuevo < 1:
                         ui.notify("El precio debe ser al menos 1.", color="negative")
@@ -3691,11 +2950,11 @@ def _mostrar_tabla_precios(
                     try:
                         nuevo_fob = float(fob_raw) if fob_raw else None
                     except (TypeError, ValueError):
-                        ui.notify("FOB inválido.", color="negative"); return
+                        ui.notify("FOB invÃ¡lido.", color="negative"); return
                     try:
                         nuevo_costo = float(costo_raw) if costo_raw else None
                     except (TypeError, ValueError):
-                        ui.notify("Costo inválido.", color="negative"); return
+                        ui.notify("Costo invÃ¡lido.", color="negative"); return
                     if nuevo_fob is not None and nuevo_fob < 0:
                         ui.notify("El FOB no puede ser negativo.", color="negative"); return
                     if nuevo_costo is not None and nuevo_costo < 0:
@@ -3737,7 +2996,7 @@ def _mostrar_tabla_precios(
             with ui.card().classes("p-4 min-w-[280px]"):
                 ui.label("Editar tipo de IVA").classes("text-lg font-semibold mb-2")
                 ui.label((row.get("title") or "")[:80]).classes("text-sm text-gray-600 mb-2")
-                ui.label("Tipo de IVA para cálculo de margen").classes("text-xs text-gray-500 mb-2")
+                ui.label("Tipo de IVA para cÃ¡lculo de margen").classes("text-xs text-gray-500 mb-2")
                 sel_iva = ui.select({"0.105": "10,5%", "0.21": "21%"}, value=_iva_str).classes("w-full")
 
                 def guardar() -> None:
@@ -3792,7 +3051,7 @@ def _mostrar_tabla_precios(
         try:
             nuevo = float(raw)
         except (TypeError, ValueError):
-            ui.notify("Costo inválido.", color="negative")
+            ui.notify("Costo invÃ¡lido.", color="negative")
             return
         if nuevo < 0:
             ui.notify("El costo no puede ser negativo.", color="negative")
@@ -3822,7 +3081,7 @@ def _mostrar_tabla_precios(
         try:
             nuevo = float(raw)
         except (TypeError, ValueError):
-            ui.notify("FOB inválido.", color="negative")
+            ui.notify("FOB invÃ¡lido.", color="negative")
             return
         if nuevo < 0:
             ui.notify("El FOB no puede ser negativo.", color="negative")
@@ -3868,20 +3127,20 @@ def _mostrar_tabla_precios(
 
     def _abrir_detalle_catalogo(row: Dict[str, Any]) -> None:
         _STATUS_MAP = {
-            "winning":             ("✓", "Ganando",               "text-positive font-bold"),
-            "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
-            "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
-            "listed":              ("—", "Publicado sin ganar",   "text-gray-500"),
+            "winning":             ("âœ“", "Ganando",               "text-positive font-bold"),
+            "sharing_first_place": ("=", "Compartiendo 1Â° lugar", "text-blue-600 font-bold"),
+            "competing":           ("â†“", "Compitiendo",           "text-orange-500 font-bold"),
+            "listed":              ("â€”", "Publicado sin ganar",   "text-gray-500"),
         }
         _REASON_ES = {
             "PRICE":           "Precio",
-            "QUALITY":         "Calidad de publicación",
-            "REVIEWS":         "Reseñas",
-            "SALES":           "Ventas históricas",
-            "SHIPPING":        "Envío",
-            "REPUTATION":      "Reputación del vendedor",
-            "CATALOG_QUALITY": "Calidad del catálogo",
-            "CATALOG_SCORE":   "Puntuación en catálogo",
+            "QUALITY":         "Calidad de publicaciÃ³n",
+            "REVIEWS":         "ReseÃ±as",
+            "SALES":           "Ventas histÃ³ricas",
+            "SHIPPING":        "EnvÃ­o",
+            "REPUTATION":      "ReputaciÃ³n del vendedor",
+            "CATALOG_QUALITY": "Calidad del catÃ¡logo",
+            "CATALOG_SCORE":   "PuntuaciÃ³n en catÃ¡logo",
         }
         cs      = row.get("catalog_status")
         ptw     = row.get("catalog_price_to_win")
@@ -3901,8 +3160,8 @@ def _mostrar_tabla_precios(
                             ui.label("Sin foto").classes("text-xs text-gray-500")
                     with ui.column().classes("flex-1 min-w-0 gap-1"):
                         sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                        ui.label(f"{row.get('id','—')}  —  {sku_txt}").classes("text-xs font-mono text-gray-500")
-                        ui.label(str(row.get("marca") or "—")).classes("text-sm font-medium")
+                        ui.label(f"{row.get('id','â€”')}  â€”  {sku_txt}").classes("text-xs font-mono text-gray-500")
+                        ui.label(str(row.get("marca") or "â€”")).classes("text-sm font-medium")
                         ui.label((str(row.get("title") or ""))[:100]).classes("text-sm font-bold")
                         ui.label(f"Stock: {row.get('available_quantity', 0)}").classes("text-sm text-gray-500")
                 ui.separator()
@@ -3910,7 +3169,7 @@ def _mostrar_tabla_precios(
                     ui.label("Precio actual").classes("text-sm font-medium text-gray-600")
                     ui.label(fmt_moneda(row.get("price"))).classes("text-sm font-bold")
                 with ui.row().classes("w-full justify-between py-2"):
-                    ui.label("Posición").classes("text-sm font-medium text-gray-600")
+                    ui.label("PosiciÃ³n").classes("text-sm font-medium text-gray-600")
                     if cs and cs in _STATUS_MAP:
                         ico, lbl, cls = _STATUS_MAP[cs]
                         ui.label(f"{ico}  {lbl}").classes(f"text-sm {cls}")
@@ -3929,14 +3188,14 @@ def _mostrar_tabla_precios(
                             ui.label(str(vs)).classes("text-sm")
                 if comps is not None:
                     with ui.row().classes("w-full justify-between py-2"):
-                        ui.label("Competidores compartiendo 1°").classes("text-sm font-medium text-gray-600")
+                        ui.label("Competidores compartiendo 1Â°").classes("text-sm font-medium text-gray-600")
                         ui.label(str(comps)).classes("text-sm")
                 if reasons:
                     ui.separator()
                     ui.label("Razones").classes("text-xs font-medium text-gray-500 mt-1")
                     for rsn in (reasons if isinstance(reasons, list) else [reasons]):
                         r_es = _REASON_ES.get(str(rsn).upper(), str(rsn))
-                        ui.label(f"• {r_es}").classes("text-sm text-gray-700")
+                        ui.label(f"â€¢ {r_es}").classes("text-sm text-gray-700")
                 ui.separator()
                 with ui.row().classes("w-full justify-end mt-2"):
                     ui.button("Cerrar", on_click=d.close).props("flat").classes("text-gray-600")
@@ -4013,7 +3272,7 @@ def _mostrar_tabla_precios(
         background_tasks.create(_fetch_det(), name="fetch_productos_detalle")
 
     def _sort_key_precios(row: Dict[str, Any], col_name: str) -> Any:
-        """Devuelve valor para ordenar según el tipo de columna."""
+        """Devuelve valor para ordenar segÃºn el tipo de columna."""
         if col_name in ("price", "subtotal", "costo_usd", "margen_pesos", "margen_venta_pct", "quality_score"):
             return float(row.get(col_name) or 0)
         if col_name in ("available_quantity", "sold_quantity"):
@@ -4056,11 +3315,11 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt − 12pt padding lateral
+        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt âˆ’ 12pt padding lateral
 
         def _trunc(s):
-            if not s or s == "—":
-                return s or "—"
+            if not s or s == "â€”":
+                return s or "â€”"
             if _sw(s, "Helvetica", 8) <= _col_prod_pts:
                 return s
             while len(s) > 0 and _sw(s + "...", "Helvetica", 8) > _col_prod_pts:
@@ -4073,9 +3332,9 @@ def _mostrar_tabla_precios(
             stock_val = r.get("available_quantity")
             stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
             data.append([
-                str(r.get("marca") or "—"),
-                _trunc(str(r.get("title") or "—")),
-                str(r.get("color") or "—"),
+                str(r.get("marca") or "â€”"),
+                _trunc(str(r.get("title") or "â€”")),
+                str(r.get("color") or "â€”"),
                 stock_str,
             ])
 
@@ -4112,7 +3371,7 @@ def _mostrar_tabla_precios(
                 self.setFont("Helvetica", 9)
                 self.setFillColorRGB(0.4, 0.4, 0.4)
                 self.drawRightString(page_w - margin_lr, page_h - margin + 4,
-                                     f"Página {self._pageNumber} de {page_count}")
+                                     f"PÃ¡gina {self._pageNumber} de {page_count}")
                 self.restoreState()
 
         doc = SimpleDocTemplate(
@@ -4175,7 +3434,7 @@ def _mostrar_tabla_precios(
                     pass
             if not rows_to_print:
                 with client:
-                    ui.notify("No hay datos para imprimir. Aplicá filtros y volvé a intentar.", color="warning")
+                    ui.notify("No hay datos para imprimir. AplicÃ¡ filtros y volvÃ© a intentar.", color="warning")
                 return
             path = await run.io_bound(_generar_pdf_stock, rows_to_print)
             if path:
@@ -4278,13 +3537,13 @@ def _mostrar_tabla_precios(
         lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
         _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
         lbl_pesos.set_text(fmt_moneda(_pesos))
-        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "—")
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "â€”")
         lbl_marcas.set_text(str(len({
             str(x.get("marca") or "").strip()
             for x in filtrados
             if x.get("tipo") == "Propia"
             and str(x.get("marca") or "").strip()
-            and str(x.get("marca") or "").strip() != "—"
+            and str(x.get("marca") or "").strip() != "â€”"
         })))
 
         header_div_precios.clear()
@@ -4336,11 +3595,11 @@ def _mostrar_tabla_precios(
                                     with _td_el:
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
-                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "—"
+                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "â€”"
                                             ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "costo_usd":
                                             _costo_val = row.get("costo_usd")
-                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "—"
+                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "â€”"
                                             ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
@@ -4358,9 +3617,9 @@ def _mostrar_tabla_precios(
                                                 ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
-                                            ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
+                                            ui.label(fmt_moneda(ptw) if ptw is not None else "â€”").classes("" if ptw is not None else "text-gray-400")
                                         elif col["name"] == "title":
-                                            _ttxt = str(val or "—")
+                                            _ttxt = str(val or "â€”")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
                                                 ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
                                             elif row.get("tipo") == "Catalogo":
@@ -4375,13 +3634,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "margen_pesos":
                                             v = row.get("margen_pesos")
                                             if v is None:
-                                                ui.label("—").classes("text-gray-400 text-xs")
+                                                ui.label("â€”").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] == "margen_venta_pct":
                                             v = row.get("margen_venta_pct")
                                             if v is None:
-                                                ui.label("—").classes("text-gray-400 text-xs")
+                                                ui.label("â€”").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] in ("available_quantity", "sold_quantity"):
@@ -4399,7 +3658,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
-                                                ui.label("—").classes("text-gray-400 text-center w-full")
+                                                ui.label("â€”").classes("text-gray-400 text-center w-full")
                                             else:
                                                 qs_i = int(qs)
                                                 _filled = round(qs_i / 20)
@@ -4423,7 +3682,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
-                                                ui.label("—").classes("text-gray-400 text-center")
+                                                ui.label("â€”").classes("text-gray-400 text-center")
                                             elif _dias == 0:
                                                 ui.label("hoy").classes("text-positive font-medium text-center")
                                             elif _dias <= 7:
@@ -4431,7 +3690,7 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
-                                            ui.label(str(val) if val is not None else "—")
+                                            ui.label(str(val) if val is not None else "â€”")
             async def _recalc_padding() -> None:
                 await ui.run_javascript(
                     f"(function(){{"
@@ -4455,27 +3714,27 @@ def _mostrar_tabla_precios(
         finally:
             conn.close()
         filtrar_y_pintar()
-        ui.notify("Revisiones del día borradas", color="info")
+        ui.notify("Revisiones del dÃ­a borradas", color="info")
 
     with result_area:
         with ui.row().classes("w-full items-center gap-5 px-3 py-1 bg-grey-2 rounded mb-1"):
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Publicaciones:").classes("text-xs text-gray-500")
-                lbl_totales = ui.label("—").classes("text-sm font-bold text-primary")
+                lbl_totales = ui.label("â€”").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Unidades:").classes("text-xs text-gray-500")
-                lbl_unidades = ui.label("—").classes("text-sm font-bold text-primary")
+                lbl_unidades = ui.label("â€”").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Total $:").classes("text-xs text-gray-500")
-                lbl_pesos = ui.label("—").classes("text-sm font-bold text-primary")
+                lbl_pesos = ui.label("â€”").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Total u$s:").classes("text-xs text-gray-500")
-                lbl_usd = ui.label("—").classes("text-sm font-bold text-primary")
+                lbl_usd = ui.label("â€”").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Marcas:").classes("text-xs text-gray-500")
-                lbl_marcas = ui.label("—").classes("text-sm font-bold text-primary")
+                lbl_marcas = ui.label("â€”").classes("text-sm font-bold text-primary")
             ui.space()
-            ui.button("Limpiar día", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
+            ui.button("Limpiar dÃ­a", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
                 ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
@@ -4505,7 +3764,7 @@ def _mostrar_tabla_precios(
             filtro_revision = ui.select(
                 {"todos": "Todos", "pendientes": "Sin revisar", "revisados": "Revisados", "precio_ok": "Precio cambiado"},
                 value="todos",
-                label="Revisión",
+                label="RevisiÃ³n",
             ).classes("w-44").props("outlined dense")
         header_div_precios = ui.element("div").style("width:100%;overflow:hidden")
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
@@ -4546,7 +3805,7 @@ def _mostrar_tabla_precios(
 
 
 def build_tab_precios_detalle(container) -> None:
-    """Pestaña Precios: tabla con id, marca, producto, stock, precio, iva, costo, comision, cobrado, iibb, margen $, margen costo, margen venta."""
+    """PestaÃ±a Precios: tabla con id, marca, producto, stock, precio, iva, costo, comision, cobrado, iibb, margen $, margen costo, margen venta."""
     container.clear()
     user = require_login()
     if not user:
@@ -4556,7 +3815,7 @@ def build_tab_precios_detalle(container) -> None:
     access_token = get_ml_access_token(uid)
     if not access_token:
         with container:
-            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+            ui.label("âš ï¸ No tienes MercadoLibre vinculado. Ve a ConfiguraciÃ³n y conecta tu cuenta.").classes("text-warning mb-4")
         return
 
     def _parse_float(s: Any) -> float:
@@ -4595,18 +3854,18 @@ def build_tab_precios_detalle(container) -> None:
     if dolar_oficial <= 0:
         dolar_oficial = 1475.0
 
-    IVA_IMPORTACION_APROX = 0.09  # Aprox. IVA ya pagado en importación (sobre costo u$ * dolar)
+    IVA_IMPORTACION_APROX = 0.09  # Aprox. IVA ya pagado en importaciÃ³n (sobre costo u$ * dolar)
 
     def _calc_iva(precio: float, tipo_iva: float, comision: float, costo_usd: float) -> tuple:
         """Devuelve (iva_total, iva_meli, iva_impor)."""
         iva_venta = precio * tipo_iva / (1 + tipo_iva)
-        iva_meli = comision * 0.21 / 1.21  # IVA crédito fiscal de comisión ML
+        iva_meli = comision * 0.21 / 1.21  # IVA crÃ©dito fiscal de comisiÃ³n ML
         iva_impor = IVA_IMPORTACION_APROX * costo_usd * dolar_oficial
         iva_total = iva_venta - iva_meli - iva_impor
         return (iva_total, iva_meli, iva_impor)
 
     def _envio_a_restar(precio: float) -> float:
-        """Si precio < ml_envios_gratuitos, no se resta envío."""
+        """Si precio < ml_envios_gratuitos, no se resta envÃ­o."""
         return 0.0 if precio < ml_envios_gratuitos else ml_envios
 
     items_loaded: List[Dict[str, Any]] = []
@@ -4626,7 +3885,7 @@ def build_tab_precios_detalle(container) -> None:
     calcular_labels_ref: Dict[str, Any] = {}
 
     def _pintar_ui_desde_ref():
-        """Pinta la UI cuando los datos están listos. Se llama desde el timer en el main thread."""
+        """Pinta la UI cuando los datos estÃ¡n listos. Se llama desde el timer en el main thread."""
         if not cargar_listo_ref.get("listo"):
             return
         cargar_listo_ref["listo"] = False
@@ -4634,7 +3893,7 @@ def build_tab_precios_detalle(container) -> None:
         if err:
             content_column.clear()
             with content_column:
-                ui.label(f"❌ Error al cargar: {err}").classes("text-negative")
+                ui.label(f"âŒ Error al cargar: {err}").classes("text-negative")
             timer_ref["t"].active = False
             return
         totales = cargar_listo_ref.get("totales", 0)
@@ -4644,31 +3903,31 @@ def build_tab_precios_detalle(container) -> None:
                 with ui.row().classes("w-full justify-around flex-wrap gap-4"):
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones sin promociones").classes("text-sm text-gray-600")
-                        lbl_sin_promo = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_sin_promo = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["sin_promo"] = lbl_sin_promo
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones con promociones").classes("text-sm text-gray-600")
-                        lbl_con_promo = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_con_promo = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["con_promo"] = lbl_con_promo
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones con cuotas").classes("text-sm text-gray-600")
-                        lbl_con_cuotas = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_con_cuotas = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["con_cuotas"] = lbl_con_cuotas
                     with ui.column().classes("items-center"):
                         ui.label("Unidades vendidas").classes("text-sm text-gray-600")
-                        lbl_uds = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_uds = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["unidades"] = lbl_uds
                     with ui.column().classes("items-center"):
-                        ui.label("Facturación total").classes("text-sm text-gray-600")
-                        lbl_fact = ui.label("—").classes("text-2xl font-bold text-primary")
+                        ui.label("FacturaciÃ³n total").classes("text-sm text-gray-600")
+                        lbl_fact = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["facturacion"] = lbl_fact
                     with ui.column().classes("items-center"):
                         ui.label("Margen total").classes("text-sm text-gray-600")
-                        lbl_margen = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_margen = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["margen"] = lbl_margen
                     with ui.column().classes("items-center"):
                         ui.label("Margen % sobre venta").classes("text-sm text-gray-600")
-                        lbl_margen_pct = ui.label("—").classes("text-2xl font-bold text-primary")
+                        lbl_margen_pct = ui.label("â€”").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["margen_pct"] = lbl_margen_pct
                     with ui.column().classes("items-center"):
                         ui.label("Margen estimado (Datos)").classes("text-sm text-gray-600")
@@ -4698,7 +3957,7 @@ def build_tab_precios_detalle(container) -> None:
                         value=filtro_ventas_ref.get("val", "con_ventas"),
                         label="Ventas",
                     ).classes("w-36")
-                    btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "Mínimo", color="primary").props("icon=visibility")
+                    btn_vista = ui.button("Completo" if vista_modo_ref.get("val") == "minimo" else "MÃ­nimo", color="primary").props("icon=visibility")
                 ui.space()
                 ui.button("QUIEBRE STOCK", on_click=lambda: _quiebre_stock_click(), color="primary").classes("uppercase").props("icon=print")
 
@@ -4708,7 +3967,7 @@ def build_tab_precios_detalle(container) -> None:
                     background_tasks.create(_quiebre_stock_async(client, container), name="quiebre_stock")
 
                 async def _quiebre_stock_async(client, container) -> None:
-                    """Genera Excel con productos vendidos en los últimos 60 días que no tienen stock."""
+                    """Genera Excel con productos vendidos en los Ãºltimos 60 dÃ­as que no tienen stock."""
                     try:
                         with container:
                             ui.notify("Generando Quiebre Stock...", color="info")
@@ -4751,7 +4010,7 @@ def build_tab_precios_detalle(container) -> None:
                                 qty = int(it.get("quantity") or it.get("qty") or 0)
                                 if qty == 0:
                                     continue
-                                titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "—"
+                                titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "â€”"
                                 item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
                                 if not item_id:
                                     continue
@@ -4759,7 +4018,7 @@ def build_tab_precios_detalle(container) -> None:
                                 item_ids_set.add(item_id)
                         if not ventas_quiebre:
                             with container:
-                                ui.notify("No hay ventas en los últimos 60 días.", color="warning")
+                                ui.notify("No hay ventas en los Ãºltimos 60 dÃ­as.", color="warning")
                             return
                         item_ids_list = list(item_ids_set)
                         item_id_to_info: Dict[str, Dict[str, Any]] = {}
@@ -4780,8 +4039,8 @@ def build_tab_precios_detalle(container) -> None:
                                                 val = att.get("value_name") or att.get("value_id")
                                                 color = str(val) if val is not None else ""
                                         catalog_id = str(b.get("catalog_product_id") or "").strip()
-                                        item_id_to_info[iid] = {"stock": int(b.get("available_quantity") or 0), "marca": marca or "—", "color": color or "—", "catalog_product_id": catalog_id, "title": (b.get("title") or "")[:200]}
-                        ids_sin_color = [iid for iid in item_ids_list if (item_id_to_info.get(iid) or {}).get("color") == "—"]
+                                        item_id_to_info[iid] = {"stock": int(b.get("available_quantity") or 0), "marca": marca or "â€”", "color": color or "â€”", "catalog_product_id": catalog_id, "title": (b.get("title") or "")[:200]}
+                        ids_sin_color = [iid for iid in item_ids_list if (item_id_to_info.get(iid) or {}).get("color") == "â€”"]
                         item_id_to_color_desc: Dict[str, str] = {}
                         for iid in ids_sin_color[:25]:
                             desc = await run.io_bound(ml_get_item_description, access_token, iid)
@@ -4794,10 +4053,10 @@ def build_tab_precios_detalle(container) -> None:
                             iid = v.get("item_id", "")
                             info = item_id_to_info.get(iid) or item_id_to_info.get(iid.upper()) or item_id_to_info.get(iid.lower()) if iid else None
                             stock = info["stock"] if info else -1
-                            marca = info["marca"] if info else "—"
-                            color = (info["color"] if info else "—") or item_id_to_color_desc.get(iid) or item_id_to_color_desc.get(iid.upper()) or item_id_to_color_desc.get(iid.lower()) or "—"
-                            if color == "—":
-                                color = _extraer_color_desde_texto(v["productos"]) or "—"
+                            marca = info["marca"] if info else "â€”"
+                            color = (info["color"] if info else "â€”") or item_id_to_color_desc.get(iid) or item_id_to_color_desc.get(iid.upper()) or item_id_to_color_desc.get(iid.lower()) or "â€”"
+                            if color == "â€”":
+                                color = _extraer_color_desde_texto(v["productos"]) or "â€”"
                             if stock == 0:
                                 catalog_id = (info or {}).get("catalog_product_id", "")
                                 key = (catalog_id or v["productos"], marca, color)
@@ -4949,7 +4208,7 @@ def build_tab_precios_detalle(container) -> None:
 
             def toggle_vista():
                 vista_modo_ref["val"] = "completo" if vista_modo_ref.get("val") == "minimo" else "minimo"
-                btn_vista.text = "Completo" if vista_modo_ref["val"] == "minimo" else "Mínimo"
+                btn_vista.text = "Completo" if vista_modo_ref["val"] == "minimo" else "MÃ­nimo"
                 _filtrar_con_indicador()
 
             def on_fecha_change(e):
@@ -5025,7 +4284,7 @@ def build_tab_precios_detalle(container) -> None:
             return 0.0
         try:
             raw = str(s).replace("u$", "").replace("$", "").replace(",", ".").strip()
-            # Si hay varios puntos, el último es decimal (1.234.56 -> 1234.56)
+            # Si hay varios puntos, el Ãºltimo es decimal (1.234.56 -> 1234.56)
             if "." in raw:
                 p = raw.split(".")
                 raw = "".join(p[:-1]) + "." + p[-1]
@@ -5035,22 +4294,22 @@ def build_tab_precios_detalle(container) -> None:
 
     def fmt_pct(val: Any) -> str:
         if val is None:
-            return "—"
+            return "â€”"
         try:
             n = float(val)
             return f"{n:.1f}%"
         except (TypeError, ValueError):
-            return "—"
+            return "â€”"
 
     def fmt_pct2(val: Any) -> str:
         """Porcentaje con 2 decimales (para margen costo y margen venta)."""
         if val is None:
-            return "—"
+            return "â€”"
         try:
             n = float(val)
             return f"{n:.2f}%"
         except (TypeError, ValueError):
-            return "—"
+            return "â€”"
 
     def _sort_key(row: Dict[str, Any], col: str) -> Any:
         if col in ("precio", "stock", "ventas", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
@@ -5069,14 +4328,14 @@ def build_tab_precios_detalle(container) -> None:
         ("costo", "Costo u$ +IVA", "right", True),
         ("precio", "Precio", "right", True),
         ("tipo_iva", "Tipo IVA", "right", True),
-        ("comision", "Comisión", "right", True),
+        ("comision", "ComisiÃ³n", "right", True),
         ("cobrado", "Cobrado", "right", True),
         ("iva_meli", "IVA Meli", "center", True),
         ("iva_impor", "IVA impor", "center", True),
         ("iva_total", "IVA total", "center", True),
         ("deb_cred", "Deb-Cred", "right", True),
         ("iibb", "IIBB", "right", True),
-        ("envio", "Envío", "right", True),
+        ("envio", "EnvÃ­o", "right", True),
         ("margen_pesos", "Gan $", "center", True),
         ("margen_venta_pct", "Gan Vta %", "center", True),
         ("margen_costo_pct", "Gan % Cos", "center", True),
@@ -5260,7 +4519,7 @@ def build_tab_precios_detalle(container) -> None:
         tc.clear()
         es_completo = vista_modo_ref.get("val") == "completo"
         with tc:
-            # Vista completo: tabla compacta que quepa en pantalla (texto más chico, columnas ajustadas)
+            # Vista completo: tabla compacta que quepa en pantalla (texto mÃ¡s chico, columnas ajustadas)
             tab_cls = "border-collapse text-xs" if es_completo else "border-collapse text-sm"
             prod_width = "min-width: 120px; max-width: 180px;" if es_completo else "min-width: 220px;"
             cell_px = "px-1 py-0.5" if es_completo else "px-2 py-1"
@@ -5314,13 +4573,13 @@ def build_tab_precios_detalle(container) -> None:
                                             else:
                                                 lbl.classes(base_cls + "font-bold " + ("text-positive" if mp > 0 else "text-negative"))
                                         elif field == "seller_sku":
-                                            ui.label(str(r.get("seller_sku") or r.get("id") or "—"))
+                                            ui.label(str(r.get("seller_sku") or r.get("id") or "â€”"))
                                         elif field == "stock":
                                             ui.label(str(val) if val is not None else "0")
                                         elif field == "ventas":
                                             ui.label(str(val) if val is not None else "0")
                                         else:
-                                            ui.label(str(val) if val is not None else "—")
+                                            ui.label(str(val) if val is not None else "â€”")
         fn_calcular = calcular_labels_ref.get("_calcular_fn")
         if callable(fn_calcular):
             fn_calcular()
@@ -5353,7 +4612,7 @@ def build_tab_precios_detalle(container) -> None:
             timer_ref["t"].active = True
         include_paused = include_paused_ref.get("val", False)
         try:
-            # Cargar items primero para mostrar tabla rápido; órdenes en paralelo para ventas por período
+            # Cargar items primero para mostrar tabla rÃ¡pido; Ã³rdenes en paralelo para ventas por perÃ­odo
             async def _fetch_items():
                 return await run.io_bound(ml_get_my_items, access_token, include_paused)
             async def _fetch_orders():
@@ -5400,7 +4659,7 @@ def build_tab_precios_detalle(container) -> None:
         items_loaded.clear()
 
         def _id_num(id_val: Any) -> int:
-            """Extrae la parte numérica del ID (ej. MLA1444322457 -> 1444322457) para ordenar."""
+            """Extrae la parte numÃ©rica del ID (ej. MLA1444322457 -> 1444322457) para ordenar."""
             s = str(id_val or "")
             num = "".join(c for c in s if c.isdigit()) or "0"
             try:
@@ -5409,7 +4668,7 @@ def build_tab_precios_detalle(container) -> None:
                 return 999999999
 
         items_ordenados = sorted(items, key=lambda x: _id_num(x.get("id")))
-        # Mapeo item_id -> dedupe_key para todos los ítems (incl. los que deduplicamos)
+        # Mapeo item_id -> dedupe_key para todos los Ã­tems (incl. los que deduplicamos)
         item_id_to_dedupe: Dict[str, str] = {}
         for i in items_ordenados:
             catalog_id = str(i.get("catalog_product_id") or "").strip()
@@ -5417,14 +4676,14 @@ def build_tab_precios_detalle(container) -> None:
             item_id_str = str(i.get("id", ""))
             dk = ("c:" + catalog_id) if catalog_id else ("s:" + seller_sku if seller_sku else "id:" + item_id_str)
             item_id_to_dedupe[item_id_str] = dk
-        # Ventas históricas (sold_quantity por item_id; no agrupar por catalog para evitar ventas cruzadas)
+        # Ventas histÃ³ricas (sold_quantity por item_id; no agrupar por catalog para evitar ventas cruzadas)
         ventas_historico: Dict[str, int] = {}
         for i in items_ordenados:
             item_id_str = str(i.get("id", ""))
             if item_id_str:
                 sold = int(i.get("sold_quantity") or 0)
                 ventas_historico["id:" + item_id_str] = ventas_historico.get("id:" + item_id_str, 0) + sold
-        # Ventas por mes actual y mes anterior desde órdenes (ya cargadas en paralelo)
+        # Ventas por mes actual y mes anterior desde Ã³rdenes (ya cargadas en paralelo)
         ventas_mes_actual: Dict[str, int] = {}
         ventas_mes_anterior: Dict[str, int] = {}
         item_id_to_catalog_from_orders: Dict[str, str] = {}  # Para orden items sin catalog_product_id
@@ -5510,7 +4769,7 @@ def build_tab_precios_detalle(container) -> None:
                     elif primer_dia_anterior <= dt <= ultimo_mes:
                         _agg_ventas([o], ventas_mes_anterior)
 
-                # Incluir items con ventas que no vinieron en ml_get_my_items (límite por status)
+                # Incluir items con ventas que no vinieron en ml_get_my_items (lÃ­mite por status)
                 ids_con_ventas: set = set()
                 for k in list(ventas_mes_actual.keys()) + list(ventas_mes_anterior.keys()):
                     if isinstance(k, str) and k.startswith("id:") and len(k) > 3:
@@ -5539,7 +4798,7 @@ def build_tab_precios_detalle(container) -> None:
         ventas_por_periodo_ref["mes_actual"] = ventas_mes_actual
         ventas_por_periodo_ref["mes_anterior"] = ventas_mes_anterior
 
-        # sale_price y cuotas: cargar en segundo plano para mostrar tabla rápido
+        # sale_price y cuotas: cargar en segundo plano para mostrar tabla rÃ¡pido
         item_id_to_sale_price: Dict[str, Dict[str, Any]] = {}
         item_id_to_cuotas_precios: Dict[str, str] = {}
         item_ids_precios = [str(i.get("id", "")).strip() for i in items_ordenados if i.get("id")]
@@ -5621,7 +4880,7 @@ def build_tab_precios_detalle(container) -> None:
             finally:
                 _conn_prod.close()
 
-        # Agrupar por dedupe_key; preferir catalog_listing=false (Propia), solo usar Catálogo si no hay Propia
+        # Agrupar por dedupe_key; preferir catalog_listing=false (Propia), solo usar CatÃ¡logo si no hay Propia
         grupos_por_dedupe: Dict[str, List[Dict]] = {}
         for i in items_ordenados:
             catalog_id = str(i.get("catalog_product_id") or "").strip()
@@ -5710,7 +4969,7 @@ def build_tab_precios_detalle(container) -> None:
                 "id": str(i.get("id", "")),
                 "seller_sku": seller_sku,
                 "thumbnail": i.get("thumbnail") or "",
-                "marca": i.get("marca") or "—",
+                "marca": i.get("marca") or "â€”",
                 "producto": str(i.get("title") or ""),
                 "stock": stock,
                 "ventas": ventas,
@@ -5779,7 +5038,7 @@ def build_tab_precios_detalle(container) -> None:
                 "listing_type_id": body.get("listing_type_id"),
                 "sale_terms": body.get("sale_terms"),
                 "seller_sku": seller_sku,
-                "marca": marca or "—",
+                "marca": marca or "â€”",
             }
 
         for i, grupo in items_a_mostrar:
@@ -5890,7 +5149,7 @@ def build_tab_precios_detalle(container) -> None:
 def _fmt_fecha_compras(s: str) -> str:
     """Formato fecha: 'Lunes 16-03-26 09:30' (dia dd-mm-aa hora:minutos)."""
     if not s or not str(s).strip():
-        return "—"
+        return "â€”"
     s = str(s).strip()
     try:
         if " " in s:
@@ -5902,7 +5161,7 @@ def _fmt_fecha_compras(s: str) -> str:
         if len(p) >= 3:
             y, m, d = int(p[0]), int(p[1]), int(p[2])
             dt_obj = datetime(y, m, d)
-            dia_nombre = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"][dt_obj.weekday()]
+            dia_nombre = ["Lunes", "Martes", "MiÃ©rcoles", "Jueves", "Viernes", "SÃ¡bado", "Domingo"][dt_obj.weekday()]
             dd = f"{d:02d}-{m:02d}-{y % 100:02d}"
             if time_str:
                 return f"{dia_nombre} {dd} {time_str}"
@@ -5925,7 +5184,7 @@ def _parse_precio_compras_input(s: str) -> str:
     if not s or not str(s).strip():
         return ""
     s = str(s).strip().replace(",", ".")
-    # Dejar solo dígitos y un punto
+    # Dejar solo dÃ­gitos y un punto
     parts = s.split(".")
     if len(parts) > 2:
         s = parts[0] + "." + "".join(parts[1:])
@@ -5944,21 +5203,21 @@ def _parse_fecha_compras_input(s: str) -> str:
         y_full = 2000 + y if y < 100 else y
         time_part = m.group(4) or "00:00"
         return f"{y_full:04d}-{m_val:02d}-{d:02d} {time_part}"
-    # Si ya está en YYYY-MM-DD
+    # Si ya estÃ¡ en YYYY-MM-DD
     if re.match(r"\d{4}-\d{2}-\d{2}", s):
         return s[:16] if len(s) > 10 else (s + " 00:00")
     return s
 
 
 def _solo_numeros(val: str) -> str:
-    """Filtra a solo dígitos (cantidad entera)."""
+    """Filtra a solo dÃ­gitos (cantidad entera)."""
     if not val:
         return ""
     return "".join(c for c in str(val) if c.isdigit())
 
 
 def _sort_key_compras(row: Dict[str, Any], col: str) -> Any:
-    """Clave de ordenación para filas de compras_lista."""
+    """Clave de ordenaciÃ³n para filas de compras_lista."""
     if col == "fecha":
         raw = row.get("fecha") or ""
         try:
@@ -5977,7 +5236,7 @@ def _sort_key_compras(row: Dict[str, Any], col: str) -> Any:
 
 
 def build_tab_compras_lista(container) -> None:
-    """Pestaña Compras Lista: tabla editable de compras a cotizar (marca, producto, cantidad, estado, usuario_qb)."""
+    """PestaÃ±a Compras Lista: tabla editable de compras a cotizar (marca, producto, cantidad, estado, usuario_qb)."""
     user = require_login()
     if not user:
         return
@@ -5991,17 +5250,17 @@ def build_tab_compras_lista(container) -> None:
         filtro_estado_ref: Dict[str, str] = {"val": "Todas"}
         sort_col_ref: List[str] = [""]
         sort_asc_ref: List[bool] = [True]
-        # Filtro arriba de tabla (solo), tabla, botón debajo
+        # Filtro arriba de tabla (solo), tabla, botÃ³n debajo
         compras_header = ui.column().classes("w-full mb-2")
         filtro_row = ui.column().classes("w-full mb-2")
         tabla_container = ui.column().classes("w-full gap-2")
         boton_row = ui.row().classes("w-full mt-2 items-center")
 
         user_id_ref: List[int] = [user["id"]]
-        tbody_el = None  # se asignará al crear la tabla
+        tbody_el = None  # se asignarÃ¡ al crear la tabla
 
         def _filtrar_cantidad_on_input(inp) -> None:
-            """Solo permite dígitos en cantidad."""
+            """Solo permite dÃ­gitos en cantidad."""
             if hasattr(inp, "value"):
                 actual = getattr(inp, "value", "") or ""
                 filtrado = _solo_numeros(actual)
@@ -6009,12 +5268,12 @@ def build_tab_compras_lista(container) -> None:
                     inp.value = filtrado
 
         def _filtrar_precio_on_input(inp) -> None:
-            """Solo permite dígitos, punto y coma en precio; muestra coma como decimal."""
+            """Solo permite dÃ­gitos, punto y coma en precio; muestra coma como decimal."""
             if not hasattr(inp, "value"):
                 return
             s = getattr(inp, "value", "") or ""
             s = "".join(c for c in str(s) if c.isdigit() or c in ".,")
-            # Máximo un separador decimal; mantener primera parte entera y primera decimal
+            # MÃ¡ximo un separador decimal; mantener primera parte entera y primera decimal
             if s.count(".") + s.count(",") > 1:
                 parts = s.replace(",", ".").split(".")
                 s = parts[0] + "," + (parts[1] if len(parts) > 1 else "")
@@ -6107,7 +5366,7 @@ def build_tab_compras_lista(container) -> None:
         def _agregar_fila() -> None:
             u = require_login()
             if not u:
-                ui.notify("Debe iniciar sesión", color="negative")
+                ui.notify("Debe iniciar sesiÃ³n", color="negative")
                 return
             qb = get_user_qb_customer(u["id"])
             cli = (qb or {}).get("name", "")
@@ -6184,7 +5443,7 @@ def build_tab_compras_lista(container) -> None:
         def _agregar_fila() -> None:
             u = require_login()
             if not u:
-                ui.notify("Debe iniciar sesión", color="negative")
+                ui.notify("Debe iniciar sesiÃ³n", color="negative")
                 return
             qb = get_user_qb_customer(u["id"])
             cli = (qb or {}).get("name", "")
@@ -6220,7 +5479,7 @@ def build_tab_compras_lista(container) -> None:
 
 
 def build_tab_historicos(container) -> None:
-    """Pestaña Históricos: buscador de productos en QuickBooks. Escribís una palabra y debajo se muestran todos los productos que la contienen."""
+    """PestaÃ±a HistÃ³ricos: buscador de productos en QuickBooks. EscribÃ­s una palabra y debajo se muestran todos los productos que la contienen."""
     user = require_login()
     if not user:
         return
@@ -6228,13 +5487,13 @@ def build_tab_historicos(container) -> None:
     qb_tokens = get_qb_tokens(user["id"])
     if not qb_tokens or not qb_tokens.get("access_token"):
         with container:
-            ui.label("Conectá QuickBooks en Configuración para usar el buscador de productos.").classes("text-gray-600")
+            ui.label("ConectÃ¡ QuickBooks en ConfiguraciÃ³n para usar el buscador de productos.").classes("text-gray-600")
         return
 
     with container:
-        ui.label("Históricos").classes("text-xl font-semibold mb-4")
+        ui.label("HistÃ³ricos").classes("text-xl font-semibold mb-4")
         with ui.row().classes("w-full gap-2 items-center"):
-            search_input = ui.input("Buscar", placeholder="Escribí una palabra para buscar en QuickBooks...").classes("w-96 max-w-full").props("dense outlined clearable")
+            search_input = ui.input("Buscar", placeholder="EscribÃ­ una palabra para buscar en QuickBooks...").classes("w-96 max-w-full").props("dense outlined clearable")
             ui.button("Buscar", on_click=lambda: _do_search(), color="primary").props("dense no-caps")
         results_container = ui.column().classes("w-full mt-4")
 
@@ -6243,7 +5502,7 @@ def build_tab_historicos(container) -> None:
             results_container.clear()
             with results_container:
                 if not txt:
-                    ui.label("Escribí al menos un carácter para buscar.").classes("text-gray-500 text-sm")
+                    ui.label("EscribÃ­ al menos un carÃ¡cter para buscar.").classes("text-gray-500 text-sm")
                     return
                 ui.spinner(size="lg")
                 ui.label("Buscando...").classes("text-gray-600")
@@ -6261,7 +5520,7 @@ def build_tab_historicos(container) -> None:
                     if not items:
                         msg = "No se encontraron productos."
                         if total_revisados > 0:
-                            msg += f" (Se buscó en {total_revisados} productos de QuickBooks: Name, SKU y Sales Description)"
+                            msg += f" (Se buscÃ³ en {total_revisados} productos de QuickBooks: Name, SKU y Sales Description)"
                         ui.label(msg).classes("text-gray-500 text-sm")
                         return
                     ui.label(f"Se encontraron {len(items)} productos").classes("text-sm font-medium text-gray-700 mb-2")
@@ -6281,14 +5540,14 @@ def build_tab_historicos(container) -> None:
                                 for it in items:
                                     with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(str(it.get("id", "—")))
+                                            ui.label(str(it.get("id", "â€”")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("producto", it.get("name", "—")))
+                                            ui.label(it.get("producto", it.get("name", "â€”")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("sku") or "—")
+                                            ui.label(it.get("sku") or "â€”")
                                         with ui.element("td").classes("px-2 py-1 border text-center"):
                                             _uid, _iid = user["id"], it.get("id", "")
-                                            _prod, _sku = it.get("producto", it.get("name", "—")), (it.get("sku") or "").strip()
+                                            _prod, _sku = it.get("producto", it.get("name", "â€”")), (it.get("sku") or "").strip()
 
                                             def _abrir_historial(uid, iid, prod, sku):
                                                 d = ui.dialog().props("persistent")
@@ -6325,11 +5584,11 @@ def build_tab_historicos(container) -> None:
                                                                     for h in hist:
                                                                         with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("tipo", "—"))
+                                                                                ui.label(h.get("tipo", "â€”"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("fecha", "—"))
+                                                                                ui.label(h.get("fecha", "â€”"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                doc_txt = str(h.get("doc", "—"))[:40]
+                                                                                doc_txt = str(h.get("doc", "â€”"))[:40]
                                                                                 qb_id = h.get("qb_id") or ""
                                                                                 qb_tipo = h.get("qb_tipo") or ""
                                                                                 if qb_tipo == "invoice" and qb_id:
@@ -6352,7 +5611,7 @@ def build_tab_historicos(container) -> None:
                                                                             _tipo = h.get("tipo", "")
                                                                             _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                             with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                                ui.label(_p_fmt if _tipo == "Venta" else "—")
+                                                                                ui.label(_p_fmt if _tipo == "Venta" else "â€”")
                                                         with ui.row().classes("w-full justify-end mt-4"):
                                                             ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
@@ -6366,7 +5625,7 @@ def build_tab_historicos(container) -> None:
 
 
 def build_tab_stock(container) -> None:
-    """Pestaña Stock: inventario de QuickBooks (Items con QtyOnHand > 0)."""
+    """PestaÃ±a Stock: inventario de QuickBooks (Items con QtyOnHand > 0)."""
     user = require_login()
     if not user:
         return
@@ -6377,13 +5636,13 @@ def build_tab_stock(container) -> None:
     with container:
         if not qb_creds:
             ui.label(
-                "Configurá QuickBooks en Configuración (Client ID, Client Secret, Redirect URI) y conectá tu cuenta."
+                "ConfigurÃ¡ QuickBooks en ConfiguraciÃ³n (Client ID, Client Secret, Redirect URI) y conectÃ¡ tu cuenta."
             ).classes("text-gray-600")
             return
 
         if not qb_tokens:
             ui.label(
-                "Credenciales configuradas. Andá a Configuración → QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
+                "Credenciales configuradas. AndÃ¡ a ConfiguraciÃ³n â†’ QuickBooks y hacÃ© clic en 'Conectar cuenta' para autorizar."
             ).classes("text-warning")
             return
 
@@ -6455,19 +5714,19 @@ def build_tab_stock(container) -> None:
                         for it in items_sorted:
                             with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("id", "—")))
+                                    ui.label(str(it.get("id", "â€”")))
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("producto", "—")))
+                                    ui.label(str(it.get("producto", "â€”")))
                                 with ui.element("td").classes("px-3 py-1 border"):
                                     _sku_val = (it.get("sku") or "").strip()
-                                    ui.label(_sku_val if _sku_val else "—")
+                                    ui.label(_sku_val if _sku_val else "â€”")
                                 with ui.element("td").classes("px-3 py-1 border text-right"):
                                     _sp = it.get("sales_price") or 0
                                     ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                                 with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
                                     ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
                                 with ui.element("td").classes("px-3 py-1 border text-center"):
-                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip()):
+                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "â€”"), sku_val=(it.get("sku") or "").strip()):
                                         dialog = ui.dialog().props("persistent")
                                         with dialog:
                                             with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
@@ -6502,11 +5761,11 @@ def build_tab_stock(container) -> None:
                                                             for h in hist:
                                                                 with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("tipo", "—"))
+                                                                        ui.label(h.get("tipo", "â€”"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("fecha", "—"))
+                                                                        ui.label(h.get("fecha", "â€”"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        doc_txt = str(h.get("doc", "—"))[:40]
+                                                                        doc_txt = str(h.get("doc", "â€”"))[:40]
                                                                         qb_id = h.get("qb_id") or ""
                                                                         qb_tipo = h.get("qb_tipo") or ""
                                                                         if qb_tipo == "invoice" and qb_id:
@@ -6529,12 +5788,12 @@ def build_tab_stock(container) -> None:
                                                                     _tipo = h.get("tipo", "")
                                                                     _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                     with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                        ui.label(_p_fmt if _tipo == "Venta" else "—")
+                                                                        ui.label(_p_fmt if _tipo == "Venta" else "â€”")
                                                 with ui.row().classes("w-full justify-end mt-4"):
                                                     ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
                                         background_tasks.create(_cargar_y_mostrar(), name="stock_historial")
-                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
+                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "â€”"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
 
         def _cargar() -> None:
             items, err = fetch_qb_items(user["id"])
@@ -6558,7 +5817,7 @@ def build_tab_stock(container) -> None:
 
 
 def build_tab_busqueda() -> None:
-    """Pestaña Búsqueda: texto + botón, resultados en tabla (nombre, precio, vendedor, stock, tipo)."""
+    """PestaÃ±a BÃºsqueda: texto + botÃ³n, resultados en tabla (nombre, precio, vendedor, stock, tipo)."""
     user = require_login()
     if not user:
         return
@@ -6566,10 +5825,10 @@ def build_tab_busqueda() -> None:
     access_token = get_ml_access_token(user["id"])
 
     with ui.column().classes("w-full gap-4"):
-        ui.label("Búsqueda en MercadoLibre").classes("text-xl font-semibold")
+        ui.label("BÃºsqueda en MercadoLibre").classes("text-xl font-semibold")
         with ui.row().classes("items-center gap-3"):
             input_busqueda = ui.input(
-                "Texto o ID de publicación (ej: MLA1996852282)"
+                "Texto o ID de publicaciÃ³n (ej: MLA1996852282)"
             ).classes("w-96").props("outlined dense")
             input_busqueda.on("keydown.enter", lambda: on_buscar())
 
@@ -6585,7 +5844,7 @@ def build_tab_busqueda() -> None:
             ui.button("Buscar", on_click=on_buscar, color="primary")
             ui.button("Borrar", on_click=on_borrar, color="secondary")
         with ui.row().classes("items-center gap-4"):
-            solo_propias_switch = ui.checkbox("Solo publicaciones propias (no catálogo)", value=True).classes("text-sm")
+            solo_propias_switch = ui.checkbox("Solo publicaciones propias (no catÃ¡logo)", value=True).classes("text-sm")
             solo_activas_stock_switch = ui.checkbox("Solo activas con stock", value=True).classes("text-sm")
         results_container = ui.column().classes("w-full mt-2")
 
@@ -6597,9 +5856,9 @@ def build_tab_busqueda() -> None:
                 or ""
             ).strip()
             seller_nick = (seller.get("nickname") or "").strip() if isinstance(seller, dict) else ""
-            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "—")
+            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "â€”")
             catalog = from_catalog or r.get("catalog_listing") is True or bool(r.get("catalog_product_id"))
-            tipo = "Catálogo" if catalog else "Propia"
+            tipo = "CatÃ¡logo" if catalog else "Propia"
             price = r.get("price") or r.get("base_price")
             if price is None:
                 prices = r.get("prices")
@@ -6615,10 +5874,10 @@ def build_tab_busqueda() -> None:
                 price = None
             qty_raw = r.get("available_quantity") if r.get("available_quantity") is not None else r.get("availableQuantity") or r.get("quantity")
             if qty_raw is None:
-                qty_display, qty_num = "—", 0
+                qty_display, qty_num = "â€”", 0
             elif isinstance(qty_raw, str):
                 qty_display = qty_raw
-                # API pública puede devolver rangos: RANGO_1_50, RANGO_51_100, etc.
+                # API pÃºblica puede devolver rangos: RANGO_1_50, RANGO_51_100, etc.
                 if qty_raw.startswith("RANGO_"):
                     try:
                         parts = qty_raw.replace("RANGO_", "").split("_")
@@ -6635,7 +5894,7 @@ def build_tab_busqueda() -> None:
                     qty_num = int(qty_raw)
                     qty_display = str(qty_num)
                 except (TypeError, ValueError):
-                    qty_display, qty_num = "—", 0
+                    qty_display, qty_num = "â€”", 0
             perm = (r.get("permalink") or "").strip()
             if not perm or perm == "#":
                 wid = str(r.get("id") or r.get("product_id") or r.get("item_id") or "").strip()
@@ -6645,7 +5904,7 @@ def build_tab_busqueda() -> None:
                 "title": (r.get("title") or r.get("name") or "").strip(),
                 "tipo": tipo,
                 "price": price if price is not None else 999999999,
-                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "—",
+                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "â€”",
                 "available_quantity": qty_num,
                 "available_quantity_display": qty_display,
                 "seller": seller_display,
@@ -6656,14 +5915,14 @@ def build_tab_busqueda() -> None:
             }
 
         def _looks_like_ml_item_id(s: str) -> bool:
-            """Detecta IDs tipo MLA1996852282 (3 letras + dígitos)."""
+            """Detecta IDs tipo MLA1996852282 (3 letras + dÃ­gitos)."""
             s = s.strip().upper()
             return len(s) >= 10 and s[:3].isalpha() and s[3:].isdigit()
 
         async def _buscar_async() -> None:
             texto = (input_busqueda.value or "").strip()
             if not texto:
-                ui.notify("Ingresá un texto o ID de publicación", color="warning")
+                ui.notify("IngresÃ¡ un texto o ID de publicaciÃ³n", color="warning")
                 return
             # Si el usuario pega una URL de la API (ej: GET https://api.mercadolibre.com/items/MLA.../sale_price?context=...)
             if "api.mercadolibre.com" in texto.lower():
@@ -6698,7 +5957,7 @@ def build_tab_busqueda() -> None:
                         resp = await run.io_bound(_fetch_api)
                         results_container.clear()
                         with results_container:
-                            ui.label(f"Respuesta ({resp.get('status', '—')})").classes("text-base font-semibold mb-2")
+                            ui.label(f"Respuesta ({resp.get('status', 'â€”')})").classes("text-base font-semibold mb-2")
                             body = resp.get("body")
                             if isinstance(body, dict):
                                 json_str = json.dumps(body, indent=2, ensure_ascii=False)
@@ -6747,14 +6006,14 @@ def build_tab_busqueda() -> None:
                         with results_container:
                             ui.label(f"Error: {err}").classes("text-negative")
                     return
-            # Si el usuario ingresa solo números, intentar primero con MLA adelante
+            # Si el usuario ingresa solo nÃºmeros, intentar primero con MLA adelante
             texto_buscar = "MLA" + texto if texto.isdigit() else texto
             texto_fallback = texto if texto.isdigit() else None  # Para reintentar sin MLA si no hay resultados
             results_container.clear()
             with results_container:
                 ui.spinner(size="lg")
                 ui.label("Buscando en MercadoLibre...").classes("text-gray-600")
-            # Si parece ID de publicación (ej MLA1996852282), obtener por ID; si no existe, buscar
+            # Si parece ID de publicaciÃ³n (ej MLA1996852282), obtener por ID; si no existe, buscar
             es_item_id = _looks_like_ml_item_id(texto_buscar)
             raw_item = None
             if es_item_id:
@@ -6774,8 +6033,8 @@ def build_tab_busqueda() -> None:
                     es_propia = mi_seller_id and seller_id and mi_seller_id == seller_id
                     results_container.clear()
                     with results_container:
-                        lbl_tipo = "Tu publicación" if es_propia else "Publicación de otro vendedor"
-                        ui.label(f"Datos que devuelve MercadoLibre para esta publicación ({lbl_tipo}):").classes(
+                        lbl_tipo = "Tu publicaciÃ³n" if es_propia else "PublicaciÃ³n de otro vendedor"
+                        ui.label(f"Datos que devuelve MercadoLibre para esta publicaciÃ³n ({lbl_tipo}):").classes(
                             "text-base font-semibold mb-2"
                         )
                         json_str = json.dumps(raw_item, indent=2, ensure_ascii=False)
@@ -6821,17 +6080,17 @@ def build_tab_busqueda() -> None:
                                         }}
                                     }})();
                                 ''')
-                                ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V donde quieras.", type="positive")
+                                ui.notify("Datos copiados al portapapeles. PegÃ¡ con Ctrl+V donde quieras.", type="positive")
                             ui.button("Copiar datos", on_click=lambda d=json_str: _copiar_click(d), color="secondary").classes("rounded px-4 py-2").props("no-caps unelevated")
                     return
-            # Búsqueda por texto o por ID cuando ml_get_item no encontró nada
+            # BÃºsqueda por texto o por ID cuando ml_get_item no encontrÃ³ nada
             try:
                 solo_propias = getattr(solo_propias_switch, "value", True)
                 data = await run.io_bound(ml_search_similar, texto_buscar, 50, access_token, solo_propias)
                 # Para IDs: si no hay resultados con propias, probar sin filtrar por propias
                 if es_item_id and (not data.get("results") or len(data.get("results", [])) == 0) and solo_propias:
                     data = await run.io_bound(ml_search_similar, texto_buscar, 50, access_token, False)
-                # Si ingresó solo números y no hubo resultados con MLA, intentar sin MLA
+                # Si ingresÃ³ solo nÃºmeros y no hubo resultados con MLA, intentar sin MLA
                 if texto_fallback and (not data.get("results") or len(data.get("results", [])) == 0):
                     data = await run.io_bound(ml_search_similar, texto_fallback, 50, access_token, solo_propias)
                     if (not data.get("results") or len(data.get("results", [])) == 0) and solo_propias:
@@ -6855,7 +6114,7 @@ def build_tab_busqueda() -> None:
                     if full is None:
                         full = await run.io_bound(ml_get_item, access_token, item_id)
                     if full and isinstance(full, dict):
-                        r["_full_item"] = full  # Para mostrar JSON completo cuando es búsqueda por ID
+                        r["_full_item"] = full  # Para mostrar JSON completo cuando es bÃºsqueda por ID
                         if full.get("price") is not None:
                             r["price"] = full["price"]
                         elif access_token:
@@ -6907,7 +6166,7 @@ def build_tab_busqueda() -> None:
                         sid = str(r.get("seller_id") or "")
                         if sid and sid in nicknames:
                             r["seller"] = {"id": sid, "nickname": nicknames[sid]}
-            # Para búsqueda por ID: mostrar JSON completo; para texto: tabla resumida
+            # Para bÃºsqueda por ID: mostrar JSON completo; para texto: tabla resumida
             mostrar_como_json = es_item_id and results
             rows = [_norm_busqueda(r, from_catalog) for r in results]
             filter_showed_all = False
@@ -6983,7 +6242,7 @@ def build_tab_busqueda() -> None:
                                                 }}
                                             }})();
                                         ''')
-                                        ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V.", type="positive")
+                                        ui.notify("Datos copiados al portapapeles. PegÃ¡ con Ctrl+V.", type="positive")
                                     ui.button("Copiar datos", on_click=lambda j=json_str_card: _copiar_card(j), color="secondary").classes("rounded px-3 py-1.5").props("no-caps unelevated")
                 else:
                     if filter_showed_all:
@@ -7006,9 +6265,9 @@ def build_tab_busqueda() -> None:
                             with ui.row().classes("w-full py-2 px-3 border-b border-gray-200 hover:bg-gray-50 flex-nowrap"):
                                 tit = (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else "")
                                 ui.label(tit).classes("min-w-[280px] shrink-0 text-left")
-                                ui.label(r.get("price_display", "—")).classes("min-w-[120px] shrink-0 text-right font-medium")
-                                ui.label(str(r.get("seller", "—"))).classes("min-w-[150px] shrink-0 text-left")
-                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "—")))).classes("min-w-[90px] shrink-0 text-right")
+                                ui.label(r.get("price_display", "â€”")).classes("min-w-[120px] shrink-0 text-right font-medium")
+                                ui.label(str(r.get("seller", "â€”"))).classes("min-w-[150px] shrink-0 text-left")
+                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "â€”")))).classes("min-w-[90px] shrink-0 text-right")
                                 ui.label(r.get("tipo", "")).classes("min-w-[90px] shrink-0 text-left")
                                 with ui.row().classes("min-w-[180px] shrink-0 gap-1"):
                                     if perm and perm != "#":
@@ -7041,7 +6300,7 @@ def build_tab_busqueda() -> None:
                                                 }}
                                             }})();
                                         ''')
-                                        ui.notify("Datos copiados al portapapeles. Pegá con Ctrl+V.", type="positive")
+                                        ui.notify("Datos copiados al portapapeles. PegÃ¡ con Ctrl+V.", type="positive")
                                     ui.button("Copiar datos", on_click=lambda j=json_para_copiar: _copiar_tabla(j), color="secondary").classes("rounded px-2 py-1").props("no-caps unelevated")
 
 
@@ -7053,16 +6312,16 @@ def build_tab_comparar_precios() -> None:
 
     ui.label("Comparar precios con la competencia").classes("text-lg font-semibold mb-4")
     ui.label(
-        "Aquí podrás buscar un producto y ver precios de otros vendedores. "
-        "De momento es sólo una pantalla de diseño; luego conectamos con la API."
+        "AquÃ­ podrÃ¡s buscar un producto y ver precios de otros vendedores. "
+        "De momento es sÃ³lo una pantalla de diseÃ±o; luego conectamos con la API."
     ).classes("text-gray-600 mb-4")
 
-    query_input = ui.input("Palabra clave o código de producto").classes("w-full max-w-lg")
+    query_input = ui.input("Palabra clave o cÃ³digo de producto").classes("w-full max-w-lg")
     result_area = ui.column().classes("w-full gap-2 mt-4")
 
     def comparar() -> None:
         if not query_input.value:
-            ui.notify("Ingresa un término de búsqueda", color="negative")
+            ui.notify("Ingresa un tÃ©rmino de bÃºsqueda", color="negative")
             return
         save_query(
             user_id=user["id"],
@@ -7071,7 +6330,7 @@ def build_tab_comparar_precios() -> None:
         )
         result_area.clear()
         with result_area:
-            ui.label("Aquí mostraremos resultados de la competencia (pendiente de implementar).")
+            ui.label("AquÃ­ mostraremos resultados de la competencia (pendiente de implementar).")
 
     ui.button("Comparar", on_click=comparar, color="primary")
 
@@ -7083,8 +6342,8 @@ def build_tab_historial_precios() -> None:
 
     ui.label("Historial de precios").classes("text-lg font-semibold mb-4")
     ui.label(
-        "En esta pestaña podrás ver cómo evolucionaron los precios de tus productos "
-        "y los de la competencia. Más adelante conectaremos esta vista con la base de datos."
+        "En esta pestaÃ±a podrÃ¡s ver cÃ³mo evolucionaron los precios de tus productos "
+        "y los de la competencia. MÃ¡s adelante conectaremos esta vista con la base de datos."
     ).classes("text-gray-600")
 
 
@@ -7093,30 +6352,30 @@ def build_tab_competencia() -> None:
     if not user:
         return
 
-    ui.label("Análisis de competencia").classes("text-lg font-semibold mb-4")
+    ui.label("AnÃ¡lisis de competencia").classes("text-lg font-semibold mb-4")
     ui.label(
-        "Aquí calcularemos cantidad de vendedores, cantidad de productos y otros KPIs "
+        "AquÃ­ calcularemos cantidad de vendedores, cantidad de productos y otros KPIs "
         "de la competencia."
     ).classes("text-gray-600 mb-4")
 
-    categoria = ui.input("Categoría o keyword").classes("w-full max-w-lg")
+    categoria = ui.input("CategorÃ­a o keyword").classes("w-full max-w-lg")
 
     def calcular() -> None:
         if not categoria.value:
-            ui.notify("Ingresa una categoría o palabra clave", color="negative")
+            ui.notify("Ingresa una categorÃ­a o palabra clave", color="negative")
             return
         save_query(
             user_id=user["id"],
             query_type="competencia",
             params={"categoria": categoria.value},
         )
-        ui.notify("Cálculo de competencia pendiente de implementar.", color="info")
+        ui.notify("CÃ¡lculo de competencia pendiente de implementar.", color="info")
 
     ui.button("Calcular", on_click=calcular, color="primary")
 
 
 def build_tab_pesos() -> None:
-    """Pestaña Pesos: tabla Pesario (Marca, Producto, Peso, Fuente, Total) en formato Excel."""
+    """PestaÃ±a Pesos: tabla Pesario (Marca, Producto, Peso, Fuente, Total) en formato Excel."""
     user = require_login()
     if not user:
         return
@@ -7251,15 +6510,15 @@ def build_tab_pesos() -> None:
                                             pesario_data[i], pesario_data[i + 1] = pesario_data[i + 1], pesario_data[i]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("▲", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("▼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–²", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–¼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("border border-gray-200 w-8 text-center").style("padding: 2px 4px; vertical-align: middle;"):
                                     def borrar_pesario(rref: Dict[str, Any]) -> None:
                                         sync_inputs_to_rows()
                                         if rref in pesario_data:
                                             pesario_data.remove(rref)
                                             repintar()
-                                    ui.button("×", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
+                                    ui.button("Ã—", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
                             row_to_inputs.append((row_ref, rinputs))
                             edit_rows.append(rinputs)
 
@@ -7294,7 +6553,7 @@ def build_tab_pesos() -> None:
 
 
 def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int, periodo: str = "mes_actual") -> Dict[str, float]:
-    """Calcula ventas y ganancias desde órdenes ML. periodo: mes_actual, mes_anterior o historico."""
+    """Calcula ventas y ganancias desde Ã³rdenes ML. periodo: mes_actual, mes_anterior o historico."""
     hoy = datetime.now().date()
     primer_dia = hoy.replace(day=1)
     ultimo_mes = primer_dia - timedelta(days=1)
@@ -7355,7 +6614,7 @@ def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int, per
 
 
 def build_tab_balance(container) -> None:
-    """Pestaña Balance: Gastos (editable), Ingresos (ventas/ganancias) y Resultados."""
+    """PestaÃ±a Balance: Gastos (editable), Ingresos (ventas/ganancias) y Resultados."""
     user = require_login()
     if not user:
         return
@@ -7525,9 +6784,9 @@ def build_tab_balance(container) -> None:
                                 with ui.column().classes("gap-0"):
                                     ui.label("Resultado neto estimado").classes("text-xs text-gray-600")
                                     ui.label(f"$ {ganancia_neta_est:,.0f}".replace(",", ".")).classes("text-base font-bold " + ("text-positive" if ganancia_neta_est >= 0 else "text-negative"))
-                        # 4. Datos Estimados en Dólares
+                        # 4. Datos Estimados en DÃ³lares
                         with ui.column().classes("gap-0"):
-                            ui.label("Datos Estimados (dólares)").classes("text-xs text-gray-600 font-semibold mb-1")
+                            ui.label("Datos Estimados (dÃ³lares)").classes("text-xs text-gray-600 font-semibold mb-1")
                             with ui.row().classes("gap-4 flex-wrap"):
                                 with ui.column().classes("gap-0"):
                                     ui.label("Venta estimada").classes("text-xs text-gray-600")
@@ -7550,7 +6809,7 @@ def build_tab_balance(container) -> None:
                     ui.label("Ingresos").classes("text-lg font-semibold text-emerald-700 mb-2")
                     inc = ingresos_ref["data"]
                     if inc is None:
-                        ui.label("Conectá MercadoLibre para ver ingresos.").classes("text-gray-500")
+                        ui.label("ConectÃ¡ MercadoLibre para ver ingresos.").classes("text-gray-500")
                     else:
                         with ui.element("table").classes("w-full border-collapse text-sm"):
                             with ui.element("tbody"):
@@ -7575,7 +6834,7 @@ def build_tab_balance(container) -> None:
                 with ui.card().classes("w-full p-4 border-l-4 border-l-blue-500"):
                     ui.label("Resultados Netos").classes("text-lg font-semibold text-blue-700 mb-2")
                     if inc is None:
-                        ui.label("Conectá MercadoLibre para ver resultados.").classes("text-gray-500")
+                        ui.label("ConectÃ¡ MercadoLibre para ver resultados.").classes("text-gray-500")
                     else:
                         res_a_fecha = inc.get("ganancia_a_fecha", 0) - total_gastos
                         res_estimado = inc.get("ganancia_estimada_mes", 0) - total_gastos
@@ -7642,14 +6901,14 @@ def build_tab_balance(container) -> None:
                                                 gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
                                                 repintar()
                                         with ui.row().classes("gap-0 justify-center"):
-                                            ui.button("▲", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                            ui.button("▼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("â–²", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("â–¼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                     with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
                                         def borrar_fila(r: Dict[str, Any]) -> None:
                                             if r in gastos_data:
                                                 gastos_data.remove(r)
                                                 repintar()
-                                        ui.button("×", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("Ã—", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                                 edit_rows_ref.append(rinputs)
                                 row_to_inputs.append((row, rinputs))
             _pintar_header()
@@ -7680,20 +6939,20 @@ def build_tab_balance(container) -> None:
 
 
 def build_tab_admin(container) -> None:
-    """Pestaña Admin: tabla de usuarios con permisos por pestaña y estado ML/BDC."""
+    """PestaÃ±a Admin: tabla de usuarios con permisos por pestaÃ±a y estado ML/BDC."""
     container.clear()
     user = require_login()
     if not user:
         return
     if not user_can_access_tab(user["id"], "admin"):
         with container:
-            ui.label("No tenés permiso para acceder a Admin.").classes("text-negative")
+            ui.label("No tenÃ©s permiso para acceder a Admin.").classes("text-negative")
         return
 
     users_list = get_all_users()
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
-            # Tarjeta Permisos (usuarios y acceso por pestaña)
+            # Tarjeta Permisos (usuarios y acceso por pestaÃ±a)
             with ui.card().classes("w-full p-2 bg-grey-2"):
                 with ui.element("div").classes("w-full overflow-x-auto"):
                     with ui.element("table").classes("border-collapse text-xs").style("width: 100%; min-width: 100%"):
@@ -7728,13 +6987,13 @@ def build_tab_admin(container) -> None:
                                             with ui.dialog() as dlg:
                                                 dlg.props("persistent")
                                                 with ui.card().classes("p-4 min-w-[300px]"):
-                                                    ui.label("¿Estás seguro que querés borrarlo?").classes("text-lg font-bold")
-                                                    ui.label(f"Se borrará el usuario {target_uname} y todos sus datos.").classes("text-sm text-gray-600 mt-1")
+                                                    ui.label("Â¿EstÃ¡s seguro que querÃ©s borrarlo?").classes("text-lg font-bold")
+                                                    ui.label(f"Se borrarÃ¡ el usuario {target_uname} y todos sus datos.").classes("text-sm text-gray-600 mt-1")
                                                     with ui.row().classes("mt-3 gap-2 justify-end"):
                                                         ui.button("Cancelar", on_click=dlg.close)
                                                         def _confirm():
                                                             if target_uid == user["id"]:
-                                                                ui.notify("No podés borrarte a vos mismo.", color="negative")
+                                                                ui.notify("No podÃ©s borrarte a vos mismo.", color="negative")
                                                                 dlg.close()
                                                                 return
                                                             err = delete_user_and_all_data(target_uid)
@@ -7753,29 +7012,29 @@ def build_tab_admin(container) -> None:
                                             if err and not new_pwd:
                                                 ui.notify(err, color="negative")
                                             elif email_sent and dest_email:
-                                                ui.notify(f"Enviamos un email con la nueva contraseña a {dest_email}", color="positive")
+                                                ui.notify(f"Enviamos un email con la nueva contraseÃ±a a {dest_email}", color="positive")
                                             elif new_pwd:
                                                 with ui.dialog() as dlg:
                                                     dlg.props("persistent")
                                                     with ui.card().classes("p-6 min-w-[400px]"):
                                                         ui.label("No se pudo enviar el email").classes("text-lg font-semibold text-warning")
-                                                        ui.label(err or "Contraseña actualizada, pero el correo no llegó.").classes("text-sm text-gray-600 mt-2")
-                                                        ui.label("Nueva contraseña generada (copiala y entregala al usuario):").classes("text-sm font-medium mt-4")
+                                                        ui.label(err or "ContraseÃ±a actualizada, pero el correo no llegÃ³.").classes("text-sm text-gray-600 mt-2")
+                                                        ui.label("Nueva contraseÃ±a generada (copiala y entregala al usuario):").classes("text-sm font-medium mt-4")
                                                         with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
                                                             ui.label(new_pwd)
                                                         ui.button("Cerrar popup", on_click=dlg.close).props("flat color=primary").classes("mt-4")
                                                 dlg.open()
                                             else:
-                                                ui.notify("Contraseña actualizada, pero no se pudo enviar el email.", color="warning")
+                                                ui.notify("ContraseÃ±a actualizada, pero no se pudo enviar el email.", color="warning")
                                         ui.button("Reiniciar", on_click=lambda uid_inner=uid: _do_reset(uid_inner)).props("flat dense").classes("text-xs")
                                     with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                         with ui.row().classes("items-center justify-center gap-1"):
                                             ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
-                                            ui.label("Sí" if ml_linked else "No").classes("text-xs")
+                                            ui.label("SÃ­" if ml_linked else "No").classes("text-xs")
                                     with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                         with ui.row().classes("items-center justify-center gap-1"):
                                             ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if bdc_linked else '#ef4444'}")
-                                            ui.label("Sí" if bdc_linked else "No").classes("text-xs")
+                                            ui.label("SÃ­" if bdc_linked else "No").classes("text-xs")
                                     for tab_key, _label in TAB_KEYS:
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             val = perms.get(tab_key, True if tab_key != "admin" else False)
@@ -7786,12 +7045,12 @@ def build_tab_admin(container) -> None:
                                                 ui.notify("Permiso actualizado", color="positive")
 
                                             chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
-            ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
+            ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. MarcÃ¡ los checkboxes para permitir acceso a cada pestaÃ±a.").classes("text-xs text-gray-600")
 
-            # Tarjeta Asignación QuickBooks
+            # Tarjeta AsignaciÃ³n QuickBooks
             with ui.card().classes("w-full p-3 bg-grey-2"):
-                ui.label("Asignación QuickBooks").classes("text-base font-semibold mb-2")
-                ui.label("Asignar Customer QB a un usuario habilita automáticamente las tabs Invoices y Compras.").classes("text-xs text-gray-600 mb-3")
+                ui.label("AsignaciÃ³n QuickBooks").classes("text-base font-semibold mb-2")
+                ui.label("Asignar Customer QB a un usuario habilita automÃ¡ticamente las tabs Invoices y Compras.").classes("text-xs text-gray-600 mb-3")
 
                 _qb_assign_users = get_all_users()
                 _qb_user_options = {str(u["id"]): u.get("username", str(u["id"])) for u in _qb_assign_users}
@@ -7821,7 +7080,7 @@ def build_tab_admin(container) -> None:
                         return
                     cust = get_user_qb_customer(uid_int)
                     if cust:
-                        _qb_current_label["ref"].text = f"Customer actual: {cust.get('name', '—')} (id {cust.get('id', '—')})"
+                        _qb_current_label["ref"].text = f"Customer actual: {cust.get('name', 'â€”')} (id {cust.get('id', 'â€”')})"
                     else:
                         _qb_current_label["ref"].text = "Sin customer asignado"
 
@@ -7855,9 +7114,9 @@ def build_tab_admin(container) -> None:
                             with ui.element("tbody"):
                                 for c in customers:
                                     cid = str(c.get("Id", ""))
-                                    cname = str(c.get("DisplayName") or c.get("FullyQualifiedName") or "—")
+                                    cname = str(c.get("DisplayName") or c.get("FullyQualifiedName") or "â€”")
                                     cemail_obj = c.get("PrimaryEmailAddr") or {}
-                                    cemail = str(cemail_obj.get("Address") or "—") if isinstance(cemail_obj, dict) else "—"
+                                    cemail = str(cemail_obj.get("Address") or "â€”") if isinstance(cemail_obj, dict) else "â€”"
                                     with ui.element("tr").classes("border-t border-gray-200 hover:bg-blue-50"):
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
                                             ui.label(cid)
@@ -7869,12 +7128,12 @@ def build_tab_admin(container) -> None:
                                             def _asignar(cid_inner=cid, cname_inner=cname) -> None:
                                                 uid_str = _qb_sel_uid["val"]
                                                 if not uid_str:
-                                                    ui.notify("Seleccioná un usuario primero", color="warning")
+                                                    ui.notify("SeleccionÃ¡ un usuario primero", color="warning")
                                                     return
                                                 try:
                                                     uid_int = int(uid_str)
                                                 except (ValueError, TypeError):
-                                                    ui.notify("Usuario inválido", color="negative")
+                                                    ui.notify("Usuario invÃ¡lido", color="negative")
                                                     return
                                                 set_user_qb_customer(uid_int, cid_inner, cname_inner)
                                                 _enable_tabs_for_user(uid_int, TABS_QB)
@@ -7885,14 +7144,14 @@ def build_tab_admin(container) -> None:
                                                     if creds_admin and not creds_usuario:
                                                         set_qb_app_credentials(uid_int, creds_admin["client_id"], creds_admin["client_secret"], creds_admin.get("redirect_uri"))
                                                 _qb_current_label["ref"].text = f"Customer actual: {cname_inner} (id {cid_inner})"
-                                                ui.notify(f"Asignado {cname_inner} → usuario {uid_str}. Tabs QB habilitadas.", color="positive")
+                                                ui.notify(f"Asignado {cname_inner} â†’ usuario {uid_str}. Tabs QB habilitadas.", color="positive")
                                             ui.button("Asignar", on_click=_asignar).props("flat dense no-caps").classes("text-xs text-blue-600")
 
                 ui.button("Buscar clientes en QB", on_click=_buscar_customers_qb, color="primary").props("dense no-caps")
 
             # Tarjetas Marcas y Despachantes lado a lado
             with ui.row().classes("w-full gap-6 flex-wrap"):
-                # Tarjeta Marcas (catálogo global para Compras)
+                # Tarjeta Marcas (catÃ¡logo global para Compras)
                 with ui.column().classes("max-w-xl"):
                     marcas_table_container = ui.column().classes("w-full gap-2")
 
@@ -7948,7 +7207,7 @@ def build_tab_admin(container) -> None:
                                     def _agregar():
                                         nombre = (inp_nueva.value or "").strip()
                                         if not nombre:
-                                            ui.notify("Ingresá un nombre", color="warning")
+                                            ui.notify("IngresÃ¡ un nombre", color="warning")
                                             return
                                         err = insert_marca(nombre)
                                         if err:
@@ -8018,7 +7277,7 @@ def build_tab_admin(container) -> None:
                                     def _agregar_desp():
                                         nombre = (inp_nuevo.value or "").strip()
                                         if not nombre:
-                                            ui.notify("Ingresá un nombre", color="warning")
+                                            ui.notify("IngresÃ¡ un nombre", color="warning")
                                             return
                                         err = insert_despachante(nombre)
                                         if err:
@@ -8134,7 +7393,7 @@ def _calc_courier_row(
     origen_posicion: Dict[str, str],
     iva_vs_exento_by_courier: Optional[Dict[str, Dict[str, bool]]] = None,
 ) -> Dict[str, Any]:
-    """Aplica la lógica del Excel Courier. row contiene: marca, familia, stock, productos, origen, fob, qty, peso_unitario, extras, trafo, cambio_pa."""
+    """Aplica la lÃ³gica del Excel Courier. row contiene: marca, familia, stock, productos, origen, fob, qty, peso_unitario, extras, trafo, cambio_pa."""
     def _f(s: Any) -> float:
         if s is None or s == "": return 0.0
         try:
@@ -8189,21 +7448,21 @@ def _calc_courier_row(
     env_dom = _f(courier.get("env_dom"))
     iibb = _f(courier.get("iibb"))
 
-    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa × FOB Total (en USD × Dólar)
-    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa × FOB Total
-    N = kg_real * peso_total * dolar_oficial  # Flete: dólar oficial
+    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa Ã— FOB Total (en USD Ã— DÃ³lar)
+    M = estad_rate * fob_total * dolar_oficial     # EstadÃ­stica = tasa Ã— FOB Total
+    N = kg_real * peso_total * dolar_oficial  # Flete: dÃ³lar oficial
     O_val = almacenaje * peso_total * dolar_oficial
     P = res_3244 * dolar_oficial
     Q = seguro * dolar_oficial
     R = gas_ope * dolar_oficial
-    S = env_dom * dolar_oficial  # Env Dom: dólar oficial
-    # IVA FOB: (FOB + flete + seguro) × dolar_despacho × iva_rate; flete = Peso(total)×2.5; seguro = (FOB+flete)×0.01; CIF = FOB+flete+seguro
+    S = env_dom * dolar_oficial  # Env Dom: dÃ³lar oficial
+    # IVA FOB: (FOB + flete + seguro) Ã— dolar_despacho Ã— iva_rate; flete = Peso(total)Ã—2.5; seguro = (FOB+flete)Ã—0.01; CIF = FOB+flete+seguro
     monto_flete = peso_total * 2.5 if peso_total > 0 else 0  # Peso (columna total), no Peso U
     monto_seguro = (fob_total + monto_flete) * 0.01
     cif = fob_total + monto_flete + monto_seguro
-    iva_fob_pesos = iva_rate * cif * dolar_despacho  # IVA FOB usa dólar despacho
+    iva_fob_pesos = iva_rate * cif * dolar_despacho  # IVA FOB usa dÃ³lar despacho
 
-    # IVA vs Exento: según Datos → IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
+    # IVA vs Exento: segÃºn Datos â†’ IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
     def _iva_cobra(v: Any) -> bool:
         return v is True or v == "true" or (isinstance(v, str) and v.lower() == "true") or v == 1
 
@@ -8218,7 +7477,7 @@ def _calc_courier_row(
     if iva_cfg is None:
         iva_cfg = {"almacenaje": True, "res_3244": True, "seguro": True, "gas_ope": True, "env_dom": True, "precio_con_iva": True}
 
-    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto × 0.21
+    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto Ã— 0.21
     precio_con_iva = _iva_cobra(iva_cfg.get("precio_con_iva", True))
 
     def _calc_iva(monto: float) -> float:
@@ -8239,7 +7498,7 @@ def _calc_courier_row(
     U = iibb * R
     V_raw = L + M + N + O_val + P + Q + R + S + T + U
     V = V_raw - total_iva_servicios if precio_con_iva else V_raw  # Si Precio con IVA: restar IVA servicios; si no, no restar
-    Z = V + extras + (cambio_pa_manual * dolar_blue) - T  # Excel: Datos!$B$2 = Dólar Blue
+    Z = V + extras + (cambio_pa_manual * dolar_blue) - T  # Excel: Datos!$B$2 = DÃ³lar Blue
     AA = Z / (fob_total * dolar_oficial) if fob_total > 0 else 0
     AC = (fob * (AA + 1)) * dolar_oficial
     AD = AC / dolar_oficial if dolar_oficial > 0 else 0
@@ -8250,7 +7509,7 @@ def _calc_courier_row(
     ml_comision = params.get("ml_comision", 0.15)
     ml_debcre = params.get("ml_debcre", 0.006)
     iva_21 = params.get("iva_21", 0.21)
-    ml_envios = params.get("ml_envios", 5823)  # ML - Envíos desde Datos
+    ml_envios = params.get("ml_envios", 5823)  # ML - EnvÃ­os desde Datos
     ml_iibb_per = params.get("ml_iibb_per", 0.055)
 
     cuotas3 = venta_ml * ml_3cuotas if venta_ml > 0 else 0
@@ -8298,7 +7557,7 @@ def _calc_courier_row(
                 ["Res 3244", P, iva_res_3244, _iva_cobra(iva_cfg.get("res_3244", True))],
                 ["Seguro", Q, iva_seguro, _iva_cobra(iva_cfg.get("seguro", True))],
                 ["Gastos Operativos", R, iva_gas_ope, _iva_cobra(iva_cfg.get("gas_ope", True))],
-                ["Envío a Domicilio", S, iva_env_dom, _iva_cobra(iva_cfg.get("env_dom", True))],
+                ["EnvÃ­o a Domicilio", S, iva_env_dom, _iva_cobra(iva_cfg.get("env_dom", True))],
             ],
             "precio_con_iva": precio_con_iva,
             "total_iva_servicios": total_iva_servicios,
@@ -8349,7 +7608,7 @@ def _calc_courier_row(
 
 
 def build_tab_importacion() -> None:
-    """Pestaña Importación: tabla tipo Courier del Excel. Ingresás datos y calcula el resto."""
+    """PestaÃ±a ImportaciÃ³n: tabla tipo Courier del Excel. IngresÃ¡s datos y calcula el resto."""
     user = require_login()
     if not user:
         return
@@ -8383,7 +7642,7 @@ def build_tab_importacion() -> None:
 
     origen_posicion = {str(r.get("origen", "")).strip(): str(r.get("posicion", "")).strip() for r in origen_data if r.get("origen")}
 
-    # Cargar filas guardadas o empezar con una vacía
+    # Cargar filas guardadas o empezar con una vacÃ­a
     importacion_rows: List[Dict[str, Any]] = get_importacion_filas(user["id"])
     if not importacion_rows:
         importacion_rows = []
@@ -8392,7 +7651,7 @@ def build_tab_importacion() -> None:
     sort_asc_importacion: List[bool] = [True]
 
     def _parse_sort_val(v: Any, col: str) -> Any:
-        """Valor para ordenar: numérico si aplica, sino string."""
+        """Valor para ordenar: numÃ©rico si aplica, sino string."""
         if v is None or v == "":
             return 0.0 if col in ["fob", "qty", "peso_unitario", "extras", "cambio_pa", "venta_ml"] else ""
         s = str(v).replace("$", "").replace(".", "").replace(",", ".").strip()
@@ -8413,11 +7672,11 @@ def build_tab_importacion() -> None:
         repintar()
 
     with ui.column().classes("w-full gap-2 p-2 flex flex-col"):
-        ui.label("Importación - Cotizador Courier").classes("text-xl font-semibold")
+        ui.label("ImportaciÃ³n - Cotizador Courier").classes("text-xl font-semibold")
 
         cols_input = ["productos", "origen", "impuestos", "fob", "qty", "peso_unitario", "extras", "trafo", "cambio_pa", "venta_ml"]
         cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "comi_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "deb_cred", "iibb_per", "envio", "costo_vta", "margen", "margen_vta", "margen_costo"]
-        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA Total", "IIBB", "Courier", "Total", "Traída", "Costo$ s/iva", "Costo u$ s/iva", "3ctas", "6ctas", "MarkUp", "Cobrado", "Comision", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "Cos Vta", "Margen$", "MargVta", "MargCos"]
+        headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA Total", "IIBB", "Courier", "Total", "TraÃ­da", "Costo$ s/iva", "Costo u$ s/iva", "3ctas", "6ctas", "MarkUp", "Cobrado", "Comision", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "Cos Vta", "Margen$", "MargVta", "MargCos"]
         headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Trafo", "Cam.PA", "Venta"]
 
         opciones_origen = [r.get("origen", "") for r in origen_data if r.get("origen")]
@@ -8482,7 +7741,7 @@ def build_tab_importacion() -> None:
                 return str(v).strip()
 
         def aplicar_estilo_fob_ml(inp: Any, es_fob: bool = False) -> None:
-            """Actualiza negrita y rojo según si el input tiene valor (al cargar/editar)."""
+            """Actualiza negrita y rojo segÃºn si el input tiene valor (al cargar/editar)."""
             v = (inp.value or "").strip()
             base = "min-w-[52px] text-right" if es_fob else "min-w-[60px] text-right"
             if v:
@@ -8520,7 +7779,7 @@ def build_tab_importacion() -> None:
                             with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs bg-slate-100 dark:bg-slate-700").style("min-width: 48px;"):
                                 ui.label("Ordenar")
                             with ui.element("th").classes("font-semibold px-1 py-1 border border-gray-300 bg-slate-100 dark:bg-slate-700").style("min-width: 40px;"):
-                                ui.label("×")
+                                ui.label("Ã—")
                     with ui.element("tbody"):
                         for i, r in enumerate(importacion_rows):
                             r_in: Dict[str, Any] = {}
@@ -8594,7 +7853,7 @@ def build_tab_importacion() -> None:
                                                 d = ui.dialog().props("persistent")
                                                 with d:
                                                     with ui.card().classes("p-4 min-w-[360px]"):
-                                                        ui.label("Cálculo IVA Total").classes("text-lg font-semibold mb-3")
+                                                        ui.label("CÃ¡lculo IVA Total").classes("text-lg font-semibold mb-3")
                                                         if det:
                                                             def _fmt_mon(x: float) -> str:
                                                                 s = f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -8607,9 +7866,9 @@ def build_tab_importacion() -> None:
                                                                 concepto, monto_ivai, iva, aplica = linea[0], linea[1], linea[2], linea[3]
                                                                 if aplica:
                                                                     if precio_con_iva_popup:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. → IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. â†’ IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
                                                                     else:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA → IVA = monto × 0,21 = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA â†’ IVA = monto Ã— 0,21 = {_fmt_mon(iva)}").classes("text-sm")
                                                                 else:
                                                                     ui.label(f"{concepto}: Exento").classes("text-sm text-gray-500")
                                                             tot_serv = det.get("total_iva_servicios", 0)
@@ -8628,7 +7887,7 @@ def build_tab_importacion() -> None:
                                                                 dol_str = f"{dol:,.0f}".replace(",", ".")
                                                                 with ui.row().classes("gap-1"):
                                                                     ui.label("IVA FOB").classes("text-sm font-bold")
-                                                                    ui.label(f" = {_fmt_usd(cif_val)} × {rate} × {dol_str} = ").classes("text-sm")
+                                                                    ui.label(f" = {_fmt_usd(cif_val)} Ã— {rate} Ã— {dol_str} = ").classes("text-sm")
                                                                     ui.label(_fmt_mon(det.get('iva_fob', 0))).classes("text-sm font-bold")
                                                             else:
                                                                 ui.label(f"IVA FOB: {_fmt_mon(det.get('iva_fob', 0))}").classes("text-sm")
@@ -8636,7 +7895,7 @@ def build_tab_importacion() -> None:
                                                                 ui.label("Total IVA: IVA Total Servicios + IVA FOB =").classes("text-sm")
                                                                 ui.label(_fmt_mon(det.get("total", 0))).classes("text-sm font-bold text-blue-600")
                                                         else:
-                                                            ui.label("Recalculá para ver el detalle del IVA Total.").classes("text-sm text-gray-600")
+                                                            ui.label("RecalculÃ¡ para ver el detalle del IVA Total.").classes("text-sm text-gray-600")
                                                         ui.button("Cerrar", on_click=d.close).classes("mt-3")
                                                 d.open()
 
@@ -8649,7 +7908,7 @@ def build_tab_importacion() -> None:
                                                 d = ui.dialog().props("persistent")
                                                 with d:
                                                     with ui.card().classes("p-4 min-w-[320px]"):
-                                                        ui.label("Cálculo Margen").classes("text-lg font-semibold mb-3")
+                                                        ui.label("CÃ¡lculo Margen").classes("text-lg font-semibold mb-3")
                                                         if det:
                                                             def _fmt_mon(x: float) -> str:
                                                                 s = f"{x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".")
@@ -8685,14 +7944,14 @@ def build_tab_importacion() -> None:
                                                                 ui.label("IIBB:").classes("text-sm text-black")
                                                                 ui.label(_fmt_mon(iibb)).classes("text-sm text-negative")
                                                             with ui.row().classes("gap-2"):
-                                                                ui.label("Envío:").classes("text-sm text-black")
+                                                                ui.label("EnvÃ­o:").classes("text-sm text-black")
                                                                 ui.label(_fmt_mon(env)).classes("text-sm text-negative")
                                                             marg_cls = "text-positive" if marg >= 0 else "text-negative"
                                                             with ui.row().classes("gap-2 mt-2"):
                                                                 ui.label("Margen:").classes("text-sm text-black font-bold")
                                                                 ui.label(_fmt_mon(marg)).classes(f"text-sm font-bold {marg_cls}")
                                                         else:
-                                                            ui.label("Recalculá para ver el detalle del margen.").classes("text-sm text-gray-600")
+                                                            ui.label("RecalculÃ¡ para ver el detalle del margen.").classes("text-sm text-gray-600")
                                                         ui.button("Cerrar", on_click=d.close).classes("mt-3")
                                                 d.open()
 
@@ -8716,14 +7975,14 @@ def build_tab_importacion() -> None:
                                             importacion_rows[idx], importacion_rows[idx + 1] = importacion_rows[idx + 1], importacion_rows[idx]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("▲", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("▼", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–²", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–¼", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 40px;"):
                                     def borrar(idx: int) -> None:
                                         if 0 <= idx < len(importacion_rows):
                                             importacion_rows.pop(idx)
                                             repintar()
-                                    ui.button("×", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                    ui.button("Ã—", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                             input_rows_ref.append(r_in)
 
         def _parse_iva_bool(v: Any) -> bool:
@@ -8791,14 +8050,14 @@ def build_tab_importacion() -> None:
         def toggle_vista() -> None:
             sync_inputs_to_rows()
             vista_completa[0] = not vista_completa[0]
-            btn_vista.text = "Mínimo" if vista_completa[0] else "Completo"
+            btn_vista.text = "MÃ­nimo" if vista_completa[0] else "Completo"
             repintar()
 
         def guardar_tabla_importacion() -> None:
             sync_inputs_to_rows()
             user = require_login()
             if not user:
-                ui.notify("Debe iniciar sesión", color="negative")
+                ui.notify("Debe iniciar sesiÃ³n", color="negative")
                 return
             try:
                 save_importacion_filas(user["id"], importacion_rows)
@@ -8820,7 +8079,7 @@ def build_tab_importacion() -> None:
 
 
 def build_tab_datos() -> None:
-    """Pestaña Datos del cotizador de importaciones. Todos los valores son editables."""
+    """PestaÃ±a Datos del cotizador de importaciones. Todos los valores son editables."""
     user = require_login()
     if not user:
         return
@@ -8843,7 +8102,7 @@ def build_tab_datos() -> None:
         with ui.row().classes("w-full gap-4 flex-wrap"):
             # Dolar
             def _fmt_dolar_display(v: str) -> str:
-                """Formatea valor numérico con punto para miles."""
+                """Formatea valor numÃ©rico con punto para miles."""
                 if not v or not str(v).strip():
                     return ""
                 try:
@@ -8864,7 +8123,7 @@ def build_tab_datos() -> None:
                     return str(s).strip()
 
             with ui.card().classes("p-4 w-fit min-w-[180px]"):
-                ui.label("Dólar").classes("text-lg font-semibold mb-3")
+                ui.label("DÃ³lar").classes("text-lg font-semibold mb-3")
                 inputs_params: Dict[str, Any] = {}
                 for label, key in [
                     ("Oficial", "dolar_oficial"), ("Blue", "dolar_blue"), ("Sistema", "dolar_sistema"), ("Despacho", "dolar_despacho"),
@@ -8877,7 +8136,7 @@ def build_tab_datos() -> None:
                         inputs_params[key] = ui.input(value=val_display).classes("flex-1 max-w-[100px]").props("dense")
 
             def _fmt_usd_display(v: str) -> str:
-                """Formatea valor numérico: punto para miles, coma para decimales."""
+                """Formatea valor numÃ©rico: punto para miles, coma para decimales."""
                 if not v or not str(v).strip():
                     return ""
                 try:
@@ -8913,9 +8172,9 @@ def build_tab_datos() -> None:
             with ui.card().classes("p-4 w-fit min-w-[220px]"):
                 ui.label("Mercadolibre").classes("text-lg font-semibold mb-3")
                 for label, key in [
-                    ("ML - Comisión", "ml_comision"), ("Comision Fija (menor)", "ml_comision_fija_menor"),
-                    ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
-                    ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"),
+                    ("ML - ComisiÃ³n", "ml_comision"), ("Comision Fija (menor)", "ml_comision_fija_menor"),
+                    ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - EnvÃ­os", "ml_envios"),
+                    ("ML - IIBB + PER", "ml_iibb_per"), ("ML - EnvÃ­os grat.", "ml_envios_gratuitos"),
                     ("ML - Cobrado", "ml_cobrado"),
                     ("Ganancia Neta sobre Venta", "ml_ganancia_neta_venta"),
                 ]:
@@ -8942,7 +8201,7 @@ def build_tab_datos() -> None:
                 ui.label("Miami").classes("text-lg font-semibold mb-3")
                 inputs_miami: Dict[str, Any] = {}
                 for label, key in [
-                    ("Valor KG Miami", "valor_kg_miami"), ("Almac. Días x Kg", "almacenaje_dias_kg_miami"),
+                    ("Valor KG Miami", "valor_kg_miami"), ("Almac. DÃ­as x Kg", "almacenaje_dias_kg_miami"),
                     ("Seguro Miami", "seguro_miami"),
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
@@ -8957,9 +8216,9 @@ def build_tab_datos() -> None:
                 ui.label("China").classes("text-lg font-semibold mb-3")
                 inputs_china: Dict[str, Any] = {}
                 for label, key in [
-                    ("Valor KG China", "valor_kg_china"), ("Almac. Días x Kg", "almacenaje_dias_kg_china"),
+                    ("Valor KG China", "valor_kg_china"), ("Almac. DÃ­as x Kg", "almacenaje_dias_kg_china"),
                     ("Seguro China", "seguro_china"), ("Res 3244", "res_3244"), ("Gastos Operativos", "gastos_operativos"),
-                    ("Gastos Origen", "gastos_origen"), ("Envío Domicilio", "envio_domicilio"), ("Ajuste valor ANA", "ajuste_valor_ana"),
+                    ("Gastos Origen", "gastos_origen"), ("EnvÃ­o Domicilio", "envio_domicilio"), ("Ajuste valor ANA", "ajuste_valor_ana"),
                 ]:
                     with ui.row().classes("items-center gap-2 py-0.5"):
                         ui.label(label).classes("min-w-[120px] text-sm")
@@ -8977,11 +8236,11 @@ def build_tab_datos() -> None:
                 elif key in usd_keys:
                     val = _parse_usd(val)
                 set_cotizador_param(key, val, uid)
-            ui.notify("Parámetros guardados", color="positive")
+            ui.notify("ParÃ¡metros guardados", color="positive")
 
-        ui.button("Guardar parámetros", on_click=guardar_params, color="primary").classes("mb-2")
+        ui.button("Guardar parÃ¡metros", on_click=guardar_params, color="primary").classes("mb-2")
 
-        # Eliminar tablas obsoletas de la BD si existían
+        # Eliminar tablas obsoletas de la BD si existÃ­an
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
             delete_cotizador_param(k, uid)
 
@@ -9102,14 +8361,14 @@ def build_tab_datos() -> None:
                                                         data[i], data[i + 1] = data[i + 1], data[i]
                                                         repintar()
                                                 with ui.row().classes("gap-0 justify-center"):
-                                                    ui.button("▲", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                                    ui.button("▼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("â–²", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("â–¼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                         with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 52px; width: 52px;"):
                                             def borrar_fila(i: int) -> None:
                                                 if 0 <= i < len(data):
                                                     data.pop(i)
                                                     repintar()
-                                            ui.button("×", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                            ui.button("Ã—", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                     edit_rows.append(rinputs)
 
                 repintar()
@@ -9147,9 +8406,9 @@ def build_tab_datos() -> None:
             _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", card_ancho="w-fit")
             _tabla_editable("posicion", ["posicion", "seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"],
                 ["Posicion", "Seguro", "Flete", "Derechos", "Estadisticas", "IVA", "Despachante", "Cambio PA"],
-                tabla_posicion_data, "Tasas por Posición", card_ancho="w-fit")
+                tabla_posicion_data, "Tasas por PosiciÃ³n", card_ancho="w-fit")
             _tabla_editable("envios_ml", ["envio", "importe", "porc_10", "costo"],
-                ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envío MercadoLibre",
+                ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envÃ­o MercadoLibre",
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
                 computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
                 col_formato={"importe": "$", "porc_10": "$", "costo": "$"})
@@ -9213,7 +8472,7 @@ def build_tab_datos() -> None:
                                                         }
                                                 tabla_iva_vs_exento_data.pop(i)
                                                 repintar_iva()
-                                        ui.button("×", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("Ã—", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                 iva_vs_exento_edit_rows.append(rinputs)
 
             repintar_iva()
@@ -9276,7 +8535,7 @@ def _get_base_url(request: Request) -> str:
 
 
 async def _ml_callback_redirect(request: Request) -> RedirectResponse:
-    """Ruta HTTP directa: redirige a / con el code para que la página principal procese el OAuth."""
+    """Ruta HTTP directa: redirige a / con el code para que la pÃ¡gina principal procese el OAuth."""
     code = request.query_params.get("code")
     error_param = request.query_params.get("error")
     error_desc = request.query_params.get("error_description", "")
@@ -9294,7 +8553,7 @@ async def _ml_callback_redirect(request: Request) -> RedirectResponse:
     )
 
 
-# Registrar la ruta ANTES de las páginas para que responda a GET /ml/callback
+# Registrar la ruta ANTES de las pÃ¡ginas para que responda a GET /ml/callback
 app.add_api_route("/ml/callback", _ml_callback_redirect, methods=["GET"])
 
 
@@ -9341,7 +8600,7 @@ def index(request: Request) -> None:  # type: ignore[override]
     qb_realm_id = request.query_params.get("qb_realm_id", "")
     if qb_oauth_error:
         with root:
-            ui.label(f"❌ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"âŒ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("qb_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("qb_oauth_error_desc", ""))
@@ -9350,17 +8609,17 @@ def index(request: Request) -> None:  # type: ignore[override]
         return
     if ml_error:
         with root:
-            ui.label(f"❌ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"âŒ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("ml_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("ml_oauth_error_desc", ""))
                 ui.label(f"URL recibida: {desc}").classes("text-sm text-gray-600 mb-2")
             if ml_error == "no_code":
                 ui.label(
-                    "El parámetro 'code' no llegó al servidor. Posibles causas:\n"
-                    "• Ngrok: si viste la página 'Visit Site', haz clic ahí y vuelve a intentar.\n"
-                    "• Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
-                    "• Prueba en ventana de incógnito o con otro navegador."
+                    "El parÃ¡metro 'code' no llegÃ³ al servidor. Posibles causas:\n"
+                    "â€¢ Ngrok: si viste la pÃ¡gina 'Visit Site', haz clic ahÃ­ y vuelve a intentar.\n"
+                    "â€¢ Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
+                    "â€¢ Prueba en ventana de incÃ³gnito o con otro navegador."
                 ).classes("text-gray-600 mb-4 whitespace-pre-line")
             ui.link("Volver al inicio", "/").classes("text-primary")
         return
@@ -9368,8 +8627,8 @@ def index(request: Request) -> None:  # type: ignore[override]
         user = get_current_user()
         if not user:
             with root:
-                ui.label("Debes iniciar sesión en BDC systems antes de vincular MercadoLibre.").classes("text-lg mb-4")
-                ui.link("Ir a inicio de sesión", "/").classes("text-primary")
+                ui.label("Debes iniciar sesiÃ³n en BDC systems antes de vincular MercadoLibre.").classes("text-lg mb-4")
+                ui.link("Ir a inicio de sesiÃ³n", "/").classes("text-primary")
             return
         app_creds = get_ml_app_credentials(user["id"])
         if app_creds:
@@ -9382,7 +8641,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             redirect_uri = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
         if not client_id or not client_secret:
             with root:
-                ui.label("❌ Configurá tu App ID y Client Secret en Configuración antes de conectar.").classes("text-negative mb-4")
+                ui.label("âŒ ConfigurÃ¡ tu App ID y Client Secret en ConfiguraciÃ³n antes de conectar.").classes("text-negative mb-4")
             return
         redirect_uri = (redirect_uri or "").strip() or "http://localhost:8083/ml/callback"
         try:
@@ -9410,24 +8669,24 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
+                ui.label(f"âŒ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 causas = (
                     "Posibles causas:\n"
-                    "• redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
-                    "• Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
-                    "• El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
+                    "â€¢ redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
+                    "â€¢ Si tu app tiene PKCE habilitado, desactivÃ¡ PKCE en la app o recreÃ¡ la app sin PKCE.\n"
+                    "â€¢ El cÃ³digo de autorizaciÃ³n se usa una sola vez; si recargaste la pÃ¡gina, volvÃ© a Conectar."
                 )
                 if "invalid" in err_msg.lower() or "validating grant" in err_msg.lower():
                     causas += (
-                        "\n\n⚠️ ¿Intentabas conectar QuickBooks? Si es así, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
+                        "\n\nâš ï¸ Â¿Intentabas conectar QuickBooks? Si es asÃ­, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
                     )
                 ui.label(causas).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative mb-4")
+                ui.label(f"âŒ Error al obtener token: {e}").classes("text-negative mb-4")
             return
         data = resp.json()
         access_token = data.get("access_token")
@@ -9435,7 +8694,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"❌ Respuesta inesperada: {data}").classes("text-negative mb-4")
+                ui.label(f"âŒ Respuesta inesperada: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -9450,21 +8709,21 @@ def index(request: Request) -> None:  # type: ignore[override]
         conn.commit()
         conn.close()
         _enable_tabs_for_user(user["id"], TABS_ML)
-        # Redirigir a / sin el code para limpiar la URL (el usuario verá el panel y una notificación)
+        # Redirigir a / sin el code para limpiar la URL (el usuario verÃ¡ el panel y una notificaciÃ³n)
         return RedirectResponse(url="/", status_code=302)
 
     if qb_oauth_code:
         user = get_current_user()
         if not user:
             with root:
-                ui.label("Debes iniciar sesión en BDC systems antes de vincular QuickBooks.").classes("text-lg mb-4")
-                ui.link("Ir a inicio de sesión", "/").classes("text-primary")
+                ui.label("Debes iniciar sesiÃ³n en BDC systems antes de vincular QuickBooks.").classes("text-lg mb-4")
+                ui.link("Ir a inicio de sesiÃ³n", "/").classes("text-primary")
             return
         qb_app_creds = get_qb_app_credentials(user["id"])
         if not qb_app_creds:
             with root:
-                ui.label("❌ Configurá Client ID y Client Secret de QuickBooks en Configuración antes de conectar.").classes("text-negative mb-4")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.label("âŒ ConfigurÃ¡ Client ID y Client Secret de QuickBooks en ConfiguraciÃ³n antes de conectar.").classes("text-negative mb-4")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         client_id = qb_app_creds["client_id"]
         client_secret = qb_app_creds["client_secret"]
@@ -9499,19 +8758,19 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label("❌ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
+                ui.label("âŒ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 ui.label(
                     "Posibles causas:\n"
-                    "• Redirect URI: en developer.intuit.com → Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
-                    "• NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
-                    "• El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
+                    "â€¢ Redirect URI: en developer.intuit.com â†’ Keys debe ser EXACTAMENTE la misma URL que en ConfiguraciÃ³n (con /qb/callback).\n"
+                    "â€¢ NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
+                    "â€¢ El cÃ³digo de autorizaciÃ³n se usa una sola vez; si recargaste, volvÃ© a Conectar."
                 ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"❌ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
+                ui.label(f"âŒ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
                 ui.link("Volver al inicio", "/").classes("text-primary")
             return
         data = resp.json()
@@ -9520,7 +8779,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"❌ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
+                ui.label(f"âŒ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -9565,7 +8824,7 @@ def _iniciar_ngrok(port: int) -> None:
         except Exception:
             pass
     except FileNotFoundError:
-        print("  Ngrok no encontrado en PATH. Ejecutá 'ngrok http', PORT manualmente si lo necesitás.")
+        print("  Ngrok no encontrado en PATH. EjecutÃ¡ 'ngrok http', PORT manualmente si lo necesitÃ¡s.")
     except Exception as e:
         print(f"  No se pudo iniciar ngrok: {e}")
 
@@ -9592,10 +8851,10 @@ def main() -> None:
     env_path = Path(__file__).parent / ".env"
     load_dotenv(env_path)
     try:
-        import fitz  # noqa: F401  # pymupdf — Invoices «Otra»
+        import fitz  # noqa: F401  # pymupdf â€” Invoices Â«OtraÂ»
     except ImportError:
         logging.warning(
-            "PyMuPDF no instalado (pip install pymupdf). Invoices → botón «Otra» no funcionará hasta instalarlo "
+            "PyMuPDF no instalado (pip install pymupdf). Invoices â†’ botÃ³n Â«OtraÂ» no funcionarÃ¡ hasta instalarlo "
             "en el mismo entorno que ejecuta esta app (p. ej. %s -m pip install pymupdf).",
             sys.executable or "python3",
         )
@@ -9619,7 +8878,7 @@ def main() -> None:
         port=port,
         storage_secret=os.getenv("STORAGE_SECRET", ""),
         reconnect_timeout=120,  # Evita "Connection lost" durante carga pesada (Precios con muchos productos)
-        message_history_length=2000,  # Más mensajes al reconectar para restaurar UI
+        message_history_length=2000,  # MÃ¡s mensajes al reconectar para restaurar UI
     )
 
 
