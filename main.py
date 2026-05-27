@@ -110,10 +110,13 @@ from db import (
     export_user_db_data, import_user_db_data,
 )
 
+# --- Fase 3: tabs extraídos a módulos separados ---
+from tabs.pedidos import build_tab_pedidos
+
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.10"
+VERSION = "2.26.05.27.11"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -8409,134 +8412,6 @@ def build_tab_compras_lista(container) -> None:
                     pass
 
         _refrescar_tabla()
-
-
-def build_tab_pedidos(container) -> None:
-    """Pestaña Pedidos: vista consolidada de compras de todos los clientes (usuario_qb = Cliente QB)."""
-    user = require_login()
-    if not user:
-        return
-
-    is_admin = user_can_access_tab(user["id"], "admin")
-    qb_cust = get_user_qb_customer(user["id"])
-    mi_cliente_qb = (qb_cust or {}).get("name", "")
-
-    with container:
-        filtro_estado_ref: Dict[str, str] = {"val": "Cotizar+Buscando"}
-        filtro_cliente_ref: Dict[str, str] = {"val": ""}
-        sort_col_ref: List[str] = [""]
-        sort_asc_ref: List[bool] = [True]
-        tabla_container = ui.column().classes("w-full gap-2")
-
-        def _refrescar() -> None:
-            tabla_container.clear()
-            with tabla_container:
-                rows = get_compras_lista_all()
-                est_val = filtro_estado_ref.get("val", "Cotizar+Buscando")
-                if est_val:
-                    if est_val == "No hay":
-                        rows = [r for r in rows if (r.get("estado") or "") == ""]
-                    elif est_val == "Cotizar":
-                        rows = [r for r in rows if r.get("estado") == "Cotizar"]
-                    elif est_val == "Cotizar+Buscando":
-                        rows = [r for r in rows if r.get("estado") in ("Cotizar", "Buscando")]
-                    elif est_val == "Buscando":
-                        rows = [r for r in rows if r.get("estado") == "Buscando"]
-                    elif est_val == "Comprado":
-                        rows = [r for r in rows if r.get("estado") == "Comprado"]
-                clientes = sorted(set(r.get("usuario_qb") or "" for r in rows if r.get("usuario_qb")))
-                cli_val = filtro_cliente_ref.get("val", "")
-                if cli_val:
-                    rows = [r for r in rows if (r.get("usuario_qb") or "") == cli_val]
-
-                rows = sorted(rows, key=lambda r: _sort_key_compras(r, sort_col_ref[0] or "fecha"), reverse=not sort_asc_ref[0])
-
-                n_pedidos = len(rows)
-                total_cotizar = 0.0
-                for r in rows:
-                    try:
-                        cant = float(str(r.get("cantidad") or "0").replace(",", ".")) if r.get("cantidad") else 0
-                    except (ValueError, TypeError):
-                        cant = 0
-                    try:
-                        precio = float(str(r.get("precio_sugerido") or "0").replace(",", ".")) if r.get("precio_sugerido") else 0
-                    except (ValueError, TypeError):
-                        precio = 0
-                    total_cotizar += cant * precio
-
-                ui.label("Pedidos").classes("text-xl font-semibold mb-2")
-                with ui.card().classes("w-full p-4 bg-grey-2"):
-                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
-                        with ui.column().classes("gap-0"):
-                            ui.label("Cantidad de pedidos").classes("text-xs text-gray-600")
-                            ui.label(str(n_pedidos)).classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Total a cotizar").classes("text-xs text-gray-600")
-                            total_str = f"{total_cotizar:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                            ui.label(f"$ {total_str}").classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        ui.button("Refrescar", on_click=_refrescar).props("flat dense no-caps icon=refresh").classes("text-gray-800 hover:bg-gray-200 rounded px-3")
-
-                with ui.row().classes("w-full gap-2 mb-2 items-center"):
-                    ui.select(
-                        {"": "Todos", "Cotizar": "Cotizar", "Cotizar+Buscando": "Cotizar+Buscando", "No hay": "No hay", "Buscando": "Buscando", "Comprado": "Comprado"},
-                        value=filtro_estado_ref.get("val", "Cotizar+Buscando"),
-                        label="Estado",
-                        on_change=lambda e: (_refrescar_assign(e, filtro_estado_ref, "val") or _refrescar()),
-                    ).classes("w-36").props("dense")
-                    ui.select(
-                        {"": "Todos", **{c: c or "(sin cliente)" for c in clientes if c}},
-                        value=filtro_cliente_ref.get("val", ""),
-                        label="Cliente",
-                        on_change=lambda e: (_refrescar_assign(e, filtro_cliente_ref, "val") or _refrescar()),
-                    ).classes("w-72").props("dense")
-
-                def _refrescar_assign(e, d: Dict, k: str) -> None:
-                    d[k] = getattr(e, "value", "") or ""
-
-                with ui.element("table").classes("w-full border-collapse text-sm"):
-                    with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
-                            for col_key, h in [("fecha", "Fecha"), ("marca", "Marca"), ("producto", "Producto"), ("sku", "SKU"), ("cantidad", "Cantidad"), ("precio_sugerido", "Precio sugerido"), ("estado", "Estado"), ("usuario_qb", "Cliente")]:
-                                th = ui.element("th").classes("px-2 py-1 border text-center cursor-pointer hover:bg-primary/80")
-                                th.on("click", lambda c=col_key: (sort_col_ref.__setitem__(0, c) if sort_col_ref[0] != c else sort_asc_ref.__setitem__(0, not sort_asc_ref[0]), sort_col_ref.__setitem__(0, c), sort_asc_ref.__setitem__(0, True) if sort_col_ref[0] != c else None, _refrescar()))
-                                with th:
-                                    ui.label(h)
-                    with ui.element("tbody"):
-                        for r in rows:
-                            with ui.element("tr").classes("border-t hover:bg-gray-50"):
-                                with ui.element("td").classes("px-2 py-1 border text-center"):
-                                    ui.label(_fmt_fecha_compras(r.get("fecha", "")))
-                                with ui.element("td").classes("px-2 py-1 border text-center"):
-                                    ui.label(r.get("marca", "—"))
-                                with ui.element("td").classes("px-2 py-1 border text-center"):
-                                    ui.label(r.get("producto", "—"))
-                                with ui.element("td").classes("px-2 py-1 border text-center"):
-                                    _sku = r.get("sku") or ""
-                                    ui.label(_sku if _sku else "—")
-                                with ui.element("td").classes("px-2 py-1 border text-center"):
-                                    ui.label(str(r.get("cantidad", "—")))
-                                with ui.element("td").classes("px-2 py-1 border text-right"):
-                                    _ps = r.get("precio_sugerido") or "—"
-                                    ui.label(f"u$ {_ps}" if _ps != "—" else "—")
-                                with ui.element("td").classes("px-2 py-1 border"):
-                                    _est_opts = {"Cotizar": "Cotizar", "No hay": "No hay", "Buscando": "Buscando", "Comprado": "Comprado"}
-                                    _est_db = r.get("estado") or ""
-                                    _est_actual = "No hay" if _est_db == "" else (_est_db if _est_db in _est_opts else _est_db)
-                                    if _est_actual and _est_actual not in _est_opts:
-                                        _est_opts[_est_actual] = _est_actual
-                                    def _on_estado_pedido(e, rid, uid):
-                                        v = getattr(e, "value", "") or ""
-                                        estado_guardar = "" if v == "No hay" else v
-                                        update_compras_lista_row(rid, uid, estado=estado_guardar)
-                                        ui.notify("Estado actualizado", color="positive")
-                                        _refrescar()
-                                    ui.select(_est_opts, value=_est_actual, on_change=lambda e, rid=r["id"], uid=r.get("user_id") or user["id"]: _on_estado_pedido(e, rid, uid)).classes("w-28").props("dense")
-                                with ui.element("td").classes("px-2 py-1 border"):
-                                    ui.label(r.get("usuario_qb", "—"))
-
-        _refrescar()
 
 
 def build_tab_historicos(container) -> None:
