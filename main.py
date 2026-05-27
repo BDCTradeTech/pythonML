@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.05"
+VERSION = "2.26.05.27.06"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6624,24 +6624,23 @@ def build_tab_ventas(container) -> None:
             d = ui.dialog()
             with d:
                 with ui.card().classes("p-4 min-w-[400px] max-w-[540px]"):
-                    with ui.row().classes("w-full gap-3 mb-2"):
-                        thumb_col = ui.column().classes("w-16 h-16 rounded border bg-gray-100 items-center justify-center").style("min-width: 64px; min-height: 64px;")
+                    with ui.row().classes("w-full gap-3 mb-3 items-start"):
+                        thumb_col = ui.column().classes("rounded border bg-gray-100 items-center justify-center flex-none").style("width:56px;height:56px;")
                         with thumb_col:
                             ui.label("...").classes("text-xs text-gray-400")
-                        with ui.column().classes("flex-1 min-w-0 gap-2"):
+                        with ui.column().classes("flex-1 min-w-0 gap-0.5"):
                             _sku_txt = str(row.get("seller_sku") or "")
                             _iid_txt = str(row.get("item_id") or "—")
-                            ui.label(f"{_iid_txt}  —  {_sku_txt}" if _sku_txt else _iid_txt).classes("text-sm font-mono text-gray-600")
-                            ui.label(str(row.get("buyer") or "—")).classes("text-sm font-medium")
+                            ui.label(f"{_iid_txt}  —  {_sku_txt}" if _sku_txt else _iid_txt).classes("text-xs font-mono text-gray-500")
                             _txt = str(row.get("title") or row.get("productos") or "—")
-                            ui.label((_txt[:120] + "..." if len(_txt) > 120 else _txt)).classes("text-sm font-bold")
-                            ui.label(f"Fecha: {row.get('fecha') or '—'}").classes("text-sm text-gray-600")
+                            ui.label((_txt[:120] + "..." if len(_txt) > 120 else _txt)).classes("text-sm font-medium")
+                            ui.label(str(row.get("fecha") or "—")).classes("text-xs text-gray-500")
                     body_col = ui.column().classes("w-full gap-0")
                     with body_col:
                         with ui.row().classes("w-full items-center justify-center py-6 gap-3"):
                             ui.spinner(size="md")
-                            ui.label("Cargando datos reales...").classes("text-sm text-gray-500")
-                    with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                            ui.label("Cargando...").classes("text-sm text-gray-500")
+                    with ui.row().classes("w-full justify-end mt-3"):
                         ui.button("Cerrar", on_click=lambda: d.close(), color="secondary").props("flat")
             d.open()
 
@@ -6698,161 +6697,108 @@ def build_tab_ventas(container) -> None:
                     envio_real = 0.0
                     envio_lbl  = None
 
-                cobrado_real = gan_pesos = gan_vta_pct = gan_cos_pct = mcls = None
+                gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if has_api and has_calc:
-                    cobrado_real = unit_price - meli_fee - cuotas_fee
-                    gan_pesos = unit_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - costo_pesos
+                    gan_pesos   = unit_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - costo_pesos
                     gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
-                    mcls = "font-bold " + ("text-positive" if gan_pesos >= 0 else "text-negative")
 
                 with cl:
                     if thumb_real:
                         thumb_col.clear()
                         with thumb_col:
-                            ui.image(thumb_real).classes("w-16 h-16 object-contain rounded border").style("min-width: 64px; min-height: 64px;")
+                            ui.image(thumb_real).classes("object-contain rounded").style("width:56px;height:56px;")
                     body_col.clear()
                     with body_col:
-                        with ui.column().classes("w-full gap-0 border-b-2 border-gray-300 pb-3"):
-                            for lbl_b, val_b in [
-                                ("Precio unitario", fmt_moneda(unit_price)),
-                                ("Cantidad",        str(row.get("cantidad") or "—")),
-                                ("Monto total",     fmt_moneda(row.get("monto"))),
-                                ("Tipo IVA",        "21%" if abs(tipo_iva - 0.21) < 0.001 else "10,5%"),
+                        # INFO BLOCK
+                        with ui.row().classes("w-full flex-wrap gap-x-4 gap-y-1 border border-gray-200 rounded bg-gray-50 px-3 py-2 mb-3"):
+                            for lbl_p, val_p in [
+                                ("Cuotas",    str(row.get("cuotas") or "—")),
+                                ("Tipo",      str(row.get("tipo_display") or row.get("tipo") or "—")),
+                                ("Estado",    str(row.get("status") or "—")),
+                                ("Cantidad",  str(row.get("cantidad") or "—")),
+                                ("Comprador", str(row.get("buyer") or "—")),
+                                ("Order ID",  str(row.get("order_id") or "—")),
                             ]:
-                                with ui.row().classes("w-full justify-between py-1 items-center"):
-                                    ui.label(lbl_b).classes("text-sm font-medium text-gray-600")
-                                    ui.label(val_b).classes("text-sm")
-                            with ui.row().classes("w-full justify-between py-1 items-center gap-4 border-b-2 border-gray-300"):
-                                with ui.row().classes("items-center gap-2"):
-                                    ui.label("Costo +IVA u$").classes("text-sm font-medium text-gray-600")
-                                    ui.label(fmt_usd(costo_usd) if costo_usd else "—").classes("text-sm")
-                                with ui.row().classes("items-center gap-2"):
-                                    ui.label("Costo $").classes("text-sm font-medium text-gray-600")
-                                    ui.label(fmt_moneda(costo_pesos) if costo_usd else "—").classes("text-sm")
-                            with ui.row().classes("w-full py-1 gap-4 border-b-2 border-gray-300 flex-wrap"):
-                                for lbl_p, val_p in [
-                                    ("Cuotas",    str(row.get("cuotas") or "—")),
-                                    ("Tipo",      str(row.get("tipo_display") or row.get("tipo") or "—")),
-                                    ("Estado",    str(row.get("status") or "—")),
-                                    ("Comprador", str(row.get("buyer") or "—")),
-                                    ("Order ID",  str(row.get("order_id") or "—")),
-                                ]:
-                                    with ui.column().classes("gap-0"):
-                                        ui.label(lbl_p).classes("text-xs text-gray-600")
-                                        ui.label(val_p).classes("text-sm font-medium")
-                            if has_api:
-                                with ui.column().classes("w-full gap-0 pt-3"):
-                                    for lbl_r, val_r, cls_r, show_r in [
-                                        ("Comisión ML",  meli_fee,   "text-sm text-negative", True),
-                                        ("Costo Cuotas", cuotas_fee, "text-sm text-negative", cuotas_fee > 0),
+                                with ui.column().classes("gap-0"):
+                                    ui.label(lbl_p).classes("text-xs text-gray-500")
+                                    ui.label(val_p).classes("text-xs font-medium")
+                        if not has_api:
+                            ui.label("Datos no disponibles para pagos con saldo ML").classes("text-sm text-gray-400 italic py-3 text-center w-full")
+                        else:
+                            with ui.column().classes("w-full gap-0"):
+                                # 1. Precio de venta
+                                with ui.row().classes("w-full justify-between items-center py-1.5 border-b border-gray-200 mb-1"):
+                                    ui.label("Precio de venta").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(unit_price)).classes("text-sm font-medium")
+                                # 2. Comisión ML
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("Comisión ML").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(meli_fee)).classes("text-sm text-negative")
+                                # 3. Costo Cuotas (siempre)
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("Costo Cuotas").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(cuotas_fee)).classes("text-sm text-negative")
+                                # 4. IVA neto + sub-block
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("IVA neto").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(iva_total)).classes("text-sm text-negative")
+                                with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
+                                    for lbl_s, val_s in [
+                                        ("IVA venta",              iva_venta),
+                                        ("IVA Meli (crédito)",     iva_meli),
+                                        ("IVA importación (créd)", iva_impor),
                                     ]:
-                                        if not show_r: continue
-                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                            ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(val_r)).classes(cls_r)
-                                    with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                        with ui.row().classes("gap-4"):
-                                            ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(iva_meli)).classes("text-sm")
-                                        with ui.row().classes("gap-4"):
-                                            ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(iva_impor)).classes("text-sm")
-                                    for lbl_r, val_r, cls_r, show_r in [
-                                        ("IVA venta",  iva_venta,  "text-sm",               True),
-                                        ("IVA neto",   iva_total,  "text-sm text-negative", True),
-                                        ("Deb/Cred",   deb_cred,   "text-sm text-negative", True),
-                                        ("IIBB ret.",  iibb_ret,   "text-sm text-negative", iibb_ret > 0),
-                                        ("SIRTAC",     sirtac,     "text-sm text-negative", sirtac > 0),
-                                        ("IIBB perc.", iibb_perc,  "text-sm text-negative", True),
-                                        (envio_lbl,    envio_real, "text-sm text-negative", has_api),
-                                    ]:
-                                        if not show_r: continue
-                                        border = " border-b-2 border-gray-300" if lbl_r == envio_lbl else ""
-                                        with ui.row().classes(f"w-full justify-between py-0.5 gap-4{border}"):
-                                            with ui.row().classes("items-center gap-1"):
-                                                ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
-                                                if lbl_r == "IIBB perc.":
-                                                    ui.label("est.").classes("text-xs text-gray-400 italic")
-                                            ui.label(fmt_moneda(val_r)).classes(cls_r)
-                                    if has_calc:
-                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                            ui.label("Cobrado").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(cobrado_real)).classes("text-sm font-bold text-primary")
-                                        if net_rcv is not None:
-                                            with ui.row().classes("w-full justify-between py-1 gap-4 border-b-2 border-gray-300"):
-                                                ui.label("Neto acreditado").classes("text-sm font-medium text-gray-600")
-                                                ui.label(fmt_moneda(net_rcv)).classes("text-sm font-bold text-primary")
-                                            with ui.column().classes("w-full gap-0 bg-gray-50 rounded-md px-2 py-1 mt-1"):
-                                                ui.label("Composición del neto acreditado").classes("text-xs text-gray-400 italic pb-1")
-                                                for lbl_d, val_d, show_d in [
-                                                    ("Precio venta",  unit_price,  True),
-                                                    ("Comisión ML",  -meli_fee,    True),
-                                                    ("Costo cuotas", -cuotas_fee,  cuotas_fee > 0),
-                                                    ("Deb/Cred",     -deb_cred,    True),
-                                                    ("IIBB ret.",    -iibb_ret,    iibb_ret > 0),
-                                                    ("SIRTAC",       -sirtac,      sirtac > 0),
-                                                ]:
-                                                    if not show_d: continue
-                                                    cls_d = "text-xs text-negative" if val_d < 0 else "text-xs"
-                                                    with ui.row().classes("w-full justify-between py-0.5"):
-                                                        ui.label(lbl_d).classes("text-xs text-gray-500")
-                                                        ui.label(fmt_moneda(val_d)).classes(cls_d)
-                                                with ui.row().classes("w-full justify-between py-0.5 border-t border-gray-200 mt-0.5"):
-                                                    ui.label("= Neto acreditado").classes("text-xs font-bold text-gray-600")
-                                                    ui.label(fmt_moneda(net_rcv)).classes("text-xs font-bold text-primary")
-                                        with ui.row().classes("w-full justify-between py-1 gap-4"):
-                                            ui.label("Gan $").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(gan_pesos)).classes(mcls)
-                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                            ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_pct2(gan_vta_pct)).classes(mcls)
-                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                            ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_pct2(gan_cos_pct)).classes(mcls)
-                            elif has_calc:
-                                ml_com      = float(p.get("ml_comision") or 0.15)
-                                ml_deb      = float(p.get("ml_debcre") or 0.006)
-                                ml_env_v    = float(p.get("ml_envios") or 5823)
-                                ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
-                                tasa_cuotas = {"x3": float(p.get("cuotas_3x") or 0), "x6": float(p.get("cuotas_6x") or 0), "x9": float(p.get("cuotas_9x") or 0), "x12": float(p.get("cuotas_12x") or 0)}.get(cuotas_val, 0.0)
-                                comision    = unit_price * ml_com
-                                cobrado_e   = unit_price - comision
-                                iva_venta   = unit_price * tipo_iva / (1 + tipo_iva)
-                                iva_meli    = comision * 0.21 / 1.21
-                                iva_impor   = 0.09 * costo_usd * dolar
-                                iva_total   = iva_venta - iva_meli - iva_impor
-                                deb_cred_e  = unit_price * ml_deb
-                                iibb_e      = unit_price * ml_iibb
-                                envio_e     = 0.0 if unit_price < ml_env_grat else ml_env_v
-                                cc_e        = unit_price * tasa_cuotas
-                                gan_e       = cobrado_e - costo_pesos - iva_total - iibb_e - deb_cred_e - envio_e - cc_e
-                                gvp_e       = (gan_e / unit_price * 100) if unit_price > 0 else 0.0
-                                gcp_e       = (gan_e / costo_pesos * 100) if costo_pesos > 0 else 0.0
-                                mcls_e      = "font-bold " + ("text-positive" if gan_e >= 0 else "text-negative")
-                                ui.label("Datos estimados (sin conexión a API)").classes("text-xs text-orange-500 italic py-1")
-                                with ui.column().classes("w-full gap-0 pt-1"):
-                                    for lbl_r, val_r, cls_r in [
-                                        ("Comisión",     comision,   "text-sm text-negative"),
-                                        ("Cobrado",      cobrado_e,  "text-sm font-bold text-primary"),
-                                        ("Costo Cuotas", cc_e,       "text-sm text-negative"),
-                                        ("IVA neto",     iva_total,  "text-sm text-negative"),
-                                        ("Deb-Cred",     deb_cred_e, "text-sm text-negative"),
-                                        ("IIBB",         iibb_e,     "text-sm text-negative"),
-                                        ("Envío",        envio_e,    "text-sm text-negative"),
-                                    ]:
-                                        with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                            ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
-                                            ui.label(fmt_moneda(val_r)).classes(cls_r)
-                                    with ui.row().classes("w-full justify-between py-1 gap-4"):
-                                        ui.label("Gan $").classes("text-sm font-medium text-gray-600")
-                                        ui.label(fmt_moneda(gan_e)).classes(mcls_e)
-                                    with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                        ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
-                                        ui.label(fmt_pct2(gvp_e)).classes(mcls_e)
-                                    with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                        ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
-                                        ui.label(fmt_pct2(gcp_e)).classes(mcls_e)
+                                        with ui.row().classes("w-full justify-between"):
+                                            ui.label(lbl_s).classes("text-xs text-gray-500")
+                                            ui.label(fmt_moneda(val_s)).classes("text-xs text-gray-600")
+                                # 5. Deb/Cred
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("Deb/Cred").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(deb_cred)).classes("text-sm text-negative")
+                                # 6. SIRTAC
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("SIRTAC").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(sirtac)).classes("text-sm text-negative")
+                                # 7. IIBB combinado + sub-block
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    ui.label("IIBB").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(iibb_ret + iibb_perc)).classes("text-sm text-negative")
+                                with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
+                                    with ui.row().classes("w-full justify-between"):
+                                        with ui.row().classes("gap-1"):
+                                            ui.label("Retención").classes("text-xs text-gray-500")
+                                            ui.label("(real)").classes("text-xs text-gray-400 italic")
+                                        ui.label(fmt_moneda(iibb_ret)).classes("text-xs text-negative")
+                                    with ui.row().classes("w-full justify-between"):
+                                        with ui.row().classes("gap-1"):
+                                            ui.label("Percepción").classes("text-xs text-gray-500")
+                                            ui.label("(est.)").classes("text-xs text-gray-400 italic")
+                                        ui.label(fmt_moneda(iibb_perc)).classes("text-xs text-negative")
+                                # 8. Costo producto
+                                if has_calc:
+                                    with ui.column().classes("w-full py-0.5 gap-0"):
+                                        with ui.row().classes("w-full justify-between items-center"):
+                                            ui.label("Costo producto").classes("text-sm text-gray-600")
+                                            ui.label(fmt_moneda(costo_pesos)).classes("text-sm text-negative")
+                                        ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)}").classes("text-xs text-gray-400")
+                                # 9. Envío + separador
+                                with ui.row().classes("w-full justify-between items-center py-0.5 border-b-2 border-gray-300 pb-2 mb-2"):
+                                    ui.label(envio_lbl or "Envío").classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(envio_real)).classes("text-sm text-negative")
+                                # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
+                                if gan_pesos is not None:
+                                    _gcls = "text-positive" if gan_pesos >= 0 else "text-negative"
+                                    with ui.row().classes("w-full justify-between items-end pt-1 gap-2"):
+                                        with ui.column().classes("gap-0"):
+                                            ui.label("Gan $").classes("text-xs text-gray-500")
+                                            ui.label(fmt_moneda(gan_pesos)).classes(f"text-xl font-bold {_gcls}")
+                                        with ui.column().classes("gap-0 items-end"):
+                                            ui.label("Gan Vta %").classes("text-xs text-gray-500")
+                                            ui.label(fmt_pct2(gan_vta_pct)).classes(f"text-sm font-bold {_gcls}")
+                                        with ui.column().classes("gap-0 items-end"):
+                                            ui.label("Gan % Cos").classes("text-xs text-gray-500")
+                                            ui.label(fmt_pct2(gan_cos_pct)).classes(f"text-sm font-bold {_gcls}")
 
             background_tasks.create(_fetch_real(), name="popup_venta_real")
 
