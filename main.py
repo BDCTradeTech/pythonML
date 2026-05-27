@@ -108,6 +108,7 @@ from db import (
     copy_cotizador_datos,
     get_importacion_filas, save_importacion_filas,
     export_user_db_data, import_user_db_data,
+    COTIZADOR_DEFAULTS,
 )
 
 # --- Fase 3: tabs extraídos a módulos separados ---
@@ -120,7 +121,7 @@ from tabs.ventas import build_tab_ventas
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.27"
+VERSION = "2.26.05.27.28"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -8031,22 +8032,6 @@ def build_tab_admin(container) -> None:
 
                     _refresh_despachantes()
 
-
-# Valores por defecto del cotizador
-COTIZADOR_DEFAULTS = {
-    "dolar_oficial": "1475", "dolar_blue": "1450", "dolar_sistema": "1500", "dolar_despacho": "1475",
-    "kilo": "60", "iva_105": "0.105", "iva_21": "0.21", "iibb_lhs": "0.03",
-    "ml_comision": "0.15", "ml_debcre": "0.006", "ml_sirtac": "0.008", "ml_envios": "5823",
-    "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_comision_fija_menor": "2800", "ml_cobrado": "0.836",
-    "ml_3cuotas": "1.12149", "ml_6cuotas": "1.21067",
-    "ml_ganancia_neta_venta": "0.1000",
-    "cuotas_3x": "0.094", "cuotas_6x": "0.151", "cuotas_9x": "0.207", "cuotas_12x": "0.259",
-    "valor_kg_miami": "13.5", "almacenaje_miami_x2": "1.8", "dias_almacenaje_miami": "2", "almacenaje_dias_kg_miami": "0.9",
-    "seguro_miami": "24.75", "descuento_lhs_kg": "1.33267522",
-    "valor_kg_china": "27", "almacenaje_china_x3": "2.7", "dias_almacenaje_china": "3", "almacenaje_dias_kg_china": "0.9",
-    "seguro_china": "29.35", "res_3244": "10", "gastos_operativos": "27", "gastos_origen": "0",
-    "envio_domicilio": "10", "ajuste_valor_ana": "1.01",
-}
 
 TABLA_ORIGEN_DEFAULT = [
     {"origen": "Mia LHS", "posicion": "Cambio PA"},
