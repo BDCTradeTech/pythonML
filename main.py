@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.26.55"
+VERSION = "2.26.05.26.56"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6311,7 +6311,7 @@ def build_tab_ventas(container) -> None:
 
     ventas_raw: List[Dict[str, Any]] = []
     all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}, "item_id_to_tipo_venta": {}, "item_id_to_cuotas": {}, "item_id_to_tipo_oferta": {}, "item_id_to_promo_display": {}}
-    filtro_fecha_ref: Dict[str, str] = {"val": "mes_actual"}
+    filtro_fecha_ref: Dict[str, str] = {"val": "hoy"}
     filtro_publicacion_ref: Dict[str, str] = {"val": "todas"}
     filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
     filtro_tipo_ref: Dict[str, str] = {"val": "todas"}
@@ -6486,27 +6486,15 @@ def build_tab_ventas(container) -> None:
                                     pass
             return (fallback, None)
 
-        def _aplicar_filtro_fecha() -> None:
-            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
-            if fecha_val not in ("mes_actual", "mes_anterior"):
-                fecha_val = "mes_actual"
-            # Si selecciona mes anterior y no lo tenemos, cargar
-            if fecha_val == "mes_anterior" and not all_orders_ref.get("mes_anterior_cargado"):
-                _cargar_ventas()
-                return
-            orders = all_orders_ref.get("orders") or []
-            if not orders:
-                return
-            hoy = datetime.now().date()
+        def _rango_desde_filtro(fecha_val: str, hoy) -> tuple:
             primer_dia = hoy.replace(day=1)
-            ultimo_mes = primer_dia - timedelta(days=1)
-            primer_dia_anterior = ultimo_mes.replace(day=1)
-            if fecha_val == "mes_actual":
-                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia, hoy)]
-            else:
-                orders_periodo = [o for o in orders if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
-            _construir_ventas_desde_orders(orders_periodo)
-            _pintar_tabla()
+            dias_map = {"hoy": 1, "dias_2": 2, "dias_3": 3, "dias_5": 5, "dias_7": 7, "dias_15": 15, "dias_21": 21, "dias_30": 30}
+            if fecha_val in dias_map:
+                return hoy - timedelta(days=dias_map[fecha_val] - 1), hoy
+            return primer_dia, hoy  # mes_actual y fallback
+
+        def _aplicar_filtro_fecha() -> None:
+            _cargar_ventas()
 
         def _construir_ventas_desde_orders(orders_periodo: List[Dict]) -> None:
             nonlocal ventas_raw
@@ -6912,13 +6900,9 @@ def build_tab_ventas(container) -> None:
                     texto_val in (v.get("item_id") or "").lower()]
             ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
             hoy = datetime.now().date()
-            primer_dia = hoy.replace(day=1)
-            ultimo_mes = primer_dia - timedelta(days=1)
-            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
-            if fecha_val == "mes_anterior":
-                dias_total = calendar.monthrange(ultimo_mes.year, ultimo_mes.month)[1]
-            else:
-                dias_total = (hoy - primer_dia).days + 1
+            fecha_val = filtro_fecha_ref.get("val", "hoy")
+            date_ini_pt, date_fin_pt = _rango_desde_filtro(fecha_val, hoy)
+            dias_total = (date_fin_pt - date_ini_pt).days + 1
             total_monto_ok = sum(v["monto"] for v in ventas_ok)
             total_unidades_ok = sum(v["cantidad"] for v in ventas_ok)
             n_ventas_ok = len(ventas_ok)
@@ -7142,24 +7126,14 @@ def build_tab_ventas(container) -> None:
                         filtro_controls_ref[0].set_visibility(True)
                     return
                 hoy = datetime.now().date()
-                primer_dia = hoy.replace(day=1)
-                ultimo_mes = primer_dia - timedelta(days=1)
-                primer_dia_anterior = ultimo_mes.replace(day=1)
-                fecha_val = filtro_fecha_ref.get("val", "mes_actual")
-                if fecha_val == "mes_actual":
-                    date_from = primer_dia.strftime("%Y-%m-%dT00:00:00.000-03:00")
-                    date_to = hoy.strftime("%Y-%m-%dT23:59:59.999-03:00")
-                    orders_data = await run.io_bound(
-                        ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
-                        date_from=date_from, date_to=date_to,
-                    )
-                else:
-                    date_from = primer_dia_anterior.strftime("%Y-%m-%dT00:00:00.000-03:00")
-                    date_to = ultimo_mes.strftime("%Y-%m-%dT23:59:59.999-03:00")
-                    orders_data = await run.io_bound(
-                        ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
-                        date_from=date_from, date_to=date_to,
-                    )
+                fecha_val = filtro_fecha_ref.get("val", "hoy")
+                date_ini, date_fin = _rango_desde_filtro(fecha_val, hoy)
+                date_from = date_ini.strftime("%Y-%m-%dT00:00:00.000-03:00")
+                date_to   = date_fin.strftime("%Y-%m-%dT23:59:59.999-03:00")
+                orders_data = await run.io_bound(
+                    ml_get_orders, access_token, str(seller_id), limit=2000, offset=0,
+                    date_from=date_from, date_to=date_to,
+                )
             except Exception as e:
                 result_area.clear()
                 with result_area:
@@ -7169,27 +7143,8 @@ def build_tab_ventas(container) -> None:
                 return
             raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
             orders = [o for o in raw_orders if isinstance(o, dict)]
-            hoy = datetime.now().date()
-            primer_dia = hoy.replace(day=1)
-            ultimo_mes = primer_dia - timedelta(days=1)
-            primer_dia_anterior = ultimo_mes.replace(day=1)
-            fecha_val = filtro_fecha_ref.get("val", "mes_actual")
-            if fecha_val not in ("mes_actual", "mes_anterior"):
-                fecha_val = "mes_actual"
-            # Merge con órdenes ya cargadas (p.ej. mes anterior cuando cambian de mes)
-            orders_existentes = all_orders_ref.get("orders") or []
-            ids_existentes = {str(o.get("id")) for o in orders_existentes if o.get("id")}
-            for o in orders:
-                if o.get("id") and str(o.get("id")) not in ids_existentes:
-                    orders_existentes.append(o)
-                    ids_existentes.add(str(o.get("id")))
-            all_orders_ref["orders"] = orders_existentes
-            if fecha_val == "mes_actual":
-                orders_periodo = [o for o in orders_existentes if _order_in_range(o, primer_dia, hoy)]
-                all_orders_ref["mes_actual_cargado"] = True
-            else:
-                orders_periodo = [o for o in orders_existentes if _order_in_range(o, primer_dia_anterior, ultimo_mes)]
-                all_orders_ref["mes_anterior_cargado"] = True
+            all_orders_ref["orders"] = orders
+            orders_periodo = [o for o in orders if _order_in_range(o, date_ini, date_fin)]
             item_ids_to_fetch: List[str] = []
             for o in orders_periodo:
                 for it in o.get("order_items") or o.get("items") or []:
@@ -7323,7 +7278,7 @@ def build_tab_ventas(container) -> None:
                     _conn_v.close()
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
-            dia_ini, dia_fin = (primer_dia, hoy) if fecha_val == "mes_actual" else (primer_dia_anterior, ultimo_mes) if fecha_val == "mes_anterior" else (None, None)
+            dia_ini, dia_fin = date_ini, date_fin
             for ord_item in orders_periodo:
                 dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
                 if not dt_str or not isinstance(dt_str, str):
@@ -7417,10 +7372,12 @@ def build_tab_ventas(container) -> None:
             filtro_controls_ref.append(filtro_controls)
             with filtro_controls:
                 filtro_fecha = ui.select(
-                    {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
-                    value=filtro_fecha_ref.get("val", "mes_actual"),
+                    {"hoy": "Hoy", "dias_2": "Últimos 2 días", "dias_3": "Últimos 3 días",
+                     "dias_5": "Últimos 5 días", "dias_7": "Últimos 7 días", "dias_15": "Últimos 15 días",
+                     "dias_21": "Últimos 21 días", "dias_30": "Últimos 30 días", "mes_actual": "Mes actual"},
+                    value=filtro_fecha_ref.get("val", "hoy"),
                     label="Fecha",
-                ).classes("w-36").bind_value(filtro_fecha_ref, "val")
+                ).classes("w-44").bind_value(filtro_fecha_ref, "val")
                 filtro_fecha.on_value_change(lambda: _aplicar_filtro_fecha())
                 filtro_publicacion = ui.select(
                     {"todas": "Todas", "propias": "Propias", "catalogo": "Catálogo"},
