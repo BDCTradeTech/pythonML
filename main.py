@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.04"
+VERSION = "2.26.05.27.05"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6651,6 +6651,7 @@ def build_tab_ventas(container) -> None:
                 def _get_pay(tok, pid):
                     r = requests.get(f"https://api.mercadopago.com/v1/payments/{pid}",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+                    print(f"[DBG_PAY] payment_id={pid} http_status={r.status_code}", flush=True)
                     return r.json() if r.status_code == 200 else {}
 
                 def _get_item(tok, iid):
@@ -6686,6 +6687,7 @@ def build_tab_ventas(container) -> None:
                 iva_total  = iva_venta - iva_meli - iva_impor
 
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                print(f"[DBG_PAY] order={_oid} shp_xd={shp_xd} charge_names={[c.get('name') for c in charges]}", flush=True)
                 if shp_xd > 0:
                     envio_real = shp_xd
                     envio_lbl  = "Envío Correo"
