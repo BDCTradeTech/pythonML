@@ -78,6 +78,15 @@ from qb_api import (
     patch_invoice_pdf_line_items,
 )
 
+# --- Compatibilidad Fase 1: funciones de auth movidas a auth.py ---
+from auth import (
+    hash_password, _is_bcrypt_hash, _verify_password,
+    send_email, get_user_email,
+    create_user, authenticate_user,
+    update_user_password, admin_reset_user_password,
+    delete_user_and_all_data,
+)
+
 # --- Compatibilidad Fase 1: funciones de DB movidas a db.py ---
 from db import (
     get_connection, init_db, save_query,
