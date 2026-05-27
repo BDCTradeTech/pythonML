@@ -7080,26 +7080,61 @@ def build_tab_ventas(container) -> None:
                             key=lambda x: _sort_key_ventas(x, sort_col),
                             reverse=not asc,
                         )
-                        with ui.element("div").classes("w-full"):
-                            with ui.element("table").classes("w-full border-collapse text-sm"):
+                        # Sticky header: dos tablas separadas (igual que Cuotas)
+                        _vhd = ui.element("div").style("width:100%;overflow:hidden")
+                        _vtc = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
+                        _vhid = _vhd.id
+                        _vcid = _vtc.id
+                        async def _setup_ventas_sync(_vhid=_vhid, _vcid=_vcid) -> None:
+                            await ui.run_javascript(
+                                f"(function(){{"
+                                f"var body=document.getElementById('c{_vcid}');"
+                                f"var hdr=document.getElementById('c{_vhid}');"
+                                f"if(!body||!hdr)return;"
+                                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                                f"_sg();new ResizeObserver(_sg).observe(body);"
+                                f"}})();"
+                            )
+                        ui.timer(0.1, _setup_ventas_sync, once=True)
+                        def _build_colgroup_ventas() -> None:
+                            with ui.element("colgroup"):
+                                ui.element("col").style("width:3%")
+                                ui.element("col").style("width:7%")
+                                ui.element("col").style("width:9%")
+                                ui.element("col").style("width:9%")
+                                ui.element("col").style("width:5%")
+                                ui.element("col").style("width:8%")
+                                ui.element("col").style("width:5%")
+                                ui.element("col").style("width:5%")
+                                ui.element("col").style("width:20%")
+                                ui.element("col").style("width:4%")
+                                ui.element("col").style("width:7%")
+                                ui.element("col").style("width:7%")
+                                ui.element("col").style("width:6%")
+                                ui.element("col").style("width:5%")
+                        cols_ventas = [
+                            ("#", "#", "text-center"),
+                            ("dt", "Fecha", "text-center"),
+                            ("order_id", "Order ID", "text-center"),
+                            ("item_id", "ID publicación", "text-center"),
+                            ("envio_tipo", "Envío", "text-center"),
+                            ("tipo_venta", "Publicacion", "text-center"),
+                            ("cuotas", "Cuotas", "text-center"),
+                            ("tipo", "Tipo", "text-center"),
+                            ("productos", "Producto", "text-center"),
+                            ("cantidad", "Cant.", "text-center"),
+                            ("monto", "Monto", "text-center"),
+                            ("gan_pesos", "Gan $", "text-center"),
+                            ("gan_vta_pct", "Gan Vta%", "text-center"),
+                            ("status", "Estado", "text-center"),
+                        ]
+                        # Tabla header (thead solamente)
+                        with _vhd:
+                            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                                _build_colgroup_ventas()
                                 with ui.element("thead"):
                                     with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                        cols_ventas = [
-                                            ("#", "#", "text-center"),
-                                            ("dt", "Fecha", "text-center"),
-                                            ("order_id", "Order ID", "text-center"),
-                                            ("item_id", "ID publicación", "text-center"),
-                                            ("envio_tipo", "Envío", "text-center"),
-                                            ("tipo_venta", "Publicacion", "text-center"),
-                                            ("cuotas", "Cuotas", "text-center"),
-                                            ("tipo", "Tipo", "text-center"),
-                                            ("productos", "Producto", "text-center"),
-                                            ("cantidad", "Cant.", "text-center"),
-                                            ("monto", "Monto", "text-center"),
-                                            ("gan_pesos", "Gan $", "text-center"),
-                                            ("gan_vta_pct", "Gan Vta%", "text-center"),
-                                            ("status", "Estado", "text-center"),
-                                        ]
                                         for col_key, h, align in cols_ventas:
                                             th_cls = f"px-2 py-2 border {align or 'text-left'}"
                                             with ui.element("th").classes(th_cls):
@@ -7107,6 +7142,10 @@ def build_tab_ventas(container) -> None:
                                                     ui.label(h)
                                                 else:
                                                     ui.button(h, on_click=lambda c=col_key: _on_sort_ventas(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                        # Tabla body (tbody solamente, scrolleable)
+                        with _vtc:
+                            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                                _build_colgroup_ventas()
                                 with ui.element("tbody"):
                                     for idx, v in enumerate(ventas_orden, 1):
                                         with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
@@ -7143,7 +7182,10 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v["monto_fmt"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
                                                 _gp = v.get("gan_pesos")
-                                                if _gp is None:
+                                                _is_am = v.get("payment_type", "") == "account_money"
+                                                if _gp is None and _is_am:
+                                                    ui.label("Saldo ML").classes("text-gray-400 text-xs")
+                                                elif _gp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
                                                     ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
@@ -7161,14 +7203,9 @@ def build_tab_ventas(container) -> None:
                 ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
                 lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
                 barra = ui.linear_progress(value=0).classes("w-full my-2")
-                def _on_cerrar():
-                    dlg.close()
-                    _pintar_tabla()
-                btn_cerrar = ui.button("Cerrar", on_click=_on_cerrar).props("flat no-caps color=primary")
-                btn_cerrar.disable()
             dlg.open()
             background_tasks.create(
-                _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, btn_cerrar, force=True)
+                _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
             )
 
         async def _enriquecer_ventas_async(
@@ -7176,7 +7213,6 @@ def build_tab_ventas(container) -> None:
             dlg=None,
             lbl_progreso=None,
             barra=None,
-            btn_cerrar=None,
             force: bool = False,
         ) -> None:
             rows_to_enrich = [
@@ -7186,10 +7222,12 @@ def build_tab_ventas(container) -> None:
                 and (force or (v.get("payment_id") or "") not in ventas_cache_ref)
             ]
             if not rows_to_enrich:
-                if dlg and lbl_progreso and btn_cerrar:
+                if dlg and lbl_progreso:
                     with cl:
                         lbl_progreso.set_text("No hay ventas para completar.")
-                        btn_cerrar.enable()
+                    await asyncio.sleep(1.5)
+                    with cl:
+                        dlg.close()
                 return
 
             _uid = user["id"]
@@ -7325,13 +7363,16 @@ def build_tab_ventas(container) -> None:
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
 
-            # Al terminar: habilitar Cerrar
-            if dlg and lbl_progreso and btn_cerrar:
+            # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
+            if dlg and lbl_progreso:
                 with cl:
                     lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas.")
                     if barra:
                         barra.set_value(1.0)
-                    btn_cerrar.enable()
+                await asyncio.sleep(1.5)
+                with cl:
+                    dlg.close()
+                    _pintar_tabla()
             else:
                 # Llamada sin dialog (carga inicial automática): _pintar_tabla al terminar
                 with cl:
