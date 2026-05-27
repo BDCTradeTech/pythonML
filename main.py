@@ -6381,46 +6381,8 @@ def build_tab_ventas(container) -> None:
             cl = body.get("catalog_listing")
             return "Catálogo" if (cl is True or str(cl or "").lower() in ("true", "1")) else "Propia"
 
-        def _update_btn_agrupar() -> None:
-            if agrupar_ref.get("val"):
-                btn_agrupar.text = "Desagrupar"
-            else:
-                btn_agrupar.text = "Agrupar"
-
-        def _toggle_agrupar() -> None:
-            agrupar_ref["val"] = not agrupar_ref.get("val", False)
-            _update_btn_agrupar()
-            _pintar_tabla()
-
         def _update_margen(productos_key: str, val: str) -> None:
             margenes_ref[productos_key] = val or ""
-
-        def _calcular_ganancia() -> None:
-            if not agrupar_ref.get("val"):
-                ganancia_neta_ref["val"] = 0.0
-                _pintar_tabla()
-                return
-            # Al agrupar, solo se consideran ventas con estado Concretada (paid)
-            ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
-            grupos: Dict[str, Dict[str, Any]] = {}
-            for v in ventas_filtradas:
-                key = v.get("agrupar_key") or (v.get("productos") or v.get("title", "—"))
-                if key not in grupos:
-                    grupos[key] = {"productos": v.get("productos") or v.get("title", "—"), "cantidad": 0, "monto": 0.0}
-                grupos[key]["cantidad"] += v["cantidad"]
-                grupos[key]["monto"] += v["monto"]
-            filas = list(grupos.values())
-            total = 0.0
-            for f in filas:
-                productos_key = f["productos"]
-                cantidad = int(f["cantidad"])
-                try:
-                    margen = float((margenes_ref.get(productos_key) or "0").replace(",", ".").strip())
-                except (ValueError, TypeError):
-                    margen = 0.0
-                total += cantidad * margen
-            ganancia_neta_ref["val"] = total
-            _pintar_tabla()
 
         def _calc_gan_row(unit_price: float, sku: str, cuotas_val: str) -> tuple:
             p = params_ventas_ref
@@ -7193,12 +7155,12 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v["status"])
 
-        async def _enriquecer_ventas_async(cl) -> None:
+        async def _enriquecer_ventas_async(cl, force: bool = False) -> None:
             rows_to_enrich = [
                 v for v in ventas_raw
                 if (v.get("payment_id") or "") != ""
                 and v.get("payment_type", "") != "account_money"
-                and (v.get("payment_id") or "") not in ventas_cache_ref
+                and (force or (v.get("payment_id") or "") not in ventas_cache_ref)
             ]
             if not rows_to_enrich:
                 return
@@ -7603,6 +7565,7 @@ def build_tab_ventas(container) -> None:
                     v["gan_pesos"] = c.get("gan_pesos")
                     v["gan_vta_pct"] = c.get("gan_vta_pct")
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
+                    v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
@@ -7652,10 +7615,7 @@ def build_tab_ventas(container) -> None:
                 filtro_texto = ui.input(placeholder="Buscar producto...").props("outlined dense clearable").classes("w-64")
                 filtro_texto.bind_value(filtro_texto_ref, "val")
                 filtro_texto.on_value_change(lambda: _pintar_tabla())
-                btn_agrupar = ui.button("Agrupar", on_click=lambda: _toggle_agrupar(), color="primary").props("no-caps")
-                _update_btn_agrupar()
-                ui.button("Calcular", on_click=lambda: _calcular_ganancia(), color="primary").props("no-caps")
-                ui.button("Completar datos", on_click=lambda: background_tasks.create(_enriquecer_ventas_async(context.client))).props("icon=download dense flat no-caps color=primary").classes("text-xs")
+                ui.button("Completar datos", on_click=lambda: background_tasks.create(_enriquecer_ventas_async(context.client, force=True))).props("icon=download dense flat no-caps color=primary").classes("text-xs")
 
         _cargar_ventas()
 
