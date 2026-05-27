@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.01"
+VERSION = "2.26.05.27.03"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6685,12 +6685,13 @@ def build_tab_ventas(container) -> None:
                 iva_impor  = 0.09 * costo_usd * dolar
                 iva_total  = iva_venta - iva_meli - iva_impor
 
-                envio_real = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
-                if envio_real > 0:
-                    envio_lbl = "Envío Flex"
+                shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                if shp_xd > 0:
+                    envio_real = shp_xd
+                    envio_lbl  = "Envío Correo"
                 else:
                     envio_real = float(p.get("ml_envios") or 6271)
-                    envio_lbl  = "Envío (est.)"
+                    envio_lbl  = "Envío Flex"
 
                 cobrado_real = gan_pesos = gan_vta_pct = gan_cos_pct = mcls = None
                 if has_api and has_calc:
@@ -6777,6 +6778,24 @@ def build_tab_ventas(container) -> None:
                                             with ui.row().classes("w-full justify-between py-1 gap-4 border-b-2 border-gray-300"):
                                                 ui.label("Neto acreditado").classes("text-sm font-medium text-gray-600")
                                                 ui.label(fmt_moneda(net_rcv)).classes("text-sm font-bold text-primary")
+                                            with ui.column().classes("w-full gap-0 bg-gray-50 rounded-md px-2 py-1 mt-1"):
+                                                ui.label("Composición del neto acreditado").classes("text-xs text-gray-400 italic pb-1")
+                                                for lbl_d, val_d, show_d in [
+                                                    ("Precio venta",  unit_price,  True),
+                                                    ("Comisión ML",  -meli_fee,    True),
+                                                    ("Costo cuotas", -cuotas_fee,  cuotas_fee > 0),
+                                                    ("Deb/Cred",     -deb_cred,    True),
+                                                    ("IIBB ret.",    -iibb_ret,    iibb_ret > 0),
+                                                    ("SIRTAC",       -sirtac,      sirtac > 0),
+                                                ]:
+                                                    if not show_d: continue
+                                                    cls_d = "text-xs text-negative" if val_d < 0 else "text-xs"
+                                                    with ui.row().classes("w-full justify-between py-0.5"):
+                                                        ui.label(lbl_d).classes("text-xs text-gray-500")
+                                                        ui.label(fmt_moneda(val_d)).classes(cls_d)
+                                                with ui.row().classes("w-full justify-between py-0.5 border-t border-gray-200 mt-0.5"):
+                                                    ui.label("= Neto acreditado").classes("text-xs font-bold text-gray-600")
+                                                    ui.label(fmt_moneda(net_rcv)).classes("text-xs font-bold text-primary")
                                         with ui.row().classes("w-full justify-between py-1 gap-4"):
                                             ui.label("Gan $").classes("text-sm font-medium text-gray-600")
                                             ui.label(fmt_moneda(gan_pesos)).classes(mcls)
