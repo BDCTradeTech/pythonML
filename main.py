@@ -162,14 +162,6 @@ def _decrypt_secret(token: str) -> str:
     return _get_fernet().decrypt(token.encode()).decode()
 
 
-
-
-
-
-
-
-
-
 # ==========================
 # SESIÓN DE USUARIO (NiceGUI)
 # ==========================
