@@ -122,7 +122,7 @@ from tabs.cuotas import build_tab_cuotas, _cuotas_key
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.34"
+VERSION = "2.26.05.27.35"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -154,7 +154,7 @@ TABS_QB   = {"compras", "compras_lista"}
 
 
 # ==========================
-# ENCRIPTACIÁ“N DE SECRETS
+# ENCRIPTACIÓN DE SECRETS
 # ==========================
 
 
@@ -547,7 +547,7 @@ def _pdf_description_full_redact_rect(
         x_hi = float(d.x1) + float(extra_right_if_no_qty)
         if x_hi_cap is not None:
             x_hi = min(x_hi, float(x_hi_cap))
-    # Borde izquierdo de la columna DESCRIPCIÁ“N (nunca invadir columna SKU)
+    # Borde izquierdo de la columna DESCRIPCIÓN (nunca invadir columna SKU)
     desc_x_min = max(float(page.rect.x0) + 6.0, float(d.x0) - 3.0)
 
     next_sku_y: Optional[float] = None
@@ -1605,7 +1605,7 @@ _email_lock = threading.Lock()
 
 
 # ==========================
-# INTEGRACIÁ“N MERCADOLIBRE
+# INTEGRACIÓN MERCADOLIBRE
 # ==========================
 
 
@@ -1702,7 +1702,7 @@ ORDERS_MAX_OFFSET = 100000  # ML puede limitar offset; si devuelve 400 se detien
 
 
 # ==========================
-# SESIÁ“N DE USUARIO (NiceGUI)
+# SESIÓN DE USUARIO (NiceGUI)
 # ==========================
 
 
@@ -1992,7 +1992,7 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Históricos")
                                         tab_panels.value = tab_historicos
                                         app.storage.user["last_tab"] = "Históricos"
-                                    ui.menu_item("HISTÁ“RICOS", _historicos_click)
+                                    ui.menu_item("HISTÓRICOS", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -2024,7 +2024,7 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Configuración")
                                         tab_panels.value = tab_config
                                         app.storage.user["last_tab"] = "Configuración"
-                                    ui.menu_item("CONFIGURACIÁ“N", _config_click)
+                                    ui.menu_item("CONFIGURACIÓN", _config_click)
                 if perms.get("admin", False):
                     ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
             ui.space()
@@ -2111,7 +2111,7 @@ def show_main_layout(container) -> None:
 
 
 # ==========================
-# CONTENIDO DE PESTAÁ‘AS
+# CONTENIDO DE PESTAÑAS
 # ==========================
 
 
