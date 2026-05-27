@@ -6969,6 +6969,7 @@ def build_tab_ventas(container) -> None:
                             ui.label(f"$ {ganancia_neta_ref.get('val', 0):,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                         ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
                         ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
+                        ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
@@ -7155,7 +7156,29 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v["status"])
 
-        async def _enriquecer_ventas_async(cl, force: bool = False) -> None:
+        def _abrir_dialog_enriquecer() -> None:
+            with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
+                ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
+                lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
+                barra = ui.linear_progress(value=0).classes("w-full my-2")
+                def _on_cerrar():
+                    dlg.close()
+                    _pintar_tabla()
+                btn_cerrar = ui.button("Cerrar", on_click=_on_cerrar).props("flat no-caps color=primary")
+                btn_cerrar.disable()
+            dlg.open()
+            background_tasks.create(
+                _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, btn_cerrar, force=True)
+            )
+
+        async def _enriquecer_ventas_async(
+            cl,
+            dlg=None,
+            lbl_progreso=None,
+            barra=None,
+            btn_cerrar=None,
+            force: bool = False,
+        ) -> None:
             rows_to_enrich = [
                 v for v in ventas_raw
                 if (v.get("payment_id") or "") != ""
@@ -7163,10 +7186,15 @@ def build_tab_ventas(container) -> None:
                 and (force or (v.get("payment_id") or "") not in ventas_cache_ref)
             ]
             if not rows_to_enrich:
+                if dlg and lbl_progreso and btn_cerrar:
+                    with cl:
+                        lbl_progreso.set_text("No hay ventas para completar.")
+                        btn_cerrar.enable()
                 return
 
             _uid = user["id"]
             p = params_ventas_ref
+            total = len(rows_to_enrich)
 
             def _fetch_one(pid: str) -> Dict:
                 try:
@@ -7243,7 +7271,8 @@ def build_tab_ventas(container) -> None:
                     conn.close()
 
             BATCH = 20
-            for i in range(0, len(rows_to_enrich), BATCH):
+            procesadas = 0
+            for i in range(0, total, BATCH):
                 batch = rows_to_enrich[i : i + BATCH]
 
                 def _fetch_batch(batch_rows: List[Dict]) -> List[tuple]:
@@ -7266,7 +7295,8 @@ def build_tab_ventas(container) -> None:
                 for v, pay_data in batch_results:
                     if not pay_data:
                         continue
-                    calc = _compute(pay_data, v)
+                    # CAMBIO 3: _compute en thread para no bloquear el event loop
+                    calc = await run.io_bound(_compute, pay_data, v)
                     if not calc:
                         continue
                     pid = v["payment_id"]
@@ -7281,11 +7311,31 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = calc["gan_cos_pct"]
                     v["logistic_type"] = calc["logistic_type"]
                     ventas_cache_ref[pid] = db_row
+                    procesadas += 1
 
                 if db_rows:
                     await run.io_bound(_save_batch, db_rows)
+
+                # CAMBIO 2: actualizar dialog sin llamar _pintar_tabla en cada batch
+                if dlg and lbl_progreso and barra:
                     with cl:
-                        _pintar_tabla()
+                        lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas...")
+                        barra.set_value(procesadas / total if total > 0 else 1.0)
+
+                # CAMBIO 4: yield al event loop entre batches
+                await asyncio.sleep(0)
+
+            # Al terminar: habilitar Cerrar
+            if dlg and lbl_progreso and btn_cerrar:
+                with cl:
+                    lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas.")
+                    if barra:
+                        barra.set_value(1.0)
+                    btn_cerrar.enable()
+            else:
+                # Llamada sin dialog (carga inicial automática): _pintar_tabla al terminar
+                with cl:
+                    _pintar_tabla()
 
         async def _cargar_ventas_async() -> None:
             nonlocal ventas_raw
@@ -7615,7 +7665,6 @@ def build_tab_ventas(container) -> None:
                 filtro_texto = ui.input(placeholder="Buscar producto...").props("outlined dense clearable").classes("w-64")
                 filtro_texto.bind_value(filtro_texto_ref, "val")
                 filtro_texto.on_value_change(lambda: _pintar_tabla())
-                ui.button("Completar datos", on_click=lambda: background_tasks.create(_enriquecer_ventas_async(context.client, force=True))).props("icon=download dense flat no-caps color=primary").classes("text-xs")
 
         _cargar_ventas()
 
