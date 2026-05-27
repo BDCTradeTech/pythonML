@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.07"
+VERSION = "2.26.05.27.08"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -7127,6 +7127,11 @@ def build_tab_ventas(container) -> None:
             raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
             orders = [o for o in raw_orders if isinstance(o, dict)]
             all_orders_ref["orders"] = orders
+            for _dbg_ord in orders[:3]:
+                for _dbg_item in _dbg_ord.get("order_items", []):
+                    _ship_item = (_dbg_item.get("shipping") or {})
+                    _ship_ord  = (_dbg_ord.get("shipping") or {})
+                    print(f"[DBG_SHIP] order={_dbg_ord.get('id')} item_shipping={_ship_item} ord_shipping_lt={_ship_ord.get('logistic_type')}", flush=True)
             orders_periodo = [o for o in orders if _order_in_range(o, date_ini, date_fin)]
             item_ids_to_fetch: List[str] = []
             for o in orders_periodo:
