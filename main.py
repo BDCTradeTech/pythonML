@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.06"
+VERSION = "2.26.05.27.07"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6634,7 +6634,10 @@ def build_tab_ventas(container) -> None:
                             ui.label(f"{_iid_txt}  —  {_sku_txt}" if _sku_txt else _iid_txt).classes("text-xs font-mono text-gray-500")
                             _txt = str(row.get("title") or row.get("productos") or "—")
                             ui.label((_txt[:120] + "..." if len(_txt) > 120 else _txt)).classes("text-sm font-medium")
-                            ui.label(str(row.get("fecha") or "—")).classes("text-xs text-gray-500")
+                            _dt = row.get("dt")
+                            _hora = _dt.strftime("%H:%M") if _dt and hasattr(_dt, "strftime") else ""
+                            _fecha_hora = f"{row.get('fecha', '')} {_hora}".strip()
+                            ui.label(_fecha_hora or "—").classes("text-xs text-gray-500")
                     body_col = ui.column().classes("w-full gap-0")
                     with body_col:
                         with ui.row().classes("w-full items-center justify-center py-6 gap-3"):
@@ -6795,10 +6798,10 @@ def build_tab_ventas(container) -> None:
                                             ui.label(fmt_moneda(gan_pesos)).classes(f"text-xl font-bold {_gcls}")
                                         with ui.column().classes("gap-0 items-end"):
                                             ui.label("Gan Vta %").classes("text-xs text-gray-500")
-                                            ui.label(fmt_pct2(gan_vta_pct)).classes(f"text-sm font-bold {_gcls}")
+                                            ui.label(fmt_pct2(gan_vta_pct)).classes(f"text-xl font-bold {_gcls}")
                                         with ui.column().classes("gap-0 items-end"):
                                             ui.label("Gan % Cos").classes("text-xs text-gray-500")
-                                            ui.label(fmt_pct2(gan_cos_pct)).classes(f"text-sm font-bold {_gcls}")
+                                            ui.label(fmt_pct2(gan_cos_pct)).classes(f"text-xl font-bold {_gcls}")
 
             background_tasks.create(_fetch_real(), name="popup_venta_real")
 
@@ -7029,6 +7032,7 @@ def build_tab_ventas(container) -> None:
                                             ("dt", "Fecha", "text-center"),
                                             ("order_id", "Order ID", "text-center"),
                                             ("item_id", "ID publicación", "text-center"),
+                                            ("logistic_type", "Envío", "text-center"),
                                             ("tipo_venta", "Publicacion", "text-center"),
                                             ("cuotas", "Cuotas", "text-center"),
                                             ("tipo", "Tipo", "text-center"),
@@ -7057,6 +7061,13 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("order_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("item_id", "—"))
+                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                _lt = v.get("logistic_type") or ""
+                                                _envio_lbl = ("Flex" if _lt in ("xd_drop_off", "cross_docking", "drop_off", "self_service")
+                                                              else "Correo" if _lt in ("me1", "me2")
+                                                              else "Full" if _lt == "fulfillment"
+                                                              else "—")
+                                                ui.label(_envio_lbl)
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("tipo_venta", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
