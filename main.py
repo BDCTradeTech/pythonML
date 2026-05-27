@@ -122,7 +122,7 @@ from tabs.cuotas import build_tab_cuotas, _cuotas_key
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.32"
+VERSION = "2.26.05.27.33"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6510,15 +6510,15 @@ def build_tab_pesos() -> None:
                                             pesario_data[i], pesario_data[i + 1] = pesario_data[i + 1], pesario_data[i]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("â–²", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("â–¼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▲", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("border border-gray-200 w-8 text-center").style("padding: 2px 4px; vertical-align: middle;"):
                                     def borrar_pesario(rref: Dict[str, Any]) -> None:
                                         sync_inputs_to_rows()
                                         if rref in pesario_data:
                                             pesario_data.remove(rref)
                                             repintar()
-                                    ui.button("Á—", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
+                                    ui.button("×", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
                             row_to_inputs.append((row_ref, rinputs))
                             edit_rows.append(rinputs)
 
@@ -6901,14 +6901,14 @@ def build_tab_balance(container) -> None:
                                                 gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
                                                 repintar()
                                         with ui.row().classes("gap-0 justify-center"):
-                                            ui.button("â–²", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                            ui.button("â–¼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("▲", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("▼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                     with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
                                         def borrar_fila(r: Dict[str, Any]) -> None:
                                             if r in gastos_data:
                                                 gastos_data.remove(r)
                                                 repintar()
-                                        ui.button("Á—", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("×", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                                 edit_rows_ref.append(rinputs)
                                 row_to_inputs.append((row, rinputs))
             _pintar_header()
@@ -7448,15 +7448,15 @@ def _calc_courier_row(
     env_dom = _f(courier.get("env_dom"))
     iibb = _f(courier.get("iibb"))
 
-    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa Á— FOB Total (en USD Á— Dólar)
-    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa Á— FOB Total
+    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa × FOB Total (en USD × Dólar)
+    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa × FOB Total
     N = kg_real * peso_total * dolar_oficial  # Flete: dólar oficial
     O_val = almacenaje * peso_total * dolar_oficial
     P = res_3244 * dolar_oficial
     Q = seguro * dolar_oficial
     R = gas_ope * dolar_oficial
     S = env_dom * dolar_oficial  # Env Dom: dólar oficial
-    # IVA FOB: (FOB + flete + seguro) Á— dolar_despacho Á— iva_rate; flete = Peso(total)Á—2.5; seguro = (FOB+flete)Á—0.01; CIF = FOB+flete+seguro
+    # IVA FOB: (FOB + flete + seguro) × dolar_despacho × iva_rate; flete = Peso(total)×2.5; seguro = (FOB+flete)×0.01; CIF = FOB+flete+seguro
     monto_flete = peso_total * 2.5 if peso_total > 0 else 0  # Peso (columna total), no Peso U
     monto_seguro = (fob_total + monto_flete) * 0.01
     cif = fob_total + monto_flete + monto_seguro
@@ -7477,7 +7477,7 @@ def _calc_courier_row(
     if iva_cfg is None:
         iva_cfg = {"almacenaje": True, "res_3244": True, "seguro": True, "gas_ope": True, "env_dom": True, "precio_con_iva": True}
 
-    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto Á— 0.21
+    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto × 0.21
     precio_con_iva = _iva_cobra(iva_cfg.get("precio_con_iva", True))
 
     def _calc_iva(monto: float) -> float:
@@ -7779,7 +7779,7 @@ def build_tab_importacion() -> None:
                             with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs bg-slate-100 dark:bg-slate-700").style("min-width: 48px;"):
                                 ui.label("Ordenar")
                             with ui.element("th").classes("font-semibold px-1 py-1 border border-gray-300 bg-slate-100 dark:bg-slate-700").style("min-width: 40px;"):
-                                ui.label("Á—")
+                                ui.label("×")
                     with ui.element("tbody"):
                         for i, r in enumerate(importacion_rows):
                             r_in: Dict[str, Any] = {}
@@ -7868,7 +7868,7 @@ def build_tab_importacion() -> None:
                                                                     if precio_con_iva_popup:
                                                                         ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. â†’ IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
                                                                     else:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA â†’ IVA = monto Á— 0,21 = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA â†’ IVA = monto × 0,21 = {_fmt_mon(iva)}").classes("text-sm")
                                                                 else:
                                                                     ui.label(f"{concepto}: Exento").classes("text-sm text-gray-500")
                                                             tot_serv = det.get("total_iva_servicios", 0)
@@ -7887,7 +7887,7 @@ def build_tab_importacion() -> None:
                                                                 dol_str = f"{dol:,.0f}".replace(",", ".")
                                                                 with ui.row().classes("gap-1"):
                                                                     ui.label("IVA FOB").classes("text-sm font-bold")
-                                                                    ui.label(f" = {_fmt_usd(cif_val)} Á— {rate} Á— {dol_str} = ").classes("text-sm")
+                                                                    ui.label(f" = {_fmt_usd(cif_val)} × {rate} × {dol_str} = ").classes("text-sm")
                                                                     ui.label(_fmt_mon(det.get('iva_fob', 0))).classes("text-sm font-bold")
                                                             else:
                                                                 ui.label(f"IVA FOB: {_fmt_mon(det.get('iva_fob', 0))}").classes("text-sm")
@@ -7975,14 +7975,14 @@ def build_tab_importacion() -> None:
                                             importacion_rows[idx], importacion_rows[idx + 1] = importacion_rows[idx + 1], importacion_rows[idx]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("â–²", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("â–¼", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▲", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▼", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 40px;"):
                                     def borrar(idx: int) -> None:
                                         if 0 <= idx < len(importacion_rows):
                                             importacion_rows.pop(idx)
                                             repintar()
-                                    ui.button("Á—", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                    ui.button("×", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                             input_rows_ref.append(r_in)
 
         def _parse_iva_bool(v: Any) -> bool:
@@ -8361,14 +8361,14 @@ def build_tab_datos() -> None:
                                                         data[i], data[i + 1] = data[i + 1], data[i]
                                                         repintar()
                                                 with ui.row().classes("gap-0 justify-center"):
-                                                    ui.button("â–²", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                                    ui.button("â–¼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("▲", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("▼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                         with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 52px; width: 52px;"):
                                             def borrar_fila(i: int) -> None:
                                                 if 0 <= i < len(data):
                                                     data.pop(i)
                                                     repintar()
-                                            ui.button("Á—", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                            ui.button("×", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                     edit_rows.append(rinputs)
 
                 repintar()
@@ -8472,7 +8472,7 @@ def build_tab_datos() -> None:
                                                         }
                                                 tabla_iva_vs_exento_data.pop(i)
                                                 repintar_iva()
-                                        ui.button("Á—", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("×", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                 iva_vs_exento_edit_rows.append(rinputs)
 
             repintar_iva()
