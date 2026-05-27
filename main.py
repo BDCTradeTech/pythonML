@@ -7229,7 +7229,7 @@ def build_tab_ventas(container) -> None:
             with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
                 ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
                 lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
-                barra = ui.linear_progress(value=0).classes("w-full my-2")
+                barra = ui.linear_progress(value=0).props("instant-feedback").classes("w-full my-2")
             dlg.open()
             background_tasks.create(
                 _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
@@ -7390,7 +7390,8 @@ def build_tab_ventas(container) -> None:
                 # CAMBIO 2: actualizar dialog sin llamar _pintar_tabla en cada batch
                 if dlg and lbl_progreso and barra:
                     with cl:
-                        lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas...")
+                        _pct = round(procesadas / total * 100) if total > 0 else 0
+                        lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas... ({_pct}%)")
                         barra.set_value(procesadas / total if total > 0 else 1.0)
 
                 # CAMBIO 4: yield al event loop entre batches
@@ -7399,7 +7400,7 @@ def build_tab_ventas(container) -> None:
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
             if dlg and lbl_progreso:
                 with cl:
-                    lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas.")
+                    lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas. (100%)")
                     if barra:
                         barra.set_value(1.0)
                 await asyncio.sleep(1.5)
