@@ -16,7 +16,12 @@ from db import (
     save_importacion_filas,
     COTIZADOR_DEFAULTS,
 )
-from tabs.admin import TABLA_ORIGEN_DEFAULT
+from tabs.admin import (
+    TABLA_ORIGEN_DEFAULT,
+    TABLA_POSICION_DEFAULT,
+    TABLA_COURIER_DEFAULT,
+    TABLA_IVA_VS_EXENTO_DEFAULT,
+)
 
 
 # ---------------------------------------------------------------------------
