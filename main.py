@@ -122,7 +122,7 @@ from tabs.cuotas import build_tab_cuotas, _cuotas_key
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.35"
+VERSION = "2.26.05.27.36"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -2484,7 +2484,7 @@ def _show_item_detail_dialog(
                 with ui.column().classes("flex-1 min-w-0 gap-2"):
                     sku_txt = str(row.get("seller_sku") or row.get("id") or "")
                     ui.label(f"{row.get('id', '””')}  ””  {sku_txt}").classes("text-sm font-mono text-gray-600")
-                    ui.label(str(row.get("marca", "””"))).classes("text-sm font-medium")
+                    ui.label(str(row.get("marca", "—"))).classes("text-sm font-medium")
                     txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
                     ui.label(txt).classes("text-sm font-bold")
                     ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
@@ -2527,10 +2527,10 @@ def _show_item_detail_dialog(
                 with ui.row().classes("w-full py-1 gap-4 border-b-2 border-gray-300 flex-wrap"):
                     for lbl_p, key_p, fmt_p in [
                         ("Cuotas",          "cuotas",         lambda v: str(v or "x1")),
-                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "””"),
-                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "””"),
-                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "””"),
-                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "””"),
+                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "—"),
+                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "—"),
+                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "—"),
+                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "—"),
                     ]:
                         with ui.column().classes("gap-0"):
                             ui.label(lbl_p).classes("text-xs text-gray-600")
@@ -2538,7 +2538,7 @@ def _show_item_detail_dialog(
                     with ui.column().classes("gap-0"):
                         ui.label("Promo Yo $").classes("text-xs text-gray-600")
                         _pyo = row.get("promo_yo_pct"); _por = row.get("price_original")
-                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "””").classes("text-sm font-medium")
+                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "—").classes("text-sm font-medium")
                 recalc_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
             _recalcular()
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -3161,7 +3161,7 @@ def _mostrar_tabla_precios(
                     with ui.column().classes("flex-1 min-w-0 gap-1"):
                         sku_txt = str(row.get("seller_sku") or row.get("id") or "")
                         ui.label(f"{row.get('id','””')}  ””  {sku_txt}").classes("text-xs font-mono text-gray-500")
-                        ui.label(str(row.get("marca") or "””")).classes("text-sm font-medium")
+                        ui.label(str(row.get("marca") or "—")).classes("text-sm font-medium")
                         ui.label((str(row.get("title") or ""))[:100]).classes("text-sm font-bold")
                         ui.label(f"Stock: {row.get('available_quantity', 0)}").classes("text-sm text-gray-500")
                 ui.separator()
@@ -3537,7 +3537,7 @@ def _mostrar_tabla_precios(
         lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
         _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
         lbl_pesos.set_text(fmt_moneda(_pesos))
-        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "””")
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "—")
         lbl_marcas.set_text(str(len({
             str(x.get("marca") or "").strip()
             for x in filtrados
@@ -3595,11 +3595,11 @@ def _mostrar_tabla_precios(
                                     with _td_el:
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
-                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "””"
+                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "—"
                                             ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "costo_usd":
                                             _costo_val = row.get("costo_usd")
-                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "””"
+                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "—"
                                             ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
@@ -3617,9 +3617,9 @@ def _mostrar_tabla_precios(
                                                 ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
-                                            ui.label(fmt_moneda(ptw) if ptw is not None else "””").classes("" if ptw is not None else "text-gray-400")
+                                            ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
                                         elif col["name"] == "title":
-                                            _ttxt = str(val or "””")
+                                            _ttxt = str(val or "—")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
                                                 ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
                                             elif row.get("tipo") == "Catalogo":
@@ -3690,7 +3690,7 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
-                                            ui.label(str(val) if val is not None else "””")
+                                            ui.label(str(val) if val is not None else "—")
             async def _recalc_padding() -> None:
                 await ui.run_javascript(
                     f"(function(){{"
@@ -4294,22 +4294,22 @@ def build_tab_precios_detalle(container) -> None:
 
     def fmt_pct(val: Any) -> str:
         if val is None:
-            return "””"
+            return "—"
         try:
             n = float(val)
             return f"{n:.1f}%"
         except (TypeError, ValueError):
-            return "””"
+            return "—"
 
     def fmt_pct2(val: Any) -> str:
         """Porcentaje con 2 decimales (para margen costo y margen venta)."""
         if val is None:
-            return "””"
+            return "—"
         try:
             n = float(val)
             return f"{n:.2f}%"
         except (TypeError, ValueError):
-            return "””"
+            return "—"
 
     def _sort_key(row: Dict[str, Any], col: str) -> Any:
         if col in ("precio", "stock", "ventas", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
@@ -4573,13 +4573,13 @@ def build_tab_precios_detalle(container) -> None:
                                             else:
                                                 lbl.classes(base_cls + "font-bold " + ("text-positive" if mp > 0 else "text-negative"))
                                         elif field == "seller_sku":
-                                            ui.label(str(r.get("seller_sku") or r.get("id") or "””"))
+                                            ui.label(str(r.get("seller_sku") or r.get("id") or "—"))
                                         elif field == "stock":
                                             ui.label(str(val) if val is not None else "0")
                                         elif field == "ventas":
                                             ui.label(str(val) if val is not None else "0")
                                         else:
-                                            ui.label(str(val) if val is not None else "””")
+                                            ui.label(str(val) if val is not None else "—")
         fn_calcular = calcular_labels_ref.get("_calcular_fn")
         if callable(fn_calcular):
             fn_calcular()
@@ -5540,11 +5540,11 @@ def build_tab_historicos(container) -> None:
                                 for it in items:
                                     with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(str(it.get("id", "””")))
+                                            ui.label(str(it.get("id", "—")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("producto", it.get("name", "””")))
+                                            ui.label(it.get("producto", it.get("name", "—")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("sku") or "””")
+                                            ui.label(it.get("sku") or "—")
                                         with ui.element("td").classes("px-2 py-1 border text-center"):
                                             _uid, _iid = user["id"], it.get("id", "")
                                             _prod, _sku = it.get("producto", it.get("name", "””")), (it.get("sku") or "").strip()
@@ -5584,11 +5584,11 @@ def build_tab_historicos(container) -> None:
                                                                     for h in hist:
                                                                         with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("tipo", "””"))
+                                                                                ui.label(h.get("tipo", "—"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("fecha", "””"))
+                                                                                ui.label(h.get("fecha", "—"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                doc_txt = str(h.get("doc", "””"))[:40]
+                                                                                doc_txt = str(h.get("doc", "—"))[:40]
                                                                                 qb_id = h.get("qb_id") or ""
                                                                                 qb_tipo = h.get("qb_tipo") or ""
                                                                                 if qb_tipo == "invoice" and qb_id:
@@ -5611,7 +5611,7 @@ def build_tab_historicos(container) -> None:
                                                                             _tipo = h.get("tipo", "")
                                                                             _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                             with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                                ui.label(_p_fmt if _tipo == "Venta" else "””")
+                                                                                ui.label(_p_fmt if _tipo == "Venta" else "—")
                                                         with ui.row().classes("w-full justify-end mt-4"):
                                                             ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
@@ -5714,19 +5714,19 @@ def build_tab_stock(container) -> None:
                         for it in items_sorted:
                             with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("id", "””")))
+                                    ui.label(str(it.get("id", "—")))
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("producto", "””")))
+                                    ui.label(str(it.get("producto", "—")))
                                 with ui.element("td").classes("px-3 py-1 border"):
                                     _sku_val = (it.get("sku") or "").strip()
-                                    ui.label(_sku_val if _sku_val else "””")
+                                    ui.label(_sku_val if _sku_val else "—")
                                 with ui.element("td").classes("px-3 py-1 border text-right"):
                                     _sp = it.get("sales_price") or 0
                                     ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                                 with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
                                     ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
                                 with ui.element("td").classes("px-3 py-1 border text-center"):
-                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "””"), sku_val=(it.get("sku") or "").strip()):
+                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip()):
                                         dialog = ui.dialog().props("persistent")
                                         with dialog:
                                             with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
@@ -5761,11 +5761,11 @@ def build_tab_stock(container) -> None:
                                                             for h in hist:
                                                                 with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("tipo", "””"))
+                                                                        ui.label(h.get("tipo", "—"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("fecha", "””"))
+                                                                        ui.label(h.get("fecha", "—"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        doc_txt = str(h.get("doc", "””"))[:40]
+                                                                        doc_txt = str(h.get("doc", "—"))[:40]
                                                                         qb_id = h.get("qb_id") or ""
                                                                         qb_tipo = h.get("qb_tipo") or ""
                                                                         if qb_tipo == "invoice" and qb_id:
@@ -5788,12 +5788,12 @@ def build_tab_stock(container) -> None:
                                                                     _tipo = h.get("tipo", "")
                                                                     _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                     with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                        ui.label(_p_fmt if _tipo == "Venta" else "””")
+                                                                        ui.label(_p_fmt if _tipo == "Venta" else "—")
                                                 with ui.row().classes("w-full justify-end mt-4"):
                                                     ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
                                         background_tasks.create(_cargar_y_mostrar(), name="stock_historial")
-                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "””"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
+                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
 
         def _cargar() -> None:
             items, err = fetch_qb_items(user["id"])
@@ -5856,7 +5856,7 @@ def build_tab_busqueda() -> None:
                 or ""
             ).strip()
             seller_nick = (seller.get("nickname") or "").strip() if isinstance(seller, dict) else ""
-            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "””")
+            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "—")
             catalog = from_catalog or r.get("catalog_listing") is True or bool(r.get("catalog_product_id"))
             tipo = "Catálogo" if catalog else "Propia"
             price = r.get("price") or r.get("base_price")
@@ -5904,7 +5904,7 @@ def build_tab_busqueda() -> None:
                 "title": (r.get("title") or r.get("name") or "").strip(),
                 "tipo": tipo,
                 "price": price if price is not None else 999999999,
-                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "””",
+                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "—",
                 "available_quantity": qty_num,
                 "available_quantity_display": qty_display,
                 "seller": seller_display,
@@ -6265,9 +6265,9 @@ def build_tab_busqueda() -> None:
                             with ui.row().classes("w-full py-2 px-3 border-b border-gray-200 hover:bg-gray-50 flex-nowrap"):
                                 tit = (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else "")
                                 ui.label(tit).classes("min-w-[280px] shrink-0 text-left")
-                                ui.label(r.get("price_display", "””")).classes("min-w-[120px] shrink-0 text-right font-medium")
-                                ui.label(str(r.get("seller", "””"))).classes("min-w-[150px] shrink-0 text-left")
-                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "””")))).classes("min-w-[90px] shrink-0 text-right")
+                                ui.label(r.get("price_display", "—")).classes("min-w-[120px] shrink-0 text-right font-medium")
+                                ui.label(str(r.get("seller", "—"))).classes("min-w-[150px] shrink-0 text-left")
+                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "—")))).classes("min-w-[90px] shrink-0 text-right")
                                 ui.label(r.get("tipo", "")).classes("min-w-[90px] shrink-0 text-left")
                                 with ui.row().classes("min-w-[180px] shrink-0 gap-1"):
                                     if perm and perm != "#":
