@@ -122,7 +122,7 @@ from tabs.cuotas import build_tab_cuotas, _cuotas_key
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.31"
+VERSION = "2.26.05.27.32"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -154,7 +154,7 @@ TABS_QB   = {"compras", "compras_lista"}
 
 
 # ==========================
-# ENCRIPTACI�?N DE SECRETS
+# ENCRIPTACIÁ“N DE SECRETS
 # ==========================
 
 
@@ -249,7 +249,7 @@ def _invoice_line_patch_specs(
         name = str(ref.get("name", "") if isinstance(ref, dict) else "").strip()
         item_id = str(ref.get("value", "") if isinstance(ref, dict) else "").strip()
         desc = str(lin.get("Description") or name or "").strip()
-        if idx == n - 1 and desc in ("-", "�??", ""):
+        if idx == n - 1 and desc in ("-", "””", ""):
             continue
         if not desc or desc == "Total":
             continue
@@ -324,12 +324,12 @@ def _pdf_description_search_variants(old: str) -> List[str]:
 
 
 _PDF_ROW_Y_TOL = 5.0
-# Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2�??3 líneas de descripción,
+# Banda vertical por fila al buscar QTY/RATE/AMOUNT: bastante para 2”“3 líneas de descripción,
 # pero sin el exceso anterior (~100) que mezclaba columnas de filas vecinas.
 _PDF_INVOICE_ROW_Y_SPAN = 40.0
-# Separación mínima entre �??filas de ítem�?� al agrupar rects de search_for (más que el interlineado ~11�??12).
+# Separación mínima entre “filas de ítem” al agrupar rects de search_for (más que el interlineado ~11”“12).
 _PDF_DESC_CLUSTER_ROW_SEP = 16.0
-# Debajo del texto SKU/DESCRIPTION/�?� de cabecera: aire para la franja gris antes de borrar ítems.
+# Debajo del texto SKU/DESCRIPTION/… de cabecera: aire para la franja gris antes de borrar ítems.
 _PDF_TABLE_BODY_TOP_BELOW_HEADER_PT = 14.0
 # Afinado visual al redibujar tabla (pt): SKU más izq., descripción más der., QTY bajo el título.
 _PDF_TABLE_NUDGE_SKU_LEFT = 7.0
@@ -355,7 +355,7 @@ def _qb_invoice_pdf_download_basename(doc: Any) -> str:
 
 
 def _sku_display_every_other_from_first(s: str) -> str:
-    """Solo caracteres en posiciones 1ª, 3ª, 5ª�?� (índices 0, 2, 4�?�); la 2ª, 4ª�?� se omiten."""
+    """Solo caracteres en posiciones 1ª, 3ª, 5ª… (índices 0, 2, 4…); la 2ª, 4ª… se omiten."""
     t = str(s)
     return "".join(t[i] for i in range(0, len(t), 2))
 
@@ -547,7 +547,7 @@ def _pdf_description_full_redact_rect(
         x_hi = float(d.x1) + float(extra_right_if_no_qty)
         if x_hi_cap is not None:
             x_hi = min(x_hi, float(x_hi_cap))
-    # Borde izquierdo de la columna DESCRIPCI�?N (nunca invadir columna SKU)
+    # Borde izquierdo de la columna DESCRIPCIÁ“N (nunca invadir columna SKU)
     desc_x_min = max(float(page.rect.x0) + 6.0, float(d.x0) - 3.0)
 
     next_sku_y: Optional[float] = None
@@ -804,7 +804,7 @@ def _pdf_insert_sku_in_union(
     text: str,
     y_row_align: Optional[float] = None,
 ) -> None:
-    """Redibuja el SKU en �?�2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
+    """Redibuja el SKU en â‰¤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -1101,7 +1101,7 @@ def _pdf_try_anchor_row_from_sku(
 def _pdf_find_rect_row_before(
     page: Any, y_ref: float, variants: List[str], x_max: float
 ) -> Optional[Any]:
-    """�?ltima coincidencia a la izquierda de x_max en la misma fila (p. ej. SKU)."""
+    """Última coincidencia a la izquierda de x_max en la misma fila (p. ej. SKU)."""
     import fitz  # pymupdf
 
     best: Optional[Any] = None
@@ -1451,7 +1451,7 @@ def _patch_invoice_pdf_items_table_rewrite(
                 row_extra = fs * 1.15
             desc_txt = str(new_description).strip()
             if desc_max_w > 50 and len(desc_txt) > 90:
-                desc_txt = desc_txt[:87] + "�?�"
+                desc_txt = desc_txt[:87] + "…"
             page.insert_text(
                 fitz.Point(x_desc, y_base),
                 desc_txt,
@@ -1605,7 +1605,7 @@ _email_lock = threading.Lock()
 
 
 # ==========================
-# INTEGRACI�?N MERCADOLIBRE
+# INTEGRACIÁ“N MERCADOLIBRE
 # ==========================
 
 
@@ -1702,7 +1702,7 @@ ORDERS_MAX_OFFSET = 100000  # ML puede limitar offset; si devuelve 400 se detien
 
 
 # ==========================
-# SESI�?N DE USUARIO (NiceGUI)
+# SESIÁ“N DE USUARIO (NiceGUI)
 # ==========================
 
 
@@ -1947,7 +1947,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("B�?SQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -1992,7 +1992,7 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Históricos")
                                         tab_panels.value = tab_historicos
                                         app.storage.user["last_tab"] = "Históricos"
-                                    ui.menu_item("HIST�?RICOS", _historicos_click)
+                                    ui.menu_item("HISTÁ“RICOS", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -2024,7 +2024,7 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Configuración")
                                         tab_panels.value = tab_config
                                         app.storage.user["last_tab"] = "Configuración"
-                                    ui.menu_item("CONFIGURACI�?N", _config_click)
+                                    ui.menu_item("CONFIGURACIÁ“N", _config_click)
                 if perms.get("admin", False):
                     ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
             ui.space()
@@ -2111,7 +2111,7 @@ def show_main_layout(container) -> None:
 
 
 # ==========================
-# CONTENIDO DE PESTA�?AS
+# CONTENIDO DE PESTAÁ‘AS
 # ==========================
 
 
@@ -2167,7 +2167,7 @@ def build_tab_home_welcome(container) -> None:
             label = LABEL_BY_TAB.get(tab_key, tab_key)
             desc = TAB_DESCRIPTIONS.get(tab_key, "")
             if desc:
-                lineas.append(f"�?� {label}: {desc}")
+                lineas.append(f"• {label}: {desc}")
     texto = "\n".join(lineas) if lineas else "No tenés permisos asignados. Contactá al administrador."
     with container:
         ui.label("Bienvenido").classes("text-3xl font-bold text-primary mb-4")
@@ -2188,7 +2188,7 @@ def build_tab_precios(container) -> None:
     with container:
         access_token = get_ml_access_token(user["id"])
         if not access_token:
-            ui.label("�?�️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
             return
 
         result_area = ui.column().classes("w-full gap-2")
@@ -2214,12 +2214,12 @@ def build_tab_precios(container) -> None:
             except requests.exceptions.HTTPError as e:
                 area.clear()
                 with area:
-                    ui.label(f"�? Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
+                    ui.label(f"❌ Error de la API de MercadoLibre: {e}").classes("text-negative mb-2")
                 return
             except Exception as e:
                 area.clear()
                 with area:
-                    ui.label(f"�? Error al conectar: {e}").classes("text-negative")
+                    ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
                 return
             n_items = len(data.get("results", []))
             area.clear()
@@ -2233,7 +2233,7 @@ def build_tab_precios(container) -> None:
             except Exception as e:
                 area.clear()
                 with area:
-                    ui.label(f"�? Error al mostrar datos: {e}").classes("text-negative")
+                    ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
 
         background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
 
@@ -2483,8 +2483,8 @@ def _show_item_detail_dialog(
                         ui.label("Sin foto").classes("text-xs text-gray-500")
                 with ui.column().classes("flex-1 min-w-0 gap-2"):
                     sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                    ui.label(f"{row.get('id', '�??')}  �??  {sku_txt}").classes("text-sm font-mono text-gray-600")
-                    ui.label(str(row.get("marca", "�??"))).classes("text-sm font-medium")
+                    ui.label(f"{row.get('id', '””')}  ””  {sku_txt}").classes("text-sm font-mono text-gray-600")
+                    ui.label(str(row.get("marca", "””"))).classes("text-sm font-medium")
                     txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
                     ui.label(txt).classes("text-sm font-bold")
                     ui.label(f"Stock: {row.get('stock', '0')}").classes("text-sm text-gray-600")
@@ -2527,10 +2527,10 @@ def _show_item_detail_dialog(
                 with ui.row().classes("w-full py-1 gap-4 border-b-2 border-gray-300 flex-wrap"):
                     for lbl_p, key_p, fmt_p in [
                         ("Cuotas",          "cuotas",         lambda v: str(v or "x1")),
-                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "�??"),
-                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "�??"),
-                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "�??"),
-                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "�??"),
+                        ("Promo ML",        "promo_ml_pct",   lambda v: f"{v:.1f}%" if v is not None else "””"),
+                        ("Promo Yo %",      "promo_yo_pct",   lambda v: f"{v:.1f}%" if v is not None else "””"),
+                        ("Precio Original", "price_original", lambda v: fmt_moneda(v) if v is not None else "””"),
+                        ("Precio Promo",    "price_promo",    lambda v: fmt_moneda(v) if v is not None else "””"),
                     ]:
                         with ui.column().classes("gap-0"):
                             ui.label(lbl_p).classes("text-xs text-gray-600")
@@ -2538,7 +2538,7 @@ def _show_item_detail_dialog(
                     with ui.column().classes("gap-0"):
                         ui.label("Promo Yo $").classes("text-xs text-gray-600")
                         _pyo = row.get("promo_yo_pct"); _por = row.get("price_original")
-                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "�??").classes("text-sm font-medium")
+                        ui.label(fmt_moneda(_por * _pyo / 100) if _por is not None and _pyo is not None else "””").classes("text-sm font-medium")
                 recalc_ref["container"] = ui.column().classes("w-full gap-0 pt-3")
             _recalcular()
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
@@ -2672,19 +2672,19 @@ def _mostrar_tabla_precios(
         subtotal = precio * stock
         tipo = "Catalogo" if i.get("catalog_listing") is True else "Propia"
         tiene_promo = sale_price is not None and abs(float(sale_price) - float(precio or 0)) > 0.01
-        # �?ltima modificación: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
+        # Última modificación: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
         def _fmt_fecha(s: Any) -> str:
             if not s or not isinstance(s, str):
-                return "�??"
+                return "””"
             try:
                 dt = datetime.strptime(s[:10], "%Y-%m-%d")
                 return dt.strftime("%d/%m/%Y")
             except Exception:
-                return str(s)[:10] if s else "�??"
+                return str(s)[:10] if s else "””"
 
         last_upd = i.get("last_updated")
         raw_fecha = last_upd[:10] if last_upd and isinstance(last_upd, str) and len(last_upd) >= 10 else None
-        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "�??"
+        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "””"
         _item_sku = i.get("seller_sku") or None
         _prod_row = _prod_map.get(_item_sku) if _item_sku else None
         # Calcular Gan $ y Gan Vta%
@@ -2732,8 +2732,8 @@ def _mostrar_tabla_precios(
             "subtotal": subtotal,
             "subtotal_fmt": fmt_moneda(subtotal),
             "tipo": tipo,
-            "marca": i.get("marca") or "�??",
-            "color": i.get("color") or "�??",
+            "marca": i.get("marca") or "””",
+            "color": i.get("color") or "””",
             "title": str(i.get("title") or ""),
             "ult_modif_fmt": ult_modif_fmt,
             "fecha_ult_modif": raw_fecha or "",
@@ -3127,10 +3127,10 @@ def _mostrar_tabla_precios(
 
     def _abrir_detalle_catalogo(row: Dict[str, Any]) -> None:
         _STATUS_MAP = {
-            "winning":             ("�??", "Ganando",               "text-positive font-bold"),
+            "winning":             ("âœ“", "Ganando",               "text-positive font-bold"),
             "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
-            "competing":           ("�??", "Compitiendo",           "text-orange-500 font-bold"),
-            "listed":              ("�??", "Publicado sin ganar",   "text-gray-500"),
+            "competing":           ("â†“", "Compitiendo",           "text-orange-500 font-bold"),
+            "listed":              ("””", "Publicado sin ganar",   "text-gray-500"),
         }
         _REASON_ES = {
             "PRICE":           "Precio",
@@ -3160,8 +3160,8 @@ def _mostrar_tabla_precios(
                             ui.label("Sin foto").classes("text-xs text-gray-500")
                     with ui.column().classes("flex-1 min-w-0 gap-1"):
                         sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                        ui.label(f"{row.get('id','�??')}  �??  {sku_txt}").classes("text-xs font-mono text-gray-500")
-                        ui.label(str(row.get("marca") or "�??")).classes("text-sm font-medium")
+                        ui.label(f"{row.get('id','””')}  ””  {sku_txt}").classes("text-xs font-mono text-gray-500")
+                        ui.label(str(row.get("marca") or "””")).classes("text-sm font-medium")
                         ui.label((str(row.get("title") or ""))[:100]).classes("text-sm font-bold")
                         ui.label(f"Stock: {row.get('available_quantity', 0)}").classes("text-sm text-gray-500")
                 ui.separator()
@@ -3195,7 +3195,7 @@ def _mostrar_tabla_precios(
                     ui.label("Razones").classes("text-xs font-medium text-gray-500 mt-1")
                     for rsn in (reasons if isinstance(reasons, list) else [reasons]):
                         r_es = _REASON_ES.get(str(rsn).upper(), str(rsn))
-                        ui.label(f"�?� {r_es}").classes("text-sm text-gray-700")
+                        ui.label(f"• {r_es}").classes("text-sm text-gray-700")
                 ui.separator()
                 with ui.row().classes("w-full justify-end mt-2"):
                     ui.button("Cerrar", on_click=d.close).props("flat").classes("text-gray-600")
@@ -3315,11 +3315,11 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt �?? 12pt padding lateral
+        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt âˆ’ 12pt padding lateral
 
         def _trunc(s):
-            if not s or s == "�??":
-                return s or "�??"
+            if not s or s == "””":
+                return s or "””"
             if _sw(s, "Helvetica", 8) <= _col_prod_pts:
                 return s
             while len(s) > 0 and _sw(s + "...", "Helvetica", 8) > _col_prod_pts:
@@ -3332,9 +3332,9 @@ def _mostrar_tabla_precios(
             stock_val = r.get("available_quantity")
             stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
             data.append([
-                str(r.get("marca") or "�??"),
-                _trunc(str(r.get("title") or "�??")),
-                str(r.get("color") or "�??"),
+                str(r.get("marca") or "””"),
+                _trunc(str(r.get("title") or "””")),
+                str(r.get("color") or "””"),
                 stock_str,
             ])
 
@@ -3537,13 +3537,13 @@ def _mostrar_tabla_precios(
         lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
         _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
         lbl_pesos.set_text(fmt_moneda(_pesos))
-        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "�??")
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "””")
         lbl_marcas.set_text(str(len({
             str(x.get("marca") or "").strip()
             for x in filtrados
             if x.get("tipo") == "Propia"
             and str(x.get("marca") or "").strip()
-            and str(x.get("marca") or "").strip() != "�??"
+            and str(x.get("marca") or "").strip() != "””"
         })))
 
         header_div_precios.clear()
@@ -3595,11 +3595,11 @@ def _mostrar_tabla_precios(
                                     with _td_el:
                                         if col["name"] == "fob_usd":
                                             _fob_val = row.get("fob_usd")
-                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "�??"
+                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "””"
                                             ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "costo_usd":
                                             _costo_val = row.get("costo_usd")
-                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "�??"
+                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "””"
                                             ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "tipo_iva":
                                             _iva_val = row.get("tipo_iva") or 0.105
@@ -3617,9 +3617,9 @@ def _mostrar_tabla_precios(
                                                 ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
                                         elif col["name"] == "catalog_price_to_win":
                                             ptw = row.get("catalog_price_to_win")
-                                            ui.label(fmt_moneda(ptw) if ptw is not None else "�??").classes("" if ptw is not None else "text-gray-400")
+                                            ui.label(fmt_moneda(ptw) if ptw is not None else "””").classes("" if ptw is not None else "text-gray-400")
                                         elif col["name"] == "title":
-                                            _ttxt = str(val or "�??")
+                                            _ttxt = str(val or "””")
                                             if row.get("tipo") in ("Propia", "Prop Comb"):
                                                 ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
                                             elif row.get("tipo") == "Catalogo":
@@ -3634,13 +3634,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "margen_pesos":
                                             v = row.get("margen_pesos")
                                             if v is None:
-                                                ui.label("�??").classes("text-gray-400 text-xs")
+                                                ui.label("””").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] == "margen_venta_pct":
                                             v = row.get("margen_venta_pct")
                                             if v is None:
-                                                ui.label("�??").classes("text-gray-400 text-xs")
+                                                ui.label("””").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] in ("available_quantity", "sold_quantity"):
@@ -3658,7 +3658,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
-                                                ui.label("�??").classes("text-gray-400 text-center w-full")
+                                                ui.label("””").classes("text-gray-400 text-center w-full")
                                             else:
                                                 qs_i = int(qs)
                                                 _filled = round(qs_i / 20)
@@ -3682,7 +3682,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
-                                                ui.label("�??").classes("text-gray-400 text-center")
+                                                ui.label("””").classes("text-gray-400 text-center")
                                             elif _dias == 0:
                                                 ui.label("hoy").classes("text-positive font-medium text-center")
                                             elif _dias <= 7:
@@ -3690,7 +3690,7 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
-                                            ui.label(str(val) if val is not None else "�??")
+                                            ui.label(str(val) if val is not None else "””")
             async def _recalc_padding() -> None:
                 await ui.run_javascript(
                     f"(function(){{"
@@ -3720,19 +3720,19 @@ def _mostrar_tabla_precios(
         with ui.row().classes("w-full items-center gap-5 px-3 py-1 bg-grey-2 rounded mb-1"):
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Publicaciones:").classes("text-xs text-gray-500")
-                lbl_totales = ui.label("�??").classes("text-sm font-bold text-primary")
+                lbl_totales = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Unidades:").classes("text-xs text-gray-500")
-                lbl_unidades = ui.label("�??").classes("text-sm font-bold text-primary")
+                lbl_unidades = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Total $:").classes("text-xs text-gray-500")
-                lbl_pesos = ui.label("�??").classes("text-sm font-bold text-primary")
+                lbl_pesos = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Total u$s:").classes("text-xs text-gray-500")
-                lbl_usd = ui.label("�??").classes("text-sm font-bold text-primary")
+                lbl_usd = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Marcas:").classes("text-xs text-gray-500")
-                lbl_marcas = ui.label("�??").classes("text-sm font-bold text-primary")
+                lbl_marcas = ui.label("””").classes("text-sm font-bold text-primary")
             ui.space()
             ui.button("Limpiar día", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
@@ -3815,7 +3815,7 @@ def build_tab_precios_detalle(container) -> None:
     access_token = get_ml_access_token(uid)
     if not access_token:
         with container:
-            ui.label("�?�️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración y conecta tu cuenta.").classes("text-warning mb-4")
         return
 
     def _parse_float(s: Any) -> float:
@@ -3893,7 +3893,7 @@ def build_tab_precios_detalle(container) -> None:
         if err:
             content_column.clear()
             with content_column:
-                ui.label(f"�? Error al cargar: {err}").classes("text-negative")
+                ui.label(f"❌ Error al cargar: {err}").classes("text-negative")
             timer_ref["t"].active = False
             return
         totales = cargar_listo_ref.get("totales", 0)
@@ -3903,31 +3903,31 @@ def build_tab_precios_detalle(container) -> None:
                 with ui.row().classes("w-full justify-around flex-wrap gap-4"):
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones sin promociones").classes("text-sm text-gray-600")
-                        lbl_sin_promo = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_sin_promo = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["sin_promo"] = lbl_sin_promo
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones con promociones").classes("text-sm text-gray-600")
-                        lbl_con_promo = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_con_promo = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["con_promo"] = lbl_con_promo
                     with ui.column().classes("items-center"):
                         ui.label("Publicaciones con cuotas").classes("text-sm text-gray-600")
-                        lbl_con_cuotas = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_con_cuotas = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["con_cuotas"] = lbl_con_cuotas
                     with ui.column().classes("items-center"):
                         ui.label("Unidades vendidas").classes("text-sm text-gray-600")
-                        lbl_uds = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_uds = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["unidades"] = lbl_uds
                     with ui.column().classes("items-center"):
                         ui.label("Facturación total").classes("text-sm text-gray-600")
-                        lbl_fact = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_fact = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["facturacion"] = lbl_fact
                     with ui.column().classes("items-center"):
                         ui.label("Margen total").classes("text-sm text-gray-600")
-                        lbl_margen = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_margen = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["margen"] = lbl_margen
                     with ui.column().classes("items-center"):
                         ui.label("Margen % sobre venta").classes("text-sm text-gray-600")
-                        lbl_margen_pct = ui.label("�??").classes("text-2xl font-bold text-primary")
+                        lbl_margen_pct = ui.label("””").classes("text-2xl font-bold text-primary")
                         calcular_labels_ref["margen_pct"] = lbl_margen_pct
                     with ui.column().classes("items-center"):
                         ui.label("Margen estimado (Datos)").classes("text-sm text-gray-600")
@@ -4010,7 +4010,7 @@ def build_tab_precios_detalle(container) -> None:
                                 qty = int(it.get("quantity") or it.get("qty") or 0)
                                 if qty == 0:
                                     continue
-                                titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "�??"
+                                titulo = (obj.get("title") if isinstance(obj, dict) else str(obj)) or it.get("title") or "””"
                                 item_id = (str(obj.get("id") or it.get("item_id") or "") if isinstance(obj, dict) else str(it.get("item_id") or "")).strip()
                                 if not item_id:
                                     continue
@@ -4039,8 +4039,8 @@ def build_tab_precios_detalle(container) -> None:
                                                 val = att.get("value_name") or att.get("value_id")
                                                 color = str(val) if val is not None else ""
                                         catalog_id = str(b.get("catalog_product_id") or "").strip()
-                                        item_id_to_info[iid] = {"stock": int(b.get("available_quantity") or 0), "marca": marca or "�??", "color": color or "�??", "catalog_product_id": catalog_id, "title": (b.get("title") or "")[:200]}
-                        ids_sin_color = [iid for iid in item_ids_list if (item_id_to_info.get(iid) or {}).get("color") == "�??"]
+                                        item_id_to_info[iid] = {"stock": int(b.get("available_quantity") or 0), "marca": marca or "””", "color": color or "””", "catalog_product_id": catalog_id, "title": (b.get("title") or "")[:200]}
+                        ids_sin_color = [iid for iid in item_ids_list if (item_id_to_info.get(iid) or {}).get("color") == "””"]
                         item_id_to_color_desc: Dict[str, str] = {}
                         for iid in ids_sin_color[:25]:
                             desc = await run.io_bound(ml_get_item_description, access_token, iid)
@@ -4053,10 +4053,10 @@ def build_tab_precios_detalle(container) -> None:
                             iid = v.get("item_id", "")
                             info = item_id_to_info.get(iid) or item_id_to_info.get(iid.upper()) or item_id_to_info.get(iid.lower()) if iid else None
                             stock = info["stock"] if info else -1
-                            marca = info["marca"] if info else "�??"
-                            color = (info["color"] if info else "�??") or item_id_to_color_desc.get(iid) or item_id_to_color_desc.get(iid.upper()) or item_id_to_color_desc.get(iid.lower()) or "�??"
-                            if color == "�??":
-                                color = _extraer_color_desde_texto(v["productos"]) or "�??"
+                            marca = info["marca"] if info else "””"
+                            color = (info["color"] if info else "””") or item_id_to_color_desc.get(iid) or item_id_to_color_desc.get(iid.upper()) or item_id_to_color_desc.get(iid.lower()) or "””"
+                            if color == "””":
+                                color = _extraer_color_desde_texto(v["productos"]) or "””"
                             if stock == 0:
                                 catalog_id = (info or {}).get("catalog_product_id", "")
                                 key = (catalog_id or v["productos"], marca, color)
@@ -4294,22 +4294,22 @@ def build_tab_precios_detalle(container) -> None:
 
     def fmt_pct(val: Any) -> str:
         if val is None:
-            return "�??"
+            return "””"
         try:
             n = float(val)
             return f"{n:.1f}%"
         except (TypeError, ValueError):
-            return "�??"
+            return "””"
 
     def fmt_pct2(val: Any) -> str:
         """Porcentaje con 2 decimales (para margen costo y margen venta)."""
         if val is None:
-            return "�??"
+            return "””"
         try:
             n = float(val)
             return f"{n:.2f}%"
         except (TypeError, ValueError):
-            return "�??"
+            return "””"
 
     def _sort_key(row: Dict[str, Any], col: str) -> Any:
         if col in ("precio", "stock", "ventas", "iva_total", "iva_meli", "iva_impor", "costo", "comision", "cobrado", "iibb", "deb_cred", "envio", "margen_pesos", "margen_costo_pct", "margen_venta_pct", "tipo_iva"):
@@ -4573,13 +4573,13 @@ def build_tab_precios_detalle(container) -> None:
                                             else:
                                                 lbl.classes(base_cls + "font-bold " + ("text-positive" if mp > 0 else "text-negative"))
                                         elif field == "seller_sku":
-                                            ui.label(str(r.get("seller_sku") or r.get("id") or "�??"))
+                                            ui.label(str(r.get("seller_sku") or r.get("id") or "””"))
                                         elif field == "stock":
                                             ui.label(str(val) if val is not None else "0")
                                         elif field == "ventas":
                                             ui.label(str(val) if val is not None else "0")
                                         else:
-                                            ui.label(str(val) if val is not None else "�??")
+                                            ui.label(str(val) if val is not None else "””")
         fn_calcular = calcular_labels_ref.get("_calcular_fn")
         if callable(fn_calcular):
             fn_calcular()
@@ -4969,7 +4969,7 @@ def build_tab_precios_detalle(container) -> None:
                 "id": str(i.get("id", "")),
                 "seller_sku": seller_sku,
                 "thumbnail": i.get("thumbnail") or "",
-                "marca": i.get("marca") or "�??",
+                "marca": i.get("marca") or "””",
                 "producto": str(i.get("title") or ""),
                 "stock": stock,
                 "ventas": ventas,
@@ -5038,7 +5038,7 @@ def build_tab_precios_detalle(container) -> None:
                 "listing_type_id": body.get("listing_type_id"),
                 "sale_terms": body.get("sale_terms"),
                 "seller_sku": seller_sku,
-                "marca": marca or "�??",
+                "marca": marca or "””",
             }
 
         for i, grupo in items_a_mostrar:
@@ -5149,7 +5149,7 @@ def build_tab_precios_detalle(container) -> None:
 def _fmt_fecha_compras(s: str) -> str:
     """Formato fecha: 'Lunes 16-03-26 09:30' (dia dd-mm-aa hora:minutos)."""
     if not s or not str(s).strip():
-        return "�??"
+        return "””"
     s = str(s).strip()
     try:
         if " " in s:
@@ -5540,14 +5540,14 @@ def build_tab_historicos(container) -> None:
                                 for it in items:
                                     with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(str(it.get("id", "�??")))
+                                            ui.label(str(it.get("id", "””")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("producto", it.get("name", "�??")))
+                                            ui.label(it.get("producto", it.get("name", "””")))
                                         with ui.element("td").classes("px-2 py-1 border"):
-                                            ui.label(it.get("sku") or "�??")
+                                            ui.label(it.get("sku") or "””")
                                         with ui.element("td").classes("px-2 py-1 border text-center"):
                                             _uid, _iid = user["id"], it.get("id", "")
-                                            _prod, _sku = it.get("producto", it.get("name", "�??")), (it.get("sku") or "").strip()
+                                            _prod, _sku = it.get("producto", it.get("name", "””")), (it.get("sku") or "").strip()
 
                                             def _abrir_historial(uid, iid, prod, sku):
                                                 d = ui.dialog().props("persistent")
@@ -5584,11 +5584,11 @@ def build_tab_historicos(container) -> None:
                                                                     for h in hist:
                                                                         with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("tipo", "�??"))
+                                                                                ui.label(h.get("tipo", "””"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                ui.label(h.get("fecha", "�??"))
+                                                                                ui.label(h.get("fecha", "””"))
                                                                             with ui.element("td").classes("px-2 py-1 border"):
-                                                                                doc_txt = str(h.get("doc", "�??"))[:40]
+                                                                                doc_txt = str(h.get("doc", "””"))[:40]
                                                                                 qb_id = h.get("qb_id") or ""
                                                                                 qb_tipo = h.get("qb_tipo") or ""
                                                                                 if qb_tipo == "invoice" and qb_id:
@@ -5611,7 +5611,7 @@ def build_tab_historicos(container) -> None:
                                                                             _tipo = h.get("tipo", "")
                                                                             _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                             with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                                ui.label(_p_fmt if _tipo == "Venta" else "�??")
+                                                                                ui.label(_p_fmt if _tipo == "Venta" else "””")
                                                         with ui.row().classes("w-full justify-end mt-4"):
                                                             ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
@@ -5642,7 +5642,7 @@ def build_tab_stock(container) -> None:
 
         if not qb_tokens:
             ui.label(
-                "Credenciales configuradas. Andá a Configuración �?? QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
+                "Credenciales configuradas. Andá a Configuración â†’ QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
             ).classes("text-warning")
             return
 
@@ -5714,19 +5714,19 @@ def build_tab_stock(container) -> None:
                         for it in items_sorted:
                             with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("id", "�??")))
+                                    ui.label(str(it.get("id", "””")))
                                 with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("producto", "�??")))
+                                    ui.label(str(it.get("producto", "””")))
                                 with ui.element("td").classes("px-3 py-1 border"):
                                     _sku_val = (it.get("sku") or "").strip()
-                                    ui.label(_sku_val if _sku_val else "�??")
+                                    ui.label(_sku_val if _sku_val else "””")
                                 with ui.element("td").classes("px-3 py-1 border text-right"):
                                     _sp = it.get("sales_price") or 0
                                     ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
                                 with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
                                     ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
                                 with ui.element("td").classes("px-3 py-1 border text-center"):
-                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "�??"), sku_val=(it.get("sku") or "").strip()):
+                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "””"), sku_val=(it.get("sku") or "").strip()):
                                         dialog = ui.dialog().props("persistent")
                                         with dialog:
                                             with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
@@ -5761,11 +5761,11 @@ def build_tab_stock(container) -> None:
                                                             for h in hist:
                                                                 with ui.element("tr").classes("border-t hover:bg-gray-50"):
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("tipo", "�??"))
+                                                                        ui.label(h.get("tipo", "””"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("fecha", "�??"))
+                                                                        ui.label(h.get("fecha", "””"))
                                                                     with ui.element("td").classes("px-2 py-1 border"):
-                                                                        doc_txt = str(h.get("doc", "�??"))[:40]
+                                                                        doc_txt = str(h.get("doc", "””"))[:40]
                                                                         qb_id = h.get("qb_id") or ""
                                                                         qb_tipo = h.get("qb_tipo") or ""
                                                                         if qb_tipo == "invoice" and qb_id:
@@ -5788,12 +5788,12 @@ def build_tab_stock(container) -> None:
                                                                     _tipo = h.get("tipo", "")
                                                                     _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
                                                                     with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                        ui.label(_p_fmt if _tipo == "Venta" else "�??")
+                                                                        ui.label(_p_fmt if _tipo == "Venta" else "””")
                                                 with ui.row().classes("w-full justify-end mt-4"):
                                                     ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
 
                                         background_tasks.create(_cargar_y_mostrar(), name="stock_historial")
-                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "�??"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
+                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "””"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
 
         def _cargar() -> None:
             items, err = fetch_qb_items(user["id"])
@@ -5856,7 +5856,7 @@ def build_tab_busqueda() -> None:
                 or ""
             ).strip()
             seller_nick = (seller.get("nickname") or "").strip() if isinstance(seller, dict) else ""
-            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "�??")
+            seller_display = seller_nick or (f"ID {seller_id}" if seller_id else "””")
             catalog = from_catalog or r.get("catalog_listing") is True or bool(r.get("catalog_product_id"))
             tipo = "Catálogo" if catalog else "Propia"
             price = r.get("price") or r.get("base_price")
@@ -5874,7 +5874,7 @@ def build_tab_busqueda() -> None:
                 price = None
             qty_raw = r.get("available_quantity") if r.get("available_quantity") is not None else r.get("availableQuantity") or r.get("quantity")
             if qty_raw is None:
-                qty_display, qty_num = "�??", 0
+                qty_display, qty_num = "””", 0
             elif isinstance(qty_raw, str):
                 qty_display = qty_raw
                 # API pública puede devolver rangos: RANGO_1_50, RANGO_51_100, etc.
@@ -5894,7 +5894,7 @@ def build_tab_busqueda() -> None:
                     qty_num = int(qty_raw)
                     qty_display = str(qty_num)
                 except (TypeError, ValueError):
-                    qty_display, qty_num = "�??", 0
+                    qty_display, qty_num = "””", 0
             perm = (r.get("permalink") or "").strip()
             if not perm or perm == "#":
                 wid = str(r.get("id") or r.get("product_id") or r.get("item_id") or "").strip()
@@ -5904,7 +5904,7 @@ def build_tab_busqueda() -> None:
                 "title": (r.get("title") or r.get("name") or "").strip(),
                 "tipo": tipo,
                 "price": price if price is not None else 999999999,
-                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "�??",
+                "price_display": f"$ {int(price):,}".replace(",", ".") if price is not None else "””",
                 "available_quantity": qty_num,
                 "available_quantity_display": qty_display,
                 "seller": seller_display,
@@ -5957,7 +5957,7 @@ def build_tab_busqueda() -> None:
                         resp = await run.io_bound(_fetch_api)
                         results_container.clear()
                         with results_container:
-                            ui.label(f"Respuesta ({resp.get('status', '�??')})").classes("text-base font-semibold mb-2")
+                            ui.label(f"Respuesta ({resp.get('status', '””')})").classes("text-base font-semibold mb-2")
                             body = resp.get("body")
                             if isinstance(body, dict):
                                 json_str = json.dumps(body, indent=2, ensure_ascii=False)
@@ -6265,9 +6265,9 @@ def build_tab_busqueda() -> None:
                             with ui.row().classes("w-full py-2 px-3 border-b border-gray-200 hover:bg-gray-50 flex-nowrap"):
                                 tit = (r.get("title") or "")[:80] + ("..." if len(r.get("title") or "") > 80 else "")
                                 ui.label(tit).classes("min-w-[280px] shrink-0 text-left")
-                                ui.label(r.get("price_display", "�??")).classes("min-w-[120px] shrink-0 text-right font-medium")
-                                ui.label(str(r.get("seller", "�??"))).classes("min-w-[150px] shrink-0 text-left")
-                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "�??")))).classes("min-w-[90px] shrink-0 text-right")
+                                ui.label(r.get("price_display", "””")).classes("min-w-[120px] shrink-0 text-right font-medium")
+                                ui.label(str(r.get("seller", "””"))).classes("min-w-[150px] shrink-0 text-left")
+                                ui.label(str(r.get("available_quantity_display", r.get("available_quantity", "””")))).classes("min-w-[90px] shrink-0 text-right")
                                 ui.label(r.get("tipo", "")).classes("min-w-[90px] shrink-0 text-left")
                                 with ui.row().classes("min-w-[180px] shrink-0 gap-1"):
                                     if perm and perm != "#":
@@ -6510,15 +6510,15 @@ def build_tab_pesos() -> None:
                                             pesario_data[i], pesario_data[i + 1] = pesario_data[i + 1], pesario_data[i]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("�?�", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("�?�", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–²", on_click=lambda i=idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–¼", on_click=lambda i=idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("border border-gray-200 w-8 text-center").style("padding: 2px 4px; vertical-align: middle;"):
                                     def borrar_pesario(rref: Dict[str, Any]) -> None:
                                         sync_inputs_to_rows()
                                         if rref in pesario_data:
                                             pesario_data.remove(rref)
                                             repintar()
-                                    ui.button("�?", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
+                                    ui.button("Á—", on_click=lambda r=row_ref: borrar_pesario(r)).classes("text-red-600 font-bold text-base min-w-0 px-0").props("flat dense no-caps")
                             row_to_inputs.append((row_ref, rinputs))
                             edit_rows.append(rinputs)
 
@@ -6901,14 +6901,14 @@ def build_tab_balance(container) -> None:
                                                 gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
                                                 repintar()
                                         with ui.row().classes("gap-0 justify-center"):
-                                            ui.button("�?�", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                            ui.button("�?�", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("â–²", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            ui.button("â–¼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                     with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
                                         def borrar_fila(r: Dict[str, Any]) -> None:
                                             if r in gastos_data:
                                                 gastos_data.remove(r)
                                                 repintar()
-                                        ui.button("�?", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("Á—", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                                 edit_rows_ref.append(rinputs)
                                 row_to_inputs.append((row, rinputs))
             _pintar_header()
@@ -7080,7 +7080,7 @@ def build_tab_admin(container) -> None:
                         return
                     cust = get_user_qb_customer(uid_int)
                     if cust:
-                        _qb_current_label["ref"].text = f"Customer actual: {cust.get('name', '�??')} (id {cust.get('id', '�??')})"
+                        _qb_current_label["ref"].text = f"Customer actual: {cust.get('name', '””')} (id {cust.get('id', '””')})"
                     else:
                         _qb_current_label["ref"].text = "Sin customer asignado"
 
@@ -7114,9 +7114,9 @@ def build_tab_admin(container) -> None:
                             with ui.element("tbody"):
                                 for c in customers:
                                     cid = str(c.get("Id", ""))
-                                    cname = str(c.get("DisplayName") or c.get("FullyQualifiedName") or "�??")
+                                    cname = str(c.get("DisplayName") or c.get("FullyQualifiedName") or "””")
                                     cemail_obj = c.get("PrimaryEmailAddr") or {}
-                                    cemail = str(cemail_obj.get("Address") or "�??") if isinstance(cemail_obj, dict) else "�??"
+                                    cemail = str(cemail_obj.get("Address") or "””") if isinstance(cemail_obj, dict) else "””"
                                     with ui.element("tr").classes("border-t border-gray-200 hover:bg-blue-50"):
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
                                             ui.label(cid)
@@ -7144,7 +7144,7 @@ def build_tab_admin(container) -> None:
                                                     if creds_admin and not creds_usuario:
                                                         set_qb_app_credentials(uid_int, creds_admin["client_id"], creds_admin["client_secret"], creds_admin.get("redirect_uri"))
                                                 _qb_current_label["ref"].text = f"Customer actual: {cname_inner} (id {cid_inner})"
-                                                ui.notify(f"Asignado {cname_inner} �?? usuario {uid_str}. Tabs QB habilitadas.", color="positive")
+                                                ui.notify(f"Asignado {cname_inner} â†’ usuario {uid_str}. Tabs QB habilitadas.", color="positive")
                                             ui.button("Asignar", on_click=_asignar).props("flat dense no-caps").classes("text-xs text-blue-600")
 
                 ui.button("Buscar clientes en QB", on_click=_buscar_customers_qb, color="primary").props("dense no-caps")
@@ -7448,21 +7448,21 @@ def _calc_courier_row(
     env_dom = _f(courier.get("env_dom"))
     iibb = _f(courier.get("iibb"))
 
-    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa �? FOB Total (en USD �? Dólar)
-    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa �? FOB Total
+    L = derechos_rate * fob_total * dolar_oficial  # Derechos = tasa Á— FOB Total (en USD Á— Dólar)
+    M = estad_rate * fob_total * dolar_oficial     # Estadística = tasa Á— FOB Total
     N = kg_real * peso_total * dolar_oficial  # Flete: dólar oficial
     O_val = almacenaje * peso_total * dolar_oficial
     P = res_3244 * dolar_oficial
     Q = seguro * dolar_oficial
     R = gas_ope * dolar_oficial
     S = env_dom * dolar_oficial  # Env Dom: dólar oficial
-    # IVA FOB: (FOB + flete + seguro) �? dolar_despacho �? iva_rate; flete = Peso(total)�?2.5; seguro = (FOB+flete)�?0.01; CIF = FOB+flete+seguro
+    # IVA FOB: (FOB + flete + seguro) Á— dolar_despacho Á— iva_rate; flete = Peso(total)Á—2.5; seguro = (FOB+flete)Á—0.01; CIF = FOB+flete+seguro
     monto_flete = peso_total * 2.5 if peso_total > 0 else 0  # Peso (columna total), no Peso U
     monto_seguro = (fob_total + monto_flete) * 0.01
     cif = fob_total + monto_flete + monto_seguro
     iva_fob_pesos = iva_rate * cif * dolar_despacho  # IVA FOB usa dólar despacho
 
-    # IVA vs Exento: según Datos �?? IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
+    # IVA vs Exento: según Datos â†’ IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
     def _iva_cobra(v: Any) -> bool:
         return v is True or v == "true" or (isinstance(v, str) and v.lower() == "true") or v == 1
 
@@ -7477,7 +7477,7 @@ def _calc_courier_row(
     if iva_cfg is None:
         iva_cfg = {"almacenaje": True, "res_3244": True, "seguro": True, "gas_ope": True, "env_dom": True, "precio_con_iva": True}
 
-    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto �? 0.21
+    # Si Precio con IVA: IVA = monto - (monto / 1.21). Si no: IVA = monto Á— 0.21
     precio_con_iva = _iva_cobra(iva_cfg.get("precio_con_iva", True))
 
     def _calc_iva(monto: float) -> float:
@@ -7779,7 +7779,7 @@ def build_tab_importacion() -> None:
                             with ui.element("th").classes("font-semibold px-0.5 py-1 text-center border border-gray-300 text-xs bg-slate-100 dark:bg-slate-700").style("min-width: 48px;"):
                                 ui.label("Ordenar")
                             with ui.element("th").classes("font-semibold px-1 py-1 border border-gray-300 bg-slate-100 dark:bg-slate-700").style("min-width: 40px;"):
-                                ui.label("�?")
+                                ui.label("Á—")
                     with ui.element("tbody"):
                         for i, r in enumerate(importacion_rows):
                             r_in: Dict[str, Any] = {}
@@ -7866,9 +7866,9 @@ def build_tab_importacion() -> None:
                                                                 concepto, monto_ivai, iva, aplica = linea[0], linea[1], linea[2], linea[3]
                                                                 if aplica:
                                                                     if precio_con_iva_popup:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. �?? IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. â†’ IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
                                                                     else:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA �?? IVA = monto �? 0,21 = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA â†’ IVA = monto Á— 0,21 = {_fmt_mon(iva)}").classes("text-sm")
                                                                 else:
                                                                     ui.label(f"{concepto}: Exento").classes("text-sm text-gray-500")
                                                             tot_serv = det.get("total_iva_servicios", 0)
@@ -7887,7 +7887,7 @@ def build_tab_importacion() -> None:
                                                                 dol_str = f"{dol:,.0f}".replace(",", ".")
                                                                 with ui.row().classes("gap-1"):
                                                                     ui.label("IVA FOB").classes("text-sm font-bold")
-                                                                    ui.label(f" = {_fmt_usd(cif_val)} �? {rate} �? {dol_str} = ").classes("text-sm")
+                                                                    ui.label(f" = {_fmt_usd(cif_val)} Á— {rate} Á— {dol_str} = ").classes("text-sm")
                                                                     ui.label(_fmt_mon(det.get('iva_fob', 0))).classes("text-sm font-bold")
                                                             else:
                                                                 ui.label(f"IVA FOB: {_fmt_mon(det.get('iva_fob', 0))}").classes("text-sm")
@@ -7975,14 +7975,14 @@ def build_tab_importacion() -> None:
                                             importacion_rows[idx], importacion_rows[idx + 1] = importacion_rows[idx + 1], importacion_rows[idx]
                                             repintar()
                                     with ui.row().classes("gap-0 justify-center"):
-                                        ui.button("�?�", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        ui.button("�?�", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–²", on_click=lambda idx=i: subir(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("â–¼", on_click=lambda idx=i: bajar(idx)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                 with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 40px;"):
                                     def borrar(idx: int) -> None:
                                         if 0 <= idx < len(importacion_rows):
                                             importacion_rows.pop(idx)
                                             repintar()
-                                    ui.button("�?", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                                    ui.button("Á—", on_click=lambda idx=i: borrar(idx)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
                             input_rows_ref.append(r_in)
 
         def _parse_iva_bool(v: Any) -> bool:
@@ -8361,14 +8361,14 @@ def build_tab_datos() -> None:
                                                         data[i], data[i + 1] = data[i + 1], data[i]
                                                         repintar()
                                                 with ui.row().classes("gap-0 justify-center"):
-                                                    ui.button("�?�", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                                    ui.button("�?�", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("â–²", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                    ui.button("â–¼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
                                         with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 52px; width: 52px;"):
                                             def borrar_fila(i: int) -> None:
                                                 if 0 <= i < len(data):
                                                     data.pop(i)
                                                     repintar()
-                                            ui.button("�?", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                            ui.button("Á—", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                     edit_rows.append(rinputs)
 
                 repintar()
@@ -8472,7 +8472,7 @@ def build_tab_datos() -> None:
                                                         }
                                                 tabla_iva_vs_exento_data.pop(i)
                                                 repintar_iva()
-                                        ui.button("�?", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                        ui.button("Á—", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
                                 iva_vs_exento_edit_rows.append(rinputs)
 
             repintar_iva()
@@ -8600,7 +8600,7 @@ def index(request: Request) -> None:  # type: ignore[override]
     qb_realm_id = request.query_params.get("qb_realm_id", "")
     if qb_oauth_error:
         with root:
-            ui.label(f"�? Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"❌ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("qb_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("qb_oauth_error_desc", ""))
@@ -8609,7 +8609,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         return
     if ml_error:
         with root:
-            ui.label(f"�? Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"❌ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("ml_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("ml_oauth_error_desc", ""))
@@ -8617,9 +8617,9 @@ def index(request: Request) -> None:  # type: ignore[override]
             if ml_error == "no_code":
                 ui.label(
                     "El parámetro 'code' no llegó al servidor. Posibles causas:\n"
-                    "�?� Ngrok: si viste la página 'Visit Site', haz clic ahí y vuelve a intentar.\n"
-                    "�?� Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
-                    "�?� Prueba en ventana de incógnito o con otro navegador."
+                    "• Ngrok: si viste la página 'Visit Site', haz clic ahí y vuelve a intentar.\n"
+                    "• Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
+                    "• Prueba en ventana de incógnito o con otro navegador."
                 ).classes("text-gray-600 mb-4 whitespace-pre-line")
             ui.link("Volver al inicio", "/").classes("text-primary")
         return
@@ -8641,7 +8641,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             redirect_uri = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
         if not client_id or not client_secret:
             with root:
-                ui.label("�? Configurá tu App ID y Client Secret en Configuración antes de conectar.").classes("text-negative mb-4")
+                ui.label("❌ Configurá tu App ID y Client Secret en Configuración antes de conectar.").classes("text-negative mb-4")
             return
         redirect_uri = (redirect_uri or "").strip() or "http://localhost:8083/ml/callback"
         try:
@@ -8669,24 +8669,24 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label(f"�? Error al obtener token: {e}").classes("text-negative text-lg mb-2")
+                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 causas = (
                     "Posibles causas:\n"
-                    "�?� redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
-                    "�?� Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
-                    "�?� El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
+                    "• redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
+                    "• Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
+                    "• El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
                 )
                 if "invalid" in err_msg.lower() or "validating grant" in err_msg.lower():
                     causas += (
-                        "\n\n�?�️ ¿Intentabas conectar QuickBooks? Si es así, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
+                        "\n\n⚠️ ¿Intentabas conectar QuickBooks? Si es así, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
                     )
                 ui.label(causas).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
                 ui.link("Volver a Configuración", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"�? Error al obtener token: {e}").classes("text-negative mb-4")
+                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative mb-4")
             return
         data = resp.json()
         access_token = data.get("access_token")
@@ -8694,7 +8694,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"�? Respuesta inesperada: {data}").classes("text-negative mb-4")
+                ui.label(f"❌ Respuesta inesperada: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -8722,7 +8722,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         qb_app_creds = get_qb_app_credentials(user["id"])
         if not qb_app_creds:
             with root:
-                ui.label("�? Configurá Client ID y Client Secret de QuickBooks en Configuración antes de conectar.").classes("text-negative mb-4")
+                ui.label("❌ Configurá Client ID y Client Secret de QuickBooks en Configuración antes de conectar.").classes("text-negative mb-4")
                 ui.link("Volver a Configuración", "/").classes("text-primary")
             return
         client_id = qb_app_creds["client_id"]
@@ -8758,19 +8758,19 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label("�? Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
+                ui.label("❌ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 ui.label(
                     "Posibles causas:\n"
-                    "�?� Redirect URI: en developer.intuit.com �?? Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
-                    "�?� NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
-                    "�?� El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
+                    "• Redirect URI: en developer.intuit.com â†’ Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
+                    "• NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
+                    "• El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
                 ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
                 ui.link("Volver a Configuración", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"�? Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
+                ui.label(f"❌ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
                 ui.link("Volver al inicio", "/").classes("text-primary")
             return
         data = resp.json()
@@ -8779,7 +8779,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"�? Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
+                ui.label(f"❌ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -8851,10 +8851,10 @@ def main() -> None:
     env_path = Path(__file__).parent / ".env"
     load_dotenv(env_path)
     try:
-        import fitz  # noqa: F401  # pymupdf �?? Invoices «Otra»
+        import fitz  # noqa: F401  # pymupdf ”” Invoices «Otra»
     except ImportError:
         logging.warning(
-            "PyMuPDF no instalado (pip install pymupdf). Invoices �?? botón «Otra» no funcionará hasta instalarlo "
+            "PyMuPDF no instalado (pip install pymupdf). Invoices â†’ botón «Otra» no funcionará hasta instalarlo "
             "en el mismo entorno que ejecuta esta app (p. ej. %s -m pip install pymupdf).",
             sys.executable or "python3",
         )
