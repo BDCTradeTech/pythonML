@@ -122,7 +122,7 @@ from tabs.cuotas import build_tab_cuotas, _cuotas_key
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.33"
+VERSION = "2.26.05.27.34"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -804,7 +804,7 @@ def _pdf_insert_sku_in_union(
     text: str,
     y_row_align: Optional[float] = None,
 ) -> None:
-    """Redibuja el SKU en â‰¤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
+    """Redibuja el SKU en ≤2 líneas. y_row_align = d_rect.y0 alinea con la primera línea de descripción (mismo baseline que el texto de descripción)."""
     import fitz  # pymupdf
 
     u = fitz.Rect(union_rect)
@@ -3127,9 +3127,9 @@ def _mostrar_tabla_precios(
 
     def _abrir_detalle_catalogo(row: Dict[str, Any]) -> None:
         _STATUS_MAP = {
-            "winning":             ("âœ“", "Ganando",               "text-positive font-bold"),
+            "winning":             ("✓", "Ganando",               "text-positive font-bold"),
             "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
-            "competing":           ("â†“", "Compitiendo",           "text-orange-500 font-bold"),
+            "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
             "listed":              ("””", "Publicado sin ganar",   "text-gray-500"),
         }
         _REASON_ES = {
@@ -3315,7 +3315,7 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt âˆ’ 12pt padding lateral
+        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt − 12pt padding lateral
 
         def _trunc(s):
             if not s or s == "””":
@@ -5642,7 +5642,7 @@ def build_tab_stock(container) -> None:
 
         if not qb_tokens:
             ui.label(
-                "Credenciales configuradas. Andá a Configuración â†’ QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
+                "Credenciales configuradas. Andá a Configuración → QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
             ).classes("text-warning")
             return
 
@@ -7144,7 +7144,7 @@ def build_tab_admin(container) -> None:
                                                     if creds_admin and not creds_usuario:
                                                         set_qb_app_credentials(uid_int, creds_admin["client_id"], creds_admin["client_secret"], creds_admin.get("redirect_uri"))
                                                 _qb_current_label["ref"].text = f"Customer actual: {cname_inner} (id {cid_inner})"
-                                                ui.notify(f"Asignado {cname_inner} â†’ usuario {uid_str}. Tabs QB habilitadas.", color="positive")
+                                                ui.notify(f"Asignado {cname_inner} → usuario {uid_str}. Tabs QB habilitadas.", color="positive")
                                             ui.button("Asignar", on_click=_asignar).props("flat dense no-caps").classes("text-xs text-blue-600")
 
                 ui.button("Buscar clientes en QB", on_click=_buscar_customers_qb, color="primary").props("dense no-caps")
@@ -7462,7 +7462,7 @@ def _calc_courier_row(
     cif = fob_total + monto_flete + monto_seguro
     iva_fob_pesos = iva_rate * cif * dolar_despacho  # IVA FOB usa dólar despacho
 
-    # IVA vs Exento: según Datos â†’ IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
+    # IVA vs Exento: según Datos → IVA vs Exento, cada courier cobra IVA solo en los campos marcados (Origen = courier)
     def _iva_cobra(v: Any) -> bool:
         return v is True or v == "true" or (isinstance(v, str) and v.lower() == "true") or v == 1
 
@@ -7866,9 +7866,9 @@ def build_tab_importacion() -> None:
                                                                 concepto, monto_ivai, iva, aplica = linea[0], linea[1], linea[2], linea[3]
                                                                 if aplica:
                                                                     if precio_con_iva_popup:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. â†’ IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} IVA incl. → IVA = monto - (monto/1,21) = {_fmt_mon(iva)}").classes("text-sm")
                                                                     else:
-                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA â†’ IVA = monto × 0,21 = {_fmt_mon(iva)}").classes("text-sm")
+                                                                        ui.label(f"{concepto}: {_fmt_mon(monto_ivai)} sin IVA → IVA = monto × 0,21 = {_fmt_mon(iva)}").classes("text-sm")
                                                                 else:
                                                                     ui.label(f"{concepto}: Exento").classes("text-sm text-gray-500")
                                                             tot_serv = det.get("total_iva_servicios", 0)
@@ -8762,7 +8762,7 @@ def index(request: Request) -> None:  # type: ignore[override]
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 ui.label(
                     "Posibles causas:\n"
-                    "• Redirect URI: en developer.intuit.com â†’ Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
+                    "• Redirect URI: en developer.intuit.com → Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
                     "• NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
                     "• El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
                 ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
@@ -8854,7 +8854,7 @@ def main() -> None:
         import fitz  # noqa: F401  # pymupdf ”” Invoices «Otra»
     except ImportError:
         logging.warning(
-            "PyMuPDF no instalado (pip install pymupdf). Invoices â†’ botón «Otra» no funcionará hasta instalarlo "
+            "PyMuPDF no instalado (pip install pymupdf). Invoices → botón «Otra» no funcionará hasta instalarlo "
             "en el mismo entorno que ejecuta esta app (p. ej. %s -m pip install pymupdf).",
             sys.executable or "python3",
         )
