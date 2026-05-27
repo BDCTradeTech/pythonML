@@ -50,6 +50,23 @@ from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import app, background_tasks, context, run, ui
 
+# --- Compatibilidad Fase 1: funciones ML movidas a ml_api.py ---
+from ml_api import (
+    get_ml_access_token,
+    _parse_ml_item_body, _cuotas_desde_item, _body_to_precios_item,
+    _tipo_publicacion_desde_item, _extraer_color_desde_texto,
+    ml_get_my_items, ml_update_item_price, ml_get_one_item_full,
+    ml_get_item_sale_price, ml_get_item_sale_price_full,
+    ml_get_item_price_to_win, ml_get_item_performance,
+    ml_get_promotion_item_discounts, ml_get_promotion_item_discounts_by_user,
+    ml_get_promotion_item_discounts_by_campaign,
+    ml_get_item_prices, ml_enriquecer_sale_price, ml_fetch_price_for_item,
+    ml_get_product_detail, ml_get_item_description, ml_get_item,
+    ml_get_items_multiget, ml_get_items_multiget_with_attributes, ml_get_items_multiget_all,
+    ml_get_users_multiget, ml_get_user_id, ml_get_user_profile,
+    ml_get_orders, ml_get_shipments_today, ml_search_similar,
+)
+
 # --- Compatibilidad Fase 1: funciones de DB movidas a db.py ---
 from db import (
     get_connection, init_db, save_query,
@@ -6385,24 +6402,6 @@ def build_tab_ventas(container) -> None:
         header_card = ui.column().classes("w-full mb-2")
         filtro_row = ui.row().classes("w-full mb-2 items-center gap-4")
         result_area = ui.column().classes("w-full gap-2")
-
-        def _cuotas_desde_item(body: Dict[str, Any]) -> str:
-            """Devuelve x1, x3 o x6 según listing_type_id y INSTALLMENTS_CAMPAIGN (en sale_terms o attributes)."""
-            listing_type_id = str(body.get("listing_type_id") or "").strip().lower()
-            if listing_type_id == "gold_special":
-                return "x1"
-            if listing_type_id == "gold_pro":
-                def _tiene_3x_campaign(items: list) -> bool:
-                    for a in items or []:
-                        if isinstance(a, dict) and (str(a.get("id") or "").upper() == "INSTALLMENTS_CAMPAIGN"):
-                            vn = str(a.get("value_name") or "").lower()
-                            if "3x_campaign" in vn or vn == "3x_campaign":
-                                return True
-                    return False
-                if _tiene_3x_campaign(body.get("sale_terms")) or _tiene_3x_campaign(body.get("attributes")):
-                    return "x3"
-                return "x6"
-            return "x1"
 
         def _tipo_base_desde_body(body: Dict[str, Any]) -> str:
             """Devuelve Propia o Catálogo. Solo catalog_listing=True es Catálogo; catalog_listing=false o ausente es Propia."""
