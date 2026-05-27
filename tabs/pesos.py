@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, run, ui
 
 from db import get_cotizador_tabla, set_cotizador_tabla
+from tabs.admin import TABLA_PESARIO_DEFAULT
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,13 @@ from db import (
     set_cotizador_tabla,
     COTIZADOR_DEFAULTS,
 )
+from tabs.admin import (
+    TABLA_TRAFO_GRAMOS_DEFAULT,
+    TABLA_POSICION_DEFAULT,
+    TABLA_ENVIOS_ML_DEFAULT,
+    TABLA_COURIER_DEFAULT,
+    TABLA_IVA_VS_EXENTO_DEFAULT,
+)
 
 
 # ---------------------------------------------------------------------------
