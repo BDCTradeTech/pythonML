@@ -67,6 +67,17 @@ from ml_api import (
     ml_get_orders, ml_get_shipments_today, ml_search_similar,
 )
 
+# --- Compatibilidad Fase 1: funciones QB movidas a qb_api.py ---
+from qb_api import (
+    _refresh_qb_token_if_needed,
+    fetch_qb_customers, _qb_raw_query, fetch_qb_company_info,
+    fetch_qb_vendors, fetch_qb_bills, fetch_qb_items,
+    fetch_qb_items_search, fetch_qb_item_history,
+    fetch_qb_customer_detail, fetch_qb_invoice_pdf, fetch_qb_item_by_id,
+    fetch_qb_invoices, fetch_qb_invoice_detail,
+    patch_invoice_pdf_line_items,
+)
+
 # --- Compatibilidad Fase 1: funciones de DB movidas a db.py ---
 from db import (
     get_connection, init_db, save_query,
