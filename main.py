@@ -53,7 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "2.26.05.27.03"
+VERSION = "2.26.05.27.04"
 
 # Pestañas del sistema (tab_key interno -> label visible). Usado en Admin para permisos.
 # compras_lista (Compras) se quitó de la tabla de permisos.
@@ -6689,9 +6689,12 @@ def build_tab_ventas(container) -> None:
                 if shp_xd > 0:
                     envio_real = shp_xd
                     envio_lbl  = "Envío Correo"
-                else:
-                    envio_real = float(p.get("ml_envios") or 6271)
+                elif has_api:
+                    envio_real = float(p.get("ml_envios") or 5823)
                     envio_lbl  = "Envío Flex"
+                else:
+                    envio_real = 0.0
+                    envio_lbl  = None
 
                 cobrado_real = gan_pesos = gan_vta_pct = gan_cos_pct = mcls = None
                 if has_api and has_calc:
@@ -6760,7 +6763,7 @@ def build_tab_ventas(container) -> None:
                                         ("IIBB ret.",  iibb_ret,   "text-sm text-negative", iibb_ret > 0),
                                         ("SIRTAC",     sirtac,     "text-sm text-negative", sirtac > 0),
                                         ("IIBB perc.", iibb_perc,  "text-sm text-negative", True),
-                                        (envio_lbl,    envio_real, "text-sm text-negative", True),
+                                        (envio_lbl,    envio_real, "text-sm text-negative", has_api),
                                     ]:
                                         if not show_r: continue
                                         border = " border-b-2 border-gray-300" if lbl_r == envio_lbl else ""
