@@ -206,18 +206,25 @@ def build_tab_datos() -> None:
         inp.on("blur", _on_blur)
 
     def _add_field(container: Dict[str, Any], key: str, label_text: str,
-                   label_cls: str = "min-w-[100px] text-sm",
-                   input_cls: str = "flex-1 max-w-[100px]") -> None:
-        """Crea row con label + input, registra en container y conecta auto-guardado."""
+                   unit: str = "", *,
+                   label_cls: str = "text-xs text-gray-700 flex-1",
+                   input_cls: str = "w-20 shrink-0") -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
-        with ui.row().classes("items-center gap-2 py-0.5"):
+        with ui.row().classes("items-center gap-1 py-0.5 w-full"):
             lbl = ui.label(label_text).classes(label_cls)
             if key in TOOLTIPS:
                 lbl.tooltip(TOOLTIPS[key])
+            if unit:
+                ui.label(unit).classes("text-[10px] text-gray-400 shrink-0 mr-1")
             inp = ui.input(value=display_val).classes(input_cls).props("dense")
             container[key] = inp
         _wire_blur(inp, key, label_text)
+
+    def _card_header(icon: str, title: str) -> None:
+        with ui.row().classes("items-center gap-1.5 mb-2 pb-1 border-b border-gray-200"):
+            ui.html(f'<i class="ti {icon}" style="font-size:15px;color:var(--q-primary)"></i>')
+            ui.label(title).classes("text-xs font-bold uppercase tracking-wide text-gray-600")
 
     inputs_params: Dict[str, Any] = {}
     inputs_cuotas: Dict[str, Any] = {}
@@ -229,93 +236,94 @@ def build_tab_datos() -> None:
     with ui.column().classes("w-full gap-4 p-4"):
         ui.label("Datos del cotizador de importaciones").classes("text-2xl font-semibold")
 
-        with ui.row().classes("w-full gap-4 flex-wrap"):
+        # --- Fila 1 ---
+        with ui.row().classes("w-full gap-3 flex-wrap items-start"):
 
-            # Dólar
-            with ui.card().classes("p-4 w-fit min-w-[180px]"):
-                ui.label("Dólar").classes("text-lg font-semibold mb-3")
+            with ui.card().classes("p-3 min-w-[170px]"):
+                _card_header("ti-currency-dollar", "Dólar")
                 for lbl_text, key in [
                     ("Oficial", "dolar_oficial"), ("Blue", "dolar_blue"),
                     ("Sistema", "dolar_sistema"), ("Despacho", "dolar_despacho"),
                 ]:
-                    _add_field(inputs_params, key, lbl_text, label_cls="min-w-[70px] text-sm")
+                    _add_field(inputs_params, key, lbl_text, "$")
 
-            # Traida por Kilo
-            with ui.card().classes("p-4 w-fit min-w-[140px]"):
-                ui.label("Traida por Kilo").classes("text-lg font-semibold mb-3")
-                _add_field(inputs_params, "kilo", "Kilo",
-                            label_cls="min-w-[60px] text-sm", input_cls="flex-1 max-w-[80px]")
+            with ui.card().classes("p-3 min-w-[150px]"):
+                _card_header("ti-weight", "Traída por Kilo")
+                _add_field(inputs_params, "kilo", "Por kilo", "u$")
 
-            # Mercadolibre
-            with ui.card().classes("p-4 w-fit min-w-[280px]"):
-                ui.label("Mercadolibre").classes("text-lg font-semibold mb-3")
-                for lbl_text, key in [
-                    ("ML - Comisión (%)", "ml_comision"),
-                    ("Comisión Fija (menor)", "ml_comision_fija_menor"),
-                    ("ML - Deb/Cre (%)", "ml_debcre"),
-                    ("ML - Sirtac (%)", "ml_sirtac"),
-                    ("ML - Envíos", "ml_envios"),
-                    ("ML - IIBB + PER (%)", "ml_iibb_per"),
-                    ("ML - Envíos grat.", "ml_envios_gratuitos"),
-                    ("ML - Cobrado", "ml_cobrado"),
-                    ("Gan. Neta s/Venta (%)", "ml_ganancia_neta_venta"),
+            with ui.card().classes("p-3 min-w-[230px]"):
+                _card_header("ti-building-store", "MercadoLibre")
+                for lbl_text, key, unit in [
+                    ("Comisión",            "ml_comision",           "%"),
+                    ("Comisión fija menor", "ml_comision_fija_menor", "$"),
+                    ("Deb/Cre",             "ml_debcre",             "%"),
+                    ("Sirtac",              "ml_sirtac",             "%"),
+                    ("Envíos",              "ml_envios",             ""),
+                    ("IIBB + PER",          "ml_iibb_per",           "%"),
+                    ("Envíos gratuitos",    "ml_envios_gratuitos",   ""),
+                    ("Cobrado",             "ml_cobrado",            ""),
+                    ("Gan. neta s/venta",   "ml_ganancia_neta_venta","%"),
                 ]:
-                    _add_field(inputs_params, key, lbl_text, label_cls="min-w-[160px] text-sm")
+                    _add_field(inputs_params, key, lbl_text, unit)
 
-            # Cuotas y Promociones
-            with ui.card().classes("p-4 w-fit min-w-[200px]"):
-                ui.label("Cuotas y Promociones").classes("text-lg font-semibold mb-3")
-                for lbl_text, key in [
-                    ("Cuotas 3x (%)", "cuotas_3x"), ("Cuotas 6x (%)", "cuotas_6x"),
-                    ("Cuotas 9x (%)", "cuotas_9x"), ("Cuotas 12x (%)", "cuotas_12x"),
-                    ("ML 3 cuotas", "ml_3cuotas"), ("ML 6 cuotas", "ml_6cuotas"),
+            with ui.card().classes("p-3 min-w-[190px]"):
+                _card_header("ti-credit-card", "Cuotas y Promociones")
+                for lbl_text, key, unit in [
+                    ("3 cuotas",    "cuotas_3x",  "%"),
+                    ("6 cuotas",    "cuotas_6x",  "%"),
+                    ("9 cuotas",    "cuotas_9x",  "%"),
+                    ("12 cuotas",   "cuotas_12x", "%"),
+                    ("ML 3x mult.", "ml_3cuotas", ""),
+                    ("ML 6x mult.", "ml_6cuotas", ""),
                 ]:
-                    _add_field(inputs_cuotas, key, lbl_text, label_cls="min-w-[100px] text-sm")
+                    _add_field(inputs_cuotas, key, lbl_text, unit)
 
-            # Miami
-            with ui.card().classes("p-4 w-fit min-w-[240px]"):
-                ui.label("Miami").classes("text-lg font-semibold mb-3")
-                for lbl_text, key in [
-                    ("Valor KG Miami", "valor_kg_miami"),
-                    ("Almac. Días x Kg", "almacenaje_dias_kg_miami"),
-                    ("Seguro Miami", "seguro_miami"),
-                    ("Almacenaje ×2 (u$)", "almacenaje_miami_x2"),
-                    ("Días almacenaje", "dias_almacenaje_miami"),
+        # --- Fila 2 ---
+        with ui.row().classes("w-full gap-3 flex-wrap items-start"):
+
+            with ui.card().classes("p-3 min-w-[150px]"):
+                _card_header("ti-motorbike", "Envíos Flex")
+                ui.label("próximamente").classes("text-xs text-gray-400 italic mt-1")
+
+            with ui.card().classes("p-3 min-w-[210px]"):
+                _card_header("ti-plane", "Miami")
+                for lbl_text, key, unit in [
+                    ("Valor KG",       "valor_kg_miami",           "u$"),
+                    ("Almac. días/kg", "almacenaje_dias_kg_miami", "u$"),
+                    ("Seguro",         "seguro_miami",             ""),
+                    ("Almacenaje ×2",  "almacenaje_miami_x2",      "u$"),
+                    ("Días almac.",    "dias_almacenaje_miami",    ""),
                 ]:
-                    _add_field(inputs_miami, key, lbl_text, label_cls="min-w-[140px] text-sm")
+                    _add_field(inputs_miami, key, lbl_text, unit)
 
-            # China
-            with ui.card().classes("p-4 w-fit min-w-[240px]"):
-                ui.label("China").classes("text-lg font-semibold mb-3")
-                for lbl_text, key in [
-                    ("Valor KG China", "valor_kg_china"),
-                    ("Almac. Días x Kg", "almacenaje_dias_kg_china"),
-                    ("Seguro China", "seguro_china"),
-                    ("Res 3244", "res_3244"),
-                    ("Gastos Operativos", "gastos_operativos"),
-                    ("Gastos Origen", "gastos_origen"),
-                    ("Envío Domicilio", "envio_domicilio"),
-                    ("Ajuste valor ANA", "ajuste_valor_ana"),
-                    ("Almacenaje ×3 (u$)", "almacenaje_china_x3"),
-                    ("Días almacenaje", "dias_almacenaje_china"),
+            with ui.card().classes("p-3 min-w-[210px]"):
+                _card_header("ti-ship", "China")
+                for lbl_text, key, unit in [
+                    ("Valor KG",          "valor_kg_china",          "u$"),
+                    ("Almac. días/kg",    "almacenaje_dias_kg_china","u$"),
+                    ("Seguro",            "seguro_china",            ""),
+                    ("Res 3244",          "res_3244",                ""),
+                    ("Gastos operativos", "gastos_operativos",       ""),
+                    ("Gastos origen",     "gastos_origen",           ""),
+                    ("Envío domicilio",   "envio_domicilio",         ""),
+                    ("Ajuste valor ANA",  "ajuste_valor_ana",        ""),
+                    ("Almacenaje ×3",     "almacenaje_china_x3",    "u$"),
+                    ("Días almac.",       "dias_almacenaje_china",   ""),
                 ]:
-                    _add_field(inputs_china, key, lbl_text, label_cls="min-w-[140px] text-sm")
+                    _add_field(inputs_china, key, lbl_text, unit)
 
-            # Impuestos (nueva card)
-            with ui.card().classes("p-4 w-fit min-w-[200px]"):
-                ui.label("Impuestos").classes("text-lg font-semibold mb-3")
+            with ui.card().classes("p-3 min-w-[175px]"):
+                _card_header("ti-receipt-tax", "Impuestos")
                 for lbl_text, key in [
-                    ("IVA 10,5% (%)", "iva_105"),
-                    ("IVA 21% (%)", "iva_21"),
-                    ("IIBB LHS (%)", "iibb_lhs"),
+                    ("IVA 10,5%", "iva_105"),
+                    ("IVA 21%",   "iva_21"),
+                    ("IIBB LHS",  "iibb_lhs"),
                 ]:
-                    _add_field(inputs_impuestos, key, lbl_text, label_cls="min-w-[120px] text-sm")
+                    _add_field(inputs_impuestos, key, lbl_text, "%")
 
-            # Logística (nueva card)
-            with ui.card().classes("p-4 w-fit min-w-[200px]"):
-                ui.label("Logística").classes("text-lg font-semibold mb-3")
-                _add_field(inputs_logistica, "descuento_lhs_kg", "Descuento LHS/Kg",
-                            label_cls="min-w-[130px] text-sm")
+            with ui.card().classes("p-3 min-w-[175px]"):
+                _card_header("ti-truck", "Logística")
+                _add_field(inputs_logistica, "descuento_lhs_kg", "Descuento LHS/kg", "u$")
 
         def guardar_params() -> None:
             all_inputs = {**inputs_params, **inputs_cuotas, **inputs_miami,
