@@ -248,8 +248,9 @@ def build_tab_ventas(container) -> None:
                     if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                         tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
                     _pays_r1 = ord_item.get("payments") or []
-                    _payment_id = str(_pays_r1[0].get("id") or "") if _pays_r1 else ""
-                    _payment_type = str((_pays_r1[0].get("payment_type") or "") if _pays_r1 else "")
+                    _p_ap_r1 = next((p for p in _pays_r1 if str(p.get("status", "")).lower() == "approved"), None) or (_pays_r1[0] if _pays_r1 else None)
+                    _payment_id = str(_p_ap_r1.get("id") or "") if _p_ap_r1 else ""
+                    _payment_type = str(_p_ap_r1.get("payment_type") or "") if _p_ap_r1 else ""
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "hora": dt.strftime("%H:%M"), "productos": titulo[:100], "title": titulo[:100],
                         "tipo_venta": tipo, "cuotas": cuotas, "tipo": tipo_oferta, "tipo_oferta": tipo_oferta,
@@ -313,8 +314,9 @@ def build_tab_ventas(container) -> None:
             thumb_url   = ""
             if raw_order:
                 pays = raw_order.get("payments") or []
-                if pays:
-                    payment_id = str(pays[0].get("id") or "")
+                _p_ap = next((p for p in pays if str(p.get("status", "")).lower() == "approved"), None) or (pays[0] if pays else None)
+                if _p_ap:
+                    payment_id = str(_p_ap.get("id") or "")
                 ship = raw_order.get("shipping") or {}
                 if ship.get("id"):
                     shipping_id = str(ship["id"])
@@ -1436,8 +1438,9 @@ def build_tab_ventas(container) -> None:
                     if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                         tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
                     _pays_r2 = ord_item.get("payments") or []
-                    _payment_id = str(_pays_r2[0].get("id") or "") if _pays_r2 else ""
-                    _payment_type = str((_pays_r2[0].get("payment_type") or "") if _pays_r2 else "")
+                    _p_ap_r2 = next((p for p in _pays_r2 if str(p.get("status", "")).lower() == "approved"), None) or (_pays_r2[0] if _pays_r2 else None)
+                    _payment_id = str(_p_ap_r2.get("id") or "") if _p_ap_r2 else ""
+                    _payment_type = str(_p_ap_r2.get("payment_type") or "") if _p_ap_r2 else ""
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
