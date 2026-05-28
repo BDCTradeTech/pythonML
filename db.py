@@ -472,6 +472,19 @@ def init_db() -> None:
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS flex_zonas (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          INTEGER NOT NULL,
+            nombre           TEXT NOT NULL,
+            codigos_postales TEXT NOT NULL,
+            tarifa           REAL NOT NULL,
+            orden            INTEGER DEFAULT 0,
+            created_at       TEXT DEFAULT (datetime('now'))
+        )
+        """
+    )
 
     # Migración: agregar pay_status a ventas_datos si no existe
     cur.execute("PRAGMA table_info(ventas_datos)")
