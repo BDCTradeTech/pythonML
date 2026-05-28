@@ -208,30 +208,32 @@ def build_tab_datos() -> None:
     # --- UI helpers ---
 
     def _card_header(icon: str, title: str) -> None:
-        with ui.row().classes("items-center gap-1.5 pb-1 mb-1 w-full").style("border-bottom:1px solid #e5e7eb"):
+        with ui.row().classes("items-center gap-1.5 w-full").style(
+            "border-bottom:1px solid #e5e7eb; padding-bottom:6px; margin-bottom:4px"
+        ):
             ui.html(f'<i class="ti {icon}" style="font-size:14px;color:var(--q-primary)"></i>')
             ui.label(title).classes("leading-none").style("font-size:12px; font-weight:500; color:#374151")
 
     def _add_field(container: Dict[str, Any], key: str, label_text: str, unit: str = "") -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
-        with ui.row().classes("justify-between items-center py-1 w-full gap-1"):
+        with ui.row().classes("justify-between items-center py-0 w-full gap-2"):
             with ui.row().classes("items-center gap-1 flex-1 min-w-0 overflow-hidden"):
-                lbl = ui.label(label_text).classes("text-xs truncate").style("color:#6b7280")
+                lbl = ui.label(label_text).classes("truncate").style("font-size:11px; color:#6b7280")
                 if key in TOOLTIPS:
                     lbl.tooltip(TOOLTIPS[key])
                 if unit:
-                    ui.label(unit).classes("text-[10px] shrink-0 whitespace-nowrap").style("color:#d1d5db")
+                    ui.label(unit).classes("shrink-0 whitespace-nowrap").style("font-size:10px; color:#d1d5db")
             inp = (
                 ui.input(value=display_val)
-                .props('dense outlined input-style="text-align:right; font-size:11px; padding:2px 4px;"')
-                .style("width:90px; min-width:90px; flex-shrink:0")
+                .props('dense outlined input-style="text-align:right; font-size:11px; padding:0 4px;"')
+                .style("width:90px; min-width:90px; flex-shrink:0; height:26px")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
 
     def _divider() -> None:
-        ui.element("div").classes("w-full my-1").style("border-top:1px solid #f3f4f6")
+        ui.element("div").classes("w-full").style("border-top:1px solid #f3f4f6; margin:3px 0")
 
     # --- Input dicts por card ---
     inp_dolar:      Dict[str, Any] = {}
