@@ -82,11 +82,13 @@ def build_tab_datos() -> None:
     uid = user["id"]
 
     ui.add_head_html('''<style>
-.datos-card .q-field__control { min-height: 28px !important; height: 28px !important; }
-.datos-card .q-field__marginal { height: 28px !important; }
-.datos-card .q-field { padding-bottom: 0 !important; }
-.datos-card .q-field__native { padding: 0 4px !important; font-size: 11px !important; }
-.datos-card .nicegui-input { margin: 0 !important; }
+.datos-card .q-field__control { min-height: 26px !important; height: 26px !important; }
+.datos-card .q-field__marginal { height: 26px !important; }
+.datos-card .q-field { padding-bottom: 0 !important; margin-bottom: 0 !important; }
+.datos-card .q-field__inner { min-height: 0 !important; padding-bottom: 0 !important; }
+.datos-card .q-field__bottom { display: none !important; }
+.datos-card .q-field__native { padding: 0 4px !important; font-size: 11px !important; line-height: 26px !important; }
+.datos-card .nicegui-input { margin: 0 !important; padding: 0 !important; }
 </style>''')
 
     def _get(key: str) -> str:
@@ -234,8 +236,8 @@ def build_tab_datos() -> None:
                     ui.label(unit).classes("shrink-0 whitespace-nowrap").style("font-size:10px; line-height:1.2; color:#d1d5db")
             inp = (
                 ui.input(value=display_val)
-                .props("dense")
-                .style("width:100px")
+                .props('dense outlined hide-bottom-space input-style="text-align:right; font-size:11px; padding:0 4px;"')
+                .style("width:100px; flex-shrink:0")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
