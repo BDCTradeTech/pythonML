@@ -282,6 +282,13 @@ def build_tab_ventas(container) -> None:
                 try: return f"{float(val):.2f}%".replace(".", ",")
                 except (TypeError, ValueError): return "0,00%"
 
+            def _lbl(texto, es_real: bool):
+                color_icon = "#27500A" if es_real else "#BA7517"
+                icon = "ti-checks" if es_real else "ti-calculator"
+                with ui.row().classes("items-center gap-1"):
+                    ui.label(texto).classes("text-sm").style("color: var(--color-text-secondary)")
+                    ui.html(f'<i class="ti {icon}" style="font-size:12px;color:{color_icon}" aria-hidden="true"></i>')
+
             sku          = str(row.get("seller_sku") or "")
             unit_price   = float(row.get("unit_price") or 0)
             cantidad     = int(row.get("cantidad") or 1)
@@ -465,6 +472,7 @@ def build_tab_ventas(container) -> None:
                                 conn.close()
                         await run.io_bound(_save_popup_pay)
 
+                envio_es_real = (_lt == "cross_docking")
                 thumb_real = item_data.get("thumbnail") or ""
                 if not thumb_real:
                     _pics = item_data.get("pictures") or []
@@ -506,15 +514,15 @@ def build_tab_ventas(container) -> None:
                                     ui.label(f"{fmt_moneda(unit_price)} × {cantidad}").classes("text-xs text-gray-400 -mt-1 mb-0.5")
                                 # 2. Comisión ML
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    ui.label("Comisión ML").classes("text-sm text-gray-600")
+                                    _lbl("Comisión ML", True)
                                     ui.label(fmt_moneda(meli_fee)).classes("text-sm text-negative")
                                 # 3. Costo Cuotas (siempre)
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    ui.label("Costo Cuotas").classes("text-sm text-gray-600")
+                                    _lbl("Costo Cuotas", True)
                                     ui.label(fmt_moneda(cuotas_fee)).classes("text-sm text-negative")
                                 # 4. IVA neto + sub-block
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    ui.label("IVA neto").classes("text-sm text-gray-600")
+                                    _lbl("IVA neto", False)
                                     ui.label(fmt_moneda(iva_total)).classes("text-sm text-negative")
                                 with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
                                     for lbl_s, val_s in [
@@ -523,15 +531,15 @@ def build_tab_ventas(container) -> None:
                                         ("IVA importación (créd)", iva_impor),
                                     ]:
                                         with ui.row().classes("w-full justify-between"):
-                                            ui.label(lbl_s).classes("text-xs text-gray-500")
+                                            _lbl(lbl_s, False)
                                             ui.label(fmt_moneda(val_s)).classes("text-xs text-gray-600")
                                 # 5. Deb/Cred
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    ui.label("Deb/Cred").classes("text-sm text-gray-600")
+                                    _lbl("Deb/Cred", True)
                                     ui.label(fmt_moneda(deb_cred)).classes("text-sm text-negative")
                                 # 6. SIRTAC
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    ui.label("SIRTAC").classes("text-sm text-gray-600")
+                                    _lbl("SIRTAC", True)
                                     ui.label(fmt_moneda(sirtac)).classes("text-sm text-negative")
                                 # 7. IIBB combinado + sub-block
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
@@ -539,21 +547,17 @@ def build_tab_ventas(container) -> None:
                                     ui.label(fmt_moneda(iibb_ret + iibb_perc)).classes("text-sm text-negative")
                                 with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
                                     with ui.row().classes("w-full justify-between"):
-                                        with ui.row().classes("gap-1"):
-                                            ui.label("Retención").classes("text-xs text-gray-500")
-                                            ui.label("(real)").classes("text-xs text-gray-400 italic")
+                                        _lbl("IIBB ret.", True)
                                         ui.label(fmt_moneda(iibb_ret)).classes("text-xs text-negative")
                                     with ui.row().classes("w-full justify-between"):
-                                        with ui.row().classes("gap-1"):
-                                            ui.label("Percepción").classes("text-xs text-gray-500")
-                                            ui.label("(est.)").classes("text-xs text-gray-400 italic")
+                                        _lbl("IIBB perc.", False)
                                         ui.label(fmt_moneda(iibb_perc)).classes("text-xs text-negative")
                                 # 8. Costo producto
                                 if has_calc:
                                     with ui.column().classes("w-full py-0.5 gap-0"):
                                         with ui.row().classes("w-full justify-between items-center"):
                                             _cp_lbl = f"Costo producto (×{cantidad})" if cantidad > 1 else "Costo producto"
-                                            ui.label(_cp_lbl).classes("text-sm text-gray-600")
+                                            _lbl(_cp_lbl, False)
                                             ui.label(fmt_moneda(total_costo)).classes("text-sm text-negative")
                                         if cantidad > 1:
                                             ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)} × {cantidad}").classes("text-xs text-gray-400")
@@ -561,7 +565,7 @@ def build_tab_ventas(container) -> None:
                                             ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)}").classes("text-xs text-gray-400")
                                 # 9. Envío + separador
                                 with ui.row().classes("w-full justify-between items-center py-0.5 border-b-2 border-gray-300 pb-2 mb-2"):
-                                    ui.label(envio_lbl or "Envío").classes("text-sm text-gray-600")
+                                    _lbl(envio_lbl or "Envío", envio_es_real)
                                     ui.label(fmt_moneda(envio_real)).classes("text-sm text-negative")
                                 # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
                                 if gan_pesos is not None:
@@ -576,6 +580,14 @@ def build_tab_ventas(container) -> None:
                                         with ui.column().classes("gap-0 items-end"):
                                             ui.label("Gan % Cos").classes("text-xs text-gray-500")
                                             ui.label(fmt_pct2(gan_cos_pct)).classes(f"text-xl font-bold {_gcls}")
+                                ui.separator()
+                                with ui.row().classes("gap-4 text-xs").style("color: var(--color-text-secondary)"):
+                                    with ui.row().classes("items-center gap-1"):
+                                        ui.html('<i class="ti ti-checks" style="font-size:12px;color:#27500A" aria-hidden="true"></i>')
+                                        ui.label("Dato real de ML/MP")
+                                    with ui.row().classes("items-center gap-1"):
+                                        ui.html('<i class="ti ti-calculator" style="font-size:12px;color:#BA7517" aria-hidden="true"></i>')
+                                        ui.label("Valor estimado")
 
             background_tasks.create(_fetch_real(), name="popup_venta_real")
 
