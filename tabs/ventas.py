@@ -1267,6 +1267,26 @@ def build_tab_ventas(container) -> None:
                             pass
                 await run.io_bound(_fetch_am_ships, _am_ship_candidates)
 
+            # Persistir logistic_type actualizado para account_money (independiente de gan_pesos)
+            _lt_updates = [
+                {"payment_id": v.get("payment_id"), "logistic_type": v.get("logistic_type")}
+                for v in ventas_raw
+                if v.get("payment_type") == "account_money"
+                and v.get("payment_id")
+                and v.get("logistic_type")
+            ]
+            if _lt_updates:
+                def _update_lt(rows):
+                    conn = get_connection()
+                    for r in rows:
+                        conn.execute(
+                            "UPDATE ventas_datos SET logistic_type=? WHERE payment_id=? AND user_id=?",
+                            (r["logistic_type"], r["payment_id"], _uid)
+                        )
+                    conn.commit()
+                    conn.close()
+                await run.io_bound(_update_lt, _lt_updates)
+
             # Estimar gan$ para account_money usando params del cotizador
             _am_rows: List[Dict] = []
             for v in ventas_raw:
