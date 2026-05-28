@@ -502,7 +502,88 @@ def build_tab_ventas(container) -> None:
                         if is_rejected:
                             ui.label("Pago rechazado — sin comisión cobrada").classes("text-negative text-sm font-medium py-3 text-center w-full")
                         elif not has_api:
-                            ui.label("Datos no disponibles para pagos con saldo ML").classes("text-sm text-gray-400 italic py-3 text-center w-full")
+                            _ml_com      = float(p.get("ml_comision") or 0.15)
+                            _ml_deb      = float(p.get("ml_debcre") or 0.006)
+                            _ml_env      = float(p.get("ml_envios") or 5823)
+                            _ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
+                            _tasa_e = {
+                                "x3": float(p.get("cuotas_3x") or 0), "x6": float(p.get("cuotas_6x") or 0),
+                                "x9": float(p.get("cuotas_9x") or 0), "x12": float(p.get("cuotas_12x") or 0),
+                            }.get(cuotas_val, 0.0)
+                            _meli_fee_e   = total_price * _ml_com
+                            _cuotas_fee_e = total_price * _tasa_e
+                            _deb_cred_e   = total_price * _ml_deb
+                            _iibb_perc_e  = total_price * ml_iibb
+                            _iva_venta_e  = total_price * tipo_iva / (1 + tipo_iva)
+                            _iva_meli_e   = _meli_fee_e * 0.21 / 1.21
+                            _iva_impor_e  = 0.09 * costo_usd * dolar * cantidad
+                            _iva_total_e  = _iva_venta_e - _iva_meli_e - _iva_impor_e
+                            _envio_e      = 0.0 if unit_price < _ml_env_grat else _ml_env
+                            _gan_pesos_e = _gan_vta_pct_e = _gan_cos_pct_e = None
+                            if has_calc:
+                                _gan_pesos_e   = total_price - _meli_fee_e - _cuotas_fee_e - _iva_total_e - _deb_cred_e - _iibb_perc_e - _envio_e - total_costo
+                                _gan_vta_pct_e = (_gan_pesos_e / total_price * 100) if total_price > 0 else 0.0
+                                _gan_cos_pct_e = (_gan_pesos_e / total_costo * 100) if total_costo > 0 else 0.0
+                            with ui.column().classes("w-full gap-0"):
+                                with ui.row().classes("w-full justify-between items-center py-1.5 border-b border-gray-200 mb-1"):
+                                    _pv_lbl = f"Precio de venta (×{cantidad})" if cantidad > 1 else "Precio de venta"
+                                    ui.label(_pv_lbl).classes("text-sm text-gray-600")
+                                    ui.label(fmt_moneda(total_price)).classes("text-sm font-medium")
+                                if cantidad > 1:
+                                    ui.label(f"{fmt_moneda(unit_price)} × {cantidad}").classes("text-xs text-gray-400 -mt-1 mb-0.5")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Comisión ML", False)
+                                    ui.label(fmt_moneda(_meli_fee_e)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Costo Cuotas", False)
+                                    ui.label(fmt_moneda(_cuotas_fee_e)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("IVA neto", False)
+                                    ui.label(fmt_moneda(_iva_total_e)).classes("text-sm text-negative")
+                                with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
+                                    for lbl_s, val_s in [
+                                        ("IVA venta",              _iva_venta_e),
+                                        ("IVA Meli (crédito)",     _iva_meli_e),
+                                        ("IVA importación (créd)", _iva_impor_e),
+                                    ]:
+                                        with ui.row().classes("w-full justify-between"):
+                                            _lbl(lbl_s, False)
+                                            ui.label(fmt_moneda(val_s)).classes("text-xs text-gray-600")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Deb/Cred", False)
+                                    ui.label(fmt_moneda(_deb_cred_e)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("IIBB perc.", False)
+                                    ui.label(fmt_moneda(_iibb_perc_e)).classes("text-sm text-negative")
+                                if has_calc:
+                                    with ui.column().classes("w-full py-0.5 gap-0"):
+                                        with ui.row().classes("w-full justify-between items-center"):
+                                            _cp_lbl = f"Costo producto (×{cantidad})" if cantidad > 1 else "Costo producto"
+                                            _lbl(_cp_lbl, False)
+                                            ui.label(fmt_moneda(total_costo)).classes("text-sm text-negative")
+                                        if cantidad > 1:
+                                            ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)} × {cantidad}").classes("text-xs text-gray-400")
+                                        else:
+                                            ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)}").classes("text-xs text-gray-400")
+                                with ui.row().classes("w-full justify-between items-center py-0.5 border-b-2 border-gray-300 pb-2 mb-2"):
+                                    _lbl("Envío", False)
+                                    ui.label(fmt_moneda(_envio_e)).classes("text-sm text-negative")
+                                if _gan_pesos_e is not None:
+                                    _gcls = "text-positive" if _gan_pesos_e >= 0 else "text-negative"
+                                    with ui.row().classes("w-full justify-between items-end pt-1 gap-2"):
+                                        with ui.column().classes("gap-0"):
+                                            ui.label("Gan $").classes("text-xs text-gray-500")
+                                            ui.label(fmt_moneda(_gan_pesos_e)).classes(f"text-xl font-bold {_gcls}")
+                                        with ui.column().classes("gap-0 items-end"):
+                                            ui.label("Gan Vta %").classes("text-xs text-gray-500")
+                                            ui.label(fmt_pct2(_gan_vta_pct_e)).classes(f"text-xl font-bold {_gcls}")
+                                        with ui.column().classes("gap-0 items-end"):
+                                            ui.label("Gan % Cos").classes("text-xs text-gray-500")
+                                            ui.label(fmt_pct2(_gan_cos_pct_e)).classes(f"text-xl font-bold {_gcls}")
+                                ui.separator()
+                                with ui.row().classes("items-center gap-1 text-xs").style("color: var(--color-text-secondary)"):
+                                    ui.html('<i class="ti ti-calculator" style="font-size:12px;color:#BA7517" aria-hidden="true"></i>')
+                                    ui.label("Valores estimados con parámetros del cotizador")
                         else:
                             with ui.column().classes("w-full gap-0"):
                                 # 1. Precio de venta
@@ -912,12 +993,9 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v["monto_fmt"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
                                                 _gp    = v.get("gan_pesos")
-                                                _is_am  = v.get("payment_type", "") == "account_money"
                                                 _is_rej = v.get("pay_status") == "rejected"
                                                 if _is_rej:
                                                     ui.label("Rechazado").classes("text-negative text-xs font-medium")
-                                                elif _gp is None and _is_am:
-                                                    ui.label("Saldo ML").classes("text-gray-400 text-xs")
                                                 elif _gp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
@@ -1102,6 +1180,21 @@ def build_tab_ventas(container) -> None:
 
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
+
+            # Estimar gan$ para account_money usando params del cotizador
+            for v in ventas_raw:
+                if v.get("payment_type") == "account_money" and v.get("gan_pesos") is None:
+                    _up   = float(v.get("unit_price") or 0)
+                    _cant = int(v.get("cantidad") or 1)
+                    _sk   = str(v.get("seller_sku") or "")
+                    _cv   = str(v.get("cuotas") or "x1").strip().lower()
+                    _gp_u, _ = _calc_gan_row(_up, _sk, _cv)
+                    if _gp_u is not None:
+                        _env = (0.0 if _up < float(p.get("ml_envios_gratuitos") or 33000)
+                                else float(p.get("ml_envios") or 5823))
+                        _gp = _gp_u * _cant + _env * (_cant - 1)
+                        v["gan_pesos"]   = _gp
+                        v["gan_vta_pct"] = (_gp / (_up * _cant) * 100) if _up > 0 else 0.0
 
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
             if dlg and lbl_progreso:
