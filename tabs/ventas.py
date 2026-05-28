@@ -1018,7 +1018,7 @@ def build_tab_ventas(container) -> None:
                                                 _lt = (v.get("logistic_type") or "").lower().strip()
                                                 if _lt in ("self_service", "flex"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
-                                                elif _lt in ("cross_docking", "xd_drop_off", "me1", "me2", "correo"):
+                                                elif _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2", "correo"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
                                                 elif _lt == "fulfillment":
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
