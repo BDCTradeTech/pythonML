@@ -260,7 +260,8 @@ def build_tab_ventas(container) -> None:
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
-                        "logistic_type": (ord_item.get("shipping") or {}).get("logistic_type") or "",
+                        "logistic_type": "",
+                        "shipping_id": str((ord_item.get("shipping") or {}).get("id") or ""),
                         "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
                         "payment_id": _payment_id,
                         "payment_type": _payment_type,
@@ -1073,9 +1074,10 @@ def build_tab_ventas(container) -> None:
         ) -> None:
             rows_to_enrich = [
                 v for v in ventas_raw
-                if (v.get("payment_id") or "") != ""
+                if (pid := (v.get("payment_id") or "")) != ""
                 and v.get("payment_type", "") != "account_money"
-                and (force or (v.get("payment_id") or "") not in ventas_cache_ref)
+                and (force or pid not in ventas_cache_ref
+                     or ventas_cache_ref.get(pid, {}).get("gan_pesos") is None)
             ]
             if not rows_to_enrich:
                 if dlg and lbl_progreso:
@@ -1094,6 +1096,19 @@ def build_tab_ventas(container) -> None:
                 try:
                     r = requests.get(
                         f"https://api.mercadopago.com/v1/payments/{pid}",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=15,
+                    )
+                    return r.json() if r.status_code == 200 else {}
+                except Exception:
+                    return {}
+
+            def _fetch_ship(sid: str) -> Dict:
+                if not sid:
+                    return {}
+                try:
+                    r = requests.get(
+                        f"https://api.mercadolibre.com/shipments/{sid}",
                         headers={"Authorization": f"Bearer {access_token}"},
                         timeout=15,
                     )
@@ -1173,25 +1188,32 @@ def build_tab_ventas(container) -> None:
                 batch = rows_to_enrich[i : i + BATCH]
 
                 def _fetch_batch(batch_rows: List[Dict]) -> List[tuple]:
-                    max_w = min(8, len(batch_rows))
+                    max_w = min(16, len(batch_rows) * 2)
                     with ThreadPoolExecutor(max_workers=max_w) as ex:
-                        futures = {ex.submit(_fetch_one, v["payment_id"]): v for v in batch_rows}
-                        results = []
-                        for fut in as_completed(futures):
-                            row_v = futures[fut]
-                            try:
-                                pay_data = fut.result()
-                            except Exception:
-                                pay_data = {}
-                            results.append((row_v, pay_data))
+                        pay_futs = [(v, ex.submit(_fetch_one, v["payment_id"])) for v in batch_rows]
+                        ship_futs = [(v, ex.submit(_fetch_ship, v.get("shipping_id") or "")) for v in batch_rows]
+                    results = []
+                    for (v, pf), (_, sf) in zip(pay_futs, ship_futs):
+                        try:
+                            pay_data = pf.result()
+                        except Exception:
+                            pay_data = {}
+                        try:
+                            ship_data = sf.result()
+                        except Exception:
+                            ship_data = {}
+                        results.append((v, pay_data, ship_data))
                     return results
 
                 batch_results = await run.io_bound(_fetch_batch, batch)
 
                 db_rows: List[Dict] = []
-                for v, pay_data in batch_results:
+                for v, pay_data, ship_data in batch_results:
                     if not pay_data:
                         continue
+                    lt = ship_data.get("logistic_type") or ""
+                    if lt:
+                        v["logistic_type"] = lt
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
                     calc = await run.io_bound(_compute, pay_data, v)
                     if not calc:
@@ -1420,7 +1442,6 @@ def build_tab_ventas(container) -> None:
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             dia_ini, dia_fin = date_ini, date_fin
-            _dbg_lt_printed = False
             for ord_item in orders_periodo:
                 dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
                 if not dt_str or not isinstance(dt_str, str):
@@ -1447,10 +1468,6 @@ def build_tab_ventas(container) -> None:
                 status_display = status_map.get(status_raw, status_raw or "—")
                 items = ord_item.get("order_items") or ord_item.get("items") or []
                 ord_qty = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
-                if not _dbg_lt_printed:
-                    _shp_dbg = ord_item.get("shipping") or {}
-                    print(f"[DBG_LT] order={ord_item.get('id')} shipping_keys={list(_shp_dbg.keys())} lt={repr(_shp_dbg.get('logistic_type'))}", flush=True)
-                    _dbg_lt_printed = True
                 for it in items:
                     if not isinstance(it, dict):
                         continue
@@ -1508,7 +1525,8 @@ def build_tab_ventas(container) -> None:
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
-                        "logistic_type": (ord_item.get("shipping") or {}).get("logistic_type") or "",
+                        "logistic_type": "",
+                        "shipping_id": str((ord_item.get("shipping") or {}).get("id") or ""),
                         "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
                         "payment_id": _payment_id,
                         "payment_type": _payment_type,
