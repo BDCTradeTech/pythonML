@@ -490,7 +490,8 @@ def build_tab_ventas(container) -> None:
                                 conn.close()
                         await run.io_bound(_save_popup_pay)
 
-                envio_es_real = _lt in ("cross_docking", "xd_drop_off", "me1", "me2", "self_service", "flex")
+                _pay_type = row.get("payment_type") or ""
+                envio_es_real = _pay_type != "account_money" and _lt == "cross_docking"
                 thumb_real = item_data.get("thumbnail") or ""
                 if not thumb_real:
                     _pics = item_data.get("pictures") or []
