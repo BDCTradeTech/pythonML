@@ -225,7 +225,7 @@ def build_tab_datos() -> None:
     def _add_field(container: Dict[str, Any], key: str, label_text: str, unit: str = "") -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
-        with ui.row().classes("w-full justify-between items-center").style("padding:1px 0; min-height:0; gap:4px"):
+        with ui.row().classes("w-full justify-between items-center").style("padding: 3px 0; min-height: 0"):
             with ui.row().classes("items-center flex-1 min-w-0 overflow-hidden").style("gap:3px"):
                 lbl = ui.label(label_text).classes("truncate").style("font-size:11px; line-height:1.2; color:var(--q-secondary)")
                 if key in TOOLTIPS:
@@ -234,8 +234,8 @@ def build_tab_datos() -> None:
                     ui.label(unit).classes("shrink-0 whitespace-nowrap").style("font-size:10px; line-height:1.2; color:#d1d5db")
             inp = (
                 ui.input(value=display_val)
-                .props('dense outlined input-style="text-align:right; font-size:11px; padding:0 4px;"')
-                .style("width:90px; min-width:90px; flex-shrink:0")
+                .props("dense")
+                .style("width:100px")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
