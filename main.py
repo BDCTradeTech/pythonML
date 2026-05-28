@@ -137,7 +137,7 @@ from tabs.compras_lista import build_tab_compras_lista
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.05.28.41"
+VERSION = "3.26.05.28.42"
 
 
 # ==========================
