@@ -1573,6 +1573,7 @@ def build_tab_ventas(container) -> None:
                     v["gan_vta_pct"] = c.get("gan_vta_pct")
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["pay_status"] = c.get("pay_status")
+                    v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
