@@ -1051,7 +1051,7 @@ def build_tab_ventas(container) -> None:
             with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
                 ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
                 lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
-                barra = ui.linear_progress(value=0, min=0, max=100).props("instant-feedback").classes("w-full my-2")
+                barra = ui.linear_progress(value=0).props("instant-feedback").classes("w-full my-2")
             dlg.open()
             background_tasks.create(
                 _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
@@ -1214,7 +1214,7 @@ def build_tab_ventas(container) -> None:
                     with cl:
                         _pct = round(procesadas / total * 100) if total > 0 else 0
                         lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas... ({_pct}%)")
-                        barra.set_value(_pct)
+                        barra.set_value(procesadas / total if total > 0 else 1.0)
 
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
@@ -1239,7 +1239,7 @@ def build_tab_ventas(container) -> None:
                 with cl:
                     lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas. (100%)")
                     if barra:
-                        barra.set_value(100)
+                        barra.set_value(1.0)
                 await asyncio.sleep(1.5)
                 with cl:
                     dlg.close()
