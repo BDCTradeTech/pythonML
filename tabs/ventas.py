@@ -285,9 +285,9 @@ def build_tab_ventas(container) -> None:
             def _lbl(texto, es_real: bool):
                 color_icon = "#27500A" if es_real else "#BA7517"
                 icon = "ti-checks" if es_real else "ti-calculator"
-                with ui.row().classes("items-center gap-1"):
-                    ui.label(texto).classes("text-sm").style("color: var(--color-text-secondary)")
-                    ui.html(f'<i class="ti {icon}" style="font-size:12px;color:{color_icon}" aria-hidden="true"></i>')
+                return ui.html(f'<span style="color:var(--color-text-secondary);font-size:12px">'
+                               f'<i class="ti {icon}" style="font-size:12px;color:{color_icon};margin-right:4px" aria-hidden="true"></i>'
+                               f'{texto}</span>')
 
             sku          = str(row.get("seller_sku") or "")
             unit_price   = float(row.get("unit_price") or 0)
@@ -347,7 +347,7 @@ def build_tab_ventas(container) -> None:
                             ui.spinner(size="md")
                             ui.label("Cargando...").classes("text-sm text-gray-500")
                     with ui.row().classes("w-full justify-end mt-3"):
-                        ui.button("Cerrar", on_click=lambda: d.close(), color="secondary").props("flat")
+                        ui.button("Cerrar", on_click=lambda: d.close(), color="primary")
             d.open()
 
             cl = context.client
