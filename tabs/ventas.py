@@ -1522,6 +1522,7 @@ def build_tab_ventas(container) -> None:
             _new_cache = await run.io_bound(_load_ventas_cache, _uid_v)
             ventas_cache_ref.clear()
             ventas_cache_ref.update(_new_cache)
+            print(f"[DBG_CACHE] cache_size={len(ventas_cache_ref)}", flush=True)
             for v in ventas_mes:
                 pid = v.get("payment_id") or ""
                 if pid and pid in ventas_cache_ref:
@@ -1531,6 +1532,9 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
                     v["pay_status"] = c.get("pay_status")
+            con_datos = sum(1 for v in ventas_mes if v.get("gan_pesos") is not None)
+            sin_datos = sum(1 for v in ventas_mes if v.get("gan_pesos") is None)
+            print(f"[DBG_CACHE] total={len(ventas_mes)} con_datos={con_datos} sin_datos={sin_datos}", flush=True)
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
