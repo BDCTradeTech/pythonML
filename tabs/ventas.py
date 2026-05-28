@@ -813,7 +813,7 @@ def build_tab_ventas(container) -> None:
                                     ui.label("Gan. prom. %").classes("text-xs text-gray-500")
                                     if gan_prom_pct is not None:
                                         _gpp_cls = "text-positive" if gan_prom_pct >= 0 else "text-negative"
-                                        ui.label(f"{gan_prom_pct:,.1f}%".replace(",", ".")).classes(f"text-lg font-bold {_gpp_cls}")
+                                        ui.label(f"{gan_prom_pct:.2f}%".replace(".", ",")).classes(f"text-lg font-bold {_gpp_cls}")
                                     else:
                                         ui.label("—").classes("text-lg font-bold text-gray-400")
                         with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
@@ -1043,7 +1043,7 @@ def build_tab_ventas(container) -> None:
                                                 if _gvp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
-                                                    ui.label(f"{_gvp:.1f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
+                                                    ui.label(f"{_gvp:.2f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v["status"])
 
@@ -1051,7 +1051,7 @@ def build_tab_ventas(container) -> None:
             with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
                 ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
                 lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
-                barra = ui.linear_progress(value=0).props("instant-feedback").classes("w-full my-2")
+                barra = ui.linear_progress(value=0, min=0, max=100).props("instant-feedback").classes("w-full my-2")
             dlg.open()
             background_tasks.create(
                 _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
@@ -1214,7 +1214,7 @@ def build_tab_ventas(container) -> None:
                     with cl:
                         _pct = round(procesadas / total * 100) if total > 0 else 0
                         lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas... ({_pct}%)")
-                        barra.set_value(procesadas / total if total > 0 else 1.0)
+                        barra.set_value(_pct)
 
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
@@ -1239,7 +1239,7 @@ def build_tab_ventas(container) -> None:
                 with cl:
                     lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas. (100%)")
                     if barra:
-                        barra.set_value(1.0)
+                        barra.set_value(100)
                 await asyncio.sleep(1.5)
                 with cl:
                     dlg.close()
