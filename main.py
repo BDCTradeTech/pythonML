@@ -637,6 +637,8 @@ app.add_api_route("/qb/callback", _qb_callback_redirect, methods=["GET"])
 # ==========================
 
 
+ui.add_head_html('<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">')
+
 @ui.page("/")
 def index(request: Request) -> None:  # type: ignore[override]
     root = ui.column().classes("w-full")
