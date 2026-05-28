@@ -249,8 +249,7 @@ def build_tab_datos() -> None:
     def _build_flex_crud(container: Any, user_id: int) -> None:
         conn = get_connection()
         zonas = conn.execute(
-            "SELECT id, nombre, codigos_postales, tarifa FROM flex_zonas WHERE user_id=? ORDER BY tarifa",
-            (user_id,)
+            "SELECT id, nombre, codigos_postales, tarifa FROM flex_zonas ORDER BY tarifa"
         ).fetchall()
         conn.close()
         container.clear()
@@ -284,8 +283,8 @@ def build_tab_datos() -> None:
                         tarifa = 0.0
                     conn = get_connection()
                     conn.execute(
-                        "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=? AND user_id=?",
-                        (inp_nombre.value.strip(), tarifa, inp_cps.value.strip(), z["id"], user_id)
+                        "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
+                        (inp_nombre.value.strip(), tarifa, inp_cps.value.strip(), z["id"])
                     )
                     conn.commit()
                     conn.close()
@@ -296,7 +295,7 @@ def build_tab_datos() -> None:
 
     def _delete_zona(zid: int, container: Any, user_id: int) -> None:
         conn = get_connection()
-        conn.execute("DELETE FROM flex_zonas WHERE id=? AND user_id=?", (zid, user_id))
+        conn.execute("DELETE FROM flex_zonas WHERE id=?", (zid,))
         conn.commit()
         conn.close()
         _build_flex_crud(container, user_id)
@@ -316,8 +315,8 @@ def build_tab_datos() -> None:
                         tarifa = 0.0
                     conn = get_connection()
                     conn.execute(
-                        "INSERT INTO flex_zonas (user_id, nombre, codigos_postales, tarifa) VALUES (?,?,?,?)",
-                        (user_id, inp_nombre.value.strip(), inp_cps.value.strip(), tarifa)
+                        "INSERT INTO flex_zonas (user_id, nombre, codigos_postales, tarifa) VALUES (1,?,?,?)",
+                        (inp_nombre.value.strip(), inp_cps.value.strip(), tarifa)
                     )
                     conn.commit()
                     conn.close()
