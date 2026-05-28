@@ -1008,12 +1008,12 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("item_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 _lt = (v.get("logistic_type") or "").lower()
-                                                if _lt in ("self_service", "flex"):
-                                                    ui.label("Flex").classes("text-green-600 font-medium text-xs")
+                                                if _lt in ("xd_drop_off", "cross_docking", "self_service", "flex"):
+                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
+                                                elif _lt in ("me1", "me2"):
+                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
                                                 elif _lt == "fulfillment":
-                                                    ui.label("Full").classes("text-blue-600 font-medium text-xs")
-                                                elif _lt in ("cross_docking", "xd_drop_off", "drop_off", "me2"):
-                                                    ui.label("Correo").classes("text-orange-600 font-medium text-xs")
+                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
                                                 else:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
