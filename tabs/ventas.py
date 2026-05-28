@@ -1264,6 +1264,9 @@ def build_tab_ventas(container) -> None:
                             lt = sd.get("logistic_type") or ""
                             if lt:
                                 v["logistic_type"] = lt
+                            _cost = (sd.get("shipping_option") or {}).get("list_cost") or 0.0
+                            if _cost:
+                                v["envio_real_am"] = float(_cost)
                         except Exception:
                             pass
                 await run.io_bound(_fetch_am_ships, _am_ship_candidates)
@@ -1298,8 +1301,10 @@ def build_tab_ventas(container) -> None:
                     _cv   = str(v.get("cuotas") or "x1").strip().lower()
                     _gp_u, _ = _calc_gan_row(_up, _sk, _cv)
                     if _gp_u is not None:
-                        _env = (0.0 if _up < float(p.get("ml_envios_gratuitos") or 33000)
-                                else float(p.get("ml_envios") or 5823))
+                        _env = v.get("envio_real_am") or (
+                            0.0 if _up < float(p.get("ml_envios_gratuitos") or 33000)
+                            else float(p.get("ml_envios") or 5823)
+                        )
                         _gp = _gp_u * _cant + _env * (_cant - 1)
                         v["gan_pesos"]   = _gp
                         v["gan_vta_pct"] = (_gp / (_up * _cant) * 100) if _up > 0 else 0.0
