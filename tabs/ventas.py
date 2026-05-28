@@ -391,12 +391,12 @@ def build_tab_ventas(container) -> None:
                     net_rcv     = _cached.get("net_rcv")
                     envio_real  = float(_cached.get("envio_real") or 0)
                     _lt         = _cached.get("logistic_type") or ""
-                    if _lt == "cross_docking":
+                    if _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2"):
                         envio_lbl = "Envío Correo"
-                    elif zip_code:
-                        envio_lbl = f"Envío Flex (CP {zip_code})"
+                    elif _lt in ("self_service", "flex"):
+                        envio_lbl = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
                     else:
-                        envio_lbl = "Envío Flex"
+                        envio_lbl = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
                     iibb_perc   = total_price * ml_iibb
                     iva_venta   = total_price * tipo_iva / (1 + tipo_iva)
                     iva_meli    = meli_fee * 0.21 / 1.21
