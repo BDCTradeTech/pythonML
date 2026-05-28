@@ -25,9 +25,40 @@ from tabs.admin import (
     TABLA_IVA_VS_EXENTO_DEFAULT,
 )
 
+# Campos almacenados como decimal (0.155) pero editados como porcentaje (15.5)
+PCT_KEYS = {
+    "ml_comision", "ml_debcre", "ml_sirtac", "ml_iibb_per",
+    "ml_ganancia_neta_venta",
+    "cuotas_3x", "cuotas_6x", "cuotas_9x", "cuotas_12x",
+    "iva_105", "iva_21", "iibb_lhs",
+}
+
+# Campos con formato peso argentino ($ + punto miles)
+DOLAR_DISPLAY_KEYS = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho"}
+DOLAR_PARSE_KEYS = DOLAR_DISPLAY_KEYS | {"ml_comision_fija_menor"}
+
+# Campos con formato dólar (u$)
+USD_KEYS = {
+    "kilo",
+    "valor_kg_miami", "almacenaje_dias_kg_miami", "almacenaje_miami_x2",
+    "valor_kg_china", "almacenaje_dias_kg_china", "almacenaje_china_x3",
+}
+
+TOOLTIPS: Dict[str, str] = {
+    "ml_cobrado":             "Factor de lo que cobra el vendedor. Ej: 0.836 = 83.6% del precio de venta",
+    "ml_comision_fija_menor": "Cargo fijo en $ para ventas con precio menor al mínimo",
+    "ml_3cuotas":             "Multiplicador de precio para absorber el costo de cuotas. Ej: 1.15 = precio × 1.15",
+    "ml_6cuotas":             "Multiplicador de precio para absorber el costo de cuotas. Ej: 1.15 = precio × 1.15",
+    "cuotas_3x":  "Tasa de costo de cuotas que ML cobra al vendedor. Ej: 0.094 = 9.4%",
+    "cuotas_6x":  "Tasa de costo de cuotas que ML cobra al vendedor. Ej: 0.094 = 9.4%",
+    "cuotas_9x":  "Tasa de costo de cuotas que ML cobra al vendedor. Ej: 0.094 = 9.4%",
+    "cuotas_12x": "Tasa de costo de cuotas que ML cobra al vendedor. Ej: 0.094 = 9.4%",
+    "descuento_lhs_kg": "Factor de descuento LHS por kilogramo",
+}
+
 
 # ---------------------------------------------------------------------------
-# Helper de sesión (mismo patrón que otros tabs; se unificará en auth.py Fase 4)
+# Helper de sesión
 # ---------------------------------------------------------------------------
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -59,146 +90,243 @@ def build_tab_datos() -> None:
         r = get_cotizador_tabla(nombre, uid)
         return r if r else default
 
+    # --- Formatters ---
+
+    def _fmt_dolar_display(v: str) -> str:
+        if not v or not str(v).strip():
+            return ""
+        try:
+            n = float(str(v).replace(".", "").replace(",", "."))
+            return f"{int(n):,}".replace(",", ".")
+        except (ValueError, TypeError):
+            return str(v)
+
+    def _fmt_usd_display(v: str) -> str:
+        if not v or not str(v).strip():
+            return ""
+        try:
+            n = float(str(v).strip().replace(",", "."))
+            if n == int(n):
+                return f"{int(n):,}".replace(",", ".")
+            return f"{n:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+        except (ValueError, TypeError):
+            return str(v)
+
+    def _parse_dolar(s: Any) -> str:
+        if s is None or s == "":
+            return ""
+        raw = str(s).replace("$", "").replace(".", "").replace(",", ".").strip()
+        try:
+            n = float(raw)
+            return str(int(n)) if n == int(n) else f"{n:.2f}"
+        except (ValueError, TypeError):
+            return str(s).strip()
+
+    def _parse_usd(s: Any) -> str:
+        if s is None or s == "":
+            return ""
+        raw = str(s).replace("u$", "").replace("$", "").replace(".", "").replace(",", ".").strip()
+        try:
+            n = float(raw)
+            return str(int(n)) if n == int(n) else f"{n:.2f}"
+        except (ValueError, TypeError):
+            return str(s).strip()
+
+    # --- Conversores campo ↔ BD ---
+
+    def _field_display(key: str, raw: str) -> str:
+        """Valor raw de BD → string para mostrar en el input."""
+        if key in PCT_KEYS:
+            if not raw or not str(raw).strip():
+                return ""
+            try:
+                n = float(str(raw).replace(",", ".")) * 100
+                return str(int(n)) if n == int(n) else f"{n:.4f}".rstrip("0").rstrip(".")
+            except (ValueError, TypeError):
+                return str(raw)
+        if key in DOLAR_DISPLAY_KEYS:
+            fmt = _fmt_dolar_display(raw)
+            return f"$ {fmt}" if fmt else ""
+        if key in USD_KEYS:
+            fmt = _fmt_usd_display(raw)
+            return f"u$ {fmt}" if raw and fmt else ""
+        return raw or ""
+
+    def _field_parse(key: str, display_val: str) -> str:
+        """Valor del input → string raw para guardar en BD."""
+        val = str(display_val or "").strip()
+        if key in PCT_KEYS:
+            try:
+                n = float(val.replace(",", ".")) / 100
+                return f"{n:.8f}".rstrip("0").rstrip(".")
+            except (ValueError, TypeError):
+                return val
+        if key in DOLAR_PARSE_KEYS:
+            return _parse_dolar(val)
+        if key in USD_KEYS:
+            return _parse_usd(val)
+        return val
+
+    def _field_validate(key: str, display_val: str) -> tuple:
+        """Retorna (ok, mensaje_error)."""
+        val = str(display_val or "").strip()
+        if not val:
+            return True, ""
+        if key in PCT_KEYS:
+            try:
+                n = float(val.replace(",", "."))
+                if n < 0 or n > 100:
+                    return False, "debe estar entre 0 y 100"
+            except (ValueError, TypeError):
+                return False, "valor inválido"
+        else:
+            stripped = val.replace("u$", "").replace("$", "").strip()
+            if key in DOLAR_PARSE_KEYS or key in USD_KEYS:
+                stripped = stripped.replace(".", "").replace(",", ".")
+            else:
+                stripped = stripped.replace(",", ".")
+            try:
+                n = float(stripped)
+                if n < 0:
+                    return False, "no puede ser negativo"
+            except (ValueError, TypeError):
+                pass
+        return True, ""
+
+    def _wire_blur(inp: Any, key: str, label_text: str) -> None:
+        """Conecta guardado automático al perder foco."""
+        def _on_blur(_e: Any = None) -> None:
+            val = str(inp.value or "").strip()
+            ok, msg = _field_validate(key, val)
+            if not ok:
+                ui.notify(f"{label_text}: {msg}", type="negative")
+                return
+            set_cotizador_param(key, _field_parse(key, val), uid)
+            ui.notify("Guardado", type="positive", position="bottom-right", timeout=1500)
+        inp.on("blur", _on_blur)
+
+    def _add_field(container: Dict[str, Any], key: str, label_text: str,
+                   label_cls: str = "min-w-[100px] text-sm",
+                   input_cls: str = "flex-1 max-w-[100px]") -> None:
+        """Crea row con label + input, registra en container y conecta auto-guardado."""
+        raw = _get(key)
+        display_val = _field_display(key, raw)
+        with ui.row().classes("items-center gap-2 py-0.5"):
+            lbl = ui.label(label_text).classes(label_cls)
+            if key in TOOLTIPS:
+                lbl.tooltip(TOOLTIPS[key])
+            inp = ui.input(value=display_val).classes(input_cls).props("dense")
+            container[key] = inp
+        _wire_blur(inp, key, label_text)
+
+    inputs_params: Dict[str, Any] = {}
+    inputs_cuotas: Dict[str, Any] = {}
+    inputs_miami: Dict[str, Any] = {}
+    inputs_china: Dict[str, Any] = {}
+    inputs_impuestos: Dict[str, Any] = {}
+    inputs_logistica: Dict[str, Any] = {}
+
     with ui.column().classes("w-full gap-4 p-4"):
         ui.label("Datos del cotizador de importaciones").classes("text-2xl font-semibold")
 
         with ui.row().classes("w-full gap-4 flex-wrap"):
-            # Dolar
-            def _fmt_dolar_display(v: str) -> str:
-                """Formatea valor numérico con punto para miles."""
-                if not v or not str(v).strip():
-                    return ""
-                try:
-                    n = float(str(v).replace(".", "").replace(",", "."))
-                    return f"{int(n):,}".replace(",", ".")
-                except (ValueError, TypeError):
-                    return str(v)
 
-            def _parse_dolar(s: Any) -> str:
-                """Parsea valor de input ($ 1.475 o 1475) a string sin formato para guardar."""
-                if s is None or s == "":
-                    return ""
-                raw = str(s).replace("$", "").replace(".", "").replace(",", ".").strip()
-                try:
-                    n = float(raw)
-                    return str(int(n)) if n == int(n) else f"{n:.2f}"
-                except (ValueError, TypeError):
-                    return str(s).strip()
-
+            # Dólar
             with ui.card().classes("p-4 w-fit min-w-[180px]"):
                 ui.label("Dólar").classes("text-lg font-semibold mb-3")
-                inputs_params: Dict[str, Any] = {}
-                for label, key in [
-                    ("Oficial", "dolar_oficial"), ("Blue", "dolar_blue"), ("Sistema", "dolar_sistema"), ("Despacho", "dolar_despacho"),
+                for lbl_text, key in [
+                    ("Oficial", "dolar_oficial"), ("Blue", "dolar_blue"),
+                    ("Sistema", "dolar_sistema"), ("Despacho", "dolar_despacho"),
                 ]:
-                    with ui.row().classes("items-center gap-2 py-0.5"):
-                        ui.label(label).classes("min-w-[70px] text-sm")
-                        val_raw = _get(key)
-                        val_fmt = _fmt_dolar_display(val_raw) if val_raw else ""
-                        val_display = f"$ {val_fmt}" if val_fmt else ""
-                        inputs_params[key] = ui.input(value=val_display).classes("flex-1 max-w-[100px]").props("dense")
-
-            def _fmt_usd_display(v: str) -> str:
-                """Formatea valor numérico: punto para miles, coma para decimales."""
-                if not v or not str(v).strip():
-                    return ""
-                try:
-                    s = str(v).strip()
-                    n = float(s.replace(",", "."))  # asumir . o , como decimal
-                    if n == int(n):
-                        return f"{int(n):,}".replace(",", ".")
-                    return f"{n:.2f}".rstrip("0").rstrip(".").replace(".", ",")
-                except (ValueError, TypeError):
-                    return str(v)
-
-            def _parse_usd(s: Any) -> str:
-                """Parsea valor con u$ a string para guardar."""
-                if s is None or s == "":
-                    return ""
-                raw = str(s).replace("u$", "").replace("$", "").replace(".", "").replace(",", ".").strip()
-                try:
-                    n = float(raw)
-                    return str(int(n)) if n == int(n) else f"{n:.2f}"
-                except (ValueError, TypeError):
-                    return str(s).strip()
+                    _add_field(inputs_params, key, lbl_text, label_cls="min-w-[70px] text-sm")
 
             # Traida por Kilo
             with ui.card().classes("p-4 w-fit min-w-[140px]"):
                 ui.label("Traida por Kilo").classes("text-lg font-semibold mb-3")
-                with ui.row().classes("items-center gap-2 py-0.5"):
-                    ui.label("Kilo").classes("min-w-[60px] text-sm")
-                    val_kilo = _get("kilo")
-                    val_kilo_disp = f"u$ {_fmt_usd_display(val_kilo)}" if val_kilo else ""
-                    inputs_params["kilo"] = ui.input(value=val_kilo_disp).classes("flex-1 max-w-[80px]").props("dense")
+                _add_field(inputs_params, "kilo", "Kilo",
+                            label_cls="min-w-[60px] text-sm", input_cls="flex-1 max-w-[80px]")
 
             # Mercadolibre
-            with ui.card().classes("p-4 w-fit min-w-[220px]"):
+            with ui.card().classes("p-4 w-fit min-w-[280px]"):
                 ui.label("Mercadolibre").classes("text-lg font-semibold mb-3")
-                for label, key in [
-                    ("ML - Comisión", "ml_comision"), ("Comision Fija (menor)", "ml_comision_fija_menor"),
-                    ("ML - Deb/Cre", "ml_debcre"), ("ML - Sirtac", "ml_sirtac"), ("ML - Envíos", "ml_envios"),
-                    ("ML - IIBB + PER", "ml_iibb_per"), ("ML - Envíos grat.", "ml_envios_gratuitos"),
+                for lbl_text, key in [
+                    ("ML - Comisión (%)", "ml_comision"),
+                    ("Comisión Fija (menor)", "ml_comision_fija_menor"),
+                    ("ML - Deb/Cre (%)", "ml_debcre"),
+                    ("ML - Sirtac (%)", "ml_sirtac"),
+                    ("ML - Envíos", "ml_envios"),
+                    ("ML - IIBB + PER (%)", "ml_iibb_per"),
+                    ("ML - Envíos grat.", "ml_envios_gratuitos"),
                     ("ML - Cobrado", "ml_cobrado"),
-                    ("Ganancia Neta sobre Venta", "ml_ganancia_neta_venta"),
+                    ("Gan. Neta s/Venta (%)", "ml_ganancia_neta_venta"),
                 ]:
-                    with ui.row().classes("items-center gap-2 py-0.5"):
-                        ui.label(label).classes("min-w-[100px] text-sm")
-                        inputs_params[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+                    _add_field(inputs_params, key, lbl_text, label_cls="min-w-[160px] text-sm")
 
             # Cuotas y Promociones
-            inputs_cuotas: Dict[str, Any] = {}
             with ui.card().classes("p-4 w-fit min-w-[200px]"):
                 ui.label("Cuotas y Promociones").classes("text-lg font-semibold mb-3")
-                for label, key in [
-                    ("Cuotas 3x", "cuotas_3x"), ("Cuotas 6x", "cuotas_6x"),
-                    ("Cuotas 9x", "cuotas_9x"), ("Cuotas 12x", "cuotas_12x"),
+                for lbl_text, key in [
+                    ("Cuotas 3x (%)", "cuotas_3x"), ("Cuotas 6x (%)", "cuotas_6x"),
+                    ("Cuotas 9x (%)", "cuotas_9x"), ("Cuotas 12x (%)", "cuotas_12x"),
                     ("ML 3 cuotas", "ml_3cuotas"), ("ML 6 cuotas", "ml_6cuotas"),
                 ]:
-                    with ui.row().classes("items-center gap-2 py-0.5"):
-                        ui.label(label).classes("min-w-[80px] text-sm")
-                        inputs_cuotas[key] = ui.input(value=_get(key)).classes("flex-1 max-w-[100px]").props("dense")
+                    _add_field(inputs_cuotas, key, lbl_text, label_cls="min-w-[100px] text-sm")
 
             # Miami
-            usd_keys_miami = {"valor_kg_miami", "almacenaje_dias_kg_miami"}
-            with ui.card().classes("p-4 w-fit min-w-[220px]"):
+            with ui.card().classes("p-4 w-fit min-w-[240px]"):
                 ui.label("Miami").classes("text-lg font-semibold mb-3")
-                inputs_miami: Dict[str, Any] = {}
-                for label, key in [
-                    ("Valor KG Miami", "valor_kg_miami"), ("Almac. Días x Kg", "almacenaje_dias_kg_miami"),
+                for lbl_text, key in [
+                    ("Valor KG Miami", "valor_kg_miami"),
+                    ("Almac. Días x Kg", "almacenaje_dias_kg_miami"),
                     ("Seguro Miami", "seguro_miami"),
+                    ("Almacenaje ×2 (u$)", "almacenaje_miami_x2"),
+                    ("Días almacenaje", "dias_almacenaje_miami"),
                 ]:
-                    with ui.row().classes("items-center gap-2 py-0.5"):
-                        ui.label(label).classes("min-w-[120px] text-sm")
-                        val_raw = _get(key)
-                        val_disp = f"u$ {_fmt_usd_display(val_raw)}" if key in usd_keys_miami and val_raw else (val_raw or "")
-                        inputs_miami[key] = ui.input(value=val_disp).classes("flex-1 max-w-[100px]").props("dense")
+                    _add_field(inputs_miami, key, lbl_text, label_cls="min-w-[140px] text-sm")
 
             # China
-            usd_keys_china = {"valor_kg_china", "almacenaje_dias_kg_china"}
-            with ui.card().classes("p-4 w-fit min-w-[220px]"):
+            with ui.card().classes("p-4 w-fit min-w-[240px]"):
                 ui.label("China").classes("text-lg font-semibold mb-3")
-                inputs_china: Dict[str, Any] = {}
-                for label, key in [
-                    ("Valor KG China", "valor_kg_china"), ("Almac. Días x Kg", "almacenaje_dias_kg_china"),
-                    ("Seguro China", "seguro_china"), ("Res 3244", "res_3244"), ("Gastos Operativos", "gastos_operativos"),
-                    ("Gastos Origen", "gastos_origen"), ("Envío Domicilio", "envio_domicilio"), ("Ajuste valor ANA", "ajuste_valor_ana"),
+                for lbl_text, key in [
+                    ("Valor KG China", "valor_kg_china"),
+                    ("Almac. Días x Kg", "almacenaje_dias_kg_china"),
+                    ("Seguro China", "seguro_china"),
+                    ("Res 3244", "res_3244"),
+                    ("Gastos Operativos", "gastos_operativos"),
+                    ("Gastos Origen", "gastos_origen"),
+                    ("Envío Domicilio", "envio_domicilio"),
+                    ("Ajuste valor ANA", "ajuste_valor_ana"),
+                    ("Almacenaje ×3 (u$)", "almacenaje_china_x3"),
+                    ("Días almacenaje", "dias_almacenaje_china"),
                 ]:
-                    with ui.row().classes("items-center gap-2 py-0.5"):
-                        ui.label(label).classes("min-w-[120px] text-sm")
-                        val_raw = _get(key)
-                        val_disp = f"u$ {_fmt_usd_display(val_raw)}" if key in usd_keys_china and val_raw else (val_raw or "")
-                        inputs_china[key] = ui.input(value=val_disp).classes("flex-1 max-w-[100px]").props("dense")
+                    _add_field(inputs_china, key, lbl_text, label_cls="min-w-[140px] text-sm")
+
+            # Impuestos (nueva card)
+            with ui.card().classes("p-4 w-fit min-w-[200px]"):
+                ui.label("Impuestos").classes("text-lg font-semibold mb-3")
+                for lbl_text, key in [
+                    ("IVA 10,5% (%)", "iva_105"),
+                    ("IVA 21% (%)", "iva_21"),
+                    ("IIBB LHS (%)", "iibb_lhs"),
+                ]:
+                    _add_field(inputs_impuestos, key, lbl_text, label_cls="min-w-[120px] text-sm")
+
+            # Logística (nueva card)
+            with ui.card().classes("p-4 w-fit min-w-[200px]"):
+                ui.label("Logística").classes("text-lg font-semibold mb-3")
+                _add_field(inputs_logistica, "descuento_lhs_kg", "Descuento LHS/Kg",
+                            label_cls="min-w-[130px] text-sm")
 
         def guardar_params() -> None:
-            dolar_keys = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho", "ml_comision_fija_menor"}
-            usd_keys = {"kilo", "valor_kg_miami", "almacenaje_dias_kg_miami", "valor_kg_china", "almacenaje_dias_kg_china"}
-            for key, inp in {**inputs_params, **inputs_cuotas, **inputs_miami, **inputs_china}.items():
+            all_inputs = {**inputs_params, **inputs_cuotas, **inputs_miami,
+                          **inputs_china, **inputs_impuestos, **inputs_logistica}
+            for key, inp in all_inputs.items():
                 val = str(inp.value or "").strip()
-                if key in dolar_keys:
-                    val = _parse_dolar(val)
-                elif key in usd_keys:
-                    val = _parse_usd(val)
-                set_cotizador_param(key, val, uid)
+                ok, msg = _field_validate(key, val)
+                if not ok:
+                    ui.notify(f"El campo '{key}' tiene un valor inválido: {msg}", type="negative")
+                    continue
+                set_cotizador_param(key, _field_parse(key, val), uid)
             ui.notify("Parámetros guardados", color="positive")
 
         ui.button("Guardar parámetros", on_click=guardar_params, color="primary").classes("mb-2")
@@ -207,7 +335,7 @@ def build_tab_datos() -> None:
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
             delete_cotizador_param(k, uid)
 
-        # Tablas editables (headers = encabezados de columnas)
+        # Tablas editables
         tabla_trafo_gramos_data = list(_get_tabla("trafo_gramos", TABLA_TRAFO_GRAMOS_DEFAULT))
         tabla_posicion_data = list(_get_tabla("posicion", TABLA_POSICION_DEFAULT))
         tabla_envios_data = list(_get_tabla("envios_ml", TABLA_ENVIOS_ML_DEFAULT))
@@ -441,7 +569,6 @@ def build_tab_datos() -> None:
             repintar_iva()
 
             def agregar_fila_iva() -> None:
-                # Sincronizar valores actuales de los inputs antes de repintar para no perder datos
                 for i, rinputs in enumerate(iva_vs_exento_edit_rows):
                     if i < len(tabla_iva_vs_exento_data):
                         tabla_iva_vs_exento_data[i] = {
