@@ -780,7 +780,7 @@ def build_tab_ventas(container) -> None:
                             ui.label("TOTALES").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
                             with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
                                 with ui.column().classes("gap-0"):
-                                    ui.label("Total ventas $").classes("text-xs text-gray-500")
+                                    ui.label("Facturación").classes("text-xs text-gray-500")
                                     ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
                                     ui.label("Ventas").classes("text-xs text-gray-500")
@@ -797,14 +797,18 @@ def build_tab_ventas(container) -> None:
                                     ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
                         ui.element("div").style("width: 2px; background: rgba(0,0,0,0.2); align-self: stretch; margin: 8px 4px;")
                         with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
-                            ui.label("PROMEDIOS").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
+                            ui.label("PROMEDIO DIARIO").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
                             with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
                                 with ui.column().classes("gap-0"):
-                                    ui.label("Ventas promedio $").classes("text-xs text-gray-500")
+                                    ui.label("Facturación").classes("text-xs text-gray-500")
                                     ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
-                                    ui.label("Unidades/día").classes("text-xs text-gray-500")
-                                    ui.label(f"{ventas_diarias_u:,.1f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    ui.label("Ventas/día $").classes("text-xs text-gray-500")
+                                    _vpd = n_ventas_ok / dias_total if dias_total > 0 else 0
+                                    ui.label(f"{_vpd:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Unidades").classes("text-xs text-gray-500")
+                                    ui.label(f"{ventas_diarias_u:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
                                     ui.label("Ticket promedio").classes("text-xs text-gray-500")
                                     ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
@@ -1126,10 +1130,8 @@ def build_tab_ventas(container) -> None:
                 iva_impor  = 0.09 * costo_usd * dolar * cantidad
                 iva_total  = iva_venta - iva_meli - iva_impor
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
-                if shp_xd > 0:
-                    envio_real, logistic_type = shp_xd, "cross_docking"
-                else:
-                    envio_real, logistic_type = float(p.get("ml_envios") or 5823), "flex"
+                envio_real = shp_xd if shp_xd > 0 else float(p.get("ml_envios") or 5823)
+                logistic_type = v.get("logistic_type") or ""
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and has_calc:
                     gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
