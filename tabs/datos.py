@@ -229,14 +229,14 @@ def build_tab_datos() -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
         texto = f"{label_text} {unit}" if unit else label_text
-        with ui.row().classes("items-center").style("gap:6px; padding:2px 0"):
-            lbl = ui.label(texto).style("font-size:11px; min-width:100px; color:var(--q-secondary)")
+        with ui.row().classes("items-center").style("gap:4px; padding:1px 0; flex-wrap:nowrap"):
+            lbl = ui.label(texto).style("font-size:11px; color:gray; white-space:nowrap")
             if key in TOOLTIPS:
                 lbl.tooltip(TOOLTIPS[key])
             inp = (
                 ui.input(value=display_val)
                 .props('dense outlined hide-bottom-space input-style="text-align:right; font-size:11px; padding:0 4px;"')
-                .style("width:85px; flex-shrink:0")
+                .style("width:80px; flex-shrink:0")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
@@ -338,7 +338,7 @@ def build_tab_datos() -> None:
 
     with ui.column().classes("w-full").style("gap:8px; padding:8px"):
 
-        with ui.element("div").style("display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:8px; align-items:start; width:100%"):
+        with ui.element("div").style("display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:8px; align-items:start; width:100%"):
 
             # ── Dólar ──────────────────────────────────────────────────
             with ui.card().classes("p-2.5 datos-card"):
@@ -365,7 +365,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_cuotas, key, lbl, unit)
 
             # ── MercadoLibre ────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card").style("grid-column: span 2"):
+            with ui.card().classes("p-2.5 datos-card"):
                 _card_header("ti-building-store", "MercadoLibre")
                 for lbl, key, unit in [
                     ("Comisión",  "ml_comision",            "%"),
@@ -389,7 +389,7 @@ def build_tab_datos() -> None:
             # ── Envíos Flex ────────────────────────────────────────────
             with ui.card().classes("p-2.5 datos-card"):
                 _card_header("ti-motorbike", "Envíos Flex")
-                flex_container = ui.column().classes("w-full").style("gap:0")
+                flex_container = ui.column().classes("w-full")
                 _build_flex_crud(flex_container, uid)
 
             # ── Miami ──────────────────────────────────────────────────
@@ -405,7 +405,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_miami, key, lbl, unit)
 
             # ── China ──────────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card").style("grid-column: span 2"):
+            with ui.card().classes("p-2.5 datos-card"):
                 _card_header("ti-ship", "China")
                 for lbl, key, unit in [
                     ("KG",              "valor_kg_china",          "u$"),
