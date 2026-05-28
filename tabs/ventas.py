@@ -437,7 +437,7 @@ def build_tab_ventas(container) -> None:
                     elif has_api:
                         envio_real = float(p.get("ml_envios") or 5823)
                         envio_lbl  = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
-                        _lt = "flex"
+                        _lt = "self_service"
                     else:
                         envio_real = 0.0
                         envio_lbl  = None
@@ -490,7 +490,7 @@ def build_tab_ventas(container) -> None:
                                 conn.close()
                         await run.io_bound(_save_popup_pay)
 
-                envio_es_real = (_lt == "cross_docking")
+                envio_es_real = _lt in ("cross_docking", "xd_drop_off", "me1", "me2", "self_service", "flex")
                 thumb_real = item_data.get("thumbnail") or ""
                 if not thumb_real:
                     _pics = item_data.get("pictures") or []
@@ -1016,9 +1016,9 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("item_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 _lt = (v.get("logistic_type") or "").lower().strip()
-                                                if _lt in ("xd_drop_off", "cross_docking", "drop_off", "self_service", "flex"):
+                                                if _lt in ("self_service", "flex"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
-                                                elif _lt in ("me1", "me2", "correo"):
+                                                elif _lt in ("cross_docking", "xd_drop_off", "me1", "me2", "correo"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
                                                 elif _lt == "fulfillment":
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
