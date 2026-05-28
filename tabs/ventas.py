@@ -1008,6 +1008,7 @@ def build_tab_ventas(container) -> None:
                                                 ui.label(v.get("item_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 _lt = (v.get("logistic_type") or "").lower()
+                                                print(f"[DBG_LT] order={v.get('order_id')} lt={repr(_lt)} from_cache={v.get('payment_id') in ventas_cache_ref}", flush=True)
                                                 if _lt in ("xd_drop_off", "cross_docking", "self_service", "flex"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
                                                 elif _lt in ("me1", "me2"):
