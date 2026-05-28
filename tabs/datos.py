@@ -240,6 +240,7 @@ def build_tab_datos() -> None:
     inp_miami:      Dict[str, Any] = {}
     inp_china:      Dict[str, Any] = {}
     inp_impuestos:  Dict[str, Any] = {}
+    inp_kilo:       Dict[str, Any] = {}
     inp_logistica:  Dict[str, Any] = {}
 
     with ui.column().classes("w-full gap-4 p-4"):
@@ -248,7 +249,7 @@ def build_tab_datos() -> None:
         # FILA SUPERIOR  —  Dólar (1fr) | Cuotas (1fr) | ML (2fr) | Flex (1fr)
         # ══════════════════════════════════════════════════════════════════
         with ui.element("div").style(
-            "display:grid; grid-template-columns:1fr 1fr 2fr 1fr; "
+            "display:grid; grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) minmax(280px,2fr) minmax(160px,1fr) minmax(200px,1.5fr); "
             "gap:12px; width:100%; align-items:start;"
         ):
             # ── Dólar ──────────────────────────────────────────────────
@@ -275,32 +276,27 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_cuotas, key, lbl, unit)
 
-            # ── MercadoLibre (2fr, dos columnas internas) ───────────────
+            # ── MercadoLibre (2fr, una columna) ────────────────────────
             with ui.card().classes("p-3"):
                 _card_header("ti-building-store", "MercadoLibre")
-                _add_field(inp_ml, "kilo", "Traída × kilo", "u$")
-                _divider()
-                with ui.element("div").style(
-                    "display:grid; grid-template-columns:1fr 1fr; gap:0 20px;"
-                ):
-                    with ui.column().classes("gap-0"):
-                        for lbl, key, unit in [
-                            ("Comisión",  "ml_comision",            "%"),
-                            ("Deb/Cre",   "ml_debcre",              "%"),
-                            ("SIRTAC",    "ml_sirtac",              "%"),
-                            ("IIBB+PER",  "ml_iibb_per",            "%"),
-                        ]:
-                            _add_field(inp_ml, key, lbl, unit)
-                    with ui.column().classes("gap-0"):
-                        for lbl, key, unit in [
-                            ("Envíos",    "ml_envios",              "$"),
-                            ("Gan. neta", "ml_ganancia_neta_venta", "%"),
-                            ("Cobrado",   "ml_cobrado",             ""),
-                            ("Com. fija", "ml_comision_fija_menor", "$"),
-                        ]:
-                            _add_field(inp_ml, key, lbl, unit)
+                for lbl, key, unit in [
+                    ("Comisión",  "ml_comision",            "%"),
+                    ("Deb/Cre",   "ml_debcre",              "%"),
+                    ("SIRTAC",    "ml_sirtac",              "%"),
+                    ("IIBB+PER",  "ml_iibb_per",            "%"),
+                    ("Envíos",    "ml_envios",              "$"),
+                    ("Gan. neta", "ml_ganancia_neta_venta", "%"),
+                    ("Cobrado",   "ml_cobrado",             ""),
+                    ("Com. fija", "ml_comision_fija_menor", "$"),
+                ]:
+                    _add_field(inp_ml, key, lbl, unit)
                 _divider()
                 _add_field(inp_ml, "ml_envios_gratuitos", "Envíos gratuitos desde", "$")
+
+            # ── Traída por kilo ────────────────────────────────────────
+            with ui.card().classes("p-3"):
+                _card_header("ti-package", "Traída × kilo")
+                _add_field(inp_kilo, "kilo", "Precio u$", "u$")
 
             # ── Envíos Flex ────────────────────────────────────────────
             with ui.card().classes("p-3"):
@@ -367,7 +363,7 @@ def build_tab_datos() -> None:
         # ── Guardar todo ───────────────────────────────────────────────
         def guardar_params() -> None:
             all_inputs = {
-                **inp_dolar, **inp_cuotas, **inp_ml,
+                **inp_dolar, **inp_cuotas, **inp_ml, **inp_kilo,
                 **inp_miami, **inp_china, **inp_impuestos, **inp_logistica,
             }
             for key, inp in all_inputs.items():
