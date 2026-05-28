@@ -733,6 +733,9 @@ def build_tab_ventas(container) -> None:
 
         def _pintar_tabla() -> None:
             """Pinta la tabla según ventas_raw, filtro y agrupar."""
+            _con_gan = sum(1 for v in ventas_raw if v.get("gan_pesos") is not None)
+            _sin_gan = sum(1 for v in ventas_raw if v.get("gan_pesos") is None)
+            print(f"[PINTA] ventas_raw_id={id(ventas_raw)} con_gan={_con_gan} sin_gan={_sin_gan}", flush=True)
             estado_val = str(filtro_estado_ref.get("val", "todas") or "todas")
             ventas_filtradas = ventas_raw
             if estado_val == "pagada":
@@ -1558,6 +1561,9 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["pay_status"] = c.get("pay_status")
             ventas_raw = ventas_mes
+            _hits = sum(1 for v in ventas_mes if v.get("gan_pesos") is not None)
+            _misses = sum(1 for v in ventas_mes if v.get("gan_pesos") is None)
+            print(f"[PRE_PINTA] cache_size={len(ventas_cache_ref)} hits={_hits} misses={_misses} ventas_mes_id={id(ventas_mes)} ventas_raw_id={id(ventas_raw)}", flush=True)
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
             _pintar_tabla()
