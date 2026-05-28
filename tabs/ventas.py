@@ -1209,11 +1209,11 @@ def build_tab_ventas(container) -> None:
 
                 db_rows: List[Dict] = []
                 for v, pay_data, ship_data in batch_results:
-                    if not pay_data:
-                        continue
                     lt = ship_data.get("logistic_type") or ""
                     if lt:
                         v["logistic_type"] = lt
+                    if not pay_data:
+                        continue
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
                     calc = await run.io_bound(_compute, pay_data, v)
                     if not calc:
@@ -1246,6 +1246,27 @@ def build_tab_ventas(container) -> None:
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
 
+            # Fetch shipments para account_money (excluidos del batch principal)
+            _am_ship_candidates = [
+                v for v in ventas_raw
+                if v.get("payment_type") == "account_money"
+                and v.get("shipping_id")
+                and not v.get("logistic_type")
+            ]
+            if _am_ship_candidates:
+                def _fetch_am_ships(rows):
+                    with ThreadPoolExecutor(max_workers=min(16, len(rows))) as ex:
+                        futs = [(v, ex.submit(_fetch_ship, v.get("shipping_id") or "")) for v in rows]
+                    for v, fut in futs:
+                        try:
+                            sd = fut.result()
+                            lt = sd.get("logistic_type") or ""
+                            if lt:
+                                v["logistic_type"] = lt
+                        except Exception:
+                            pass
+                await run.io_bound(_fetch_am_ships, _am_ship_candidates)
+
             # Estimar gan$ para account_money usando params del cotizador
             _am_rows: List[Dict] = []
             for v in ventas_raw:
@@ -1268,7 +1289,7 @@ def build_tab_ventas(container) -> None:
                                 "gan_pesos": _gp, "gan_vta_pct": v["gan_vta_pct"], "gan_cos_pct": None,
                                 "meli_fee": 0.0, "cuotas_fee": 0.0, "iva_total": 0.0,
                                 "deb_cred": 0.0, "iibb_ret": 0.0, "sirtac": 0.0,
-                                "envio_real": _env, "logistic_type": "", "net_rcv": None,
+                                "envio_real": _env, "logistic_type": v.get("logistic_type") or "", "net_rcv": None,
                                 "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                 "pay_status": None,
                             }
