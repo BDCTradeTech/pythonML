@@ -444,12 +444,12 @@ def build_tab_ventas(container) -> None:
                         _lt = ""
 
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
-                    if not is_rejected and has_api and has_calc:
+                    if not is_rejected and has_calc:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
 
-                    if has_api and payment_id:
+                    if payment_id and (has_api or has_calc):
                         _now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                         _ce = {
                             "payment_id": payment_id, "user_id": user["id"], "order_id": _oid,
