@@ -1059,7 +1059,7 @@ def build_tab_ventas(container) -> None:
             with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
                 ui.label("Completando datos de ventas").classes("text-base font-semibold mb-2")
                 lbl_progreso = ui.label("Iniciando...").classes("text-sm text-gray-600")
-                barra = ui.linear_progress(value=0).props("instant-feedback").classes("w-full my-2")
+                barra = ui.linear_progress(value=0, show_value=False, size="20px").props("instant-feedback").classes("w-full my-2")
             dlg.open()
             background_tasks.create(
                 _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
