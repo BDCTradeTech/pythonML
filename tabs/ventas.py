@@ -1420,6 +1420,7 @@ def build_tab_ventas(container) -> None:
             ventas_mes: List[Dict[str, Any]] = []
             status_map = {"paid": "Concretada", "handling": "En preparación", "shipped": "Enviada", "delivered": "Entregada", "cancelled": "Cancelada", "canceled": "Cancelada"}
             dia_ini, dia_fin = date_ini, date_fin
+            _dbg_lt_printed = False
             for ord_item in orders_periodo:
                 dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
                 if not dt_str or not isinstance(dt_str, str):
@@ -1446,6 +1447,10 @@ def build_tab_ventas(container) -> None:
                 status_display = status_map.get(status_raw, status_raw or "—")
                 items = ord_item.get("order_items") or ord_item.get("items") or []
                 ord_qty = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
+                if not _dbg_lt_printed:
+                    _shp_dbg = ord_item.get("shipping") or {}
+                    print(f"[DBG_LT] order={ord_item.get('id')} shipping_keys={list(_shp_dbg.keys())} lt={repr(_shp_dbg.get('logistic_type'))}", flush=True)
+                    _dbg_lt_printed = True
                 for it in items:
                     if not isinstance(it, dict):
                         continue
