@@ -365,13 +365,21 @@ def build_tab_ventas(container) -> None:
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
+                def _get_ship(tok, sid):
+                    r = requests.get(f"https://api.mercadolibre.com/shipments/{sid}",
+                                     headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+                    return r.json() if r.status_code == 200 else {}
+
                 async def _noop():
                     return {}
 
                 _cached = ventas_cache_ref.get(payment_id or "")
 
                 if _cached and payment_id:
-                    item_data   = await run.io_bound(_get_item, access_token, _iid) if _iid else {}
+                    item_coro2 = run.io_bound(_get_item, access_token, _iid) if _iid else _noop()
+                    ship_coro2 = run.io_bound(_get_ship, access_token, shipping_id) if shipping_id else _noop()
+                    item_data, ship_data = await asyncio.gather(item_coro2, ship_coro2)
+                    zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
                     has_api     = True
                     is_rejected = _cached.get("pay_status") == "rejected"
                     meli_fee    = float(_cached.get("meli_fee") or 0)
@@ -382,7 +390,12 @@ def build_tab_ventas(container) -> None:
                     net_rcv     = _cached.get("net_rcv")
                     envio_real  = float(_cached.get("envio_real") or 0)
                     _lt         = _cached.get("logistic_type") or ""
-                    envio_lbl   = "Envío Correo" if _lt == "cross_docking" else "Envío Flex"
+                    if _lt == "cross_docking":
+                        envio_lbl = "Envío Correo"
+                    elif zip_code:
+                        envio_lbl = f"Envío Flex (CP {zip_code})"
+                    else:
+                        envio_lbl = "Envío Flex"
                     iibb_perc   = total_price * ml_iibb
                     iva_venta   = total_price * tipo_iva / (1 + tipo_iva)
                     iva_meli    = meli_fee * 0.21 / 1.21
@@ -396,7 +409,9 @@ def build_tab_ventas(container) -> None:
                 else:
                     pay_coro  = run.io_bound(_get_pay,  access_token, payment_id) if payment_id else _noop()
                     item_coro = run.io_bound(_get_item, access_token, _iid)        if _iid       else _noop()
-                    pay_data, item_data = await asyncio.gather(pay_coro, item_coro)
+                    ship_coro = run.io_bound(_get_ship, access_token, shipping_id) if shipping_id else _noop()
+                    pay_data, item_data, ship_data = await asyncio.gather(pay_coro, item_coro, ship_coro)
+                    zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
 
                     is_rejected = pay_data.get("status") == "rejected"
                     charges    = pay_data.get("charges_details") or []
@@ -420,7 +435,7 @@ def build_tab_ventas(container) -> None:
                         _lt = "cross_docking"
                     elif has_api:
                         envio_real = float(p.get("ml_envios") or 5823)
-                        envio_lbl  = "Envío Flex"
+                        envio_lbl  = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
                         _lt = "flex"
                     else:
                         envio_real = 0.0
