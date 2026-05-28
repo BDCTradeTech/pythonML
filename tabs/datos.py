@@ -208,30 +208,30 @@ def build_tab_datos() -> None:
     # --- UI helpers ---
 
     def _card_header(icon: str, title: str) -> None:
-        with ui.row().classes("items-center gap-2 pb-1.5 mb-2 border-b border-gray-200 w-full"):
-            ui.html(f'<i class="ti {icon}" style="font-size:16px;color:var(--q-primary)"></i>')
-            ui.label(title).classes("text-sm leading-none").style("font-weight:500; color:#374151")
+        with ui.row().classes("items-center gap-1.5 pb-1 mb-1 w-full").style("border-bottom:1px solid #e5e7eb"):
+            ui.html(f'<i class="ti {icon}" style="font-size:14px;color:var(--q-primary)"></i>')
+            ui.label(title).classes("leading-none").style("font-size:12px; font-weight:500; color:#374151")
 
     def _add_field(container: Dict[str, Any], key: str, label_text: str, unit: str = "") -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
-        with ui.row().classes("items-center justify-between gap-2 py-0.5 w-full"):
+        with ui.row().classes("justify-between items-center py-1 w-full gap-1"):
             with ui.row().classes("items-center gap-1 flex-1 min-w-0 overflow-hidden"):
-                lbl = ui.label(label_text).classes("text-xs truncate leading-4").style("color:#6b7280")
+                lbl = ui.label(label_text).classes("text-xs truncate").style("color:#6b7280")
                 if key in TOOLTIPS:
                     lbl.tooltip(TOOLTIPS[key])
                 if unit:
                     ui.label(unit).classes("text-[10px] shrink-0 whitespace-nowrap").style("color:#d1d5db")
             inp = (
                 ui.input(value=display_val)
-                .classes("w-24 shrink-0")
-                .props('dense outlined input-style="text-align:right; font-size:12px;"')
+                .props('dense outlined input-style="text-align:right; font-size:11px; padding:2px 4px;"')
+                .style("width:90px; min-width:90px; flex-shrink:0")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
 
     def _divider() -> None:
-        ui.element("div").classes("w-full my-1.5").style("border-top:1px solid #f3f4f6")
+        ui.element("div").classes("w-full my-1").style("border-top:1px solid #f3f4f6")
 
     # --- Input dicts por card ---
     inp_dolar:      Dict[str, Any] = {}
@@ -246,14 +246,14 @@ def build_tab_datos() -> None:
     with ui.column().classes("w-full gap-4 p-4"):
 
         # ══════════════════════════════════════════════════════════════════
-        # FILA SUPERIOR  —  Dólar (1fr) | Cuotas (1fr) | ML (2fr) | Flex (1fr)
+        # FILA SUPERIOR  —  Dólar | Cuotas | ML | Traída×kilo | Flex
         # ══════════════════════════════════════════════════════════════════
         with ui.element("div").style(
-            "display:grid; grid-template-columns:minmax(160px,1fr) minmax(160px,1fr) minmax(280px,2fr) minmax(160px,1fr) minmax(200px,1.5fr); "
-            "gap:12px; width:100%; align-items:start;"
+            "display:grid; grid-template-columns:1fr 1fr 2fr 1fr 1.5fr; "
+            "gap:10px; width:100%; align-items:start;"
         ):
             # ── Dólar ──────────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-currency-dollar", "Dólar")
                 for lbl, key in [
                     ("Oficial",  "dolar_oficial"),
@@ -264,7 +264,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_dolar, key, lbl)
 
             # ── Cuotas ─────────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-credit-card", "Cuotas")
                 for lbl, key, unit in [
                     ("3x",    "cuotas_3x",  "%"),
@@ -276,8 +276,8 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_cuotas, key, lbl, unit)
 
-            # ── MercadoLibre (2fr, una columna) ────────────────────────
-            with ui.card().classes("p-3"):
+            # ── MercadoLibre ────────────────────────────────────────────
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-building-store", "MercadoLibre")
                 for lbl, key, unit in [
                     ("Comisión",  "ml_comision",            "%"),
@@ -294,24 +294,24 @@ def build_tab_datos() -> None:
                 _add_field(inp_ml, "ml_envios_gratuitos", "Envíos gratuitos desde", "$")
 
             # ── Traída por kilo ────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-package", "Traída × kilo")
                 _add_field(inp_kilo, "kilo", "Precio u$", "u$")
 
             # ── Envíos Flex ────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-motorbike", "Envíos Flex")
                 ui.label("pendiente").classes("text-xs italic mt-2").style("color:#9ca3af")
 
         # ══════════════════════════════════════════════════════════════════
-        # FILA INFERIOR  —  Miami | China | Impuestos | Logística  (1fr cada una)
+        # FILA INFERIOR  —  Miami | China | Impuestos | Logística
         # ══════════════════════════════════════════════════════════════════
         with ui.element("div").style(
-            "display:grid; grid-template-columns:1fr 1fr 1fr 1fr; "
-            "gap:12px; width:100%; align-items:start;"
+            "display:grid; grid-template-columns:repeat(4,1fr); "
+            "gap:10px; width:100%; align-items:start;"
         ):
             # ── Miami ──────────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-plane", "Miami")
                 for lbl, key, unit in [
                     ("KG",            "valor_kg_miami",           "u$"),
@@ -323,7 +323,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_miami, key, lbl, unit)
 
             # ── China ──────────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-ship", "China")
                 for lbl, key, unit in [
                     ("KG",              "valor_kg_china",          "u$"),
@@ -340,7 +340,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_china, key, lbl, unit)
 
             # ── Impuestos ──────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-receipt-tax", "Impuestos")
                 for lbl, key in [
                     ("IVA 10,5%", "iva_105"),
@@ -350,7 +350,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_impuestos, key, lbl, "%")
 
             # ── Logística ──────────────────────────────────────────────
-            with ui.card().classes("p-3"):
+            with ui.card().classes("p-2.5"):
                 _card_header("ti-truck", "Logística")
                 for lbl, key, unit in [
                     ("Desc. LHS/kg",    "descuento_lhs_kg",  "u$"),
