@@ -229,7 +229,7 @@ def build_tab_datos() -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
         texto = f"{label_text} {unit}" if unit else label_text
-        with ui.row().classes("items-center").style("gap:4px; padding:1px 0; flex-wrap:nowrap"):
+        with ui.row().classes("w-full items-center").style("gap:6px; padding:2px 0; flex-wrap:nowrap; border-bottom:0.5px solid #f0f0f0"):
             lbl = ui.label(texto).style("font-size:11px; color:gray; white-space:nowrap")
             if key in TOOLTIPS:
                 lbl.tooltip(TOOLTIPS[key])
