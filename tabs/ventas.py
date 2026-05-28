@@ -751,38 +751,59 @@ def build_tab_ventas(container) -> None:
             total_unidades_ok = sum(v["cantidad"] for v in ventas_ok)
             n_ventas_ok = len(ventas_ok)
             ticket_promedio = total_monto_ok / n_ventas_ok if n_ventas_ok > 0 else 0
+            ganancia_total = sum(v["gan_pesos"] for v in ventas_filtradas if v.get("gan_pesos") is not None)
+            _gvp_lista = [v["gan_vta_pct"] for v in ventas_filtradas if v.get("gan_vta_pct") is not None]
+            gan_prom_pct = sum(_gvp_lista) / len(_gvp_lista) if _gvp_lista else None
+            ventas_diarias = total_monto_ok / dias_total if dias_total > 0 else 0
+            ventas_diarias_u = total_unidades_ok / dias_total if dias_total > 0 else 0
+            gan_prom_dia = ganancia_total / dias_total if dias_total > 0 else 0
             header_card.clear()
             with header_card:
-                with ui.card().classes("w-full p-4 bg-grey-2"):
-                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
-                        with ui.column().classes("gap-0"):
-                            ui.label("Total Ventas $").classes("text-xs text-gray-600")
-                            ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Total Ventas U").classes("text-xs text-gray-600")
-                            ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Total de días").classes("text-xs text-gray-600")
-                            ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Ventas Diarias U").classes("text-xs text-gray-600")
-                            ventas_diarias_u = total_unidades_ok / dias_total if dias_total > 0 else 0
-                            ui.label(f"{ventas_diarias_u:,.1f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Ventas Diarias $").classes("text-xs text-gray-600")
-                            ventas_diarias = total_monto_ok / dias_total if dias_total > 0 else 0
-                            ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Ticket promedio").classes("text-xs text-gray-600")
-                            ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Ganancia Neta Calculada").classes("text-xs text-gray-600")
-                            ui.label(f"$ {ganancia_neta_ref.get('val', 0):,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
-                        ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
+                    with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
+                        with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
+                            ui.label("TOTALES").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
+                            with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Total ventas $").classes("text-xs text-gray-500")
+                                    ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Unidades vendidas").classes("text-xs text-gray-500")
+                                    ui.label(str(total_unidades_ok)).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ganancia total").classes("text-xs text-gray-500")
+                                    _gt_cls = "text-positive" if ganancia_total >= 0 else "text-negative"
+                                    ui.label(f"$ {ganancia_total:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gt_cls}")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Días").classes("text-xs text-gray-500")
+                                    ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
+                        ui.element("div").style("width: 2px; background: rgba(0,0,0,0.2); align-self: stretch; margin: 8px 4px;")
+                        with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
+                            ui.label("PROMEDIOS").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
+                            with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ventas/día $").classes("text-xs text-gray-500")
+                                    ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Unidades/día").classes("text-xs text-gray-500")
+                                    ui.label(f"{ventas_diarias_u:,.1f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Ticket promedio").classes("text-xs text-gray-500")
+                                    ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Gan. prom. $").classes("text-xs text-gray-500")
+                                    _gd_cls = "text-positive" if gan_prom_dia >= 0 else "text-negative"
+                                    ui.label(f"$ {gan_prom_dia:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gd_cls}")
+                                with ui.column().classes("gap-0"):
+                                    ui.label("Gan. prom. %").classes("text-xs text-gray-500")
+                                    if gan_prom_pct is not None:
+                                        _gpp_cls = "text-positive" if gan_prom_pct >= 0 else "text-negative"
+                                        ui.label(f"{gan_prom_pct:,.1f}%".replace(",", ".")).classes(f"text-lg font-bold {_gpp_cls}")
+                                    else:
+                                        ui.label("—").classes("text-lg font-bold text-gray-400")
+                        with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
+                            ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
+                            ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
