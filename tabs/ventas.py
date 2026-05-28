@@ -1247,6 +1247,7 @@ def build_tab_ventas(container) -> None:
                 await asyncio.sleep(0)
 
             # Estimar gan$ para account_money usando params del cotizador
+            _am_rows: List[Dict] = []
             for v in ventas_raw:
                 if v.get("payment_type") == "account_money" and v.get("gan_pesos") is None:
                     _up   = float(v.get("unit_price") or 0)
@@ -1260,6 +1261,21 @@ def build_tab_ventas(container) -> None:
                         _gp = _gp_u * _cant + _env * (_cant - 1)
                         v["gan_pesos"]   = _gp
                         v["gan_vta_pct"] = (_gp / (_up * _cant) * 100) if _up > 0 else 0.0
+                        _pid = v.get("payment_id") or ""
+                        if _pid:
+                            _am_db = {
+                                "payment_id": _pid, "user_id": _uid, "order_id": v.get("order_id"),
+                                "gan_pesos": _gp, "gan_vta_pct": v["gan_vta_pct"], "gan_cos_pct": None,
+                                "meli_fee": 0.0, "cuotas_fee": 0.0, "iva_total": 0.0,
+                                "deb_cred": 0.0, "iibb_ret": 0.0, "sirtac": 0.0,
+                                "envio_real": _env, "logistic_type": "", "net_rcv": None,
+                                "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                                "pay_status": None,
+                            }
+                            ventas_cache_ref[_pid] = _am_db
+                            _am_rows.append(_am_db)
+            if _am_rows:
+                await run.io_bound(_save_batch, _am_rows)
 
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
             if dlg and lbl_progreso:
