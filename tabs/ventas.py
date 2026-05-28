@@ -783,6 +783,9 @@ def build_tab_ventas(container) -> None:
                                     ui.label("Total ventas $").classes("text-xs text-gray-500")
                                     ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
+                                    ui.label("Ventas").classes("text-xs text-gray-500")
+                                    ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
+                                with ui.column().classes("gap-0"):
                                     ui.label("Unidades vendidas").classes("text-xs text-gray-500")
                                     ui.label(str(total_unidades_ok)).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
@@ -797,7 +800,7 @@ def build_tab_ventas(container) -> None:
                             ui.label("PROMEDIOS").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
                             with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
                                 with ui.column().classes("gap-0"):
-                                    ui.label("Ventas/día $").classes("text-xs text-gray-500")
+                                    ui.label("Ventas promedio $").classes("text-xs text-gray-500")
                                     ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
                                 with ui.column().classes("gap-0"):
                                     ui.label("Unidades/día").classes("text-xs text-gray-500")
@@ -1007,11 +1010,10 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("item_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                _lt = (v.get("logistic_type") or "").lower()
-                                                print(f"[DBG_LT] order={v.get('order_id')} lt={repr(_lt)} from_cache={v.get('payment_id') in ventas_cache_ref}", flush=True)
-                                                if _lt in ("xd_drop_off", "cross_docking", "self_service", "flex"):
+                                                _lt = (v.get("logistic_type") or "").lower().strip()
+                                                if _lt in ("xd_drop_off", "cross_docking", "drop_off", "self_service", "flex"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
-                                                elif _lt in ("me1", "me2"):
+                                                elif _lt in ("me1", "me2", "correo"):
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
                                                 elif _lt == "fulfillment":
                                                     ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
@@ -1522,7 +1524,6 @@ def build_tab_ventas(container) -> None:
             _new_cache = await run.io_bound(_load_ventas_cache, _uid_v)
             ventas_cache_ref.clear()
             ventas_cache_ref.update(_new_cache)
-            print(f"[DBG_CACHE] cache_size={len(ventas_cache_ref)}", flush=True)
             for v in ventas_mes:
                 pid = v.get("payment_id") or ""
                 if pid and pid in ventas_cache_ref:
@@ -1532,9 +1533,6 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
                     v["pay_status"] = c.get("pay_status")
-            con_datos = sum(1 for v in ventas_mes if v.get("gan_pesos") is not None)
-            sin_datos = sum(1 for v in ventas_mes if v.get("gan_pesos") is None)
-            print(f"[DBG_CACHE] total={len(ventas_mes)} con_datos={con_datos} sin_datos={sin_datos}", flush=True)
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
