@@ -1520,9 +1520,17 @@ def _mostrar_tabla_precios(
         if not sku_ventas:
             return None
 
+        _EXCLUDE_WORDS = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion"}
+
+        def _sku_excluido(s: str) -> bool:
+            normalized = s.lower().replace(".", "").replace("_", "")
+            return any(w in normalized for w in _EXCLUDE_WORDS)
+
         # Calcular filas del reporte
         rows_data = []
         for sku, ventas_90d in sku_ventas.items():
+            if _sku_excluido(sku):
+                continue
             info = sku_info.get(sku)
             if not info:
                 continue
@@ -1562,7 +1570,7 @@ def _mostrar_tabla_precios(
                 s = s[:-1]
             return (s + "...") if s else "..."
 
-        headers = ["SKU", "Marca", "Producto", "Stock", "Ventas 90d", "Ventas/día", "Compra 15d"]
+        headers = ["SKU", "Marca", "Producto", "Stock", "Ventas 90d", "Ventas/día", "Compra"]
         data_rows = [headers]
         sku_fontsizes = []
         for r in rows_sorted:
