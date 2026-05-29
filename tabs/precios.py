@@ -1184,25 +1184,25 @@ def _mostrar_tabla_precios(
         _col_prod_pts = 10.0 * rl_cm - 12
 
         def _trunc(s):
-            if not s or s == “”””:
-                return s or “”””
-            if _sw(s, “Helvetica”, 7) <= _col_prod_pts:
+            if not s or s == "””":
+                return s or "””"
+            if _sw(s, "Helvetica", 7) <= _col_prod_pts:
                 return s
-            while len(s) > 0 and _sw(s + “...”, “Helvetica”, 7) > _col_prod_pts:
+            while len(s) > 0 and _sw(s + "...", "Helvetica", 7) > _col_prod_pts:
                 s = s[:-1]
-            return (s + “...”) if s else “...”
+            return (s + "...") if s else "..."
 
-        headers = [“SKU”, “Marca”, “Producto”, “Color”, “Stock”]
+        headers = ["SKU", "Marca", "Producto", "Color", "Stock"]
         data = [headers]
         for r in rows_sorted:
-            stock_val = r.get(“available_quantity”)
-            stock_str = fmt_miles(stock_val) if stock_val is not None else “0”
-            sku_str = str(r.get(“seller_sku”) or r.get(“id”) or “”)
+            stock_val = r.get("available_quantity")
+            stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
+            sku_str = str(r.get("seller_sku") or r.get("id") or "")
             data.append([
                 sku_str,
-                str(r.get(“marca”) or “”””),
-                _trunc(str(r.get(“title”) or “”””)),
-                str(r.get(“color”) or “”””),
+                str(r.get("marca") or "””"),
+                _trunc(str(r.get("title") or "””")),
+                str(r.get("color") or "””"),
                 stock_str,
             ])
 
