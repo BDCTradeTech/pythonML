@@ -6,6 +6,7 @@ Funciones exportadas: build_tab_precios, _show_item_detail_dialog (usada en prec
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import os
 import tempfile
@@ -1160,8 +1161,8 @@ def _mostrar_tabla_precios(
             sort_asc_ref["val"] = True
         filtrar_y_pintar()
 
-    def _generar_pdf_stock(filtrados_actuales: List[Dict[str, Any]]) -> Optional[str]:
-        """Genera un PDF A4 con columnas SKU/Marca/Producto/Color/Stock, ordenado por Marca+Producto."""
+    def _generar_pdf_stock(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> Optional[str]:
+        """Genera un PDF A4 con columnas SKU/Marca/Producto/Color/Stock[/Ventas], ordenado por Marca+Producto."""
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
@@ -1186,7 +1187,7 @@ def _mostrar_tabla_precios(
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
         _col_sku_pts  = 3.0 * rl_cm - 8
-        _col_prod_pts = 11.6 * rl_cm - 12
+        _col_prod_pts = (10.0 if include_ventas else 11.6) * rl_cm - 12
 
         def _trunc(s):
             if not s or s == "””":
@@ -1197,23 +1198,28 @@ def _mostrar_tabla_precios(
                 s = s[:-1]
             return (s + "...") if s else "..."
 
-        headers = ["SKU", "Marca", "Producto", "Color", "Stock"]
+        headers = [“SKU”, “Marca”, “Producto”, “Color”, “Stock”]
+        if include_ventas:
+            headers.append(“Ventas”)
         data = [headers]
         sku_fontsizes = []
         for r in rows_sorted:
-            stock_val = r.get("available_quantity")
-            stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
-            sku_str = str(r.get("seller_sku") or r.get("id") or "")
-            _sku_w = _sw(sku_str, "Helvetica", 7)
+            stock_val = r.get(“available_quantity”)
+            stock_str = fmt_miles(stock_val) if stock_val is not None else “0”
+            sku_str = str(r.get(“seller_sku”) or r.get(“id”) or “”)
+            _sku_w = _sw(sku_str, “Helvetica”, 7)
             _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
             sku_fontsizes.append(_sku_fs)
-            data.append([
+            row_cells = [
                 sku_str,
-                str(r.get("marca") or "””"),
-                _trunc(str(r.get("title") or "””")),
-                str(r.get("color") or "””"),
+                str(r.get(“marca”) or “”””),
+                _trunc(str(r.get(“title”) or “”””)),
+                str(r.get(“color”) or “”””),
                 stock_str,
-            ])
+            ]
+            if include_ventas:
+                row_cells.append(str(r.get(“sold_quantity”) or “0”))
+            data.append(row_cells)
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         tmp.close()
@@ -1244,7 +1250,7 @@ def _mostrar_tabla_precios(
                 self.saveState()
                 self.setFont("Helvetica-Bold", 11)
                 self.setFillColorRGB(0.098, 0.463, 0.824)
-                self.drawString(margin_lr, page_h - margin + 4, f"Stock {_fecha}")
+                self.drawString(margin_lr, page_h - margin + 4, f"{'Ventas' if include_ventas else 'Stock'} {_fecha}")
                 self.setFont("Helvetica", 9)
                 self.setFillColorRGB(0.4, 0.4, 0.4)
                 self.drawRightString(page_w - margin_lr, page_h - margin + 4,
@@ -1260,7 +1266,10 @@ def _mostrar_tabla_precios(
             bottomMargin=margin_b,
         )
 
-        col_widths = [3.0 * rl_cm, 1.6 * rl_cm, 11.6 * rl_cm, 2.0 * rl_cm, 1.2 * rl_cm]
+        if include_ventas:
+            col_widths = [3.0 * rl_cm, 1.6 * rl_cm, 10.0 * rl_cm, 2.0 * rl_cm, 1.2 * rl_cm, 1.6 * rl_cm]
+        else:
+            col_widths = [3.0 * rl_cm, 1.6 * rl_cm, 11.6 * rl_cm, 2.0 * rl_cm, 1.2 * rl_cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
 
@@ -1277,7 +1286,7 @@ def _mostrar_tabla_precios(
             ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
             ("FONTSIZE",     (0, 1), (-1, -1), 7),
             ("ALIGN",        (0, 1), ( 3, -1), "LEFT"),
-            ("ALIGN",        (4, 1), ( 4, -1), "RIGHT"),
+            ("ALIGN",        (4, 1), (-1, -1), "RIGHT"),
             ("GRID",         (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#dddddd")),
             ("TOPPADDING",   (0, 0), (-1, -1), 2),
             ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
@@ -1454,6 +1463,7 @@ def _mostrar_tabla_precios(
 
     def _generar_pdf_compras(todos_items: List[Dict[str, Any]], token: str, sid: str) -> Optional[str]:
         """Genera PDF A4 de compras sugeridas: SKU/Marca/Producto/Stock/Ventas 90d/Ventas día/Compra 15d."""
+        log = logging.getLogger(__name__)
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
@@ -1489,9 +1499,11 @@ def _mostrar_tabla_precios(
         except Exception:
             return None
         orders = orders_resp.get("results") or []
+        log.warning("PDF Compras: %d órdenes en 90d (desde %s)", len(orders), date_from[:10])
 
         # Acumular unidades vendidas por SKU
         sku_ventas: Dict[str, int] = {}
+        _sin_item_map = 0
         for order in orders:
             if not isinstance(order, dict):
                 continue
@@ -1511,11 +1523,22 @@ def _mostrar_tabla_precios(
                     continue
                 it_data = item_map.get(item_id)
                 if not it_data:
+                    # Fallback: ML incluye seller_custom_field en order_items
+                    _sin_item_map += 1
+                    sku_fb = ""
+                    if isinstance(obj, dict):
+                        sku_fb = str(obj.get("seller_custom_field") or obj.get("seller_sku") or "").strip()
+                    if not sku_fb:
+                        sku_fb = str(oit.get("seller_custom_field") or "").strip()
+                    if sku_fb and sku_fb in sku_info:
+                        sku_ventas[sku_fb] = sku_ventas.get(sku_fb, 0) + qty
                     continue
                 sku = str(it_data.get("seller_sku") or "").strip()
                 if not sku:
                     continue
                 sku_ventas[sku] = sku_ventas.get(sku, 0) + qty
+
+        log.warning("PDF Compras: %d SKUs con ventas, %d order_items sin match en item_map", len(sku_ventas), _sin_item_map)
 
         if not sku_ventas:
             return None
@@ -1687,12 +1710,13 @@ def _mostrar_tabla_precios(
                 with client:
                     ui.notify("No hay datos para imprimir. Aplicá filtros y volvé a intentar.", color="warning")
                 return
-            path = await run.io_bound(_generar_pdf_stock, rows_to_print)
+            path = await run.io_bound(_generar_pdf_stock, rows_to_print, imprimir_ventas)
             if path:
                 ahora = datetime.now()
                 ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
+                fname = f"ventas_{ts}.pdf" if imprimir_ventas else f"stock_{ts}.pdf"
                 with client:
-                    ui.download(path, f"stock_{ts}.pdf")
+                    ui.download(path, fname)
                     def _borrar(p=path) -> None:
                         try:
                             if p and os.path.exists(p):
