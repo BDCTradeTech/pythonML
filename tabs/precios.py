@@ -2062,13 +2062,14 @@ def _mostrar_tabla_precios(
                 ui.label("Marcas:").classes("text-xs text-gray-500")
                 lbl_marcas = ui.label("””").classes("text-sm font-bold text-primary")
             ui.space()
-            ui.button("Limpiar día", on_click=_blanquear_revisiones).props("icon=eraser dense flat no-caps color=warning").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             if on_actualizar:
-                ui.button("Actualizar", on_click=lambda: on_actualizar(), color="primary").props("icon=refresh dense flat no-caps").classes("text-xs")
-            ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
-            ui.button("Stock $", on_click=lambda: imprimir_tabla_usd(), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
-            ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
-            ui.button("Compras", on_click=lambda: imprimir_compras(), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
+                ui.button("Actualizar", on_click=lambda: on_actualizar()).props("unelevated dense no-caps icon=refresh").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Limpiar día", on_click=_blanquear_revisiones).props("unelevated dense no-caps icon=event_busy").style("background:#993C1D;color:#FAECE7;").classes("text-xs").tooltip("Blanquear revisiones de hoy")
+            ui.element("div").style("width:1px;height:24px;background:rgba(0,0,0,0.15);align-self:center;")
+            ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False)).props("unelevated dense no-caps icon=inventory_2").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Stock $", on_click=lambda: imprimir_tabla_usd()).props("unelevated dense no-caps icon=request_quote").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True)).props("unelevated dense no-caps icon=bar_chart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Compras", on_click=lambda: imprimir_compras()).props("unelevated dense no-caps icon=shopping_cart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
         with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
