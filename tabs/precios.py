@@ -1181,7 +1181,7 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 10.0 * rl_cm - 12
+        _col_prod_pts = 10.9 * rl_cm - 12
 
         def _trunc(s):
             if not s or s == "””":
@@ -1251,7 +1251,7 @@ def _mostrar_tabla_precios(
             bottomMargin=margin_b,
         )
 
-        col_widths = [2.0 * rl_cm, 2.5 * rl_cm, 10.0 * rl_cm, 3.0 * rl_cm, 1.9 * rl_cm]
+        col_widths = [3.0 * rl_cm, 2.0 * rl_cm, 10.9 * rl_cm, 2.0 * rl_cm, 1.5 * rl_cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
 
