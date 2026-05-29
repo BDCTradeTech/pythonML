@@ -29,7 +29,6 @@ TAB_KEYS = [
     ("estadisticas", "Estadísticas"),
     ("ventas", "Ventas"),
     ("productos", "Productos"),
-    ("precios", "Precios"),
     ("cuotas", "Cuotas"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),

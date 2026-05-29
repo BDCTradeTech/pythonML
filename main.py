@@ -120,7 +120,6 @@ from tabs.compras import build_tab_compras
 from tabs.ventas import build_tab_ventas
 from tabs.cuotas import build_tab_cuotas
 from tabs.precios import build_tab_precios
-from tabs.precios_detalle import build_tab_precios_detalle
 from tabs.stock import build_tab_stock
 from tabs.balance import build_tab_balance
 from tabs.busqueda import build_tab_busqueda
@@ -288,7 +287,6 @@ def show_main_layout(container) -> None:
                 tab_estadisticas = ui.tab("Estadísticas")
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
-                tab_precios_detalle = ui.tab("Precios")
                 tab_cuotas = ui.tab("Cuotas")
                 tab_compras = ui.tab("Invoices")
                 tab_stock = ui.tab("Stock")
@@ -308,7 +306,6 @@ def show_main_layout(container) -> None:
             "Estadísticas": tab_estadisticas,
             "Ventas": tab_ventas,
             "Productos": tab_precios,
-            "Precios": tab_precios_detalle,
             "Cuotas": tab_cuotas,
             "Invoices": tab_compras,
             "Stock": tab_stock,
@@ -323,11 +320,10 @@ def show_main_layout(container) -> None:
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Precios": "precios", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
-        precios_detalle_cargado = [False]
         ventas_cargado = [False]
         estadisticas_cargado = [False]
         balance_cargado = [False]
@@ -355,9 +351,6 @@ def show_main_layout(container) -> None:
             elif val == "Productos" and not precios_cargado[0]:
                 precios_cargado[0] = True
                 build_tab_precios(precios_container)
-            elif val == "Precios" and not precios_detalle_cargado[0]:
-                precios_detalle_cargado[0] = True
-                build_tab_precios_detalle(precios_detalle_container)
             elif val == "Cuotas" and not cuotas_cargado[0]:
                 cuotas_cargado[0] = True
                 build_tab_cuotas(cuotas_container)
@@ -408,7 +401,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("PRECIOS", "Precios", "precios"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -518,9 +511,6 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_precios):
                 precios_container = ui.column().classes("w-full")
-
-            with ui.tab_panel(tab_precios_detalle):
-                precios_detalle_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_compras):
                 compras_container = ui.column().classes("w-full")
