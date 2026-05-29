@@ -408,6 +408,11 @@ def build_tab_ventas(container) -> None:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
+                    for _vr in ventas_raw:
+                        if _vr.get("payment_id") == payment_id:
+                            _vr["gan_pesos"] = gan_pesos
+                            _vr["gan_vta_pct"] = gan_vta_pct
+                            break
                 else:
                     pay_coro  = run.io_bound(_get_pay,  access_token, payment_id) if payment_id else _noop()
                     item_coro = run.io_bound(_get_item, access_token, _iid)        if _iid       else _noop()
@@ -689,6 +694,7 @@ def build_tab_ventas(container) -> None:
                                     with ui.row().classes("items-center gap-1"):
                                         ui.html('<i class="ti ti-calculator" style="font-size:12px;color:#BA7517" aria-hidden="true"></i>')
                                         ui.label("Valor estimado")
+                    _pintar_tabla()
 
             background_tasks.create(_fetch_real(), name="popup_venta_real")
 
@@ -1077,9 +1083,11 @@ def build_tab_ventas(container) -> None:
             rows_to_enrich = [
                 v for v in ventas_raw
                 if (pid := (v.get("payment_id") or "")) != ""
-                and v.get("payment_type", "") != "account_money"
-                and (force or pid not in ventas_cache_ref
-                     or ventas_cache_ref.get(pid, {}).get("gan_pesos") is None)
+                and (force
+                     or pid not in ventas_cache_ref
+                     or ventas_cache_ref.get(pid, {}).get("gan_pesos") is None
+                     or (v.get("payment_type") == "account_money"
+                         and float(ventas_cache_ref.get(pid, {}).get("meli_fee") or 0) == 0))
             ]
             if not rows_to_enrich:
                 if dlg and lbl_progreso:
