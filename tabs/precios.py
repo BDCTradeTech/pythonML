@@ -1181,7 +1181,8 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 10.9 * rl_cm - 12
+        _col_sku_pts  = 3.0 * rl_cm - 8
+        _col_prod_pts = 11.6 * rl_cm - 12
 
         def _trunc(s):
             if not s or s == "””":
@@ -1194,10 +1195,14 @@ def _mostrar_tabla_precios(
 
         headers = ["SKU", "Marca", "Producto", "Color", "Stock"]
         data = [headers]
+        sku_fontsizes = []
         for r in rows_sorted:
             stock_val = r.get("available_quantity")
             stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
             sku_str = str(r.get("seller_sku") or r.get("id") or "")
+            _sku_w = _sw(sku_str, "Helvetica", 7)
+            _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
+            sku_fontsizes.append(_sku_fs)
             data.append([
                 sku_str,
                 str(r.get("marca") or "””"),
@@ -1251,7 +1256,7 @@ def _mostrar_tabla_precios(
             bottomMargin=margin_b,
         )
 
-        col_widths = [3.0 * rl_cm, 2.0 * rl_cm, 10.9 * rl_cm, 2.0 * rl_cm, 1.5 * rl_cm]
+        col_widths = [3.0 * rl_cm, 1.6 * rl_cm, 11.6 * rl_cm, 2.0 * rl_cm, 1.2 * rl_cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
 
@@ -1275,6 +1280,9 @@ def _mostrar_tabla_precios(
             ("ROWBACKGROUND",(0, 1), (-1, -1), [LIGHT_GRAY, rl_colors.white]),
         ])
         table.setStyle(ts)
+        _sku_extra = [("FONTSIZE", (0, i + 1), (0, i + 1), fs) for i, fs in enumerate(sku_fontsizes) if fs < 7]
+        if _sku_extra:
+            table.setStyle(TableStyle(_sku_extra))
 
         try:
             doc.build([table], canvasmaker=_PaginatedCanvas)
