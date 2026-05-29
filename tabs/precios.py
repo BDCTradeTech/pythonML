@@ -352,7 +352,7 @@ def _show_item_detail_dialog(
                         ui.label("Sin foto").classes("text-xs text-gray-500")
                 with ui.column().classes("flex-1 min-w-0 gap-2"):
                     sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                    ui.label(f"{row.get('id', '””')}  ””  {sku_txt}").classes("text-sm font-mono text-gray-600")
+                    ui.label(f"{row.get('id', '')}  ''  {sku_txt}").classes("text-sm font-mono text-gray-600")
                     ui.label(str(row.get("marca", "—"))).classes("text-sm font-medium")
                     txt = str(row.get("producto", ""))[:120] + ("..." if len(str(row.get("producto", ""))) > 120 else "")
                     ui.label(txt).classes("text-sm font-bold")
@@ -544,16 +544,16 @@ def _mostrar_tabla_precios(
         # Última modificación: last_updated de la API (ej. "2025-02-15T19:30:00.000Z")
         def _fmt_fecha(s: Any) -> str:
             if not s or not isinstance(s, str):
-                return "””"
+                return "''"
             try:
                 dt = datetime.strptime(s[:10], "%Y-%m-%d")
                 return dt.strftime("%d/%m/%Y")
             except Exception:
-                return str(s)[:10] if s else "””"
+                return str(s)[:10] if s else "''"
 
         last_upd = i.get("last_updated")
         raw_fecha = last_upd[:10] if last_upd and isinstance(last_upd, str) and len(last_upd) >= 10 else None
-        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "””"
+        ult_modif_fmt = _fmt_fecha(raw_fecha) if raw_fecha else "''"
         _item_sku = i.get("seller_sku") or None
         _prod_row = _prod_map.get(_item_sku) if _item_sku else None
         # Calcular Gan $ y Gan Vta%
@@ -601,8 +601,8 @@ def _mostrar_tabla_precios(
             "subtotal": subtotal,
             "subtotal_fmt": fmt_moneda(subtotal),
             "tipo": tipo,
-            "marca": i.get("marca") or "””",
-            "color": i.get("color") or "””",
+            "marca": i.get("marca") or "''",
+            "color": i.get("color") or "''",
             "title": str(i.get("title") or ""),
             "ult_modif_fmt": ult_modif_fmt,
             "fecha_ult_modif": raw_fecha or "",
@@ -999,7 +999,7 @@ def _mostrar_tabla_precios(
             "winning":             ("✓", "Ganando",               "text-positive font-bold"),
             "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
             "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
-            "listed":              ("””", "Publicado sin ganar",   "text-gray-500"),
+            "listed":              ("''", "Publicado sin ganar",   "text-gray-500"),
         }
         _REASON_ES = {
             "PRICE":           "Precio",
@@ -1029,7 +1029,7 @@ def _mostrar_tabla_precios(
                             ui.label("Sin foto").classes("text-xs text-gray-500")
                     with ui.column().classes("flex-1 min-w-0 gap-1"):
                         sku_txt = str(row.get("seller_sku") or row.get("id") or "")
-                        ui.label(f"{row.get('id','””')}  ””  {sku_txt}").classes("text-xs font-mono text-gray-500")
+                        ui.label(f"{row.get('id','')}  ''  {sku_txt}").classes("text-xs font-mono text-gray-500")
                         ui.label(str(row.get("marca") or "—")).classes("text-sm font-medium")
                         ui.label((str(row.get("title") or ""))[:100]).classes("text-sm font-bold")
                         ui.label(f"Stock: {row.get('available_quantity', 0)}").classes("text-sm text-gray-500")
@@ -1190,35 +1190,35 @@ def _mostrar_tabla_precios(
         _col_prod_pts = (10.0 if include_ventas else 11.6) * rl_cm - 12
 
         def _trunc(s):
-            if not s or s == "””":
-                return s or "””"
+            if not s or s == "''":
+                return s or "''"
             if _sw(s, "Helvetica", 7) <= _col_prod_pts:
                 return s
             while len(s) > 0 and _sw(s + "...", "Helvetica", 7) > _col_prod_pts:
                 s = s[:-1]
             return (s + "...") if s else "..."
 
-        headers = [“SKU”, “Marca”, “Producto”, “Color”, “Stock”]
+        headers = ['SKU', 'Marca', 'Producto', 'Color', 'Stock']
         if include_ventas:
-            headers.append(“Ventas”)
+            headers.append('Ventas')
         data = [headers]
         sku_fontsizes = []
         for r in rows_sorted:
-            stock_val = r.get(“available_quantity”)
-            stock_str = fmt_miles(stock_val) if stock_val is not None else “0”
-            sku_str = str(r.get(“seller_sku”) or r.get(“id”) or “”)
-            _sku_w = _sw(sku_str, “Helvetica”, 7)
+            stock_val = r.get('available_quantity')
+            stock_str = fmt_miles(stock_val) if stock_val is not None else '0'
+            sku_str = str(r.get('seller_sku') or r.get('id') or '')
+            _sku_w = _sw(sku_str, 'Helvetica', 7)
             _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
             sku_fontsizes.append(_sku_fs)
             row_cells = [
                 sku_str,
-                str(r.get(“marca”) or “”””),
-                _trunc(str(r.get(“title”) or “”””)),
-                str(r.get(“color”) or “”””),
+                str(r.get('marca') or ''),
+                _trunc(str(r.get('title') or '')),
+                str(r.get('color') or ''),
                 stock_str,
             ]
             if include_ventas:
-                row_cells.append(str(r.get(“sold_quantity”) or “0”))
+                row_cells.append(str(r.get('sold_quantity') or '0'))
             data.append(row_cells)
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
@@ -1893,7 +1893,7 @@ def _mostrar_tabla_precios(
             for x in filtrados
             if x.get("tipo") == "Propia"
             and str(x.get("marca") or "").strip()
-            and str(x.get("marca") or "").strip() != "””"
+            and str(x.get("marca") or "").strip() != "''"
         })))
 
         header_div_precios.clear()
@@ -1984,13 +1984,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "margen_pesos":
                                             v = row.get("margen_pesos")
                                             if v is None:
-                                                ui.label("””").classes("text-gray-400 text-xs")
+                                                ui.label("''").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] == "margen_venta_pct":
                                             v = row.get("margen_venta_pct")
                                             if v is None:
-                                                ui.label("””").classes("text-gray-400 text-xs")
+                                                ui.label("''").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] in ("available_quantity", "sold_quantity"):
@@ -2008,7 +2008,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
-                                                ui.label("””").classes("text-gray-400 text-center w-full")
+                                                ui.label("''").classes("text-gray-400 text-center w-full")
                                             else:
                                                 qs_i = int(qs)
                                                 _filled = round(qs_i / 20)
@@ -2032,7 +2032,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
-                                                ui.label("””").classes("text-gray-400 text-center")
+                                                ui.label("''").classes("text-gray-400 text-center")
                                             elif _dias == 0:
                                                 ui.label("hoy").classes("text-positive font-medium text-center")
                                             elif _dias <= 7:
@@ -2070,19 +2070,19 @@ def _mostrar_tabla_precios(
         with ui.row().classes("w-full items-center gap-5 px-3 py-1 bg-grey-2 rounded mb-1"):
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Publicaciones:").classes("text-xs text-gray-500")
-                lbl_totales = ui.label("””").classes("text-sm font-bold text-primary")
+                lbl_totales = ui.label("''").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Unidades:").classes("text-xs text-gray-500")
-                lbl_unidades = ui.label("””").classes("text-sm font-bold text-primary")
+                lbl_unidades = ui.label("''").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Costo Final $:").classes("text-xs text-gray-500")
-                lbl_pesos = ui.label("””").classes("text-sm font-bold text-primary")
+                lbl_pesos = ui.label("''").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Costo Final u$s:").classes("text-xs text-gray-500")
-                lbl_usd = ui.label("””").classes("text-sm font-bold text-primary")
+                lbl_usd = ui.label("''").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Marcas:").classes("text-xs text-gray-500")
-                lbl_marcas = ui.label("””").classes("text-sm font-bold text-primary")
+                lbl_marcas = ui.label("''").classes("text-sm font-bold text-primary")
             ui.space()
             if on_actualizar:
                 ui.button("Actualizar", on_click=lambda: on_actualizar()).props("unelevated dense no-caps icon=refresh").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
