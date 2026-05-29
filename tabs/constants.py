@@ -17,7 +17,6 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("estadisticas", "Estadísticas"),
     ("ventas", "Ventas"),
     ("productos", "Productos"),
-    ("precios", "Precios"),
     ("cuotas", "Cuotas"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
@@ -35,7 +34,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "precios", "busqueda", "balance", "cuotas", "historicos", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "cuotas", "historicos", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -46,7 +45,6 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "estadisticas": "ver reputación en MercadoLibre, ventas hoy/ayer/semana/mes.",
     "ventas": "gestión de ventas y órdenes.",
     "productos": "catálogo de productos.",
-    "precios": "gestión de precios.",
     "busqueda": "buscar productos en el catálogo.",
     "balance": "gastos, ingresos y resultados.",
     "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
@@ -64,7 +62,6 @@ LABEL_BY_TAB: Dict[str, str] = {
     "estadisticas": "Estadísticas",
     "ventas": "Ventas",
     "productos": "Productos",
-    "precios": "Precios",
     "busqueda": "Búsqueda",
     "balance": "Balance",
     "compras": "Invoices",
