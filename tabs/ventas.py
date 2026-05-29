@@ -353,6 +353,7 @@ def build_tab_ventas(container) -> None:
                     with ui.row().classes("w-full justify-end mt-3"):
                         ui.button("Cerrar", on_click=lambda: d.close(), color="primary")
             d.open()
+            d.on("hide", lambda: _pintar_tabla())
 
             cl = context.client
 
@@ -694,7 +695,6 @@ def build_tab_ventas(container) -> None:
                                     with ui.row().classes("items-center gap-1"):
                                         ui.html('<i class="ti ti-calculator" style="font-size:12px;color:#BA7517" aria-hidden="true"></i>')
                                         ui.label("Valor estimado")
-                    _pintar_tabla()
 
             background_tasks.create(_fetch_real(), name="popup_venta_real")
 
