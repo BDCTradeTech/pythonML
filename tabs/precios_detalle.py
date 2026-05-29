@@ -17,6 +17,8 @@ from nicegui import app, background_tasks, context, run, ui
 
 from db import get_connection, get_cotizador_param, COTIZADOR_DEFAULTS
 from ml_api import (
+    _cuotas_desde_item,
+    _tipo_publicacion_desde_item,
     get_ml_access_token,
     ml_get_my_items,
     ml_get_item_description,
