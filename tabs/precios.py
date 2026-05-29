@@ -1537,8 +1537,6 @@ def _mostrar_tabla_precios(
             stock = info["stock"]
             ventas_dia = ventas_90d / 90.0
             compra_15d = math.ceil(ventas_dia * 15 - stock)
-            if compra_15d <= 0:
-                continue
             rows_data.append({
                 "sku":        sku,
                 "marca":      info["marca"],
