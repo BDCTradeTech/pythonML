@@ -1343,8 +1343,8 @@ def _mostrar_tabla_precios(
             _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
             sku_fontsizes.append(_sku_fs)
             costo_usd_base = float(r.get("costo_usd") or 0)
-            iva_pct = float(r.get("tipo_iva") or 0)
-            costo_usd = costo_usd_base * (1 + iva_pct / 100)
+            iva_frac = float(r.get("tipo_iva") or 0)
+            costo_usd = costo_usd_base * (1 + iva_frac)
             subtotal_usd = costo_usd * stock_val
             total_subtotal_usd += subtotal_usd
             data.append([
