@@ -1601,9 +1601,13 @@ def _mostrar_tabla_precios(
 
         lbl_totales.set_text(str(len(filtrados)))
         lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
-        _pesos = sum(x.get("subtotal") or 0 for x in filtrados if x.get("tipo") == "Propia")
-        lbl_pesos.set_text(fmt_moneda(_pesos))
-        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_pesos / dolar_oficial)))}" if dolar_oficial else "—")
+        _costo_final_usd = sum(
+            float(x.get("costo_usd") or 0) * (1 + float(x.get("tipo_iva") or 0)) * float(x.get("available_quantity") or 0)
+            for x in filtrados if x.get("tipo") == "Propia"
+        )
+        _costo_final_pesos = _costo_final_usd * dolar_oficial if dolar_oficial else 0.0
+        lbl_pesos.set_text(fmt_moneda(_costo_final_pesos))
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_costo_final_usd)))}")
         lbl_marcas.set_text(str(len({
             str(x.get("marca") or "").strip()
             for x in filtrados
@@ -1791,10 +1795,10 @@ def _mostrar_tabla_precios(
                 ui.label("Unidades:").classes("text-xs text-gray-500")
                 lbl_unidades = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
-                ui.label("Total $:").classes("text-xs text-gray-500")
+                ui.label("Costo Final $:").classes("text-xs text-gray-500")
                 lbl_pesos = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
-                ui.label("Total u$s:").classes("text-xs text-gray-500")
+                ui.label("Costo Final u$s:").classes("text-xs text-gray-500")
                 lbl_usd = ui.label("””").classes("text-sm font-bold text-primary")
             with ui.row().classes("items-baseline gap-1"):
                 ui.label("Marcas:").classes("text-xs text-gray-500")
