@@ -6,6 +6,7 @@ Funciones exportadas: build_tab_precios, _show_item_detail_dialog (usada en prec
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,6 +26,7 @@ from ml_api import (
     ml_get_item_price_to_win,
     ml_get_item_performance,
     ml_get_items_multiget_with_attributes,
+    ml_get_orders,
 )
 from tabs.cuotas import _cuotas_key
 
@@ -1068,6 +1070,8 @@ def _mostrar_tabla_precios(
         d.open()
 
     current_filtrados: List[Dict[str, Any]] = []
+    todos_items_ref: List[Dict[str, Any]] = list(items_loaded)
+    seller_id_ref: str = str(data.get("seller_id") or "")
     current_table: List[Any] = []
     sort_col_ref: Dict[str, Any] = {"val": "title"}
     sort_asc_ref: Dict[str, bool] = {"val": True}
@@ -1448,6 +1452,217 @@ def _mostrar_tabla_precios(
                 pass
             return None
 
+    def _generar_pdf_compras(todos_items: List[Dict[str, Any]], token: str, sid: str) -> Optional[str]:
+        """Genera PDF A4 de compras sugeridas: SKU/Marca/Producto/Stock/Ventas 90d/Ventas día/Compra 15d."""
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.units import cm as rl_cm
+            from reportlab.pdfgen import canvas as rl_canvas
+        except ImportError:
+            return None
+
+        if not todos_items or not token or not sid:
+            return None
+
+        # Mapa item_id ML → datos del item
+        item_map: Dict[str, Dict[str, Any]] = {}
+        sku_info: Dict[str, Dict[str, Any]] = {}
+        for it in todos_items:
+            item_id = str(it.get("id") or "").strip()
+            sku = str(it.get("seller_sku") or "").strip()
+            if item_id:
+                item_map[item_id] = it
+            if sku and sku not in sku_info:
+                sku_info[sku] = {
+                    "sku":   sku,
+                    "marca": str(it.get("marca") or ""),
+                    "title": str(it.get("title") or ""),
+                    "stock": int(it.get("available_quantity") or 0),
+                }
+
+        # Obtener órdenes de los últimos 90 días
+        date_from = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%dT00:00:00.000-03:00")
+        try:
+            orders_resp = ml_get_orders(token, sid, limit=5000, date_from=date_from)
+        except Exception:
+            return None
+        orders = orders_resp.get("results") or []
+
+        # Acumular unidades vendidas por SKU
+        sku_ventas: Dict[str, int] = {}
+        for order in orders:
+            if not isinstance(order, dict):
+                continue
+            order_items = order.get("order_items") or order.get("items") or []
+            for oit in order_items:
+                if not isinstance(oit, dict):
+                    continue
+                obj = oit.get("item") or oit
+                qty = int(oit.get("quantity") or oit.get("qty") or 0)
+                if qty <= 0:
+                    continue
+                item_id = (
+                    str(obj.get("id") or oit.get("item_id") or "") if isinstance(obj, dict)
+                    else str(oit.get("item_id") or "")
+                ).strip()
+                if not item_id:
+                    continue
+                it_data = item_map.get(item_id)
+                if not it_data:
+                    continue
+                sku = str(it_data.get("seller_sku") or "").strip()
+                if not sku:
+                    continue
+                sku_ventas[sku] = sku_ventas.get(sku, 0) + qty
+
+        if not sku_ventas:
+            return None
+
+        # Calcular filas del reporte
+        rows_data = []
+        for sku, ventas_90d in sku_ventas.items():
+            info = sku_info.get(sku)
+            if not info:
+                continue
+            stock = info["stock"]
+            ventas_dia = ventas_90d / 90.0
+            compra_15d = math.ceil(ventas_dia * 15 - stock)
+            if compra_15d <= 0:
+                continue
+            rows_data.append({
+                "sku":        sku,
+                "marca":      info["marca"],
+                "title":      info["title"],
+                "stock":      stock,
+                "ventas_90d": ventas_90d,
+                "ventas_dia": ventas_dia,
+                "compra_15d": compra_15d,
+            })
+
+        if not rows_data:
+            return None
+
+        rows_sorted = sorted(rows_data, key=lambda x: ((x["marca"] or "").lower(), (x["title"] or "").lower()))
+
+        ahora = datetime.now()
+        _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
+
+        from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
+        _col_sku_pts  = 2.8 * rl_cm - 8
+        _col_prod_pts = 7.8 * rl_cm - 12
+
+        def _trunc_c(s):
+            if not s:
+                return s or ""
+            if _sw(s, "Helvetica", 7) <= _col_prod_pts:
+                return s
+            while len(s) > 0 and _sw(s + "...", "Helvetica", 7) > _col_prod_pts:
+                s = s[:-1]
+            return (s + "...") if s else "..."
+
+        headers = ["SKU", "Marca", "Producto", "Stock", "Ventas 90d", "Ventas/día", "Compra 15d"]
+        data_rows = [headers]
+        sku_fontsizes = []
+        for r in rows_sorted:
+            sku_str = r["sku"]
+            _sku_w = _sw(sku_str, "Helvetica", 7)
+            _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
+            sku_fontsizes.append(_sku_fs)
+            data_rows.append([
+                sku_str,
+                str(r["marca"]),
+                _trunc_c(str(r["title"])),
+                fmt_miles(r["stock"]),
+                fmt_miles(r["ventas_90d"]),
+                f"{r['ventas_dia']:.2f}",
+                str(r["compra_15d"]),
+            ])
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+
+        page_w, page_h = A4
+        margin    = 1.5 * rl_cm
+        margin_lr = 0.8 * rl_cm
+        margin_b  = 0.5 * rl_cm
+
+        class _PaginatedCanvas(rl_canvas.Canvas):
+            def __init__(self, *args, **kwargs):
+                rl_canvas.Canvas.__init__(self, *args, **kwargs)
+                self._saved_page_states = []
+
+            def showPage(self):
+                self._saved_page_states.append(dict(self.__dict__))
+                self._startPage()
+
+            def save(self):
+                num_pages = len(self._saved_page_states)
+                for state in self._saved_page_states:
+                    self.__dict__.update(state)
+                    self._draw_header(num_pages)
+                    rl_canvas.Canvas.showPage(self)
+                rl_canvas.Canvas.save(self)
+
+            def _draw_header(self, page_count):
+                self.saveState()
+                self.setFont("Helvetica-Bold", 11)
+                self.setFillColorRGB(0.098, 0.463, 0.824)
+                self.drawString(margin_lr, page_h - margin + 4, f"Compras {_fecha}")
+                self.setFont("Helvetica", 9)
+                self.setFillColorRGB(0.4, 0.4, 0.4)
+                self.drawRightString(page_w - margin_lr, page_h - margin + 4,
+                                     f"Página {self._pageNumber} de {page_count}")
+                self.restoreState()
+
+        doc = SimpleDocTemplate(
+            tmp.name,
+            pagesize=A4,
+            leftMargin=margin_lr,
+            rightMargin=margin_lr,
+            topMargin=margin + 0.9 * rl_cm,
+            bottomMargin=margin_b,
+        )
+
+        col_widths = [2.8 * rl_cm, 2.0 * rl_cm, 7.8 * rl_cm, 1.4 * rl_cm, 2.0 * rl_cm, 2.0 * rl_cm, 1.4 * rl_cm]
+
+        table = Table(data_rows, colWidths=col_widths, repeatRows=1)
+
+        BLUE       = rl_colors.HexColor("#1976d2")
+        LIGHT_GRAY = rl_colors.HexColor("#f8f8f8")
+
+        ts = TableStyle([
+            ("BACKGROUND",    (0, 0), (-1,  0), BLUE),
+            ("TEXTCOLOR",     (0, 0), (-1,  0), rl_colors.white),
+            ("FONTNAME",      (0, 0), (-1,  0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1,  0), 8),
+            ("ALIGN",         (0, 0), (-1,  0), "CENTER"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE",      (0, 1), (-1, -1), 7),
+            ("ALIGN",         (0, 1), ( 2, -1), "LEFT"),
+            ("ALIGN",         (3, 1), (-1, -1), "RIGHT"),
+            ("GRID",          (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#dddddd")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("ROWBACKGROUND", (0, 1), (-1, -1), [LIGHT_GRAY, rl_colors.white]),
+        ])
+        table.setStyle(ts)
+        _sku_extra = [("FONTSIZE", (0, i + 1), (0, i + 1), fs) for i, fs in enumerate(sku_fontsizes) if fs < 7]
+        if _sku_extra:
+            table.setStyle(TableStyle(_sku_extra))
+
+        try:
+            doc.build([table], canvasmaker=_PaginatedCanvas)
+            return tmp.name
+        except Exception:
+            try:
+                os.unlink(tmp.name)
+            except Exception:
+                pass
+            return None
+
     def imprimir_tabla(include_ventas: bool = False) -> None:
         client = context.client
         tbl = current_table[0] if current_table else None
@@ -1520,6 +1735,41 @@ def _mostrar_tabla_precios(
                     ui.notify("No se pudo generar el PDF.", color="negative")
 
         background_tasks.create(_imprimir_usd_async())
+
+    def imprimir_compras() -> None:
+        client = context.client
+        t_items = list(todos_items_ref)
+        s_id = seller_id_ref
+
+        async def _imprimir_compras_async() -> None:
+            if not t_items:
+                with client:
+                    ui.notify("No hay productos cargados.", color="warning")
+                return
+            if not s_id:
+                with client:
+                    ui.notify("No se pudo obtener el ID de vendedor de MercadoLibre.", color="warning")
+                return
+            with client:
+                ui.notify("Consultando ventas de los últimos 90 días...", color="info")
+            path = await run.io_bound(_generar_pdf_compras, t_items, access_token, s_id)
+            if path:
+                ahora = datetime.now()
+                ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
+                with client:
+                    ui.download(path, f"compras_{ts}.pdf")
+                    def _borrar(p=path) -> None:
+                        try:
+                            if p and os.path.exists(p):
+                                os.unlink(p)
+                        except Exception:
+                            pass
+                    ui.timer(5.0, _borrar, once=True)
+            else:
+                with client:
+                    ui.notify("No hay productos a comprar o no se pudieron obtener las ventas.", color="warning")
+
+        background_tasks.create(_imprimir_compras_async())
 
     header_style = "background-color: #1976d2; color: white; font-weight: 600;"
     fmt_num_js = "(val) => val != null && val !== '' ? Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '0'"
@@ -1810,6 +2060,7 @@ def _mostrar_tabla_precios(
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
             ui.button("Stock $", on_click=lambda: imprimir_tabla_usd(), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
             ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
+            ui.button("Compras", on_click=lambda: imprimir_compras(), color="primary").props("icon=print dense flat no-caps").classes("text-xs")
         with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
