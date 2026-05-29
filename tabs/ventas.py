@@ -251,6 +251,7 @@ def build_tab_ventas(container) -> None:
                     _p_ap_r1 = next((p for p in _pays_r1 if str(p.get("status", "")).lower() == "approved"), None) or (_pays_r1[0] if _pays_r1 else None)
                     _payment_id = str(_p_ap_r1.get("id") or "") if _p_ap_r1 else ""
                     _payment_type = str(_p_ap_r1.get("payment_type") or "") if _p_ap_r1 else ""
+                    dt = dt + timedelta(hours=1)
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "hora": dt.strftime("%H:%M"), "productos": titulo[:100], "title": titulo[:100],
                         "tipo_venta": tipo, "cuotas": cuotas, "tipo": tipo_oferta, "tipo_oferta": tipo_oferta,
@@ -1010,7 +1011,7 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(str(idx))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v["fecha"])
+                                                ui.label(f'{v["fecha"]} - {v.get("hora", "")}')
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(v.get("order_id", "—"))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
@@ -1567,6 +1568,7 @@ def build_tab_ventas(container) -> None:
                     _p_ap_r2 = next((p for p in _pays_r2 if str(p.get("status", "")).lower() == "approved"), None) or (_pays_r2[0] if _pays_r2 else None)
                     _payment_id = str(_p_ap_r2.get("id") or "") if _p_ap_r2 else ""
                     _payment_type = str(_p_ap_r2.get("payment_type") or "") if _p_ap_r2 else ""
+                    dt = dt + timedelta(hours=1)
                     ventas_mes.append({
                         "dt": dt,
                         "fecha": dt.strftime("%d/%m/%Y"),
