@@ -1157,7 +1157,7 @@ def _mostrar_tabla_precios(
         filtrar_y_pintar()
 
     def _generar_pdf_stock(filtrados_actuales: List[Dict[str, Any]]) -> Optional[str]:
-        """Genera un PDF A4 con columnas Marca/Producto/Color/Stock, ordenado por Marca+Producto."""
+        """Genera un PDF A4 con columnas SKU/Marca/Producto/Color/Stock, ordenado por Marca+Producto."""
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
@@ -1181,26 +1181,28 @@ def _mostrar_tabla_precios(
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
-        _col_prod_pts = 11.5 * rl_cm - 12   # 326pt − 12pt padding lateral
+        _col_prod_pts = 10.0 * rl_cm - 12
 
         def _trunc(s):
-            if not s or s == "””":
-                return s or "””"
-            if _sw(s, "Helvetica", 8) <= _col_prod_pts:
+            if not s or s == “”””:
+                return s or “”””
+            if _sw(s, “Helvetica”, 7) <= _col_prod_pts:
                 return s
-            while len(s) > 0 and _sw(s + "...", "Helvetica", 8) > _col_prod_pts:
+            while len(s) > 0 and _sw(s + “...”, “Helvetica”, 7) > _col_prod_pts:
                 s = s[:-1]
-            return (s + "...") if s else "..."
+            return (s + “...”) if s else “...”
 
-        headers = ["Marca", "Producto", "Color", "Stock"]
+        headers = [“SKU”, “Marca”, “Producto”, “Color”, “Stock”]
         data = [headers]
         for r in rows_sorted:
-            stock_val = r.get("available_quantity")
-            stock_str = fmt_miles(stock_val) if stock_val is not None else "0"
+            stock_val = r.get(“available_quantity”)
+            stock_str = fmt_miles(stock_val) if stock_val is not None else “0”
+            sku_str = str(r.get(“seller_sku”) or r.get(“id”) or “”)
             data.append([
-                str(r.get("marca") or "””"),
-                _trunc(str(r.get("title") or "””")),
-                str(r.get("color") or "””"),
+                sku_str,
+                str(r.get(“marca”) or “”””),
+                _trunc(str(r.get(“title”) or “”””)),
+                str(r.get(“color”) or “”””),
                 stock_str,
             ])
 
@@ -1249,7 +1251,7 @@ def _mostrar_tabla_precios(
             bottomMargin=margin_b,
         )
 
-        col_widths = [2.5 * rl_cm, 11.5 * rl_cm, 2.5 * rl_cm, 2.0 * rl_cm]
+        col_widths = [2.0 * rl_cm, 2.5 * rl_cm, 10.0 * rl_cm, 3.0 * rl_cm, 1.9 * rl_cm]
 
         table = Table(data, colWidths=col_widths, repeatRows=1)
 
@@ -1260,16 +1262,16 @@ def _mostrar_tabla_precios(
             ("BACKGROUND",   (0, 0), (-1,  0), BLUE),
             ("TEXTCOLOR",    (0, 0), (-1,  0), rl_colors.white),
             ("FONTNAME",     (0, 0), (-1,  0), "Helvetica-Bold"),
-            ("FONTSIZE",     (0, 0), (-1,  0), 9),
+            ("FONTSIZE",     (0, 0), (-1,  0), 8),
             ("ALIGN",        (0, 0), (-1,  0), "CENTER"),
             ("VALIGN",       (0, 0), (-1, -1), "MIDDLE"),
             ("FONTNAME",     (0, 1), (-1, -1), "Helvetica"),
-            ("FONTSIZE",     (0, 1), (-1, -1), 8),
-            ("ALIGN",        (0, 1), ( 2, -1), "LEFT"),
-            ("ALIGN",        (3, 1), ( 3, -1), "RIGHT"),
+            ("FONTSIZE",     (0, 1), (-1, -1), 7),
+            ("ALIGN",        (0, 1), ( 3, -1), "LEFT"),
+            ("ALIGN",        (4, 1), ( 4, -1), "RIGHT"),
             ("GRID",         (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#dddddd")),
-            ("TOPPADDING",   (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING",(0, 0), (-1, -1), 3),
+            ("TOPPADDING",   (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING",(0, 0), (-1, -1), 2),
             ("ROWBACKGROUND",(0, 1), (-1, -1), [LIGHT_GRAY, rl_colors.white]),
         ])
         table.setStyle(ts)
