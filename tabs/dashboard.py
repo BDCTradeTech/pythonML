@@ -481,32 +481,44 @@ def build_tab_dashboard(container) -> None:
                     ui.label("Sin cuenta ML vinculada").classes("text-xs text-gray-400")
                 return
 
+            from tabs.cuotas import _cuotas_key
+
             data = await run.io_bound(ml_get_my_items, access_token, False)
             items = data.get("results", [])
 
-            total = len(items)
+            # Deduplicar por SKU/catálogo — igual que cuotas.py
+            groups: dict = {}
+            for it in items:
+                groups.setdefault(_cuotas_key(it), []).append(it)
+
+            _tot  = len(groups)
+            denom = _tot or 1
+
             n_gold_pro = sum(
-                1 for it in items
-                if str(it.get("listing_type_id") or "").lower() == "gold_pro"
+                1 for g in groups.values()
+                if any(str(it.get("listing_type_id") or "").lower() == "gold_pro" for it in g)
             )
             n_gold_special = sum(
-                1 for it in items
-                if str(it.get("listing_type_id") or "").lower() == "gold_special"
-                   and not it.get("catalog_listing")
+                1 for g in groups.values()
+                if any(
+                    str(it.get("listing_type_id") or "").lower() == "gold_special"
+                    and not it.get("catalog_listing")
+                    for it in g
+                )
             )
-            n_catalogo = sum(1 for it in items if it.get("catalog_listing"))
-            n_promos   = sum(1 for it in items if it.get("promotions"))
-            denom = total or 1
+            n_catalogo = sum(
+                1 for g in groups.values()
+                if any(it.get("catalog_listing") for it in g)
+            )
 
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas y promos", _BLUE)
-                ui.label(f"Publicaciones activas: {total}").classes("text-xs text-gray-500 mb-2")
+                ui.label(f"Publicaciones únicas: {_tot}").classes("text-xs text-gray-500 mb-2")
                 with ui.column().classes("w-full gap-3"):
-                    _progress_bar("Con cuotas",   n_gold_pro     / denom * 100, n_gold_pro,     total)
-                    _progress_bar("Sin cuotas",   n_gold_special / denom * 100, n_gold_special, total)
-                    _progress_bar("Catálogo",     n_catalogo     / denom * 100, n_catalogo,     total)
-                    _progress_bar("En promoción", n_promos       / denom * 100, n_promos,       total)
+                    _progress_bar("Con cuotas",   n_gold_pro     / denom * 100, n_gold_pro,     _tot)
+                    _progress_bar("Sin cuotas",   n_gold_special / denom * 100, n_gold_special, _tot)
+                    _progress_bar("Catálogo",     n_catalogo     / denom * 100, n_catalogo,     _tot)
 
         except Exception:
             cuotas_card.clear()
