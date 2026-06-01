@@ -1692,6 +1692,127 @@ def _mostrar_tabla_precios(
                 pass
             return None
 
+    def _generar_pdf_cotizacion(filtrados_actuales: List[Dict[str, Any]], margen: float) -> Optional[str]:
+        """Genera PDF A4 de cotización: SKU/Marca/Producto/Color/Stock/Precio $."""
+        try:
+            from reportlab.lib.pagesizes import A4
+            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
+            from reportlab.lib import colors as rl_colors
+            from reportlab.lib.units import cm as rl_cm
+            from reportlab.pdfgen import canvas as rl_canvas
+        except ImportError:
+            return None
+        if not filtrados_actuales:
+            return None
+
+        rows_sorted = sorted(
+            filtrados_actuales,
+            key=lambda x: ((x.get("marca") or "").lower(), (x.get("title") or "").lower()),
+        )
+        ahora = datetime.now()
+        _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
+        _margen_str = f"{margen:.0f}%"
+
+        from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
+        _col_sku_pts  = 3.0 * rl_cm - 8
+        _col_prod_pts = 9.0 * rl_cm - 12
+
+        def _trunc(s):
+            if not s or s == "''":
+                return s or "''"
+            if _sw(s, "Helvetica", 7) <= _col_prod_pts:
+                return s
+            while len(s) > 0 and _sw(s + "...", "Helvetica", 7) > _col_prod_pts:
+                s = s[:-1]
+            return (s + "...") if s else "..."
+
+        data = [['SKU', 'Marca', 'Producto', 'Color', 'Stock', 'Precio $']]
+        sku_fontsizes = []
+        for r in rows_sorted:
+            stock_val = r.get('available_quantity')
+            stock_str = fmt_miles(stock_val) if stock_val is not None else '0'
+            sku_str = str(r.get('seller_sku') or r.get('id') or '')
+            _sku_w = _sw(sku_str, 'Helvetica', 7)
+            _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
+            sku_fontsizes.append(_sku_fs)
+            costo_usd = float(r.get('costo_usd') or 0)
+            tipo_iva  = float(r.get('tipo_iva') or 0.105)
+            precio_pesos = costo_usd * (1 + tipo_iva) * (1 + margen / 100) * dolar_oficial
+            precio_str = (
+                f"${precio_pesos:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                if precio_pesos > 0 else "—"
+            )
+            data.append([sku_str, str(r.get('marca') or ''), _trunc(str(r.get('title') or '')),
+                         str(r.get('color') or ''), stock_str, precio_str])
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
+        tmp.close()
+        page_w, page_h = A4
+        margin    = 1.5 * rl_cm
+        margin_lr = 0.8 * rl_cm
+        margin_b  = 0.5 * rl_cm
+
+        class _PaginatedCanvas(rl_canvas.Canvas):
+            def __init__(self, *args, **kwargs):
+                rl_canvas.Canvas.__init__(self, *args, **kwargs)
+                self._saved_page_states = []
+            def showPage(self):
+                self._saved_page_states.append(dict(self.__dict__))
+                self._startPage()
+            def save(self):
+                num_pages = len(self._saved_page_states)
+                for state in self._saved_page_states:
+                    self.__dict__.update(state)
+                    self._draw_header(num_pages)
+                    rl_canvas.Canvas.showPage(self)
+                rl_canvas.Canvas.save(self)
+            def _draw_header(self, page_count):
+                self.saveState()
+                self.setFont("Helvetica-Bold", 11)
+                self.setFillColorRGB(0.098, 0.463, 0.824)
+                self.drawString(margin_lr, page_h - margin + 4,
+                                f"Cotización {_fecha} — Margen {_margen_str}")
+                self.setFont("Helvetica", 9)
+                self.setFillColorRGB(0.4, 0.4, 0.4)
+                self.drawRightString(page_w - margin_lr, page_h - margin + 4,
+                                     f"Página {self._pageNumber} de {page_count}")
+                self.restoreState()
+
+        doc = SimpleDocTemplate(tmp.name, pagesize=A4,
+                                leftMargin=margin_lr, rightMargin=margin_lr,
+                                topMargin=margin + 0.9 * rl_cm, bottomMargin=margin_b)
+        col_widths = [3.0*rl_cm, 1.6*rl_cm, 9.0*rl_cm, 2.0*rl_cm, 1.2*rl_cm, 2.6*rl_cm]
+        table = Table(data, colWidths=col_widths, repeatRows=1)
+        BLUE = rl_colors.HexColor("#1976d2")
+        LIGHT_GRAY = rl_colors.HexColor("#f8f8f8")
+        ts = TableStyle([
+            ("BACKGROUND",    (0, 0), (-1,  0), BLUE),
+            ("TEXTCOLOR",     (0, 0), (-1,  0), rl_colors.white),
+            ("FONTNAME",      (0, 0), (-1,  0), "Helvetica-Bold"),
+            ("FONTSIZE",      (0, 0), (-1,  0), 8),
+            ("ALIGN",         (0, 0), (-1,  0), "CENTER"),
+            ("VALIGN",        (0, 0), (-1, -1), "MIDDLE"),
+            ("FONTNAME",      (0, 1), (-1, -1), "Helvetica"),
+            ("FONTSIZE",      (0, 1), (-1, -1), 7),
+            ("ALIGN",         (0, 1), ( 3, -1), "LEFT"),
+            ("ALIGN",         (4, 1), (-1, -1), "RIGHT"),
+            ("GRID",          (0, 0), (-1, -1), 0.5, rl_colors.HexColor("#dddddd")),
+            ("TOPPADDING",    (0, 0), (-1, -1), 2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+            ("ROWBACKGROUND", (0, 1), (-1, -1), [LIGHT_GRAY, rl_colors.white]),
+        ])
+        table.setStyle(ts)
+        _sku_extra = [("FONTSIZE", (0, i+1), (0, i+1), fs) for i, fs in enumerate(sku_fontsizes) if fs < 7]
+        if _sku_extra:
+            table.setStyle(TableStyle(_sku_extra))
+        try:
+            doc.build([table], canvasmaker=_PaginatedCanvas)
+            return tmp.name
+        except Exception:
+            try: os.unlink(tmp.name)
+            except Exception: pass
+            return None
+
     def imprimir_tabla(include_ventas: bool = False) -> None:
         client = context.client
         tbl = current_table[0] if current_table else None
@@ -1800,6 +1921,45 @@ def _mostrar_tabla_precios(
                     ui.notify("No hay productos a comprar o no se pudieron obtener las ventas.", color="warning")
 
         background_tasks.create(_imprimir_compras_async())
+
+    def imprimir_cotizar() -> None:
+        client = context.client
+        rows_snapshot = list(current_filtrados)
+
+        with ui.dialog() as dlg, ui.card().classes("w-72 gap-4"):
+            ui.label("Cotizar productos").classes("text-lg font-bold")
+            inp_margen = ui.number("Margen (%)", value=10, min=0, max=999, step=1).props("outlined dense")
+
+            def _generar() -> None:
+                margen_val = float(inp_margen.value or 10)
+                dlg.close()
+                if not rows_snapshot:
+                    ui.notify("No hay productos visibles para cotizar.", color="warning")
+                    return
+
+                async def _gen_async() -> None:
+                    path = await run.io_bound(_generar_pdf_cotizacion, rows_snapshot, margen_val)
+                    if path:
+                        ahora = datetime.now()
+                        ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
+                        with client:
+                            ui.download(path, f"cotizacion_{ts}.pdf")
+                            def _borrar(p=path) -> None:
+                                try:
+                                    if p and os.path.exists(p): os.unlink(p)
+                                except Exception: pass
+                            ui.timer(5.0, _borrar, once=True)
+                    else:
+                        with client:
+                            ui.notify("No se pudo generar el PDF.", color="negative")
+
+                background_tasks.create(_gen_async())
+
+            with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                ui.button("Cerrar", on_click=dlg.close).props("flat dense no-caps")
+                ui.button("Imprimir PDF", on_click=_generar).props("unelevated dense no-caps icon=sell").style("background:#185FA5;color:#E6F1FB;")
+
+        dlg.open()
 
     header_style = "background-color: #1976d2; color: white; font-weight: 600;"
     fmt_num_js = "(val) => val != null && val !== '' ? Number(val).toLocaleString('de-DE').replace(/,/g, '.') : '0'"
@@ -2092,6 +2252,7 @@ def _mostrar_tabla_precios(
             ui.button("Stock $", on_click=lambda: imprimir_tabla_usd()).props("unelevated dense no-caps icon=request_quote").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
             ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True)).props("unelevated dense no-caps icon=bar_chart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
             ui.button("Compras", on_click=lambda: imprimir_compras()).props("unelevated dense no-caps icon=shopping_cart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Cotizar", on_click=lambda: imprimir_cotizar()).props("unelevated dense no-caps icon=sell").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
         with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
