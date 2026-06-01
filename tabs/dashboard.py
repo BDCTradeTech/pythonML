@@ -76,7 +76,8 @@ def _query_productos(user_id: int) -> Dict[str, int]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)",
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
+            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')",
             (user_id,))
         sin_costo = cur.fetchone()[0]
 
@@ -87,7 +88,7 @@ def _query_productos(user_id: int) -> Dict[str, int]:
 
         cur.execute(
             "SELECT COUNT(DISTINCT pub.ml_id) FROM ml_publicaciones pub "
-            "WHERE pub.user_id=? AND LOWER(pub.estado) LIKE '%suspend%'",
+            "WHERE pub.user_id=? AND LOWER(pub.estado) LIKE '%suspend%' AND pub.stock > 0",
             (user_id,))
         stock_susp = cur.fetchone()[0]
 
