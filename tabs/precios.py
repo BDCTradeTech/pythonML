@@ -1798,7 +1798,7 @@ def _mostrar_tabla_precios(
         doc = SimpleDocTemplate(tmp.name, pagesize=A4,
                                 leftMargin=margin_lr, rightMargin=margin_lr,
                                 topMargin=margin + 0.9 * rl_cm, bottomMargin=margin_b)
-        col_widths = [3.0*rl_cm, 1.6*rl_cm, 9.0*rl_cm, 2.0*rl_cm, 1.2*rl_cm, 2.6*rl_cm]
+        col_widths = [3.0*rl_cm, 1.3*rl_cm, 9.0*rl_cm, 1.6*rl_cm, 1.9*rl_cm, 2.6*rl_cm]
         table = Table(data, colWidths=col_widths, repeatRows=1)
         BLUE = rl_colors.HexColor("#1976d2")
         LIGHT_GRAY = rl_colors.HexColor("#f8f8f8")
