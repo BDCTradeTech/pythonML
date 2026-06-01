@@ -169,6 +169,7 @@ def _parse_ml_item_body(body: dict) -> dict:
         "last_updated": body.get("last_updated"),
         "stop_time": body.get("stop_time"),
         "date_created": body.get("date_created"),
+        "promotions": body.get("promotions") or [],
     }
 
 

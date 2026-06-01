@@ -87,7 +87,7 @@ def _query_productos(user_id: int) -> Dict[str, int]:
 
         cur.execute(
             "SELECT COUNT(DISTINCT pub.ml_id) FROM ml_publicaciones pub "
-            "WHERE pub.user_id=? AND pub.stock > 0 AND LOWER(pub.estado) LIKE '%suspend%'",
+            "WHERE pub.user_id=? AND LOWER(pub.estado) LIKE '%suspend%'",
             (user_id,))
         stock_susp = cur.fetchone()[0]
 
@@ -111,7 +111,7 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos IS NULL AND fetched_at >= ?",
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND (gan_pesos IS NULL OR gan_pesos = 0) AND fetched_at >= ?",
             (user_id, desde))
         sin_revisar = cur.fetchone()[0]
         cur.execute(
@@ -263,8 +263,8 @@ def build_tab_dashboard(container) -> None:
 
     # Alertas de DB (sin reputación todavía)
     db_alerts: List[Tuple[str, str]] = []
-    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}"))
-    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Stock con publicación suspendida: {prod['stock_susp']}"))
+    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$s/IVA: {prod['sin_costo']}"))
+    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones suspendidas: {prod['stock_susp']}"))
     if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas (últimos 30 días) con ganancia negativa: {ventas['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
     if prod["gan_neg"]       > 0: db_alerts.append((_YELLOW, f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
@@ -316,10 +316,10 @@ def build_tab_dashboard(container) -> None:
                 with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                     _card_header("Productos", prod_color)
                     with ui.column().classes("w-full gap-2"):
-                        _stat_row("Sin costo u$",             str(prod["sin_costo"]),  _RED    if prod["sin_costo"]  > 0 else _GREEN)
-                        _stat_row("Stock + suspendida",       str(prod["stock_susp"]), _RED    if prod["stock_susp"] > 0 else _GREEN)
+                        _stat_row("Sin costo u$s/IVA",        str(prod["sin_costo"]),  _RED    if prod["sin_costo"]  > 0 else _GREEN)
+                        _stat_row("Suspendidas con stock",    str(prod["stock_susp"]), _RED    if prod["stock_susp"] > 0 else _GREEN)
                         _stat_row("Sin FOB u$",               str(prod["sin_fob"]),    _YELLOW if prod["sin_fob"]   > 0 else _GREEN)
-                        _stat_row("Gan$ negativa (estimada)", str(prod["gan_neg"]),    _YELLOW if prod["gan_neg"]   > 0 else _GREEN)
+                        _stat_row("Gan$ negativa",            str(prod["gan_neg"]),    _YELLOW if prod["gan_neg"]   > 0 else _GREEN)
 
                 ven_color = (_RED    if ventas["gan_neg"]     > 0
                              else _YELLOW if ventas["sin_revisar"] > 0
@@ -487,23 +487,26 @@ def build_tab_dashboard(container) -> None:
                 groups.setdefault(key, []).append(it)
 
             total = len(groups) or 1
-            n_x3 = n_x6 = n_x9 = n_x12 = 0
+            n_x3 = n_x6 = n_x9 = n_x12 = n_promo = 0
             for grp in groups.values():
                 tipos = {_cuotas_desde_item(it) for it in grp}
                 if "x3"  in tipos: n_x3  += 1
                 if "x6"  in tipos: n_x6  += 1
                 if "x9"  in tipos: n_x9  += 1
                 if "x12" in tipos: n_x12 += 1
+                if any(len(it.get("promotions") or []) > 0 for it in grp):
+                    n_promo += 1
 
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas y promos", _BLUE)
                 ui.label(f"Publicaciones activas: {total}").classes("text-xs text-gray-500 mb-2")
                 with ui.column().classes("w-full gap-3"):
-                    _progress_bar("3 cuotas",  n_x3  / total * 100, n_x3,  total)
-                    _progress_bar("6 cuotas",  n_x6  / total * 100, n_x6,  total)
-                    _progress_bar("9 cuotas",  n_x9  / total * 100, n_x9,  total)
-                    _progress_bar("12 cuotas", n_x12 / total * 100, n_x12, total)
+                    _progress_bar("3 cuotas",       n_x3   / total * 100, n_x3,   total)
+                    _progress_bar("6 cuotas",       n_x6   / total * 100, n_x6,   total)
+                    _progress_bar("9 cuotas",       n_x9   / total * 100, n_x9,   total)
+                    _progress_bar("12 cuotas",      n_x12  / total * 100, n_x12,  total)
+                    _progress_bar("Con promo activa", n_promo / total * 100, n_promo, total)
 
         except Exception as exc:
             cuotas_card.clear()
