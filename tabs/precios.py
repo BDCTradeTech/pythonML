@@ -1692,7 +1692,7 @@ def _mostrar_tabla_precios(
                 pass
             return None
 
-    def _generar_pdf_cotizacion(filtrados_actuales: List[Dict[str, Any]], margen: float) -> Optional[str]:
+    def _generar_pdf_cotizacion(filtrados_actuales: List[Dict[str, Any]], margen: float, stock_umbral: int = 20) -> Optional[str]:
         """Genera PDF A4 lista de precios: SKU/Marca/Producto/Color/Stock/Precio $."""
         try:
             from reportlab.lib.pagesizes import A4
@@ -1740,8 +1740,11 @@ def _mostrar_tabla_precios(
             _iva_raw   = r.get('tipo_iva')
             if not _costo_raw or not _iva_raw:
                 continue
-            stock_val = r.get('available_quantity')
-            stock_str = fmt_miles(stock_val) if stock_val is not None else '0'
+            stock_val = r.get('available_quantity') or 0
+            if stock_val <= stock_umbral:
+                stock_str = str(stock_val)
+            else:
+                stock_str = f"más de {stock_umbral}"
             sku_str = str(r.get('seller_sku') or r.get('id') or '')
             _sku_w = _sw(sku_str, 'Helvetica', 7)
             _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
@@ -1943,16 +1946,18 @@ def _mostrar_tabla_precios(
         with ui.dialog() as dlg, ui.card().classes("w-72 gap-4"):
             ui.label("Lista de Precios").classes("text-lg font-bold")
             inp_margen = ui.number("Margen (%)", value=10, min=0, max=999, step=1).props("outlined dense")
+            inp_umbral = ui.number("Mostrar stock mayor a:", value=20, min=0, max=99999, step=1).props("outlined dense")
 
             def _generar() -> None:
                 margen_val = float(inp_margen.value or 10)
+                umbral_val = int(inp_umbral.value if inp_umbral.value is not None else 20)
                 dlg.close()
                 if not rows_snapshot:
                     ui.notify("No hay productos visibles para cotizar.", color="warning")
                     return
 
                 async def _gen_async() -> None:
-                    path = await run.io_bound(_generar_pdf_cotizacion, rows_snapshot, margen_val)
+                    path = await run.io_bound(_generar_pdf_cotizacion, rows_snapshot, margen_val, umbral_val)
                     if path:
                         ahora = datetime.now()
                         ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
