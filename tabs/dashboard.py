@@ -318,7 +318,12 @@ def build_tab_dashboard(container) -> None:
                     _card_header("Productos", prod_color)
                     with ui.column().classes("w-full gap-2"):
                         _stat_row("Sin costo u$s/IVA",        str(prod["sin_costo"]),  _RED    if prod["sin_costo"]  > 0 else _GREEN)
-                        _stat_row("Suspendidas con stock",    str(prod["stock_susp"]), _RED    if prod["stock_susp"] > 0 else _GREEN)
+                        with ui.row().classes("items-center gap-2 w-full"):
+                            _susp_dot = ui.element("span").style(
+                                "display:inline-block;width:10px;height:10px;border-radius:9999px;"
+                                "background:#9ca3af;flex-shrink:0")
+                            ui.label("Suspendidas con stock").classes("text-sm text-gray-700 flex-1")
+                            _susp_lbl = ui.label("...").classes("text-sm font-semibold").style("color:#9ca3af")
                         _stat_row("Sin FOB u$",               str(prod["sin_fob"]),    _YELLOW if prod["sin_fob"]   > 0 else _GREEN)
                         _stat_row("Gan$ negativa",            str(prod["gan_neg"]),    _YELLOW if prod["gan_neg"]   > 0 else _GREEN)
 
@@ -414,6 +419,7 @@ def build_tab_dashboard(container) -> None:
         with cuotas_card:
             _card_header("Cuotas y promos", "#6b7280")
             ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+        _susp_lbl.set_text("—")
         if not db_alerts:
             _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
         return
@@ -484,8 +490,23 @@ def build_tab_dashboard(container) -> None:
 
             from tabs.cuotas import _cuotas_key
 
-            data = await run.io_bound(ml_get_my_items, access_token, False)
+            data = await run.io_bound(ml_get_my_items, access_token, True)
             items = data.get("results", [])
+
+            cnt_susp = sum(
+                1 for it in items
+                if str(it.get("status", "")).lower() != "active"
+                and (it.get("available_quantity") or 0) > 0
+            )
+            _c = _RED if cnt_susp > 0 else _GREEN
+            _susp_dot.style(
+                f"display:inline-block;width:10px;height:10px;border-radius:9999px;"
+                f"background:{_c};flex-shrink:0")
+            _susp_lbl.set_text(str(cnt_susp))
+            _susp_lbl.style(f"color:{_c}")
+            if cnt_susp > 0:
+                _alert_row(alerts_col, _RED, f"Publicaciones suspendidas: {cnt_susp}")
+            items = [it for it in items if str(it.get("status", "")).lower() == "active"]
 
             # Deduplicar por SKU/catálogo — igual que cuotas.py
             groups: dict = {}
@@ -522,6 +543,7 @@ def build_tab_dashboard(container) -> None:
                     _progress_bar("Catálogo",     n_catalogo     / denom * 100, n_catalogo,     _tot)
 
         except Exception:
+            _susp_lbl.set_text("—")
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas y promos", "#6b7280")
