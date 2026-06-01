@@ -128,6 +128,7 @@ from tabs.importacion import build_tab_importacion
 from tabs.historicos import build_tab_historicos
 from tabs.pesos import build_tab_pesos
 from tabs.arca import build_tab_arca
+from tabs.dashboard import build_tab_dashboard
 from tabs.datos import build_tab_datos
 from tabs.misc import build_tab_comparar_precios, build_tab_historial_precios, build_tab_competencia
 from tabs.constants import TAB_KEYS, TABS_BASE, TABS_ML, TABS_QB, TAB_DESCRIPTIONS, LABEL_BY_TAB
@@ -137,7 +138,7 @@ from tabs.compras_lista import build_tab_compras_lista
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.05.29.15"
+VERSION = "3.26.06.01.09"
 
 
 # ==========================
@@ -299,7 +300,8 @@ def show_main_layout(container) -> None:
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
                 tab_arca = ui.tab("ARCA")
-                tab_balance = ui.tab("Balance")
+                tab_balance    = ui.tab("Balance")
+                tab_dashboard  = ui.tab("Dashboard")
                 tab_config = ui.tab("Configuración")
                 tab_admin = ui.tab("Admin")
 
@@ -319,17 +321,19 @@ def show_main_layout(container) -> None:
             "Datos": tab_datos,
             "Pesos": tab_pesos,
             "ARCA": tab_arca,
-            "Balance": tab_balance,
+            "Balance":    tab_balance,
+            "Dashboard":  tab_dashboard,
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
         ventas_cargado = [False]
         estadisticas_cargado = [False]
-        balance_cargado = [False]
+        balance_cargado   = [False]
+        dashboard_cargado = [False]
         compras_cargado = [False]
         stock_cargado = [False]
         compras_lista_cargado = [False]
@@ -367,6 +371,9 @@ def show_main_layout(container) -> None:
             elif val == "Balance" and not balance_cargado[0]:
                 balance_cargado[0] = True
                 build_tab_balance(balance_container)
+            elif val == "Dashboard" and not dashboard_cargado[0]:
+                dashboard_cargado[0] = True
+                build_tab_dashboard(dashboard_container)
             elif val == "Históricos" and not historicos_cargado[0]:
                 historicos_cargado[0] = True
                 build_tab_historicos(historicos_container)
@@ -408,7 +415,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance"), ("DASHBOARD", "Dashboard", "dashboard")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -560,6 +567,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_dashboard):
+                dashboard_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_cuotas):
                 cuotas_container = ui.column().classes("w-full")
