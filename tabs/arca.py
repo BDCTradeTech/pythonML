@@ -74,15 +74,6 @@ def _color_iva(tecnico: str, libre: str) -> str:
     return _RED
 
 
-def _color_sire(retenciones: str, umbral: float = 50_000) -> str:
-    r = _to_float(retenciones)
-    if r < umbral:
-        return _GREEN
-    if r < umbral * 2:
-        return _YELLOW
-    return _RED
-
-
 def _color_deuda(deuda: str, intimacion: bool) -> str:
     if intimacion:
         return _RED
@@ -92,9 +83,11 @@ def _color_deuda(deuda: str, intimacion: bool) -> str:
 
 
 def _color_multilateral(filas: List[Dict]) -> str:
-    for f in filas:
-        if _to_float(f.get("saldo")) < 0:
-            return _YELLOW
+    valores = [_to_float(f.get("a_pagar")) for f in filas]
+    if any(v > 10_000 for v in valores):
+        return _RED
+    if any(v > 0 for v in valores):
+        return _YELLOW
     return _GREEN
 
 
@@ -114,17 +107,18 @@ def _card_header(title: str, color: str):
     return dot
 
 
-def _instructions_box(text: str) -> None:
+def _instructions_box(text: str, copy_button: bool = True) -> None:
     with ui.expansion("Instrucciones", icon="help_outline").classes("w-full text-sm"):
         with ui.card().classes("w-full").style("background:#f5f5f5;border:0;padding:8px 12px"):
             with ui.row().classes("items-start gap-2 w-full"):
                 ui.label(text).classes("text-sm text-gray-700 flex-1")
-                ui.button(
-                    icon="content_copy",
-                    on_click=lambda t=text: ui.run_javascript(
-                        f"navigator.clipboard.writeText({json.dumps(t)})"
-                    ),
-                ).props("flat dense round").tooltip("Copiar").classes("text-gray-500")
+                if copy_button:
+                    ui.button(
+                        icon="content_copy",
+                        on_click=lambda t=text: ui.run_javascript(
+                            f"navigator.clipboard.writeText({json.dumps(t)})"
+                        ),
+                    ).props("flat dense round").tooltip("Copiar").classes("text-gray-500")
 
 
 # ---------------------------------------------------------------------------
@@ -144,7 +138,6 @@ def _build_arca() -> None:
     # ── Cargar datos guardados ────────────────────────────────────────────────
     siper_d = get_arca_datos("siper")
     iva_d   = get_arca_datos("iva")
-    sire_d  = get_arca_datos("sire")
     deuda_d = get_arca_datos("deuda")
     ml_rows = get_arca_multilateral()
     clae_d  = get_arca_datos("clae")
@@ -152,16 +145,15 @@ def _build_arca() -> None:
     # ── Colores iniciales ─────────────────────────────────────────────────────
     c_siper = _color_siper(siper_d.get("categoria_siper", ""))
     c_iva   = _color_iva(iva_d.get("saldo_tecnico", ""), iva_d.get("saldo_libre_disponibilidad", ""))
-    c_sire  = _color_sire(sire_d.get("retenciones_mes", ""), _to_float(sire_d.get("umbral_sire"), 50_000))
     c_deuda = _color_deuda(deuda_d.get("deuda_exigible", ""), deuda_d.get("tiene_intimacion", "") == "true")
     c_multi = _color_multilateral(ml_rows)
 
     semaforos: Dict[str, str] = {
-        "siper": c_siper, "iva": c_iva, "sire": c_sire,
+        "siper": c_siper, "iva": c_iva,
         "deuda": c_deuda, "multilateral": c_multi, "clae": _GREEN,
     }
 
-    with ui.column().classes("w-full gap-4 p-4").style("max-width:740px"):
+    with ui.column().classes("w-full gap-4 p-4").style("max-width:1100px"):
 
         # ── Banner de alerta ──────────────────────────────────────────────────
         has_alert = _RED in semaforos.values()
@@ -171,7 +163,7 @@ def _build_arca() -> None:
         )
         with alert_card:
             ui.label(
-                "ALERTA: Hay campos que requieren atención inmediata (deuda, intimación o SIPER D/E)."
+                "ALERTA: Hay campos que requieren atención inmediata."
             ).style("color:white;font-weight:bold")
 
         def _refresh_alert() -> None:
@@ -181,196 +173,184 @@ def _build_arca() -> None:
                 "padding:12px 16px;border-radius:6px;border:0;width:100%;margin-bottom:4px"
             )
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 1 — SIPER / Condición IVA
-        # ─────────────────────────────────────────────────────────────────────
-        with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            dot_siper = _card_header("SIPER / Condición IVA", c_siper)
-            _instructions_box(
-                "arca.gob.ar → Servicios → SIPER → Consulta de categoría. "
-                "Ingresá con CUIT y clave fiscal nivel 2."
-            )
-            with ui.column().classes("w-full gap-3 mt-2"):
-                inp_cat  = ui.input("Categoría SIPER (ej: A — Sin observaciones)",
-                                    value=siper_d.get("categoria_siper", "")).classes("w-full")
-                inp_cond = ui.input("Condición IVA",
-                                    value=siper_d.get("condicion_iva", "")).classes("w-full")
-            siper_ts = ui.label(_fmt_ts(siper_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
+        # ── Grid 2×2 — 4 cards ───────────────────────────────────────────────
+        with ui.grid(columns=2).classes("w-full gap-4"):
 
-            def _upd_siper(_=None) -> None:
-                col = _color_siper(inp_cat.value)
-                _set_dot(dot_siper, col)
-                semaforos["siper"] = col
-                _refresh_alert()
-
-            inp_cat.on("input", _upd_siper)
-
-            def _save_siper() -> None:
-                now = datetime.now().isoformat(timespec="seconds")
-                save_arca_datos("siper", {
-                    "categoria_siper": inp_cat.value,
-                    "condicion_iva":   inp_cond.value,
-                    "_ts": now,
-                })
-                siper_ts.text = _fmt_ts(now)
-                _upd_siper()
-                ui.notify("SIPER guardado", color="positive")
-
-            ui.button("Guardar", on_click=_save_siper).props("flat dense").classes("text-sm mt-2")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 2 — Saldo IVA
-        # ─────────────────────────────────────────────────────────────────────
-        with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            dot_iva = _card_header("Saldo IVA", c_iva)
-            _instructions_box(
-                "arca.gob.ar → Mis aplicaciones → IVA → Declaración jurada → "
-                "Ver saldos acumulados."
-            )
-            with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
-                inp_tec = ui.number("Saldo técnico ($)",
-                                    value=_to_float(iva_d.get("saldo_tecnico")),
-                                    format="%.2f").classes("flex-1")
-                inp_lib = ui.number("Saldo libre disponibilidad ($)",
-                                    value=_to_float(iva_d.get("saldo_libre_disponibilidad")),
-                                    format="%.2f").classes("flex-1")
-            iva_ts = ui.label(_fmt_ts(iva_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
-
-            def _upd_iva(_=None) -> None:
-                col = _color_iva(str(inp_tec.value if inp_tec.value is not None else 0),
-                                  str(inp_lib.value if inp_lib.value is not None else 0))
-                _set_dot(dot_iva, col)
-                semaforos["iva"] = col
-                _refresh_alert()
-
-            inp_tec.on("update:model-value", _upd_iva)
-            inp_lib.on("update:model-value", _upd_iva)
-
-            def _save_iva() -> None:
-                now = datetime.now().isoformat(timespec="seconds")
-                save_arca_datos("iva", {
-                    "saldo_tecnico":              str(inp_tec.value or 0),
-                    "saldo_libre_disponibilidad": str(inp_lib.value or 0),
-                    "_ts": now,
-                })
-                iva_ts.text = _fmt_ts(now)
-                _upd_iva()
-                ui.notify("IVA guardado", color="positive")
-
-            ui.button("Guardar", on_click=_save_iva).props("flat dense").classes("text-sm mt-2")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 3 — Retenciones / Percepciones (SIRE)
-        # ─────────────────────────────────────────────────────────────────────
-        with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            dot_sire = _card_header("Retenciones / Percepciones (SIRE)", c_sire)
-            _instructions_box(
-                "arca.gob.ar → SIRE → Consulta de retenciones y percepciones sufridas → "
-                "Filtrar por período actual."
-            )
-            with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
-                inp_ret = ui.number("Retenciones del mes ($)",
-                                    value=_to_float(sire_d.get("retenciones_mes")),
-                                    format="%.2f").classes("flex-1")
-                inp_per = ui.number("Percepciones del mes ($)",
-                                    value=_to_float(sire_d.get("percepciones_mes")),
-                                    format="%.2f").classes("flex-1")
-            with ui.row().classes("items-center gap-2 mt-1"):
-                ui.label("Umbral de alerta ($):").classes("text-sm text-gray-600")
-                inp_umbral = ui.number(
-                    value=_to_float(sire_d.get("umbral_sire"), 50_000),
-                    format="%.0f",
-                ).style("width:130px")
-            sire_ts = ui.label(_fmt_ts(sire_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
-
-            def _upd_sire(_=None) -> None:
-                umbral = _to_float(inp_umbral.value, 50_000)
-                col = _color_sire(str(inp_ret.value if inp_ret.value is not None else 0), umbral)
-                _set_dot(dot_sire, col)
-                semaforos["sire"] = col
-                _refresh_alert()
-
-            inp_ret.on("update:model-value", _upd_sire)
-            inp_umbral.on("update:model-value", _upd_sire)
-
-            def _save_sire() -> None:
-                now = datetime.now().isoformat(timespec="seconds")
-                save_arca_datos("sire", {
-                    "retenciones_mes": str(inp_ret.value or 0),
-                    "percepciones_mes": str(inp_per.value or 0),
-                    "umbral_sire":     str(inp_umbral.value or 50_000),
-                    "_ts": now,
-                })
-                sire_ts.text = _fmt_ts(now)
-                _upd_sire()
-                ui.notify("SIRE guardado", color="positive")
-
-            ui.button("Guardar", on_click=_save_sire).props("flat dense").classes("text-sm mt-2")
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 4 — Deuda / Planes activos
-        # ─────────────────────────────────────────────────────────────────────
-        with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            dot_deuda = _card_header("Deuda / Planes activos", c_deuda)
-            _instructions_box(
-                "arca.gob.ar → Mis aplicaciones → Deuda → Consulta de deuda consolidada. "
-                "Planes: sección Mis Planes."
-            )
-            with ui.column().classes("w-full gap-3 mt-2"):
-                with ui.row().classes("w-full gap-3 flex-wrap"):
-                    inp_deuda  = ui.number("Deuda exigible ($)",
-                                           value=_to_float(deuda_d.get("deuda_exigible")),
-                                           format="%.2f").classes("flex-1")
-                    inp_planes = ui.number("Planes activos",
-                                           value=int(_to_float(deuda_d.get("planes_activos"))),
-                                           format="%.0f").classes("flex-1")
-                inp_intim = ui.checkbox(
-                    "Tiene intimación",
-                    value=deuda_d.get("tiene_intimacion", "") == "true",
+            # ── Card 1: SIPER ─────────────────────────────────────────────────
+            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
+                dot_siper = _card_header("SIPER", c_siper)
+                _instructions_box(
+                    "arca.gob.ar → Sistema Registral → Trámites → SIPER",
+                    copy_button=False,
                 )
-            deuda_ts = ui.label(_fmt_ts(deuda_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
+                with ui.column().classes("w-full gap-3 mt-2"):
+                    inp_cat = ui.input(
+                        "Categoría SIPER (ej: A — Sin observaciones)",
+                        value=siper_d.get("categoria_siper", ""),
+                    ).classes("w-full")
+                siper_ts = ui.label(_fmt_ts(siper_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
 
-            def _upd_deuda(_=None) -> None:
-                col = _color_deuda(str(inp_deuda.value if inp_deuda.value is not None else 0),
-                                   inp_intim.value)
-                _set_dot(dot_deuda, col)
-                semaforos["deuda"] = col
-                _refresh_alert()
+                def _upd_siper(_=None) -> None:
+                    col = _color_siper(inp_cat.value)
+                    _set_dot(dot_siper, col)
+                    semaforos["siper"] = col
+                    _refresh_alert()
 
-            inp_deuda.on("update:model-value", _upd_deuda)
-            inp_intim.on("update:model-value", _upd_deuda)
+                inp_cat.on("input", _upd_siper)
 
-            def _save_deuda() -> None:
-                now = datetime.now().isoformat(timespec="seconds")
-                save_arca_datos("deuda", {
-                    "deuda_exigible":   str(inp_deuda.value or 0),
-                    "planes_activos":   str(int(inp_planes.value or 0)),
-                    "tiene_intimacion": "true" if inp_intim.value else "false",
-                    "_ts": now,
-                })
-                deuda_ts.text = _fmt_ts(now)
-                _upd_deuda()
-                ui.notify("Deuda guardado", color="positive")
+                def _save_siper() -> None:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    save_arca_datos("siper", {"categoria_siper": inp_cat.value, "_ts": now})
+                    siper_ts.text = _fmt_ts(now)
+                    _upd_siper()
+                    ui.notify("SIPER guardado", color="positive")
 
-            ui.button("Guardar", on_click=_save_deuda).props("flat dense").classes("text-sm mt-2")
+                ui.button("Guardar", on_click=_save_siper).props("flat dense").classes("text-sm mt-2")
 
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 5 — Convenio Multilateral
-        # ─────────────────────────────────────────────────────────────────────
+            # ── Card 2: Saldo IVA (F.2051) ────────────────────────────────────
+            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
+                dot_iva = _card_header("Saldo IVA (F.2051)", c_iva)
+                _instructions_box(
+                    "Portal IVA → Consultar → Seleccionar SRL → DJ presentadas → "
+                    "Libro IVA → Ver DJ → Descargar F.2051"
+                )
+                with ui.column().classes("w-full gap-3 mt-2"):
+                    inp_tec = ui.number(
+                        "Saldo técnico ($)",
+                        value=_to_float(iva_d.get("saldo_tecnico")),
+                        format="%.2f",
+                    ).classes("w-full")
+                    inp_lib = ui.number(
+                        "Saldo libre disponibilidad ($)",
+                        value=_to_float(iva_d.get("saldo_libre_disponibilidad")),
+                        format="%.2f",
+                    ).classes("w-full")
+                iva_ts = ui.label(_fmt_ts(iva_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
+
+                def _upd_iva(_=None) -> None:
+                    col = _color_iva(
+                        str(inp_tec.value if inp_tec.value is not None else 0),
+                        str(inp_lib.value if inp_lib.value is not None else 0),
+                    )
+                    _set_dot(dot_iva, col)
+                    semaforos["iva"] = col
+                    _refresh_alert()
+
+                inp_tec.on("update:model-value", _upd_iva)
+                inp_lib.on("update:model-value", _upd_iva)
+
+                def _save_iva() -> None:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    save_arca_datos("iva", {
+                        "saldo_tecnico":              str(inp_tec.value or 0),
+                        "saldo_libre_disponibilidad": str(inp_lib.value or 0),
+                        "_ts": now,
+                    })
+                    iva_ts.text = _fmt_ts(now)
+                    _upd_iva()
+                    ui.notify("IVA guardado", color="positive")
+
+                ui.button("Guardar", on_click=_save_iva).props("flat dense").classes("text-sm mt-2")
+
+            # ── Card 3: Deuda / Planes activos ────────────────────────────────
+            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
+                dot_deuda = _card_header("Deuda / Planes activos", c_deuda)
+                _instructions_box(
+                    "arca.gob.ar → Sistemas de Cuentas Tributarias → Vencimientos"
+                )
+                with ui.column().classes("w-full gap-3 mt-2"):
+                    inp_deuda = ui.number(
+                        "Deuda exigible ($)",
+                        value=_to_float(deuda_d.get("deuda_exigible")),
+                        format="%.2f",
+                    ).classes("w-full")
+                    inp_planes = ui.number(
+                        "Planes activos",
+                        value=int(_to_float(deuda_d.get("planes_activos"))),
+                        format="%.0f",
+                    ).classes("w-full")
+                    inp_intim = ui.checkbox(
+                        "Tiene intimación",
+                        value=deuda_d.get("tiene_intimacion", "") == "true",
+                    )
+                deuda_ts = ui.label(_fmt_ts(deuda_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
+
+                def _upd_deuda(_=None) -> None:
+                    col = _color_deuda(
+                        str(inp_deuda.value if inp_deuda.value is not None else 0),
+                        inp_intim.value,
+                    )
+                    _set_dot(dot_deuda, col)
+                    semaforos["deuda"] = col
+                    _refresh_alert()
+
+                inp_deuda.on("update:model-value", _upd_deuda)
+                inp_intim.on("update:model-value", _upd_deuda)
+
+                def _save_deuda() -> None:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    save_arca_datos("deuda", {
+                        "deuda_exigible":   str(inp_deuda.value or 0),
+                        "planes_activos":   str(int(inp_planes.value or 0)),
+                        "tiene_intimacion": "true" if inp_intim.value else "false",
+                        "_ts": now,
+                    })
+                    deuda_ts.text = _fmt_ts(now)
+                    _upd_deuda()
+                    ui.notify("Deuda guardado", color="positive")
+
+                ui.button("Guardar", on_click=_save_deuda).props("flat dense").classes("text-sm mt-2")
+
+            # ── Card 4: Actividades CLAE ──────────────────────────────────────
+            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
+                _card_header("Actividades CLAE", _GREEN)
+                _instructions_box(
+                    "arca.gob.ar → Sistema Registral → Registro Único Tributario → Actividades"
+                )
+                with ui.column().classes("w-full gap-3 mt-2"):
+                    inp_princ = ui.input(
+                        "Actividad principal",
+                        value=clae_d.get("actividad_principal", ""),
+                    ).classes("w-full")
+                    inp_sec = ui.input(
+                        "Actividad secundaria (opcional)",
+                        value=clae_d.get("actividad_secundaria", ""),
+                    ).classes("w-full")
+                clae_ts = ui.label(_fmt_ts(clae_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
+
+                def _save_clae() -> None:
+                    now = datetime.now().isoformat(timespec="seconds")
+                    save_arca_datos("clae", {
+                        "actividad_principal":  inp_princ.value,
+                        "actividad_secundaria": inp_sec.value,
+                        "_ts": now,
+                    })
+                    clae_ts.text = _fmt_ts(now)
+                    ui.notify("CLAE guardado", color="positive")
+
+                ui.button("Guardar", on_click=_save_clae).props("flat dense").classes("text-sm mt-2")
+
+        # ── Card 5: Convenio Multilateral CM03 (ancho completo) ───────────────
         with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            dot_multi = _card_header("Convenio Multilateral por provincia", c_multi)
+            dot_multi = _card_header("Convenio Multilateral CM03", c_multi)
             _instructions_box(
-                "arca.gob.ar → Convenio Multilateral → Saldos por jurisdicción → "
-                "Seleccionar período y exportar."
+                "Convenio Multilateral → SIFERE Web → DDJJ → DDJJ mensuales → "
+                "Listado de DDJJ → Imprimir"
             )
 
             _ml: List[Dict[str, Any]] = [
-                {"provincia": r.get("provincia", ""), "saldo": _to_float(r.get("saldo"))}
+                {
+                    "provincia":       r.get("provincia", ""),
+                    "alicuota":        _to_float(r.get("alicuota")),
+                    "a_favor_contrib": _to_float(r.get("a_favor_contrib")),
+                    "a_favor_fisco":   _to_float(r.get("a_favor_fisco")),
+                    "a_pagar":         _to_float(r.get("a_pagar")),
+                }
                 for r in ml_rows
             ]
             ml_ts_val = ml_rows[0].get("updated_at") if ml_rows else None
 
-            ml_rows_col = ui.column().classes("w-full gap-2 mt-2")
+            ml_rows_col = ui.column().classes("w-full gap-1 mt-2")
             multi_ts = ui.label(_fmt_ts(ml_ts_val)).classes("text-xs text-gray-400")
 
             def _upd_multi() -> None:
@@ -382,24 +362,41 @@ def _build_arca() -> None:
             def _render_ml() -> None:
                 ml_rows_col.clear()
                 with ml_rows_col:
+                    with ui.row().classes("w-full gap-2 items-center pb-1").style(
+                        "border-bottom:1px solid #e0e0e0"
+                    ):
+                        ui.label("Provincia").classes("text-xs text-gray-500 font-semibold").style("width:160px;min-width:160px")
+                        ui.label("Alícuota %").classes("text-xs text-gray-500 font-semibold").style("width:100px;min-width:100px")
+                        ui.label("A favor contrib ($)").classes("text-xs text-gray-500 font-semibold").style("width:140px;min-width:140px")
+                        ui.label("A favor fisco ($)").classes("text-xs text-gray-500 font-semibold").style("width:130px;min-width:130px")
+                        ui.label("A pagar ($)").classes("text-xs text-gray-500 font-semibold").style("width:120px;min-width:120px")
                     for i, row in enumerate(_ml):
-                        with ui.row().classes("items-center gap-2 w-full flex-wrap"):
-                            prov_inp = ui.input("Provincia", value=row.get("provincia", "")).style("width:170px")
-                            sald_inp = ui.number("Saldo ($)", value=_to_float(row.get("saldo")),
-                                                  format="%.2f").style("width:150px")
+                        with ui.row().classes("items-center gap-2 w-full flex-nowrap"):
+                            prov_inp   = ui.input(value=row.get("provincia", "")).style("width:160px;min-width:160px")
+                            alic_inp   = ui.number(value=_to_float(row.get("alicuota")),        format="%.4f").style("width:100px;min-width:100px")
+                            contrib_inp = ui.number(value=_to_float(row.get("a_favor_contrib")), format="%.2f").style("width:140px;min-width:140px")
+                            fisco_inp  = ui.number(value=_to_float(row.get("a_favor_fisco")),   format="%.2f").style("width:130px;min-width:130px")
+                            pagar_inp  = ui.number(value=_to_float(row.get("a_pagar")),         format="%.2f").style("width:120px;min-width:120px")
 
-                            def _bind(idx: int, pi, si) -> None:
-                                def _on_prov(_=None) -> None:
+                            def _bind(idx: int, pi, al, co, fi, pa) -> None:
+                                def _on_prov(_=None):
                                     _ml[idx]["provincia"] = pi.value
-
-                                def _on_sald(_=None) -> None:
-                                    _ml[idx]["saldo"] = _to_float(si.value)
+                                def _on_alic(_=None):
+                                    _ml[idx]["alicuota"] = _to_float(al.value)
+                                def _on_contrib(_=None):
+                                    _ml[idx]["a_favor_contrib"] = _to_float(co.value)
+                                def _on_fisco(_=None):
+                                    _ml[idx]["a_favor_fisco"] = _to_float(fi.value)
+                                def _on_pagar(_=None):
+                                    _ml[idx]["a_pagar"] = _to_float(pa.value)
                                     _upd_multi()
-
                                 pi.on("input", _on_prov)
-                                si.on("update:model-value", _on_sald)
+                                al.on("update:model-value", _on_alic)
+                                co.on("update:model-value", _on_contrib)
+                                fi.on("update:model-value", _on_fisco)
+                                pa.on("update:model-value", _on_pagar)
 
-                            _bind(i, prov_inp, sald_inp)
+                            _bind(i, prov_inp, alic_inp, contrib_inp, fisco_inp, pagar_inp)
 
                             def _del(idx=i) -> None:
                                 _ml.pop(idx)
@@ -413,46 +410,19 @@ def _build_arca() -> None:
             _render_ml()
 
             def _add_row() -> None:
-                _ml.append({"provincia": "", "saldo": 0.0})
+                _ml.append({
+                    "provincia": "", "alicuota": 0.0,
+                    "a_favor_contrib": 0.0, "a_favor_fisco": 0.0, "a_pagar": 0.0,
+                })
                 _render_ml()
 
             def _save_multi() -> None:
-                # Sync any province still in-flight (already synced via on_input, but ensure saldo)
                 save_arca_multilateral(_ml)
                 now = datetime.now().isoformat(timespec="seconds")
                 multi_ts.text = _fmt_ts(now)
                 _upd_multi()
                 ui.notify("Multilateral guardado", color="positive")
 
-            with ui.row().classes("gap-2 mt-2 items-center"):
+            with ui.row().classes("gap-2 mt-3 items-center"):
                 ui.button("Agregar provincia", icon="add", on_click=_add_row).props("flat dense").classes("text-sm")
                 ui.button("Guardar", on_click=_save_multi).props("flat dense").classes("text-sm")
-            multi_ts  # already added above
-
-        # ─────────────────────────────────────────────────────────────────────
-        # Card 6 — Actividades CLAE (siempre verde, informativo)
-        # ─────────────────────────────────────────────────────────────────────
-        with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-            _card_header("Actividades CLAE", _GREEN)
-            _instructions_box(
-                "arca.gob.ar → Mis datos registrales → Actividades → "
-                "Ver actividades declaradas (CLAE)."
-            )
-            with ui.column().classes("w-full gap-3 mt-2"):
-                inp_princ = ui.input("Actividad principal (CLAE)",
-                                     value=clae_d.get("actividad_principal", "")).classes("w-full")
-                inp_sec   = ui.input("Actividad secundaria (opcional)",
-                                     value=clae_d.get("actividad_secundaria", "")).classes("w-full")
-            clae_ts = ui.label(_fmt_ts(clae_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
-
-            def _save_clae() -> None:
-                now = datetime.now().isoformat(timespec="seconds")
-                save_arca_datos("clae", {
-                    "actividad_principal":  inp_princ.value,
-                    "actividad_secundaria": inp_sec.value,
-                    "_ts": now,
-                })
-                clae_ts.text = _fmt_ts(now)
-                ui.notify("CLAE guardado", color="positive")
-
-            ui.button("Guardar", on_click=_save_clae).props("flat dense").classes("text-sm mt-2")
