@@ -127,6 +127,7 @@ from tabs.admin import build_tab_admin
 from tabs.importacion import build_tab_importacion
 from tabs.historicos import build_tab_historicos
 from tabs.pesos import build_tab_pesos
+from tabs.arca import build_tab_arca
 from tabs.datos import build_tab_datos
 from tabs.misc import build_tab_comparar_precios, build_tab_historial_precios, build_tab_competencia
 from tabs.constants import TAB_KEYS, TABS_BASE, TABS_ML, TABS_QB, TAB_DESCRIPTIONS, LABEL_BY_TAB
@@ -297,6 +298,7 @@ def show_main_layout(container) -> None:
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
+                tab_arca = ui.tab("ARCA")
                 tab_balance = ui.tab("Balance")
                 tab_config = ui.tab("Configuración")
                 tab_admin = ui.tab("Admin")
@@ -316,11 +318,12 @@ def show_main_layout(container) -> None:
             "Importacion": tab_importacion,
             "Datos": tab_datos,
             "Pesos": tab_pesos,
+            "ARCA": tab_arca,
             "Balance": tab_balance,
             "Configuración": tab_config,
             "Admin": tab_admin,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Configuración": "configuracion", "Admin": "admin"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -334,6 +337,7 @@ def show_main_layout(container) -> None:
         historicos_cargado = [False]
         admin_cargado = [False]
         cuotas_cargado = [False]
+        arca_cargado = [False]
 
         def _lazy_load(val: str) -> None:
             if val == "Invoices" and not compras_cargado[0]:
@@ -369,6 +373,9 @@ def show_main_layout(container) -> None:
             elif val == "Admin" and not admin_cargado[0]:
                 admin_cargado[0] = True
                 build_tab_admin(admin_container)
+            elif val == "ARCA" and not arca_cargado[0]:
+                arca_cargado[0] = True
+                build_tab_arca(arca_container)
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -463,6 +470,15 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_pesos
                                         app.storage.user["last_tab"] = "Pesos"
                                     ui.menu_item("PESOS", _pesos_click)
+                if perms.get("arca", True):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(impuestos_menu)):
+                        with ui.button("IMPUESTOS").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as impuestos_menu:
+                                def _arca_click():
+                                    _lazy_load("ARCA")
+                                    tab_panels.value = tab_arca
+                                    app.storage.user["last_tab"] = "ARCA"
+                                ui.menu_item("ARCA", _arca_click)
                 if perms.get("datos", True) or perms.get("configuracion", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(config_menu)):
                         with ui.button("CONFIG").props("flat dense no-caps").classes(_nav_font):
@@ -538,6 +554,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_pesos):
                 build_tab_pesos()
+
+            with ui.tab_panel(tab_arca):
+                arca_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")

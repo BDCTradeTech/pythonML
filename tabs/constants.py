@@ -27,13 +27,14 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("historicos", "Históricos"),
     ("importacion", "Importacion"),
     ("pesos", "Pesos"),
+    ("arca", "ARCA"),
     ("datos", "Datos"),
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
 ]
 
 # Grupos de tabs para control de acceso por defecto
-TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "datos", "configuracion"}
+TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
 TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "cuotas", "historicos", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
@@ -53,6 +54,7 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "pedidos": "ver consolidado de compras de todos los clientes.",
     "importacion": "cargar datos desde archivos.",
     "pesos": "cotización del dólar.",
+    "arca": "variables fiscales mensuales (SIPER, IVA, SIRE, Deuda, Multilateral, CLAE).",
     "datos": "configuración de marcas, despachantes y otros datos.",
     "configuracion": "vincular MercadoLibre, QuickBooks y configurar email.",
     "admin": "gestión de usuarios y permisos (solo administradores).",
@@ -70,6 +72,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "pedidos": "Pedidos",
     "importacion": "Importación",
     "pesos": "Pesos",
+    "arca": "ARCA",
     "datos": "Datos",
     "configuracion": "Configuración",
     "admin": "Admin",
