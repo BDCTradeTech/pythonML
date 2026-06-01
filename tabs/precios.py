@@ -1718,6 +1718,7 @@ def _mostrar_tabla_precios(
         ahora = datetime.now()
         _fecha = f"{ahora.day:02d}/{ahora.month:02d}/{ahora.year}"
         _margen_str = f"{margen:.0f}%"
+        _dolar_str = f"$ {round(dolar_oficial):,}".replace(",", ".")
 
         from reportlab.pdfbase.pdfmetrics import stringWidth as _sw
         _col_sku_pts  = 3.0 * rl_cm - 8
@@ -1735,14 +1736,18 @@ def _mostrar_tabla_precios(
         data = [['SKU', 'Marca', 'Producto', 'Color', 'Stock', 'Precio $']]
         sku_fontsizes = []
         for r in rows_sorted:
+            _costo_raw = r.get('costo_usd')
+            _iva_raw   = r.get('tipo_iva')
+            if not _costo_raw or not _iva_raw:
+                continue
             stock_val = r.get('available_quantity')
             stock_str = fmt_miles(stock_val) if stock_val is not None else '0'
             sku_str = str(r.get('seller_sku') or r.get('id') or '')
             _sku_w = _sw(sku_str, 'Helvetica', 7)
             _sku_fs = 7 if _sku_w <= _col_sku_pts else max(5, round(7 * _col_sku_pts / _sku_w, 1))
             sku_fontsizes.append(_sku_fs)
-            costo_usd = float(r.get('costo_usd') or 0)
-            tipo_iva  = float(r.get('tipo_iva') or 0.105)
+            costo_usd = float(_costo_raw)
+            tipo_iva  = float(_iva_raw)
             precio_pesos = costo_usd * (1 + tipo_iva) * (1 + margen / 100) * dolar_oficial
             precio_int = round(precio_pesos)
             precio_str = (
@@ -1780,7 +1785,7 @@ def _mostrar_tabla_precios(
                 self.setFont("Helvetica-Bold", 11)
                 self.setFillColorRGB(0.098, 0.463, 0.824)
                 self.drawString(margin_lr, page_h - margin + 4,
-                                f"Lista de Precios {_fecha}")
+                                f"Lista de Precios {_fecha}   |   Dólar {_dolar_str}")
                 self.setFont("Helvetica", 9)
                 self.setFillColorRGB(0.4, 0.4, 0.4)
                 self.drawRightString(page_w - margin_lr, page_h - margin + 4,
