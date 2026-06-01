@@ -134,6 +134,8 @@ from tabs.misc import build_tab_comparar_precios, build_tab_historial_precios, b
 from tabs.constants import TAB_KEYS, TABS_BASE, TABS_ML, TABS_QB, TAB_DESCRIPTIONS, LABEL_BY_TAB
 from tabs.home import build_tab_home_welcome
 from tabs.compras_lista import build_tab_compras_lista
+from tabs.activity import build_tab_actividad
+from helpers.activity_logger import log_event
 
 DB_PATH = Path(__file__).with_name("app.db")
 
@@ -304,6 +306,7 @@ def show_main_layout(container) -> None:
                 tab_dashboard  = ui.tab("Dashboard")
                 tab_config = ui.tab("Configuración")
                 tab_admin = ui.tab("Admin")
+                tab_actividad = ui.tab("Actividad")
 
         tab_map = {
             "Home": tab_home,
@@ -325,8 +328,9 @@ def show_main_layout(container) -> None:
             "Dashboard":  tab_dashboard,
             "Configuración": tab_config,
             "Admin": tab_admin,
+            "Actividad": tab_actividad,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -342,6 +346,7 @@ def show_main_layout(container) -> None:
         admin_cargado = [False]
         cuotas_cargado = [False]
         arca_cargado = [False]
+        actividad_cargado = [False]
 
         def _lazy_load(val: str) -> None:
             if val == "Invoices" and not compras_cargado[0]:
@@ -383,6 +388,9 @@ def show_main_layout(container) -> None:
             elif val == "ARCA" and not arca_cargado[0]:
                 arca_cargado[0] = True
                 build_tab_arca(arca_container)
+            elif val == "Actividad" and not actividad_cargado[0]:
+                actividad_cargado[0] = True
+                build_tab_actividad(actividad_container)
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -503,7 +511,12 @@ def show_main_layout(container) -> None:
                                         app.storage.user["last_tab"] = "Configuración"
                                     ui.menu_item("CONFIGURACIÓN", _config_click)
                 if perms.get("admin", False):
-                    ui.button("ADMIN", on_click=_go("Admin")).props("flat dense no-caps").classes(_nav_font)
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(admin_menu)):
+                        with ui.button("ADMIN").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as admin_menu:
+                                ui.menu_item("PERMISOS", _go("Admin"))
+                                if perms.get("actividad", False):
+                                    ui.menu_item("ACTIVIDAD", _go("Actividad"))
             ui.space()
             with ui.row().classes("items-center gap-3 flex-wrap"):
                 with ui.row().classes("items-center gap-2"):
@@ -580,14 +593,28 @@ def show_main_layout(container) -> None:
             with ui.tab_panel(tab_admin):
                 admin_container = ui.column().classes("w-full")
 
+            with ui.tab_panel(tab_actividad):
+                actividad_container = ui.column().classes("w-full")
+
+        tab_enter_times: Dict[str, Any] = {}
+
         def on_tab_change(e) -> None:
-            val = getattr(e, "value", None)
-            if val:
-                app.storage.user["last_tab"] = val
-            if val:
-                _lazy_load(val)
+            new_val = getattr(e, "value", None)
+            old_val = app.storage.user.get("last_tab")
+            if old_val and old_val != new_val and old_val in tab_enter_times:
+                elapsed = int((datetime.now() - tab_enter_times[old_val]).total_seconds())
+                if elapsed >= 1:
+                    log_event(user["id"], old_val, "time_spent", tiempo_segundos=elapsed)
+                del tab_enter_times[old_val]
+            if new_val:
+                app.storage.user["last_tab"] = new_val
+                tab_enter_times[new_val] = datetime.now()
+                log_event(user["id"], new_val, "page_view")
+                _lazy_load(new_val)
 
         tab_panels.on_value_change(on_tab_change)
+        tab_enter_times["Home"] = datetime.now()
+        log_event(user["id"], "Home", "page_view")
 
 
 def _get_base_url(request: Request) -> str:
@@ -778,6 +805,20 @@ def index(request: Request) -> None:  # type: ignore[override]
         conn.commit()
         conn.close()
         _enable_tabs_for_user(user["id"], TABS_ML)
+        # Guardar nickname de ML (para activity_log)
+        try:
+            me_r = requests.get(
+                "https://api.mercadolibre.com/users/me",
+                headers={"Authorization": f"Bearer {access_token}"},
+                timeout=5,
+            )
+            if me_r.ok:
+                nickname = me_r.json().get("nickname") or ""
+                if nickname:
+                    from db import set_ml_nickname
+                    set_ml_nickname(user["id"], nickname)
+        except Exception:
+            pass
         # Redirigir a / sin el code para limpiar la URL (el usuario verá el panel y una notificación)
         return RedirectResponse(url="/", status_code=302)
 
