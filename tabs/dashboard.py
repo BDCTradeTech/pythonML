@@ -488,7 +488,7 @@ def build_tab_dashboard(container) -> None:
                         FROM ml_publicaciones
                         WHERE user_id = ? AND estado = 'active'
                         """,
-                        (user_id,),
+                        (uid,),
                     )
                     row = cur.fetchone()
                     return (
