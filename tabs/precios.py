@@ -1693,7 +1693,7 @@ def _mostrar_tabla_precios(
             return None
 
     def _generar_pdf_cotizacion(filtrados_actuales: List[Dict[str, Any]], margen: float) -> Optional[str]:
-        """Genera PDF A4 de cotización: SKU/Marca/Producto/Color/Stock/Precio $."""
+        """Genera PDF A4 lista de precios: SKU/Marca/Producto/Color/Stock/Precio $."""
         try:
             from reportlab.lib.pagesizes import A4
             from reportlab.platypus import SimpleDocTemplate, Table, TableStyle
@@ -1705,8 +1705,14 @@ def _mostrar_tabla_precios(
         if not filtrados_actuales:
             return None
 
+        _EXCLUDE_WORDS_COT = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion"}
+
+        def _sku_excluido_cot(s: str) -> bool:
+            normalized = s.lower().replace(".", "").replace("_", "")
+            return any(w.replace(".", "").replace("_", "") in normalized for w in _EXCLUDE_WORDS_COT)
+
         rows_sorted = sorted(
-            filtrados_actuales,
+            [r for r in filtrados_actuales if not _sku_excluido_cot(str(r.get('seller_sku') or r.get('id') or ''))],
             key=lambda x: ((x.get("marca") or "").lower(), (x.get("title") or "").lower()),
         )
         ahora = datetime.now()
@@ -1719,7 +1725,7 @@ def _mostrar_tabla_precios(
 
         def _trunc(s):
             if not s or s == "''":
-                return s or "''"
+                return "—"
             if _sw(s, "Helvetica", 7) <= _col_prod_pts:
                 return s
             while len(s) > 0 and _sw(s + "...", "Helvetica", 7) > _col_prod_pts:
@@ -1738,12 +1744,15 @@ def _mostrar_tabla_precios(
             costo_usd = float(r.get('costo_usd') or 0)
             tipo_iva  = float(r.get('tipo_iva') or 0.105)
             precio_pesos = costo_usd * (1 + tipo_iva) * (1 + margen / 100) * dolar_oficial
+            precio_int = round(precio_pesos)
             precio_str = (
-                f"${precio_pesos:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                f"$ {precio_int:,}".replace(",", ".")
                 if precio_pesos > 0 else "—"
             )
-            data.append([sku_str, str(r.get('marca') or ''), _trunc(str(r.get('title') or '')),
-                         str(r.get('color') or ''), stock_str, precio_str])
+            _marca_str = str(r.get('marca') or '')
+            _color_str = str(r.get('color') or '')
+            data.append([sku_str, "—" if _marca_str == "''" else _marca_str, _trunc(str(r.get('title') or '')),
+                         "—" if _color_str == "''" else _color_str, stock_str, precio_str])
 
         tmp = tempfile.NamedTemporaryFile(suffix=".pdf", delete=False)
         tmp.close()
@@ -1771,7 +1780,7 @@ def _mostrar_tabla_precios(
                 self.setFont("Helvetica-Bold", 11)
                 self.setFillColorRGB(0.098, 0.463, 0.824)
                 self.drawString(margin_lr, page_h - margin + 4,
-                                f"Cotización {_fecha} — Margen {_margen_str}")
+                                f"Lista de Precios {_fecha}")
                 self.setFont("Helvetica", 9)
                 self.setFillColorRGB(0.4, 0.4, 0.4)
                 self.drawRightString(page_w - margin_lr, page_h - margin + 4,
@@ -1927,7 +1936,7 @@ def _mostrar_tabla_precios(
         rows_snapshot = list(current_filtrados)
 
         with ui.dialog() as dlg, ui.card().classes("w-72 gap-4"):
-            ui.label("Cotizar productos").classes("text-lg font-bold")
+            ui.label("Lista de Precios").classes("text-lg font-bold")
             inp_margen = ui.number("Margen (%)", value=10, min=0, max=999, step=1).props("outlined dense")
 
             def _generar() -> None:
@@ -1943,7 +1952,7 @@ def _mostrar_tabla_precios(
                         ahora = datetime.now()
                         ts = f"{ahora.day:02d}-{ahora.month:02d}-{ahora.year % 100:02d}"
                         with client:
-                            ui.download(path, f"cotizacion_{ts}.pdf")
+                            ui.download(path, f"lista_precios_{ts}.pdf")
                             def _borrar(p=path) -> None:
                                 try:
                                     if p and os.path.exists(p): os.unlink(p)
@@ -2144,13 +2153,13 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "margen_pesos":
                                             v = row.get("margen_pesos")
                                             if v is None:
-                                                ui.label("''").classes("text-gray-400 text-xs")
+                                                ui.label("—").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] == "margen_venta_pct":
                                             v = row.get("margen_venta_pct")
                                             if v is None:
-                                                ui.label("''").classes("text-gray-400 text-xs")
+                                                ui.label("—").classes("text-gray-400 text-xs")
                                             else:
                                                 ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
                                         elif col["name"] in ("available_quantity", "sold_quantity"):
@@ -2168,7 +2177,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
-                                                ui.label("''").classes("text-gray-400 text-center w-full")
+                                                ui.label("—").classes("text-gray-400 text-center w-full")
                                             else:
                                                 qs_i = int(qs)
                                                 _filled = round(qs_i / 20)
@@ -2192,7 +2201,7 @@ def _mostrar_tabla_precios(
                                         elif col["name"] == "dias_sin_modificar":
                                             _dias = row.get("dias_sin_modificar")
                                             if _dias is None:
-                                                ui.label("''").classes("text-gray-400 text-center")
+                                                ui.label("—").classes("text-gray-400 text-center")
                                             elif _dias == 0:
                                                 ui.label("hoy").classes("text-positive font-medium text-center")
                                             elif _dias <= 7:
@@ -2200,7 +2209,7 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(str(_dias)).classes("text-negative font-medium text-center")
                                         else:
-                                            ui.label(str(val) if val is not None else "—")
+                                            ui.label(str(val) if val is not None and str(val) != "''" else "—")
             async def _recalc_padding() -> None:
                 await ui.run_javascript(
                     f"(function(){{"
@@ -2252,7 +2261,7 @@ def _mostrar_tabla_precios(
             ui.button("Stock $", on_click=lambda: imprimir_tabla_usd()).props("unelevated dense no-caps icon=request_quote").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
             ui.button("Ventas", on_click=lambda: imprimir_tabla(include_ventas=True)).props("unelevated dense no-caps icon=bar_chart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
             ui.button("Compras", on_click=lambda: imprimir_compras()).props("unelevated dense no-caps icon=shopping_cart").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
-            ui.button("Cotizar", on_click=lambda: imprimir_cotizar()).props("unelevated dense no-caps icon=sell").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+            ui.button("Lista de Precios", on_click=lambda: imprimir_cotizar()).props("unelevated dense no-caps icon=sell").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
         with ui.row().classes("items-center gap-2 py-1 flex-wrap"):
             filtro_stock = ui.select(
                 {"con_stock": "Con stock", "todas": "Todas", "sin_stock": "Sin stock"},
