@@ -495,6 +495,7 @@ def build_tab_dashboard(container) -> None:
                    and not it.get("catalog_listing")
             )
             n_catalogo = sum(1 for it in items if it.get("catalog_listing"))
+            n_promos   = sum(1 for it in items if it.get("promotions"))
             denom = total or 1
 
             cuotas_card.clear()
@@ -502,11 +503,10 @@ def build_tab_dashboard(container) -> None:
                 _card_header("Cuotas y promos", _BLUE)
                 ui.label(f"Publicaciones activas: {total}").classes("text-xs text-gray-500 mb-2")
                 with ui.column().classes("w-full gap-3"):
-                    _progress_bar("Con cuotas",  n_gold_pro     / denom * 100, n_gold_pro,     total)
-                    _progress_bar("Sin cuotas",  n_gold_special / denom * 100, n_gold_special, total)
-                    _progress_bar("Catálogo",    n_catalogo     / denom * 100, n_catalogo,     total)
-                ui.label("Los datos de cuotas específicas (3/6/9/12) y promos requieren sincronización con ML") \
-                    .classes("text-xs text-gray-400 italic mt-1")
+                    _progress_bar("Con cuotas",   n_gold_pro     / denom * 100, n_gold_pro,     total)
+                    _progress_bar("Sin cuotas",   n_gold_special / denom * 100, n_gold_special, total)
+                    _progress_bar("Catálogo",     n_catalogo     / denom * 100, n_catalogo,     total)
+                    _progress_bar("En promoción", n_promos       / denom * 100, n_promos,       total)
 
         except Exception:
             cuotas_card.clear()
