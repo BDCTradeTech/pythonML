@@ -473,35 +473,28 @@ def build_tab_dashboard(container) -> None:
 
     async def _cargar_cuotas() -> None:
         try:
-            def _query() -> tuple:
-                conn = get_connection()
-                try:
-                    cur = conn.cursor()
-                    cur.execute(
-                        """
-                        SELECT
-                            COUNT(*)                                                       AS total,
-                            SUM(CASE WHEN listing_type_id = 'gold_pro'     THEN 1 ELSE 0 END) AS n_gold_pro,
-                            SUM(CASE WHEN listing_type_id = 'gold_special' THEN 1 ELSE 0 END) AS n_gold_special,
-                            SUM(CASE WHEN catalog_listing = 1              THEN 1 ELSE 0 END) AS n_catalogo,
-                            MAX(ultima_sync)                                               AS ultima_sync
-                        FROM ml_publicaciones
-                        WHERE user_id = ? AND estado = 'active'
-                        """,
-                        (uid,),
-                    )
-                    row = cur.fetchone()
-                    return (
-                        row["total"] or 0,
-                        row["n_gold_pro"] or 0,
-                        row["n_gold_special"] or 0,
-                        row["n_catalogo"] or 0,
-                        row["ultima_sync"] or "",
-                    )
-                finally:
-                    conn.close()
+            access_token = get_ml_access_token(uid)
+            if not access_token:
+                cuotas_card.clear()
+                with cuotas_card:
+                    _card_header("Cuotas y promos", "#6b7280")
+                    ui.label("Sin cuenta ML vinculada").classes("text-xs text-gray-400")
+                return
 
-            total, n_gold_pro, n_gold_special, n_catalogo, ultima_sync = await run.io_bound(_query)
+            data = await run.io_bound(ml_get_my_items, access_token, False)
+            items = data.get("results", [])
+
+            total = len(items)
+            n_gold_pro = sum(
+                1 for it in items
+                if str(it.get("listing_type_id") or "").lower() == "gold_pro"
+            )
+            n_gold_special = sum(
+                1 for it in items
+                if str(it.get("listing_type_id") or "").lower() == "gold_special"
+                   and not it.get("catalog_listing")
+            )
+            n_catalogo = sum(1 for it in items if it.get("catalog_listing"))
             denom = total or 1
 
             cuotas_card.clear()
@@ -512,16 +505,14 @@ def build_tab_dashboard(container) -> None:
                     _progress_bar("Con cuotas",  n_gold_pro     / denom * 100, n_gold_pro,     total)
                     _progress_bar("Sin cuotas",  n_gold_special / denom * 100, n_gold_special, total)
                     _progress_bar("Catálogo",    n_catalogo     / denom * 100, n_catalogo,     total)
-                if ultima_sync:
-                    ui.label(f"Última sync: {ultima_sync[:16]}").classes("text-xs text-gray-400 mt-2")
                 ui.label("Los datos de cuotas específicas (3/6/9/12) y promos requieren sincronización con ML") \
                     .classes("text-xs text-gray-400 italic mt-1")
 
-        except Exception as exc:
+        except Exception:
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas y promos", "#6b7280")
-                ui.label(f"Error: {exc}").classes("text-xs text-gray-400")
+                ui.label("Datos no disponibles").classes("text-xs text-gray-400")
 
     background_tasks.create(_cargar_rep(),    name="dashboard_rep")
     background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
