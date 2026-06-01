@@ -5,13 +5,13 @@ Exporta: build_tab_dashboard
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from nicegui import app, background_tasks, run, ui
 
 from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral
-from ml_api import get_ml_access_token, ml_get_user_profile
+from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item
 
 _GREEN  = "#3B6D11"
 _YELLOW = "#BA7517"
@@ -20,6 +20,9 @@ _BLUE   = "#185FA5"
 _BG     = {_RED: "#FCEBEB", _YELLOW: "#FAEEDA", _GREEN: "#EAF3DE"}
 
 MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
+
+_MESES_ES = ["enero","febrero","marzo","abril","mayo","junio",
+             "julio","agosto","septiembre","octubre","noviembre","diciembre"]
 
 
 def _require_login():
@@ -40,22 +43,24 @@ def _to_float(val, default=0.0):
 
 def _color_siper(cat: str) -> str:
     c = (cat or "").strip().upper()
-    if not c:                                          return _RED
+    if not c:                                          return _YELLOW
     if c.startswith("A"):                              return _GREEN
     if c.startswith("B") or c.startswith("C"):        return _YELLOW
     return _RED
 
 def _color_iva(tec: str, lib: str) -> str:
+    if not (tec or "").strip() and not (lib or "").strip(): return _YELLOW
     t, l = _to_float(tec), _to_float(lib)
     if t >= 0 and l >= 0: return _GREEN
     if t < 0  and l >= 0: return _YELLOW
     return _RED
 
 def _color_deuda(deu: str, intim: bool) -> str:
+    if not intim and not (deu or "").strip():          return _YELLOW
     return _RED if intim or _to_float(deu) > 0 else _GREEN
 
 def _color_multilateral(filas: List[Dict]) -> str:
-    if not filas: return _RED
+    if not filas:                                      return _YELLOW
     vals = [_to_float(f.get("a_pagar")) for f in filas]
     if any(v > 10_000 for v in vals): return _RED
     if any(v > 0      for v in vals): return _YELLOW
@@ -101,49 +106,19 @@ def _query_productos(user_id: int) -> Dict[str, int]:
 
 
 def _query_ventas(user_id: int) -> Dict[str, int]:
-    mes = datetime.now().strftime("%Y-%m")
+    desde = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos IS NULL AND fetched_at LIKE ?",
-            (user_id, f"{mes}%"))
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos IS NULL AND fetched_at >= ?",
+            (user_id, desde))
         sin_revisar = cur.fetchone()[0]
         cur.execute(
-            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos < 0 AND fetched_at LIKE ?",
-            (user_id, f"{mes}%"))
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos < 0 AND fetched_at >= ?",
+            (user_id, desde))
         gan_neg = cur.fetchone()[0]
         return {"sin_revisar": sin_revisar, "gan_neg": gan_neg}
-    finally:
-        conn.close()
-
-
-def _query_publicaciones(user_id: int) -> Dict[str, Any]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT COUNT(*) FROM ml_publicaciones WHERE user_id=? AND LOWER(estado)='active'",
-            (user_id,))
-        total = cur.fetchone()[0] or 1
-        cur.execute(
-            "SELECT COUNT(*) FROM ml_publicaciones WHERE user_id=? AND LOWER(estado)='active' AND catalog_listing=0",
-            (user_id,))
-        propias = cur.fetchone()[0]
-        cur.execute(
-            "SELECT COUNT(*) FROM ml_publicaciones WHERE user_id=? AND LOWER(estado)='active' AND catalog_listing=1",
-            (user_id,))
-        catalogo = cur.fetchone()[0]
-        cur.execute(
-            "SELECT COUNT(*) FROM ml_publicaciones WHERE user_id=? AND LOWER(estado)='active' AND LOWER(listing_type_id)='gold_pro'",
-            (user_id,))
-        gold_pro = cur.fetchone()[0]
-        return {
-            "total": total, "propias": propias, "catalogo": catalogo, "gold_pro": gold_pro,
-            "pct_propias":  propias  / total * 100,
-            "pct_catalogo": catalogo / total * 100,
-            "pct_gold_pro": gold_pro / total * 100,
-        }
     finally:
         conn.close()
 
@@ -280,26 +255,46 @@ def build_tab_dashboard(container) -> None:
 
     prod         = _query_productos(uid)
     ventas       = _query_ventas(uid)
-    pubs         = _query_publicaciones(uid)
     arca_data    = _query_arca()
     arca_al      = _arca_alerts(arca_data)
     access_token = get_ml_access_token(uid)
+    desde_dt     = datetime.now() - timedelta(days=30)
+    desde_fmt    = desde_dt.strftime("%d/%m/%Y")
 
     # Alertas de DB (sin reputación todavía)
     db_alerts: List[Tuple[str, str]] = []
     if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}"))
     if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Stock con publicación suspendida: {prod['stock_susp']}"))
-    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas mes actual con ganancia negativa: {ventas['gan_neg']}"))
+    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas (últimos 30 días) con ganancia negativa: {ventas['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
     if prod["gan_neg"]       > 0: db_alerts.append((_YELLOW, f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
-    if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar este mes: {ventas['sin_revisar']}"))
+    if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar (últimos 30 días): {ventas['sin_revisar']}"))
     for ac, am in arca_al:
         if ac != _GREEN:
             db_alerts.append((ac, am))
     db_alerts.sort(key=lambda x: {_RED: 0, _YELLOW: 1}.get(x[0], 2))
 
+    n_red_init    = sum(1 for c, _ in db_alerts if c == _RED)
+    n_yellow_init = sum(1 for c, _ in db_alerts if c == _YELLOW)
+
     with container:
         with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
+
+            # ── BARRA DE RESUMEN ──────────────────────────────────────────
+            with ui.card().classes("w-full p-3 bg-grey-2").style("border:1px solid #e0e0e0"):
+                with ui.row().classes("w-full items-center gap-4"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.icon("error", size="xs").style(f"color:{_RED}")
+                        red_count_lbl = ui.label(str(n_red_init)).classes("font-bold text-sm").style(f"color:{_RED}")
+                        ui.label("urgente(s)").classes("text-sm text-gray-600")
+                    with ui.row().classes("items-center gap-1"):
+                        ui.icon("warning", size="xs").style(f"color:{_YELLOW}")
+                        yel_count_lbl = ui.label(str(n_yellow_init)).classes("font-bold text-sm").style(f"color:{_YELLOW}")
+                        ui.label("importante(s)").classes("text-sm text-gray-600")
+                    ui.element("div").classes("flex-1")
+                    ui.button("Actualizar", icon="refresh",
+                              on_click=lambda: (container.clear(), build_tab_dashboard(container))
+                              ).props("flat dense")
 
             # ── ALERTAS ───────────────────────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
@@ -329,24 +324,22 @@ def build_tab_dashboard(container) -> None:
                 ven_color = (_RED    if ventas["gan_neg"]     > 0
                              else _YELLOW if ventas["sin_revisar"] > 0
                              else _GREEN)
-                mes_label = datetime.now().strftime("%B %Y").capitalize()
                 with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-                    _card_header(f"Ventas — {mes_label}", ven_color)
+                    _card_header("Ventas — últimos 30 días", ven_color)
                     with ui.column().classes("w-full gap-2"):
                         _stat_row("Gan$ negativa", str(ventas["gan_neg"]),     _RED    if ventas["gan_neg"]     > 0 else _GREEN)
                         _stat_row("Sin revisar",   str(ventas["sin_revisar"]), _YELLOW if ventas["sin_revisar"] > 0 else _GREEN)
-                    ui.label("Filtrado por fecha de cálculo del mes actual").classes("text-xs text-gray-400 mt-2")
+                    ui.label(f"Desde el {desde_fmt}").classes("text-xs text-gray-400 mt-2")
 
-            # ── GRILLA 2: Cuotas/Modalidad | Estadísticas ML ──────────────
+            # ── GRILLA 2: Cuotas y promos | Estadísticas ML ───────────────
             with ui.grid(columns=2).classes("w-full gap-4"):
 
-                with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-                    _card_header("Cuotas y Modalidad", _BLUE)
-                    ui.label(f"Publicaciones activas: {pubs['total']}").classes("text-xs text-gray-500 mb-2")
-                    with ui.column().classes("w-full gap-3"):
-                        _progress_bar("Propias (Gold Special)", pubs["pct_propias"],  pubs["propias"],  pubs["total"])
-                        _progress_bar("Catálogo",               pubs["pct_catalogo"], pubs["catalogo"], pubs["total"])
-                        _progress_bar("Gold Pro (cuotas 12x)",  pubs["pct_gold_pro"], pubs["gold_pro"], pubs["total"])
+                cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0")
+                with cuotas_card:
+                    with ui.row().classes("items-center gap-2 mb-2"):
+                        ui.spinner(size="sm")
+                        ui.label("Cuotas y promos").classes("font-bold text-base text-gray-800")
+                    ui.label("Cargando datos de cuotas...").classes("text-sm text-gray-400")
 
                 rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0")
                 with rep_card:
@@ -408,61 +401,115 @@ def build_tab_dashboard(container) -> None:
                         else:
                             ui.label("Sin datos").classes("text-sm text-gray-400")
 
-        # ── Async: reputación ML ──────────────────────────────────────────
-        if not access_token:
+    # ── Async tasks ───────────────────────────────────────────────────────────
+
+    if not access_token:
+        rep_card.clear()
+        with rep_card:
+            _card_header("Estadísticas ML", "#6b7280")
+            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+        rep_placeholder.delete()
+        cuotas_card.clear()
+        with cuotas_card:
+            _card_header("Cuotas y promos", "#6b7280")
+            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+        if not db_alerts:
+            _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
+        return
+
+    async def _cargar_rep() -> None:
+        try:
+            profile  = await run.io_bound(ml_get_user_profile, access_token)
+            rep      = (profile or {}).get("seller_reputation") or {}
+            metrics  = rep.get("metrics") or {}
+            level_id = rep.get("level_id") or "—"
+            ra = _rep_alerts(metrics)
+
+            rep_card.clear()
+            with rep_card:
+                rc_col = (_RED    if any(c == _RED for c, _ in ra)
+                          else _YELLOW if ra
+                          else _GREEN)
+                _card_header("Estadísticas ML", rc_col)
+                level_colors = {
+                    "1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308",
+                    "4_light_green": "#84cc16", "5_green": "#22c55e",
+                }
+                lc = level_colors.get(str(level_id), "#6b7280")
+                ui.label(f"Nivel: {str(level_id).replace('_', ' ').title()}").classes(
+                    "text-xs mb-2").style(f"color:{lc};font-weight:600")
+                with ui.column().classes("w-full gap-2"):
+                    for key, label, maxv in [
+                        ("claims",                "Reclamos",      MAX_CLAIMS),
+                        ("mediations",            "Mediaciones",   MAX_MEDIAT),
+                        ("cancellations",         "Cancelaciones", MAX_CANC),
+                        ("delayed_handling_time", "Demora envío",  MAX_DELAYED),
+                    ]:
+                        _rep_stat_row(label, _rep_rate(metrics.get(key) or {}), maxv)
+
+            rep_placeholder.delete()
+            if ra:
+                for color, msg in ra:
+                    _alert_row(alerts_col, color, msg)
+
+            n_red_total    = (sum(1 for c, _ in db_alerts if c == _RED)
+                              + sum(1 for c, _ in ra if c == _RED))
+            n_yellow_total = (sum(1 for c, _ in db_alerts if c == _YELLOW)
+                              + sum(1 for c, _ in ra if c == _YELLOW))
+            red_count_lbl.set_text(str(n_red_total))
+            yel_count_lbl.set_text(str(n_yellow_total))
+
+            if not db_alerts and not ra:
+                _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
+
+        except Exception as exc:
             rep_card.clear()
             with rep_card:
                 _card_header("Estadísticas ML", "#6b7280")
-                ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                ui.label(f"Error: {exc}").classes("text-xs text-gray-400")
             rep_placeholder.delete()
             if not db_alerts:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
-            return
 
-        async def _cargar_rep() -> None:
-            try:
-                profile  = await run.io_bound(ml_get_user_profile, access_token)
-                rep      = (profile or {}).get("seller_reputation") or {}
-                metrics  = rep.get("metrics") or {}
-                level_id = rep.get("level_id") or "—"
-                ra = _rep_alerts(metrics)
+    async def _cargar_cuotas() -> None:
+        try:
+            data  = await run.io_bound(ml_get_my_items, access_token, False)
+            items = (data or {}).get("results", [])
 
-                rep_card.clear()
-                with rep_card:
-                    rc_col = (_RED    if any(c == _RED for c, _ in ra)
-                              else _YELLOW if ra
-                              else _GREEN)
-                    _card_header("Estadísticas ML", rc_col)
-                    level_colors = {
-                        "1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308",
-                        "4_light_green": "#84cc16", "5_green": "#22c55e",
-                    }
-                    lc = level_colors.get(str(level_id), "#6b7280")
-                    ui.label(f"Nivel: {str(level_id).replace('_', ' ').title()}").classes(
-                        "text-xs mb-2").style(f"color:{lc};font-weight:600")
-                    with ui.column().classes("w-full gap-2"):
-                        for key, label, maxv in [
-                            ("claims",                "Reclamos",      MAX_CLAIMS),
-                            ("mediations",            "Mediaciones",   MAX_MEDIAT),
-                            ("cancellations",         "Cancelaciones", MAX_CANC),
-                            ("delayed_handling_time", "Demora envío",  MAX_DELAYED),
-                        ]:
-                            _rep_stat_row(label, _rep_rate(metrics.get(key) or {}), maxv)
+            groups: Dict[Any, List[Dict]] = {}
+            for it in items:
+                sku = (it.get("seller_sku") or "").strip()
+                if sku:
+                    key: Any = ("sku", sku)
+                else:
+                    cpid = (it.get("catalog_product_id") or "").strip()
+                    key  = ("catalog", cpid) if cpid else ("id", str(it.get("id") or ""))
+                groups.setdefault(key, []).append(it)
 
-                rep_placeholder.delete()
-                if ra:
-                    for color, msg in ra:
-                        _alert_row(alerts_col, color, msg)
-                if not db_alerts and not ra:
-                    _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
+            total = len(groups) or 1
+            n_x3 = n_x6 = n_x9 = n_x12 = 0
+            for grp in groups.values():
+                tipos = {_cuotas_desde_item(it) for it in grp}
+                if "x3"  in tipos: n_x3  += 1
+                if "x6"  in tipos: n_x6  += 1
+                if "x9"  in tipos: n_x9  += 1
+                if "x12" in tipos: n_x12 += 1
 
-            except Exception as exc:
-                rep_card.clear()
-                with rep_card:
-                    _card_header("Estadísticas ML", "#6b7280")
-                    ui.label(f"Error: {exc}").classes("text-xs text-gray-400")
-                rep_placeholder.delete()
-                if not db_alerts:
-                    _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
+            cuotas_card.clear()
+            with cuotas_card:
+                _card_header("Cuotas y promos", _BLUE)
+                ui.label(f"Publicaciones activas: {total}").classes("text-xs text-gray-500 mb-2")
+                with ui.column().classes("w-full gap-3"):
+                    _progress_bar("3 cuotas",  n_x3  / total * 100, n_x3,  total)
+                    _progress_bar("6 cuotas",  n_x6  / total * 100, n_x6,  total)
+                    _progress_bar("9 cuotas",  n_x9  / total * 100, n_x9,  total)
+                    _progress_bar("12 cuotas", n_x12 / total * 100, n_x12, total)
 
-        background_tasks.create(_cargar_rep(), name="dashboard_rep")
+        except Exception as exc:
+            cuotas_card.clear()
+            with cuotas_card:
+                _card_header("Cuotas y promos", "#6b7280")
+                ui.label(f"Error: {exc}").classes("text-xs text-gray-400")
+
+    background_tasks.create(_cargar_rep(),    name="dashboard_rep")
+    background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
