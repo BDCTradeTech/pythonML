@@ -31,6 +31,7 @@ from db import (
     delete_despachante,
 )
 from ml_api import get_ml_access_token
+from tabs.constants import TAB_KEYS, TABS_QB
 
 
 # ---------------------------------------------------------------------------
