@@ -207,6 +207,27 @@ def init_db() -> None:
         """
     )
 
+    # Migration: agregar ml_nickname a ml_credentials
+    cur.execute("PRAGMA table_info(ml_credentials)")
+    if "ml_nickname" not in [r[1] for r in cur.fetchall()]:
+        cur.execute("ALTER TABLE ml_credentials ADD COLUMN ml_nickname TEXT")
+
+    # Registro de actividad de usuarios
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS activity_log (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario          TEXT NOT NULL,
+            ml_username      TEXT,
+            tab              TEXT NOT NULL,
+            accion           TEXT NOT NULL,
+            detalle          TEXT,
+            tiempo_segundos  INTEGER,
+            timestamp        TEXT NOT NULL
+        )
+        """
+    )
+
     # Historial de consultas que hagamos a la API
     cur.execute(
         """
@@ -548,8 +569,8 @@ def init_db() -> None:
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "dashboard", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin"):
-            can = 1 if tab_key != "admin" or uid == _admin_uid else 0
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "dashboard", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin", "actividad"):
+            can = 1 if tab_key not in ("admin", "actividad") or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
                 (uid, tab_key, can),
@@ -594,6 +615,35 @@ def set_ml_app_credentials(user_id: int, client_id: str, client_secret: str, red
         cur.execute(
             "INSERT INTO ml_app_credentials (user_id, client_id, client_secret, redirect_uri) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET client_id=?, client_secret=?, redirect_uri=?",
             (user_id, client_id.strip(), enc, redirect_uri or "", client_id.strip(), enc, redirect_uri or ""),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ml_nickname(user_id: int) -> Optional[str]:
+    """Obtiene el nickname de MercadoLibre del usuario."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT ml_nickname FROM ml_credentials WHERE user_id = ? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row["ml_nickname"] if row and row["ml_nickname"] else None
+    finally:
+        conn.close()
+
+
+def set_ml_nickname(user_id: int, nickname: str) -> None:
+    """Guarda el nickname de MercadoLibre en ml_credentials."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE ml_credentials SET ml_nickname = ? WHERE user_id = ?",
+            (nickname, user_id),
         )
         conn.commit()
     finally:

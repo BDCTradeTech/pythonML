@@ -32,6 +32,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("datos", "Datos"),
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
+    ("actividad", "Actividad"),
 ]
 
 # Grupos de tabs para control de acceso por defecto
