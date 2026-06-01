@@ -473,10 +473,10 @@ def build_tab_dashboard(container) -> None:
                                  ("Marca",    lambda r: r.get("marca")  or "—"),
                                  ("Producto", lambda r: r.get("nombre") or "—")]))
                         _stat_row_popup(
-                            "Gan$ negativa", str(prod["gan_neg"]),
+                            "A pérdida", str(prod["gan_neg"]),
                             _YELLOW if prod["gan_neg"] > 0 else _GREEN,
                             lambda: _open_popup_list(
-                                "Ganancia negativa (Productos)", _detail_gan_neg_prod(uid),
+                                "A pérdida (Productos)", _detail_gan_neg_prod(uid),
                                 [("SKU",      lambda r: r.get("sku")    or "—"),
                                  ("Marca",    lambda r: r.get("marca")  or "—"),
                                  ("Producto", lambda r: r.get("nombre") or "—"),
@@ -660,7 +660,7 @@ def build_tab_dashboard(container) -> None:
                     ui.label("Sin cuenta ML vinculada").classes("text-xs text-gray-400")
                 return
 
-            from tabs.cuotas import _cuotas_key
+            from tabs.cuotas import _cuotas_key, _get_promo_data
 
             data = await run.io_bound(ml_get_my_items, access_token, True)
             items = data.get("results", [])
@@ -690,39 +690,55 @@ def build_tab_dashboard(container) -> None:
             _tot  = len(groups)
             denom = _tot or 1
 
-            n_gold_pro = sum(
-                1 for g in groups.values()
-                if any(str(it.get("listing_type_id") or "").lower() == "gold_pro" for it in g)
-            )
-            n_gold_special = sum(
-                1 for g in groups.values()
-                if any(
-                    str(it.get("listing_type_id") or "").lower() == "gold_special"
-                    and not it.get("catalog_listing")
-                    for it in g
-                )
-            )
-            n_catalogo = sum(
-                1 for g in groups.values()
-                if any(it.get("catalog_listing") for it in g)
-            )
             n_x3  = sum(1 for g in groups.values() if any(_cuotas_desde_item(it) == "x3"  for it in g))
             n_x6  = sum(1 for g in groups.values() if any(_cuotas_desde_item(it) == "x6"  for it in g))
             n_x9  = sum(1 for g in groups.values() if any(_cuotas_desde_item(it) == "x9"  for it in g))
             n_x12 = sum(1 for g in groups.values() if any(_cuotas_desde_item(it) == "x12" for it in g))
 
+            # Rep IDs por grupo — misma lógica que tab Cuotas
+            rep_ids: list = []
+            for g in groups.values():
+                rid = ""
+                for it in g:
+                    if not it.get("catalog_listing") and str(it.get("listing_type_id") or "").lower() == "gold_special":
+                        rid = str(it.get("id") or "")
+                        break
+                if not rid:
+                    for it in g:
+                        if it.get("catalog_listing"):
+                            rid = str(it.get("id") or "")
+                            break
+                if not rid:
+                    for it in g:
+                        rid = str(it.get("id") or "")
+                        if rid:
+                            break
+                if rid:
+                    rep_ids.append(rid)
+
+            seller_id = ""
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id = str((profile or {}).get("id") or "")
+            except Exception:
+                pass
+
+            promo_data: dict = {}
+            for iid in rep_ids:
+                promo_data[iid] = await run.io_bound(_get_promo_data, access_token, iid, seller_id)
+
+            n_promos = sum(1 for iid in rep_ids if (promo_data.get(iid) or {}).get("price_promo") is not None)
+
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas", _BLUE)
-                ui.label(f"Publicaciones únicas: {_tot}").classes("text-xs text-gray-500 mb-2")
                 with ui.column().classes("w-full gap-3"):
-                    _progress_bar("Con cuotas",   n_gold_pro     / denom * 100, n_gold_pro,     _tot)
-                    _progress_bar("Sin cuotas",   n_gold_special / denom * 100, n_gold_special, _tot)
-                    _progress_bar("Catálogo",     n_catalogo     / denom * 100, n_catalogo,     _tot)
-                    _progress_bar("En 3 cuotas",  n_x3  / denom * 100, n_x3,  _tot)
-                    _progress_bar("En 6 cuotas",  n_x6  / denom * 100, n_x6,  _tot)
-                    _progress_bar("En 9 cuotas",  n_x9  / denom * 100, n_x9,  _tot)
-                    _progress_bar("En 12 cuotas", n_x12 / denom * 100, n_x12, _tot)
+                    _progress_bar("Publicaciones únicas", 100,                    _tot,     _tot)
+                    _progress_bar("Promos",               n_promos / denom * 100, n_promos, _tot)
+                    _progress_bar("En 3 cuotas",          n_x3     / denom * 100, n_x3,     _tot)
+                    _progress_bar("En 6 cuotas",          n_x6     / denom * 100, n_x6,     _tot)
+                    _progress_bar("En 9 cuotas",          n_x9     / denom * 100, n_x9,     _tot)
+                    _progress_bar("En 12 cuotas",         n_x12    / denom * 100, n_x12,    _tot)
 
         except Exception:
             _susp_lbl.set_text("—")
