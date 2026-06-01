@@ -473,40 +473,49 @@ def build_tab_dashboard(container) -> None:
 
     async def _cargar_cuotas() -> None:
         try:
-            data  = await run.io_bound(ml_get_my_items, access_token, False)
-            items = (data or {}).get("results", [])
+            def _query() -> tuple:
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    cur.execute(
+                        """
+                        SELECT
+                            COUNT(*)                                                       AS total,
+                            SUM(CASE WHEN listing_type_id = 'gold_pro'     THEN 1 ELSE 0 END) AS n_gold_pro,
+                            SUM(CASE WHEN listing_type_id = 'gold_special' THEN 1 ELSE 0 END) AS n_gold_special,
+                            SUM(CASE WHEN catalog_listing = 1              THEN 1 ELSE 0 END) AS n_catalogo,
+                            MAX(ultima_sync)                                               AS ultima_sync
+                        FROM ml_publicaciones
+                        WHERE user_id = ? AND estado = 'active'
+                        """,
+                        (user_id,),
+                    )
+                    row = cur.fetchone()
+                    return (
+                        row["total"] or 0,
+                        row["n_gold_pro"] or 0,
+                        row["n_gold_special"] or 0,
+                        row["n_catalogo"] or 0,
+                        row["ultima_sync"] or "",
+                    )
+                finally:
+                    conn.close()
 
-            groups: Dict[Any, List[Dict]] = {}
-            for it in items:
-                sku = (it.get("seller_sku") or "").strip()
-                if sku:
-                    key: Any = ("sku", sku)
-                else:
-                    cpid = (it.get("catalog_product_id") or "").strip()
-                    key  = ("catalog", cpid) if cpid else ("id", str(it.get("id") or ""))
-                groups.setdefault(key, []).append(it)
-
-            total = len(groups) or 1
-            n_x3 = n_x6 = n_x9 = n_x12 = n_promo = 0
-            for grp in groups.values():
-                tipos = {_cuotas_desde_item(it) for it in grp}
-                if "x3"  in tipos: n_x3  += 1
-                if "x6"  in tipos: n_x6  += 1
-                if "x9"  in tipos: n_x9  += 1
-                if "x12" in tipos: n_x12 += 1
-                if any(len(it.get("promotions") or []) > 0 for it in grp):
-                    n_promo += 1
+            total, n_gold_pro, n_gold_special, n_catalogo, ultima_sync = await run.io_bound(_query)
+            denom = total or 1
 
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas y promos", _BLUE)
                 ui.label(f"Publicaciones activas: {total}").classes("text-xs text-gray-500 mb-2")
                 with ui.column().classes("w-full gap-3"):
-                    _progress_bar("3 cuotas",       n_x3   / total * 100, n_x3,   total)
-                    _progress_bar("6 cuotas",       n_x6   / total * 100, n_x6,   total)
-                    _progress_bar("9 cuotas",       n_x9   / total * 100, n_x9,   total)
-                    _progress_bar("12 cuotas",      n_x12  / total * 100, n_x12,  total)
-                    _progress_bar("Con promo activa", n_promo / total * 100, n_promo, total)
+                    _progress_bar("Con cuotas",  n_gold_pro     / denom * 100, n_gold_pro,     total)
+                    _progress_bar("Sin cuotas",  n_gold_special / denom * 100, n_gold_special, total)
+                    _progress_bar("Catálogo",    n_catalogo     / denom * 100, n_catalogo,     total)
+                if ultima_sync:
+                    ui.label(f"Última sync: {ultima_sync[:16]}").classes("text-xs text-gray-400 mt-2")
+                ui.label("Los datos de cuotas específicas (3/6/9/12) y promos requieren sincronización con ML") \
+                    .classes("text-xs text-gray-400 italic mt-1")
 
         except Exception as exc:
             cuotas_card.clear()
