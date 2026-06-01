@@ -40,6 +40,7 @@ TAB_KEYS = [
     ("cuotas", "Cuotas"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
+    ("dashboard", "Dashboard"),
     ("compras", "Invoices"),
     ("stock", "Stock"),
     ("compras_lista", "Compras"),
@@ -547,7 +548,7 @@ def init_db() -> None:
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin"):
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "dashboard", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin"):
             can = 1 if tab_key != "admin" or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
