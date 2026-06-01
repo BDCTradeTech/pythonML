@@ -5,7 +5,6 @@ Funciones exportadas: build_tab_arca
 """
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -83,6 +82,8 @@ def _color_deuda(deuda: str, intimacion: bool) -> str:
 
 
 def _color_multilateral(filas: List[Dict]) -> str:
+    if not filas:
+        return _RED
     valores = [_to_float(f.get("a_pagar")) for f in filas]
     if any(v > 10_000 for v in valores):
         return _RED
@@ -107,18 +108,8 @@ def _card_header(title: str, color: str):
     return dot
 
 
-def _instructions_box(text: str, copy_button: bool = True) -> None:
-    with ui.expansion("Instrucciones", icon="help_outline").classes("w-full text-sm"):
-        with ui.card().classes("w-full").style("background:#f5f5f5;border:0;padding:8px 12px"):
-            with ui.row().classes("items-start gap-2 w-full"):
-                ui.label(text).classes("text-sm text-gray-700 flex-1")
-                if copy_button:
-                    ui.button(
-                        icon="content_copy",
-                        on_click=lambda t=text: ui.run_javascript(
-                            f"navigator.clipboard.writeText({json.dumps(t)})"
-                        ),
-                    ).props("flat dense round").tooltip("Copiar").classes("text-gray-500")
+def _hint(text: str) -> None:
+    ui.label(text).classes("text-xs text-gray-400 mt-1 mb-1")
 
 
 # ---------------------------------------------------------------------------
@@ -144,13 +135,18 @@ def _build_arca() -> None:
 
     # ── Colores iniciales ─────────────────────────────────────────────────────
     c_siper = _color_siper(siper_d.get("categoria_siper", ""))
-    c_iva   = _color_iva(iva_d.get("saldo_tecnico", ""), iva_d.get("saldo_libre_disponibilidad", ""))
-    c_deuda = _color_deuda(deuda_d.get("deuda_exigible", ""), deuda_d.get("tiene_intimacion", "") == "true")
+    c_iva   = _RED if "saldo_tecnico" not in iva_d else _color_iva(
+        iva_d.get("saldo_tecnico", ""), iva_d.get("saldo_libre_disponibilidad", "")
+    )
+    c_deuda = _RED if "deuda_exigible" not in deuda_d else _color_deuda(
+        deuda_d.get("deuda_exigible", ""), deuda_d.get("tiene_intimacion", "") == "true"
+    )
+    c_clae  = _RED if not (clae_d.get("actividad_principal") or "").strip() else _GREEN
     c_multi = _color_multilateral(ml_rows)
 
     semaforos: Dict[str, str] = {
         "siper": c_siper, "iva": c_iva,
-        "deuda": c_deuda, "multilateral": c_multi, "clae": _GREEN,
+        "deuda": c_deuda, "multilateral": c_multi, "clae": c_clae,
     }
 
     with ui.column().classes("w-full gap-4 p-4").style("max-width:1100px"):
@@ -179,10 +175,7 @@ def _build_arca() -> None:
             # ── Card 1: SIPER ─────────────────────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 dot_siper = _card_header("SIPER", c_siper)
-                _instructions_box(
-                    "arca.gob.ar → Sistema Registral → Trámites → SIPER",
-                    copy_button=False,
-                )
+                _hint("arca.gob.ar → Sistema Registral → Trámites → SIPER")
                 with ui.column().classes("w-full gap-3 mt-2"):
                     inp_cat = ui.input(
                         "Categoría SIPER (ej: A — Sin observaciones)",
@@ -210,10 +203,7 @@ def _build_arca() -> None:
             # ── Card 2: Saldo IVA (F.2051) ────────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 dot_iva = _card_header("Saldo IVA (F.2051)", c_iva)
-                _instructions_box(
-                    "Portal IVA → Consultar → Seleccionar SRL → DJ presentadas → "
-                    "Libro IVA → Ver DJ → Descargar F.2051"
-                )
+                _hint("Portal IVA → Consultar → Seleccionar SRL → DJ presentadas → Libro IVA → Ver DJ → Descargar F.2051")
                 with ui.column().classes("w-full gap-3 mt-2"):
                     inp_tec = ui.number(
                         "Saldo técnico ($)",
@@ -228,10 +218,10 @@ def _build_arca() -> None:
                 iva_ts = ui.label(_fmt_ts(iva_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
 
                 def _upd_iva(_=None) -> None:
-                    col = _color_iva(
-                        str(inp_tec.value if inp_tec.value is not None else 0),
-                        str(inp_lib.value if inp_lib.value is not None else 0),
-                    )
+                    if inp_tec.value is None or inp_lib.value is None:
+                        col = _RED
+                    else:
+                        col = _color_iva(str(inp_tec.value), str(inp_lib.value))
                     _set_dot(dot_iva, col)
                     semaforos["iva"] = col
                     _refresh_alert()
@@ -255,9 +245,7 @@ def _build_arca() -> None:
             # ── Card 3: Deuda / Planes activos ────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 dot_deuda = _card_header("Deuda / Planes activos", c_deuda)
-                _instructions_box(
-                    "arca.gob.ar → Sistemas de Cuentas Tributarias → Vencimientos"
-                )
+                _hint("arca.gob.ar → Sistemas de Cuentas Tributarias → Vencimientos")
                 with ui.column().classes("w-full gap-3 mt-2"):
                     inp_deuda = ui.number(
                         "Deuda exigible ($)",
@@ -276,10 +264,10 @@ def _build_arca() -> None:
                 deuda_ts = ui.label(_fmt_ts(deuda_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
 
                 def _upd_deuda(_=None) -> None:
-                    col = _color_deuda(
-                        str(inp_deuda.value if inp_deuda.value is not None else 0),
-                        inp_intim.value,
-                    )
+                    if inp_deuda.value is None:
+                        col = _RED
+                    else:
+                        col = _color_deuda(str(inp_deuda.value), inp_intim.value)
                     _set_dot(dot_deuda, col)
                     semaforos["deuda"] = col
                     _refresh_alert()
@@ -303,10 +291,8 @@ def _build_arca() -> None:
 
             # ── Card 4: Actividades CLAE ──────────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-                _card_header("Actividades CLAE", _GREEN)
-                _instructions_box(
-                    "arca.gob.ar → Sistema Registral → Registro Único Tributario → Actividades"
-                )
+                dot_clae = _card_header("Actividades CLAE", c_clae)
+                _hint("arca.gob.ar → Sistema Registral → Registro Único Tributario → Actividades")
                 with ui.column().classes("w-full gap-3 mt-2"):
                     inp_princ = ui.input(
                         "Actividad principal",
@@ -318,6 +304,14 @@ def _build_arca() -> None:
                     ).classes("w-full")
                 clae_ts = ui.label(_fmt_ts(clae_d.get("_ts"))).classes("text-xs text-gray-400 mt-1")
 
+                def _upd_clae(_=None) -> None:
+                    col = _RED if not (inp_princ.value or "").strip() else _GREEN
+                    _set_dot(dot_clae, col)
+                    semaforos["clae"] = col
+                    _refresh_alert()
+
+                inp_princ.on("input", _upd_clae)
+
                 def _save_clae() -> None:
                     now = datetime.now().isoformat(timespec="seconds")
                     save_arca_datos("clae", {
@@ -326,6 +320,7 @@ def _build_arca() -> None:
                         "_ts": now,
                     })
                     clae_ts.text = _fmt_ts(now)
+                    _upd_clae()
                     ui.notify("CLAE guardado", color="positive")
 
                 ui.button("Guardar", on_click=_save_clae).props("flat dense").classes("text-sm mt-2")
@@ -333,10 +328,7 @@ def _build_arca() -> None:
         # ── Card 5: Convenio Multilateral CM03 (ancho completo) ───────────────
         with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
             dot_multi = _card_header("Convenio Multilateral CM03", c_multi)
-            _instructions_box(
-                "Convenio Multilateral → SIFERE Web → DDJJ → DDJJ mensuales → "
-                "Listado de DDJJ → Imprimir"
-            )
+            _hint("Convenio Multilateral → SIFERE Web → DDJJ → DDJJ mensuales → Listado de DDJJ → Imprimir")
 
             _ml: List[Dict[str, Any]] = [
                 {

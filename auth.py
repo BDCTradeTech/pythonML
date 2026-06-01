@@ -43,7 +43,7 @@ TAB_KEYS = [
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
 ]
-TABS_BASE = {"home", "pedidos", "importacion", "pesos", "datos", "configuracion"}
+TABS_BASE = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
 
 # Lock global para envío de emails (evita condiciones de carrera con socket)
 _email_lock = threading.Lock()
