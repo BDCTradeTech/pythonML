@@ -501,13 +501,39 @@ def init_db() -> None:
     if "factura_courier" not in inv_extra_cols:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN factura_courier TEXT")
 
+    # ARCA: datos fiscales manuales por bloque (global, sin user_id)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS arca_datos (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            bloque     TEXT NOT NULL,
+            campo      TEXT NOT NULL,
+            valor      TEXT,
+            updated_at TEXT,
+            UNIQUE(bloque, campo)
+        )
+        """
+    )
+
+    # ARCA: Convenio Multilateral por provincia
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS arca_multilateral (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            provincia  TEXT NOT NULL,
+            saldo      REAL NOT NULL DEFAULT 0,
+            updated_at TEXT
+        )
+        """
+    )
+
     # Migración: dar permisos por defecto a usuarios existentes (admin para el usuario con id más bajo)
     cur.execute("SELECT MIN(id) FROM users")
     _admin_uid = cur.fetchone()[0] or 1
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "datos", "configuracion", "admin"):
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin"):
             can = 1 if tab_key != "admin" or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
@@ -1416,6 +1442,71 @@ def save_query(
                 json.dumps(raw_response, ensure_ascii=False) if raw_response else None,
             ),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CRUD — ARCA (datos fiscales manuales)
+# ---------------------------------------------------------------------------
+
+
+def get_arca_datos(bloque: str) -> Dict[str, str]:
+    """Devuelve {campo: valor} para un bloque ARCA."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT campo, valor FROM arca_datos WHERE bloque = ?", (bloque,))
+        return {r["campo"]: (r["valor"] or "") for r in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def save_arca_datos(bloque: str, datos: Dict[str, str]) -> None:
+    """Guarda o actualiza los campos de un bloque ARCA."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for campo, valor in datos.items():
+            cur.execute(
+                "INSERT INTO arca_datos (bloque, campo, valor, updated_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(bloque, campo) DO UPDATE SET valor=excluded.valor, updated_at=excluded.updated_at",
+                (bloque, campo, str(valor), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_arca_multilateral() -> List[Dict[str, Any]]:
+    """Devuelve todas las filas del Convenio Multilateral."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, provincia, saldo, updated_at FROM arca_multilateral ORDER BY id")
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def save_arca_multilateral(filas: List[Dict[str, Any]]) -> None:
+    """Reemplaza todas las filas del Convenio Multilateral."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM arca_multilateral")
+        for f in filas:
+            try:
+                saldo = float(f.get("saldo") or 0)
+            except (ValueError, TypeError):
+                saldo = 0.0
+            cur.execute(
+                "INSERT INTO arca_multilateral (provincia, saldo, updated_at) VALUES (?, ?, ?)",
+                (str(f.get("provincia") or ""), saldo, now),
+            )
         conn.commit()
     finally:
         conn.close()
