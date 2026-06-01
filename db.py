@@ -519,13 +519,27 @@ def init_db() -> None:
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS arca_multilateral (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            provincia  TEXT NOT NULL,
-            saldo      REAL NOT NULL DEFAULT 0,
-            updated_at TEXT
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            provincia        TEXT NOT NULL,
+            alicuota         REAL NOT NULL DEFAULT 0,
+            a_favor_contrib  REAL NOT NULL DEFAULT 0,
+            a_favor_fisco    REAL NOT NULL DEFAULT 0,
+            a_pagar          REAL NOT NULL DEFAULT 0,
+            updated_at       TEXT
         )
         """
     )
+    # Migración: agregar columnas nuevas si la tabla ya existía con el esquema anterior
+    for _col_def in (
+        "alicuota REAL DEFAULT 0",
+        "a_favor_contrib REAL DEFAULT 0",
+        "a_favor_fisco REAL DEFAULT 0",
+        "a_pagar REAL DEFAULT 0",
+    ):
+        try:
+            cur.execute(f"ALTER TABLE arca_multilateral ADD COLUMN {_col_def}")
+        except sqlite3.OperationalError:
+            pass
 
     # Migración: dar permisos por defecto a usuarios existentes (admin para el usuario con id más bajo)
     cur.execute("SELECT MIN(id) FROM users")
@@ -1485,7 +1499,10 @@ def get_arca_multilateral() -> List[Dict[str, Any]]:
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, provincia, saldo, updated_at FROM arca_multilateral ORDER BY id")
+        cur.execute(
+            "SELECT id, provincia, alicuota, a_favor_contrib, a_favor_fisco, a_pagar, updated_at "
+            "FROM arca_multilateral ORDER BY id"
+        )
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -1495,17 +1512,29 @@ def save_arca_multilateral(filas: List[Dict[str, Any]]) -> None:
     """Reemplaza todas las filas del Convenio Multilateral."""
     now = datetime.now().isoformat(timespec="seconds")
     conn = get_connection()
+
+    def _f(v: Any) -> float:
+        try:
+            return float(v or 0)
+        except (ValueError, TypeError):
+            return 0.0
+
     try:
         cur = conn.cursor()
         cur.execute("DELETE FROM arca_multilateral")
         for f in filas:
-            try:
-                saldo = float(f.get("saldo") or 0)
-            except (ValueError, TypeError):
-                saldo = 0.0
             cur.execute(
-                "INSERT INTO arca_multilateral (provincia, saldo, updated_at) VALUES (?, ?, ?)",
-                (str(f.get("provincia") or ""), saldo, now),
+                "INSERT INTO arca_multilateral "
+                "(provincia, alicuota, a_favor_contrib, a_favor_fisco, a_pagar, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    str(f.get("provincia") or ""),
+                    _f(f.get("alicuota")),
+                    _f(f.get("a_favor_contrib")),
+                    _f(f.get("a_favor_fisco")),
+                    _f(f.get("a_pagar")),
+                    now,
+                ),
             )
         conn.commit()
     finally:
