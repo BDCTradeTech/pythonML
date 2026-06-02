@@ -310,7 +310,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 value="cualquiera", label="Promos"
             ).classes("w-36").props("outlined dense")
             filtro_check_sel = ui.select(
-                {"todos": "Todos", "ok": "OK", "alto": "Precio alto", "bajo": "Precio bajo"},
+                {"todos": "Todos", "alto": "Precio alto", "bajo": "Precio bajo"},
                 value="todos", label="Check%"
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
@@ -707,7 +707,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                         if p is None:
                             continue
                         diff = (float(p) - float(pp)) / float(pp) * 100 - tasa * 100
-                        if target == "ok"   and abs(diff) <= 0.5: return True
                         if target == "alto" and diff >  0.5:       return True
                         if target == "bajo" and diff < -0.5:       return True
                     return False
