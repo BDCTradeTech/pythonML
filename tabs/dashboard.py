@@ -76,14 +76,12 @@ def _query_productos(user_id: int) -> Dict[str, int]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
-            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')",
-            (user_id,))
+            "SELECT COUNT(*) FROM productos WHERE (costo_usd IS NULL OR costo_usd=0)"
+            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')")
         sin_costo = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)",
-            (user_id,))
+            "SELECT COUNT(*) FROM productos WHERE (fob_usd IS NULL OR fob_usd=0)")
         sin_fob = cur.fetchone()[0]
 
         cur.execute(
@@ -314,10 +312,9 @@ def _detail_sin_costo(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
+            " WHERE (costo_usd IS NULL OR costo_usd=0)"
             " AND (marca IS NOT NULL AND marca!='' OR nombre IS NOT NULL AND nombre!='')"
-            " ORDER BY sku",
-            (user_id,))
+            " ORDER BY sku")
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -329,9 +326,8 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)"
-            " ORDER BY sku",
-            (user_id,))
+            " WHERE (fob_usd IS NULL OR fob_usd=0)"
+            " ORDER BY sku")
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -407,7 +403,7 @@ def build_tab_dashboard(container) -> None:
 
     # Alertas de DB (sin reputación todavía)
     db_alerts: List[Tuple[str, str]] = []
-    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$s/IVA: {prod['sin_costo']}"))
+    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}"))
     if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones pausadas: {prod['stock_susp']}"))
     if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
@@ -463,10 +459,10 @@ def build_tab_dashboard(container) -> None:
                     _card_header("Productos", prod_color)
                     with ui.column().classes("w-full gap-2"):
                         _stat_row_popup(
-                            "Sin costo u$s/IVA", str(prod["sin_costo"]),
+                            "Sin costo u$", str(prod["sin_costo"]),
                             _RED if prod["sin_costo"] > 0 else _GREEN,
                             lambda: _open_popup_list(
-                                "Sin costo u$s/IVA", _detail_sin_costo(uid),
+                                "Sin costo u$", _detail_sin_costo(uid),
                                 [("SKU",      lambda r: r.get("sku")    or "—"),
                                  ("Marca",    lambda r: r.get("marca")  or "—"),
                                  ("Producto", lambda r: r.get("nombre") or "—")]))
