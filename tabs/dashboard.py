@@ -579,58 +579,67 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
                     ui.label("Cargando reputación...").classes("text-sm text-gray-400")
 
-            # ── ARCA (ancho completo) ──────────────────────────────────────
+            # ── GRILLA 3: ARCA | Publicaciones ML ────────────────────────────
             arca_ov = _GREEN
             for ac, _ in arca_al:
                 if ac == _RED:    arca_ov = _RED;    break
                 if ac == _YELLOW: arca_ov = _YELLOW
 
-            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-                _card_header("ARCA — Resumen Fiscal", arca_ov)
-                sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
-                with ui.grid(columns=4).classes("w-full gap-4 mt-1"):
+            with ui.grid(columns=2).classes("w-full gap-4"):
 
-                    siper_v = sd.get("categoria_siper") or ""
-                    with ui.column().classes("gap-1"):
-                        with ui.row().classes("items-center gap-1 mb-1"):
-                            _dot(_color_siper(siper_v))
-                            ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
-                        ui.label(siper_v or "Sin datos").classes("text-sm text-gray-800")
+                with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
+                    _card_header("ARCA — Resumen Fiscal", arca_ov)
+                    sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
+                    with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
 
-                    tec_v = id_.get("saldo_tecnico", "")
-                    lib_v = id_.get("saldo_libre_disponibilidad", "")
-                    with ui.column().classes("gap-1"):
-                        with ui.row().classes("items-center gap-1 mb-1"):
-                            _dot(_color_iva(tec_v, lib_v))
-                            ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
-                        ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-sm text-gray-800")
-                        if lib_v:
-                            ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
+                        siper_v = sd.get("categoria_siper") or ""
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-1 mb-1"):
+                                _dot(_color_siper(siper_v))
+                                ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
+                            ui.label(siper_v or "Sin datos").classes("text-sm text-gray-800")
 
-                    deu_v   = dd.get("deuda_exigible", "")
-                    intim_v = dd.get("tiene_intimacion") == "true"
-                    with ui.column().classes("gap-1"):
-                        with ui.row().classes("items-center gap-1 mb-1"):
-                            _dot(_color_deuda(deu_v, intim_v))
-                            ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
-                        ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-sm text-gray-800")
-                        if intim_v:
-                            ui.label("Intimación activa").classes("text-xs font-semibold").style(f"color:{_RED}")
+                        tec_v = id_.get("saldo_tecnico", "")
+                        lib_v = id_.get("saldo_libre_disponibilidad", "")
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-1 mb-1"):
+                                _dot(_color_iva(tec_v, lib_v))
+                                ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
+                            ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-sm text-gray-800")
+                            if lib_v:
+                                ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
 
-                    mc          = _color_multilateral(mr)
-                    total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
-                    with ui.column().classes("gap-1"):
-                        with ui.row().classes("items-center gap-1 mb-1"):
-                            _dot(mc)
-                            ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
-                        if mr:
-                            ui.label(f"{len(mr)} provincia(s)").classes("text-sm text-gray-800")
-                            if total_pagar > 0:
-                                ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style(f"color:{_RED}")
+                        deu_v   = dd.get("deuda_exigible", "")
+                        intim_v = dd.get("tiene_intimacion") == "true"
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-1 mb-1"):
+                                _dot(_color_deuda(deu_v, intim_v))
+                                ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
+                            ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-sm text-gray-800")
+                            if intim_v:
+                                ui.label("Intimación activa").classes("text-xs font-semibold").style(f"color:{_RED}")
+
+                        mc          = _color_multilateral(mr)
+                        total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
+                        with ui.column().classes("gap-1"):
+                            with ui.row().classes("items-center gap-1 mb-1"):
+                                _dot(mc)
+                                ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
+                            if mr:
+                                ui.label(f"{len(mr)} provincia(s)").classes("text-sm text-gray-800")
+                                if total_pagar > 0:
+                                    ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style(f"color:{_RED}")
+                                else:
+                                    ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
                             else:
-                                ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
-                        else:
-                            ui.label("Sin datos").classes("text-sm text-gray-400")
+                                ui.label("Sin datos").classes("text-sm text-gray-400")
+
+                ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0")
+                with ml_pubs_card:
+                    with ui.row().classes("items-center gap-2 mb-2"):
+                        ui.spinner(size="sm")
+                        ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
+                    ui.label("Cargando estado de publicaciones...").classes("text-sm text-gray-400")
 
     # ── Async tasks ───────────────────────────────────────────────────────────
 
@@ -643,6 +652,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
         cuotas_card.clear()
         with cuotas_card:
             _card_header("Cuotas", "#6b7280")
+            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+        ml_pubs_card.clear()
+        with ml_pubs_card:
+            _card_header("Publicaciones ML", "#6b7280")
             ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
         _susp_lbl.set_text("—")
         if not db_alerts:
@@ -708,6 +721,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
         try:
             access_token = get_ml_access_token(uid)
             if not access_token:
+                ml_pubs_card.clear()
+                with ml_pubs_card:
+                    _card_header("Publicaciones ML", "#6b7280")
+                    ui.label("Sin cuenta ML vinculada").classes("text-xs text-gray-400")
                 cuotas_card.clear()
                 with cuotas_card:
                     _card_header("Cuotas", "#6b7280")
@@ -716,11 +733,56 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
             from tabs.cuotas import _cuotas_key, _get_promo_data
 
-            data = await run.io_bound(ml_get_my_items, access_token, True)
-            items = data.get("results", [])
+            data      = await run.io_bound(ml_get_my_items, access_token, True)
+            all_items = data.get("results", [])
 
+            # ── Publicaciones ML (under_review) ──────────────────────────────
+            ur_pend_doc = [it for it in all_items
+                           if str(it.get("status", "")).lower() == "under_review"
+                           and "pending_documentation" in (it.get("sub_status") or [])]
+            ur_held     = [it for it in all_items
+                           if str(it.get("status", "")).lower() == "under_review"
+                           and "held" in (it.get("sub_status") or [])]
+            active_count = sum(1 for it in all_items if str(it.get("status", "")).lower() == "active")
+
+            ml_pubs_ov = (_RED if ur_pend_doc else _YELLOW if ur_held else _GREEN)
+            _col_defs_ur = [
+                ("ID ML",      lambda r: str(r.get("id") or "—")),
+                ("Título",     lambda r: (r.get("title") or "—")[:45]),
+                ("Estado",     lambda r: r.get("status") or "—"),
+                ("Sub-estado", lambda r: ", ".join(r.get("sub_status") or []) or "—"),
+                ("Precio",     lambda r: f"${r['price']:,.0f}" if r.get("price") else "—"),
+                ("Stock",      lambda r: str(r.get("available_quantity") or 0)),
+            ]
+            ml_pubs_card.clear()
+            with ml_pubs_card:
+                _card_header("Publicaciones ML", ml_pubs_ov)
+                with ui.column().classes("w-full gap-2"):
+                    _stat_row_popup(
+                        "Documentación pendiente", str(len(ur_pend_doc)),
+                        _RED if ur_pend_doc else _GREEN,
+                        lambda rows=ur_pend_doc: _open_popup_list(
+                            "Documentación pendiente", rows, _col_defs_ur))
+                    _stat_row_popup(
+                        "Retenidas por ML", str(len(ur_held)),
+                        _YELLOW if ur_held else _GREEN,
+                        lambda rows=ur_held: _open_popup_list(
+                            "Retenidas por ML", rows, _col_defs_ur))
+                    _stat_row("Activas sin problemas", str(active_count), _GREEN)
+
+            if ur_pend_doc:
+                n = len(ur_pend_doc)
+                _alert_row(alerts_col, _RED,
+                           f"{n} publicación{'es' if n != 1 else ''} con documentación pendiente en ML",
+                           on_nav=(lambda: navigate_to("Cuotas")) if navigate_to else None)
+            if ur_held:
+                n = len(ur_held)
+                _alert_row(alerts_col, _YELLOW,
+                           f"{n} publicación{'es' if n != 1 else ''} retenida{'s' if n != 1 else ''} por ML")
+
+            # ── Pausadas con stock ────────────────────────────────────────────
             susp_items = [
-                it for it in items
+                it for it in all_items
                 if str(it.get("status", "")).lower() != "active"
                 and (it.get("available_quantity") or 0) > 0
             ]
@@ -735,7 +797,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             if cnt_susp > 0:
                 _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}",
                            on_nav=(lambda: navigate_to("Productos")) if navigate_to else None)
-            items = [it for it in items if str(it.get("status", "")).lower() == "active"]
+            items = [it for it in all_items if str(it.get("status", "")).lower() == "active"]
 
             # Deduplicar por SKU/catálogo — igual que cuotas.py
             groups: dict = {}
@@ -806,6 +868,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
         except Exception:
             _susp_lbl.set_text("—")
+            ml_pubs_card.clear()
+            with ml_pubs_card:
+                _card_header("Publicaciones ML", "#6b7280")
+                ui.label("Datos no disponibles").classes("text-xs text-gray-400")
             cuotas_card.clear()
             with cuotas_card:
                 _card_header("Cuotas", "#6b7280")

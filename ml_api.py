@@ -157,6 +157,7 @@ def _parse_ml_item_body(body: dict) -> dict:
         "available_quantity": body.get("available_quantity"),
         "sold_quantity": body.get("sold_quantity"),
         "status": body.get("status", ""),
+        "sub_status": body.get("sub_status") or [],
         "permalink": body.get("permalink", ""),
         "catalog_product_id": body.get("catalog_product_id"),
         "catalog_listing": catalog_listing,
@@ -192,7 +193,7 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
     item_ids = []
     seen: set = set()
     MAX_OFFSET = 1000
-    statuses = ("active", "paused", "closed") if include_paused else ("active",)
+    statuses = ("active", "paused", "closed", "under_review") if include_paused else ("active",)
     for status_val in statuses:
         offset = 0
         limit = 50
