@@ -54,7 +54,6 @@ TOOLTIPS: Dict[str, str] = {
     "cuotas_6x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_9x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_12x": "Tasa de costo de cuotas que ML cobra al vendedor",
-    "descuento_lhs_kg": "Factor de descuento LHS por kilogramo",
     "ml_envios_gratuitos": "Precio de venta mínimo a partir del cual el envío es gratuito para el comprador",
 }
 
@@ -75,7 +74,6 @@ def _require_login() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def build_tab_datos() -> None:
-    """Pestaña Datos del cotizador de importaciones. Todos los valores son editables."""
     user = _require_login()
     if not user:
         return
@@ -220,46 +218,87 @@ def build_tab_datos() -> None:
 
     def _card_header(icon: str, title: str) -> None:
         with ui.row().classes("items-center gap-1.5 w-full").style(
-            "border-bottom:1px solid #e5e7eb; padding-bottom:6px; margin-bottom:4px"
+            "border-bottom:1px solid #e5e7eb; padding-bottom:6px; margin-bottom:6px"
         ):
             ui.html(f'<i class="ti {icon}" style="font-size:14px;color:var(--q-primary)"></i>')
-            ui.label(title).classes("leading-none").style("font-size:12px; font-weight:500; color:#374151")
+            ui.label(title).classes("leading-none").style(
+                "font-size:11px; font-weight:600; color:#374151; text-transform:uppercase; letter-spacing:0.06em"
+            )
 
     def _add_field(container: Dict[str, Any], key: str, label_text: str, unit: str = "") -> None:
         raw = _get(key)
         display_val = _field_display(key, raw)
-        texto = f"{label_text} {unit}" if unit else label_text
-        with ui.row().classes("w-full items-center").style("gap:6px; padding:2px 0; flex-wrap:nowrap; border-bottom:0.5px solid #f0f0f0"):
-            lbl = ui.label(texto).style("font-size:11px; color:gray; white-space:nowrap")
+        texto = f"{label_text} {unit}".strip() if unit else label_text
+        is_peso = key in DOLAR_PARSE_KEYS
+        value_color = "#185FA5" if is_peso else "#1f2937"
+        with ui.row().classes("w-full items-center justify-between").style(
+            "padding:3px 0; border-bottom:0.5px solid #f0f0f0; gap:6px; flex-wrap:nowrap"
+        ):
+            lbl = ui.label(texto).style("font-size:12px; color:#6b7280; flex:1; min-width:0; white-space:nowrap")
             if key in TOOLTIPS:
                 lbl.tooltip(TOOLTIPS[key])
             inp = (
                 ui.input(value=display_val)
-                .props('dense outlined hide-bottom-space input-style="text-align:right; font-size:11px; padding:0 4px;"')
-                .style("width:80px; flex-shrink:0")
+                .props(
+                    f'dense outlined hide-bottom-space bg-color=grey-2 '
+                    f'input-style="text-align:right; font-size:11px; padding:0 6px; color:{value_color};"'
+                )
+                .style("width:76px; flex-shrink:0")
             )
             container[key] = inp
         _wire_blur(inp, key, label_text)
 
-    def _divider() -> None:
-        ui.element("div").classes("w-full").style("border-top:1px solid #f3f4f6; margin:3px 0")
+    def _divider(subtitle: str = "") -> None:
+        if subtitle:
+            with ui.row().classes("items-center gap-2 w-full").style("margin:6px 0 2px"):
+                ui.element("div").style("flex:1; border-top:1px solid #e5e7eb")
+                ui.label(subtitle).style("font-size:10px; color:#9ca3af; white-space:nowrap; padding:0 4px")
+                ui.element("div").style("flex:1; border-top:1px solid #e5e7eb")
+        else:
+            ui.element("div").classes("w-full").style("border-top:1px solid #f3f4f6; margin:4px 0")
 
     # --- Input dicts por card ---
-    inp_dolar:      Dict[str, Any] = {}
-    inp_cuotas:     Dict[str, Any] = {}
-    inp_ml:         Dict[str, Any] = {}
-    inp_miami:      Dict[str, Any] = {}
-    inp_china:      Dict[str, Any] = {}
-    inp_impuestos:  Dict[str, Any] = {}
-    inp_kilo:       Dict[str, Any] = {}
-    inp_logistica:  Dict[str, Any] = {}
+    inp_dolar:     Dict[str, Any] = {}
+    inp_cuotas:    Dict[str, Any] = {}
+    inp_ml:        Dict[str, Any] = {}
+    inp_miami:     Dict[str, Any] = {}
+    inp_china:     Dict[str, Any] = {}
+    inp_impuestos: Dict[str, Any] = {}
 
-    with ui.column().classes("w-full").style("gap:8px; padding:8px"):
+    def guardar_params() -> None:
+        all_inputs = {
+            **inp_dolar, **inp_cuotas, **inp_ml,
+            **inp_miami, **inp_china, **inp_impuestos,
+        }
+        for key, inp in all_inputs.items():
+            val = str(inp.value or "").strip()
+            ok, msg = _field_validate(key, val)
+            if not ok:
+                ui.notify(f"'{key}': {msg}", type="negative")
+                continue
+            set_cotizador_param(key, _field_parse(key, val), uid)
+        ui.notify("Parámetros guardados", color="positive")
 
-        with ui.element("div").style("display:grid; grid-template-columns:repeat(auto-fill, minmax(160px, 1fr)); gap:8px; align-items:start; width:100%"):
+    with ui.column().classes("w-full").style("gap:10px; padding:12px"):
 
-            # ── Dólar ──────────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
+        # ── Barra superior ─────────────────────────────────────────────
+        with ui.row().classes("w-full items-center justify-between").style(
+            "background:#f8fafc; border:1px solid #e5e7eb; border-radius:8px; padding:10px 16px"
+        ):
+            with ui.row().classes("items-center gap-2"):
+                ui.html('<i class="ti ti-adjustments-horizontal" style="font-size:16px;color:#6b7280"></i>')
+                ui.label("Parámetros del sistema").style("font-size:14px; font-weight:600; color:#374151")
+            with ui.button(on_click=guardar_params).props("dense color=primary no-caps").style("padding:4px 14px"):
+                ui.html('<i class="ti ti-device-floppy" style="font-size:14px; margin-right:6px; vertical-align:middle"></i>')
+                ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
+
+        # ── Grilla 4 columnas ──────────────────────────────────────────
+        with ui.element("div").style(
+            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px; align-items:start; width:100%"
+        ):
+
+            # 1. DÓLAR
+            with ui.card().classes("p-3 datos-card"):
                 _card_header("ti-currency-dollar", "Dólar")
                 for lbl, key in [
                     ("Oficial",  "dolar_oficial"),
@@ -269,43 +308,55 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_dolar, key, lbl)
 
-            # ── Cuotas ─────────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
+            # 2. CUOTAS
+            with ui.card().classes("p-3 datos-card"):
                 _card_header("ti-credit-card", "Cuotas")
                 for lbl, key, unit in [
-                    ("3x",    "cuotas_3x",  "%"),
-                    ("6x",    "cuotas_6x",  "%"),
-                    ("9x",    "cuotas_9x",  "%"),
-                    ("12x",   "cuotas_12x", "%"),
-                    ("ML ×3", "ml_3cuotas", ""),
-                    ("ML ×6", "ml_6cuotas", ""),
+                    ("3x",  "cuotas_3x",  "%"),
+                    ("6x",  "cuotas_6x",  "%"),
+                    ("9x",  "cuotas_9x",  "%"),
+                    ("12x", "cuotas_12x", "%"),
                 ]:
                     _add_field(inp_cuotas, key, lbl, unit)
+                _divider()
+                for lbl, key in [
+                    ("ML ×3", "ml_3cuotas"),
+                    ("ML ×6", "ml_6cuotas"),
+                ]:
+                    _add_field(inp_cuotas, key, lbl)
 
-            # ── MercadoLibre ────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
+            # 3. MERCADOLIBRE
+            with ui.card().classes("p-3 datos-card"):
                 _card_header("ti-building-store", "MercadoLibre")
                 for lbl, key, unit in [
-                    ("Comisión",  "ml_comision",            "%"),
-                    ("Deb/Cre",   "ml_debcre",              "%"),
-                    ("SIRTAC",    "ml_sirtac",              "%"),
-                    ("IIBB+PER",  "ml_iibb_per",            "%"),
-                    ("Envíos",    "ml_envios",              "$"),
-                    ("Gan. neta", "ml_ganancia_neta_venta", "%"),
-                    ("Cobrado",   "ml_cobrado",             ""),
-                    ("Com. fija", "ml_comision_fija_menor", "$"),
+                    ("Comisión", "ml_comision",  "%"),
+                    ("Deb/Cre",  "ml_debcre",    "%"),
+                    ("SIRTAC",   "ml_sirtac",    "%"),
+                    ("IIBB+PER", "ml_iibb_per",  "%"),
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
                 _divider()
-                _add_field(inp_ml, "ml_envios_gratuitos", "Envíos gratuitos desde", "$")
+                for lbl, key, unit in [
+                    ("Envíos",        "ml_envios",              "$"),
+                    ("Gan. neta",     "ml_ganancia_neta_venta", "%"),
+                    ("Cobrado",       "ml_cobrado",             ""),
+                    ("Com. fija",     "ml_comision_fija_menor", "$"),
+                    ("Envíos gratis", "ml_envios_gratuitos",    "$"),
+                ]:
+                    _add_field(inp_ml, key, lbl, unit)
 
-            # ── Traída por kilo ────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
-                _card_header("ti-package", "Traída × kilo")
-                _add_field(inp_kilo, "kilo", "Precio u$", "u$")
+            # 4. IMPUESTOS
+            with ui.card().classes("p-3 datos-card"):
+                _card_header("ti-receipt-tax", "Impuestos")
+                for lbl, key in [
+                    ("IVA 10,5%", "iva_105"),
+                    ("IVA 21%",   "iva_21"),
+                    ("IIBB LHS",  "iibb_lhs"),
+                ]:
+                    _add_field(inp_impuestos, key, lbl, "%")
 
-            # ── Miami ──────────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
+            # 5. MIAMI + Traída × kilo
+            with ui.card().classes("p-3 datos-card"):
                 _card_header("ti-plane", "Miami")
                 for lbl, key, unit in [
                     ("KG",            "valor_kg_miami",           "u$"),
@@ -315,61 +366,25 @@ def build_tab_datos() -> None:
                     ("Almac. ×2",     "almacenaje_miami_x2",       "u$"),
                 ]:
                     _add_field(inp_miami, key, lbl, unit)
+                _divider("Traída × kilo")
+                _add_field(inp_miami, "kilo", "Precio u$/kg")
 
-            # ── China ──────────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
-                _card_header("ti-ship", "China")
+            # 6. CHINA
+            with ui.card().classes("p-3 datos-card"):
+                _card_header("ti-world", "China")
                 for lbl, key, unit in [
-                    ("KG",              "valor_kg_china",          "u$"),
-                    ("Almac. día/kg",   "almacenaje_dias_kg_china", "u$"),
-                    ("Seguro",          "seguro_china",             ""),
-                    ("Días almac.",     "dias_almacenaje_china",    ""),
-                    ("Almac. ×3",       "almacenaje_china_x3",      "u$"),
-                    ("Res 3244",        "res_3244",                 ""),
-                    ("Gas. operativos", "gastos_operativos",        ""),
-                    ("Gas. origen",     "gastos_origen",            ""),
-                    ("Envío domicilio", "envio_domicilio",          ""),
-                    ("Ajuste ANA",      "ajuste_valor_ana",         ""),
+                    ("KG",              "valor_kg_china",           "u$"),
+                    ("Almac. día/kg",   "almacenaje_dias_kg_china",  "u$"),
+                    ("Seguro",          "seguro_china",              ""),
+                    ("Días almac.",     "dias_almacenaje_china",     ""),
+                    ("Almac. ×3",       "almacenaje_china_x3",       "u$"),
+                    ("Res 3244",        "res_3244",                  ""),
+                    ("Gas. operativos", "gastos_operativos",         ""),
+                    ("Gas. origen",     "gastos_origen",             ""),
+                    ("Envío domicilio", "envio_domicilio",           ""),
+                    ("Ajuste ANA",      "ajuste_valor_ana",          ""),
                 ]:
                     _add_field(inp_china, key, lbl, unit)
-
-            # ── Impuestos ──────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
-                _card_header("ti-receipt-tax", "Impuestos")
-                for lbl, key in [
-                    ("IVA 10,5%", "iva_105"),
-                    ("IVA 21%",   "iva_21"),
-                    ("IIBB LHS",  "iibb_lhs"),
-                ]:
-                    _add_field(inp_impuestos, key, lbl, "%")
-
-            # ── Logística ──────────────────────────────────────────────
-            with ui.card().classes("p-2.5 datos-card"):
-                _card_header("ti-truck", "Logística")
-                for lbl, key, unit in [
-                    ("Desc. LHS/kg",    "descuento_lhs_kg",  "u$"),
-                    ("Gas. operativos", "gastos_operativos",  ""),
-                    ("Gas. origen",     "gastos_origen",      ""),
-                    ("Envío domicilio", "envio_domicilio",    ""),
-                ]:
-                    _add_field(inp_logistica, key, lbl, unit)
-
-        # ── Guardar todo ───────────────────────────────────────────────
-        def guardar_params() -> None:
-            all_inputs = {
-                **inp_dolar, **inp_cuotas, **inp_ml, **inp_kilo,
-                **inp_miami, **inp_china, **inp_impuestos, **inp_logistica,
-            }
-            for key, inp in all_inputs.items():
-                val = str(inp.value or "").strip()
-                ok, msg = _field_validate(key, val)
-                if not ok:
-                    ui.notify(f"'{key}': {msg}", type="negative")
-                    continue
-                set_cotizador_param(key, _field_parse(key, val), uid)
-            ui.notify("Parámetros guardados", color="positive")
-
-        ui.button("Guardar parámetros", on_click=guardar_params, color="primary").classes("mb-2")
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
@@ -649,5 +664,3 @@ def build_tab_datos() -> None:
 # ==========================
 # CALLBACK OAUTH (ruta HTTP directa para evitar 404 con NiceGUI)
 # ==========================
-
-
