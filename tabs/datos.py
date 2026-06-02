@@ -294,9 +294,9 @@ def build_tab_datos() -> None:
 
         # ── Masonry CSS columns: 4 columnas ──────────────────────────────────
         with ui.element("div").style(
-            "column-count:4; column-gap:10px; width:100%"
+            "display:block; column-count:4; column-gap:10px; width:100%"
         ):
-            _CS = "break-inside:avoid; margin-bottom:10px; width:100%; display:inline-block"
+            _CS = "break-inside:avoid; -webkit-column-break-inside:avoid; margin-bottom:10px; overflow:hidden"
 
             # 1. DÓLAR
             with ui.card().classes("p-3 datos-card").style(_CS):
