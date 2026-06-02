@@ -685,6 +685,31 @@ def ml_get_item_prices(access_token: Optional[str], item_id: str) -> Optional[fl
     return None
 
 
+def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
+    """GET /items/{id}/prices — retorna {'amount': float, 'min_quantity': int} o None si no hay entrada wholesale."""
+    if not access_token or not str(item_id).strip():
+        return None
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/prices",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        prices = resp.json().get("prices") or []
+        for p in prices:
+            if isinstance(p, dict) and p.get("type") == "wholesale":
+                amt = p.get("amount")
+                if amt is None:
+                    continue
+                cond = p.get("conditions") or {}
+                min_q = cond.get("min_quantity")
+                return {"amount": float(amt), "min_quantity": int(min_q) if min_q is not None else None}
+    except Exception:
+        pass
+    return None
+
+
 def ml_enriquecer_sale_price(items: List[Dict[str, Any]], access_token: Optional[str]) -> None:
     """Enriquece items con sale_price (precio real con promoción) si no lo tienen."""
     if not access_token:
