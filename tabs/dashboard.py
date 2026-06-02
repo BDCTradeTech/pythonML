@@ -115,8 +115,7 @@ def _query_productos(user_id: int) -> Dict[str, int]:
         cur = conn.cursor()
         cur.execute(
             "SELECT COUNT(*) FROM productos WHERE user_id=?"
-            " AND (costo_usd IS NULL OR costo_usd=0)"
-            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')",
+            " AND (costo_usd IS NULL OR costo_usd=0)",
             (user_id,))
         sin_costo = cur.fetchone()[0]
 
@@ -350,7 +349,6 @@ def _detail_sin_costo(user_id: int) -> List[Dict]:
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
             " WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
-            " AND (marca IS NOT NULL AND marca!='' OR nombre IS NOT NULL AND nombre!='')"
             " ORDER BY sku",
             (user_id,))
         return [dict(r) for r in cur.fetchall()]
@@ -439,8 +437,8 @@ def build_tab_dashboard(container) -> None:
     if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}"))
     if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones pausadas: {prod['stock_susp']}"))
     if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}"))
+    if prod["gan_neg"]       > 0: db_alerts.append((_RED,    f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
-    if prod["gan_neg"]       > 0: db_alerts.append((_YELLOW, f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
     if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar (últimos 30 días): {ventas['sin_revisar']}"))
     for ac, am in arca_al:
         if ac != _GREEN:
@@ -485,8 +483,8 @@ def build_tab_dashboard(container) -> None:
             # ── GRILLA 1: Productos | Ventas ──────────────────────────────
             with ui.grid(columns=2).classes("w-full gap-4"):
 
-                prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0
-                              else _YELLOW if prod["sin_fob"]   > 0 or prod["gan_neg"]   > 0
+                prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
+                              else _YELLOW if prod["sin_fob"]   > 0
                               else _GREEN)
                 with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                     _card_header("Productos", prod_color)
@@ -523,7 +521,7 @@ def build_tab_dashboard(container) -> None:
                                  ("Producto", lambda r: r.get("nombre") or "—")]))
                         _stat_row_popup(
                             "A pérdida", str(prod["gan_neg"]),
-                            _YELLOW if prod["gan_neg"] > 0 else _GREEN,
+                            _RED if prod["gan_neg"] > 0 else _GREEN,
                             lambda: _open_popup_list(
                                 "A pérdida (Productos)", _detail_gan_neg_prod(uid),
                                 [("SKU",      lambda r: r.get("sku")    or "—"),
