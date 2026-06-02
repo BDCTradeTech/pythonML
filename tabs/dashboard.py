@@ -132,7 +132,7 @@ def _query_productos(user_id: int) -> Dict[str, int]:
         stock_susp = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE user_id=? AND gan_pesos < 0",
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND gan_pesos < 0 AND stock > 0",
             (user_id,))
         gan_neg = cur.fetchone()[0]
 
@@ -378,7 +378,7 @@ def _detail_gan_neg_prod(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre, gan_pesos FROM productos"
-            " WHERE user_id=? AND gan_pesos < 0"
+            " WHERE user_id=? AND gan_pesos < 0 AND stock > 0"
             " ORDER BY gan_pesos ASC",
             (user_id,))
         return [{"sku": r[0], "marca": r[1], "nombre": r[2], "gan": round(r[3], 2)}
