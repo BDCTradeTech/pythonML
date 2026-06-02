@@ -41,11 +41,11 @@ def build_tab_flex() -> None:
         container.clear()
         with container:
             if not zonas:
-                ui.label("No hay zonas configuradas.").classes("text-sm text-gray-400 col-span-2")
+                ui.label("No hay zonas configuradas.").classes("text-sm text-gray-400 col-span-3")
                 return
             for z in zonas:
                 tarifa_fmt = f"$ {int(z['tarifa']):,}".replace(",", ".")
-                with ui.card().classes("p-3 gap-1").style("min-width:0; min-height:120px"):
+                with ui.card().classes("p-2 gap-0.5").style("min-width:0"):
                     with ui.row().classes("w-full justify-between items-start gap-1"):
                         with ui.column().classes("gap-0.5").style("flex:1; min-width:0"):
                             ui.label(z["nombre"]).classes("font-semibold text-sm leading-tight")
@@ -144,6 +144,6 @@ def build_tab_flex() -> None:
             ).props("flat dense").style("color:#0C447C")
 
         grid = ui.element("div").classes("w-full").style(
-            "display:grid; grid-template-columns:repeat(2,1fr); gap:12px"
+            "display:grid; grid-template-columns:repeat(3,1fr); gap:10px"
         )
         _refresh(grid, bar_lbl)

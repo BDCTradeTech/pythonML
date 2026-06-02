@@ -1,8 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import asyncio
 
-# Polyfill asyncio.to_thread para Python 3.8 (agregado en 3.9). Evita AttributeError en Históricos y otras búsquedas.
+# Polyfill asyncio.to_thread para Python 3.8 (agregado en 3.9). Evita AttributeError en HistÃ³ricos y otras bÃºsquedas.
 if not hasattr(asyncio, "to_thread"):
     def _to_thread_compat(fn, *args, **kwargs):
         import functools
@@ -112,7 +112,7 @@ from db import (
     _enable_tabs_for_user,
 )
 
-# --- Fase 3: tabs extraídos a módulos separados ---
+# --- Fase 3: tabs extraÃ­dos a mÃ³dulos separados ---
 from tabs.pedidos import build_tab_pedidos
 from tabs.estadisticas import build_tab_estadisticas
 from tabs.config import build_tab_config
@@ -140,12 +140,12 @@ from helpers.activity_logger import log_event
 
 DB_PATH = Path(__file__).with_name("app.db")
 
-# Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.02.33"
+# VersiÃ³n del sistema: formato 2.aa.mm.dd.hh (aa=aÃ±o, mm=mes, dd=dÃ­a, hh=hora 00-23). Ej.: 2.26.04.14.12
+VERSION = "3.26.06.02.34"
 
 
 # ==========================
-# ENCRIPTACIÓN DE SECRETS
+# ENCRIPTACIÃ“N DE SECRETS
 # ==========================
 
 
@@ -162,12 +162,12 @@ def _encrypt_secret(plain: str) -> str:
 
 def _decrypt_secret(token: str) -> str:
     if not token.startswith("gAAAAA"):
-        return token  # plaintext legacy: aún no migrado
+        return token  # plaintext legacy: aÃºn no migrado
     return _get_fernet().decrypt(token.encode()).decode()
 
 
 # ==========================
-# SESIÓN DE USUARIO (NiceGUI)
+# SESIÃ“N DE USUARIO (NiceGUI)
 # ==========================
 
 
@@ -185,7 +185,7 @@ def set_current_user(user: Optional[Dict[str, Any]]) -> None:
 def require_login() -> Optional[Dict[str, Any]]:
     user = get_current_user()
     if not user:
-        ui.notify("Debes iniciar sesión para continuar", color="negative")
+        ui.notify("Debes iniciar sesiÃ³n para continuar", color="negative")
     return user
 
 
@@ -199,16 +199,16 @@ def show_login_screen(container) -> None:
     container.clear()
 
     with container:
-        # Fila a ancho completo, contenido centrado horizontalmente y más cerca del borde superior
+        # Fila a ancho completo, contenido centrado horizontalmente y mÃ¡s cerca del borde superior
         with ui.row().classes("w-full justify-center q-mt-xl"):
             with ui.column().classes("items-center gap-6"):
                 ui.label("BDC systems").classes("text-3xl font-bold")
 
                 with ui.card().classes("w-full max-w-md"):
-                    ui.label("Iniciar sesión").classes("text-xl font-semibold mb-4")
+                    ui.label("Iniciar sesiÃ³n").classes("text-xl font-semibold mb-4")
                     username = ui.input("Usuario").classes("w-full")
                     password = ui.input(
-                        "Contraseña",
+                        "ContraseÃ±a",
                         password=True,
                         password_toggle_button=True,
                     ).classes("w-full")
@@ -216,11 +216,11 @@ def show_login_screen(container) -> None:
                     with ui.row().classes("justify-between w-full mt-4"):
                         def on_login() -> None:
                             if not username.value or not password.value:
-                                ui.notify("Completa usuario y contraseña", color="negative")
+                                ui.notify("Completa usuario y contraseÃ±a", color="negative")
                                 return
                             user = authenticate_user(username.value, password.value)
                             if not user:
-                                ui.notify("Credenciales inválidas", color="negative")
+                                ui.notify("Credenciales invÃ¡lidas", color="negative")
                                 return
                             set_current_user(user)
                             ui.notify(f"Bienvenido {user['username']}", color="positive")
@@ -236,7 +236,7 @@ def show_login_screen(container) -> None:
                                     def _submit_reg() -> None:
                                         e = (reg_email.value or "").strip()
                                         if not e or "@" not in e:
-                                            ui.notify("Ingresá un email válido", color="negative")
+                                            ui.notify("IngresÃ¡ un email vÃ¡lido", color="negative")
                                             return
                                         err, new_pwd = create_user(e)
                                         if err:
@@ -247,7 +247,7 @@ def show_login_screen(container) -> None:
                                                     with ui.card().classes("p-6 min-w-[400px]"):
                                                         ui.label("Error al enviar el email").classes("text-lg font-semibold text-warning")
                                                         ui.label(err).classes("text-sm text-gray-600 mt-2")
-                                                        ui.label("Tu contraseña provisoria (copiala para iniciar sesión):").classes("text-sm font-medium mt-4")
+                                                        ui.label("Tu contraseÃ±a provisoria (copiala para iniciar sesiÃ³n):").classes("text-sm font-medium mt-4")
                                                         with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
                                                             ui.label(new_pwd)
                                                         ui.button("Cerrar popup", on_click=popup.close).props("flat color=primary").classes("mt-4")
@@ -257,7 +257,7 @@ def show_login_screen(container) -> None:
                                             return
                                         dlg.close()
                                         ui.notify(
-                                            "Te enviamos un email con tu contraseña provisoria. Iniciá sesión y cambiá tu contraseña en Configuración.",
+                                            "Te enviamos un email con tu contraseÃ±a provisoria. IniciÃ¡ sesiÃ³n y cambiÃ¡ tu contraseÃ±a en ConfiguraciÃ³n.",
                                             color="positive",
                                         )
 
@@ -289,7 +289,7 @@ def show_main_layout(container) -> None:
         with ui.element("div").classes("hidden"):
             with ui.tabs() as tabs:
                 tab_home = ui.tab("Home")
-                tab_estadisticas = ui.tab("Estadísticas")
+                tab_estadisticas = ui.tab("EstadÃ­sticas")
                 tab_ventas = ui.tab("Ventas")
                 tab_precios = ui.tab("Productos")
                 tab_cuotas = ui.tab("Cuotas")
@@ -297,8 +297,8 @@ def show_main_layout(container) -> None:
                 tab_stock = ui.tab("Stock")
                 tab_compras_lista = ui.tab("Compras")
                 tab_pedidos = ui.tab("Pedidos")
-                tab_historicos = ui.tab("Históricos")
-                tab_busqueda = ui.tab("Búsqueda")
+                tab_historicos = ui.tab("HistÃ³ricos")
+                tab_busqueda = ui.tab("BÃºsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
@@ -306,13 +306,13 @@ def show_main_layout(container) -> None:
                 tab_balance    = ui.tab("Balance")
                 tab_dashboard  = ui.tab("Dashboard")
                 tab_flex       = ui.tab("Flex")
-                tab_config = ui.tab("Configuración")
+                tab_config = ui.tab("ConfiguraciÃ³n")
                 tab_admin = ui.tab("Admin")
                 tab_actividad = ui.tab("Actividad")
 
         tab_map = {
             "Home": tab_home,
-            "Estadísticas": tab_estadisticas,
+            "EstadÃ­sticas": tab_estadisticas,
             "Ventas": tab_ventas,
             "Productos": tab_precios,
             "Cuotas": tab_cuotas,
@@ -320,8 +320,8 @@ def show_main_layout(container) -> None:
             "Stock": tab_stock,
             "Compras": tab_compras_lista,
             "Pedidos": tab_pedidos,
-            "Históricos": tab_historicos,
-            "Búsqueda": tab_busqueda,
+            "HistÃ³ricos": tab_historicos,
+            "BÃºsqueda": tab_busqueda,
             "Importacion": tab_importacion,
             "Datos": tab_datos,
             "Pesos": tab_pesos,
@@ -329,11 +329,11 @@ def show_main_layout(container) -> None:
             "Balance":    tab_balance,
             "Dashboard":  tab_dashboard,
             "Flex":       tab_flex,
-            "Configuración": tab_config,
+            "ConfiguraciÃ³n": tab_config,
             "Admin": tab_admin,
             "Actividad": tab_actividad,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
+        label_to_key = {"Home": "home", "EstadÃ­sticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "HistÃ³ricos": "historicos", "BÃºsqueda": "busqueda", "Importacion": "importacion", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "ConfiguraciÃ³n": "configuracion", "Admin": "admin", "Actividad": "actividad"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -373,7 +373,7 @@ def show_main_layout(container) -> None:
             elif val == "Ventas" and not ventas_cargado[0]:
                 ventas_cargado[0] = True
                 build_tab_ventas(ventas_container)
-            elif val == "Estadísticas" and not estadisticas_cargado[0]:
+            elif val == "EstadÃ­sticas" and not estadisticas_cargado[0]:
                 estadisticas_cargado[0] = True
                 build_tab_estadisticas(estadisticas_container)
             elif val == "Balance" and not balance_cargado[0]:
@@ -382,7 +382,7 @@ def show_main_layout(container) -> None:
             elif val == "Dashboard" and not dashboard_cargado[0]:
                 dashboard_cargado[0] = True
                 build_tab_dashboard(dashboard_container, navigate_to)
-            elif val == "Históricos" and not historicos_cargado[0]:
+            elif val == "HistÃ³ricos" and not historicos_cargado[0]:
                 historicos_cargado[0] = True
                 build_tab_historicos(historicos_container)
             elif val == "Admin" and not admin_cargado[0]:
@@ -408,10 +408,10 @@ def show_main_layout(container) -> None:
         def navigate_to(lbl: str) -> None:
             _go(lbl)()
 
-        # Barra gris: navegación principal + secundaria | semáforos, versión, usuario
-        # Menús secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
-        # Se cierran al seleccionar una opción o al hacer clic fuera (Quasar).
-        _open_menus: List[Any] = []  # Referencias a menús abiertos para cerrar otros al abrir uno nuevo
+        # Barra gris: navegaciÃ³n principal + secundaria | semÃ¡foros, versiÃ³n, usuario
+        # MenÃºs secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
+        # Se cierran al seleccionar una opciÃ³n o al hacer clic fuera (Quasar).
+        _open_menus: List[Any] = []  # Referencias a menÃºs abiertos para cerrar otros al abrir uno nuevo
 
         def _open_and_close_others(menu_obj: Any) -> None:
             for m in _open_menus:
@@ -429,7 +429,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("DASHBOARD", "Dashboard", "dashboard"), ("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("FLEX", "Flex", "flex"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("DASHBOARD", "Dashboard", "dashboard"), ("ESTADÃSTICAS", "EstadÃ­sticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("FLEX", "Flex", "flex"), ("BÃšSQUEDA", "BÃºsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
@@ -471,10 +471,10 @@ def show_main_layout(container) -> None:
                                     ui.menu_item("PEDIDOS", _pedidos_click)
                                 if perms.get("historicos", True):
                                     def _historicos_click():
-                                        _lazy_load("Históricos")
+                                        _lazy_load("HistÃ³ricos")
                                         tab_panels.value = tab_historicos
-                                        app.storage.user["last_tab"] = "Históricos"
-                                    ui.menu_item("HISTÓRICOS", _historicos_click)
+                                        app.storage.user["last_tab"] = "HistÃ³ricos"
+                                    ui.menu_item("HISTÃ“RICOS", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -512,10 +512,10 @@ def show_main_layout(container) -> None:
                                     ui.menu_item("DATOS", _datos_click)
                                 if perms.get("configuracion", True):
                                     def _config_click():
-                                        _lazy_load("Configuración")
+                                        _lazy_load("ConfiguraciÃ³n")
                                         tab_panels.value = tab_config
-                                        app.storage.user["last_tab"] = "Configuración"
-                                    ui.menu_item("CONFIGURACIÓN", _config_click)
+                                        app.storage.user["last_tab"] = "ConfiguraciÃ³n"
+                                    ui.menu_item("CONFIGURACIÃ“N", _config_click)
                 if perms.get("admin", False):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(admin_menu)):
                         with ui.button("ADMIN").props("flat dense no-caps").classes(_nav_font):
@@ -535,9 +535,9 @@ def show_main_layout(container) -> None:
                 ui.label(user["username"]).classes("text-sm font-medium")
                 def logout() -> None:
                     set_current_user(None)
-                    ui.notify("Sesión cerrada", color="positive")
+                    ui.notify("SesiÃ³n cerrada", color="positive")
                     show_login_screen(container)
-                ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
+                ui.button("Cerrar sesiÃ³n", on_click=logout, color="negative").props("flat dense")
 
         tab_panels = ui.tab_panels(tabs, value=tab_map.get(tab_inicial, tab_home)).classes("w-full")
 
@@ -639,7 +639,7 @@ def _get_base_url(request: Request) -> str:
 
 
 async def _ml_callback_redirect(request: Request) -> RedirectResponse:
-    """Ruta HTTP directa: redirige a / con el code para que la página principal procese el OAuth."""
+    """Ruta HTTP directa: redirige a / con el code para que la pÃ¡gina principal procese el OAuth."""
     code = request.query_params.get("code")
     error_param = request.query_params.get("error")
     error_desc = request.query_params.get("error_description", "")
@@ -657,7 +657,7 @@ async def _ml_callback_redirect(request: Request) -> RedirectResponse:
     )
 
 
-# Registrar la ruta ANTES de las páginas para que responda a GET /ml/callback
+# Registrar la ruta ANTES de las pÃ¡ginas para que responda a GET /ml/callback
 app.add_api_route("/ml/callback", _ml_callback_redirect, methods=["GET"])
 
 
@@ -705,7 +705,7 @@ def index(request: Request) -> None:  # type: ignore[override]
     qb_realm_id = request.query_params.get("qb_realm_id", "")
     if qb_oauth_error:
         with root:
-            ui.label(f"❌ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"âŒ Error de QuickBooks: {qb_oauth_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("qb_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("qb_oauth_error_desc", ""))
@@ -714,17 +714,17 @@ def index(request: Request) -> None:  # type: ignore[override]
         return
     if ml_error:
         with root:
-            ui.label(f"❌ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
+            ui.label(f"âŒ Error de MercadoLibre: {ml_error}").classes("text-negative text-lg mb-4")
             if request.query_params.get("ml_oauth_error_desc"):
                 from urllib.parse import unquote
                 desc = unquote(request.query_params.get("ml_oauth_error_desc", ""))
                 ui.label(f"URL recibida: {desc}").classes("text-sm text-gray-600 mb-2")
             if ml_error == "no_code":
                 ui.label(
-                    "El parámetro 'code' no llegó al servidor. Posibles causas:\n"
-                    "• Ngrok: si viste la página 'Visit Site', haz clic ahí y vuelve a intentar.\n"
-                    "• Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
-                    "• Prueba en ventana de incógnito o con otro navegador."
+                    "El parÃ¡metro 'code' no llegÃ³ al servidor. Posibles causas:\n"
+                    "â€¢ Ngrok: si viste la pÃ¡gina 'Visit Site', haz clic ahÃ­ y vuelve a intentar.\n"
+                    "â€¢ Redirect URI: en MercadoLibre Developers debe ser EXACTAMENTE la misma URL que en tu .env (con /ml/callback).\n"
+                    "â€¢ Prueba en ventana de incÃ³gnito o con otro navegador."
                 ).classes("text-gray-600 mb-4 whitespace-pre-line")
             ui.link("Volver al inicio", "/").classes("text-primary")
         return
@@ -732,8 +732,8 @@ def index(request: Request) -> None:  # type: ignore[override]
         user = get_current_user()
         if not user:
             with root:
-                ui.label("Debes iniciar sesión en BDC systems antes de vincular MercadoLibre.").classes("text-lg mb-4")
-                ui.link("Ir a inicio de sesión", "/").classes("text-primary")
+                ui.label("Debes iniciar sesiÃ³n en BDC systems antes de vincular MercadoLibre.").classes("text-lg mb-4")
+                ui.link("Ir a inicio de sesiÃ³n", "/").classes("text-primary")
             return
         app_creds = get_ml_app_credentials(user["id"])
         if app_creds:
@@ -746,7 +746,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             redirect_uri = os.getenv("ML_REDIRECT_URI", "http://localhost:8083/ml/callback")
         if not client_id or not client_secret:
             with root:
-                ui.label("❌ Configurá tu App ID y Client Secret en Configuración antes de conectar.").classes("text-negative mb-4")
+                ui.label("âŒ ConfigurÃ¡ tu App ID y Client Secret en ConfiguraciÃ³n antes de conectar.").classes("text-negative mb-4")
             return
         redirect_uri = (redirect_uri or "").strip() or "http://localhost:8083/ml/callback"
         try:
@@ -774,24 +774,24 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
+                ui.label(f"âŒ Error al obtener token: {e}").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 causas = (
                     "Posibles causas:\n"
-                    "• redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
-                    "• Si tu app tiene PKCE habilitado, desactivá PKCE en la app o recreá la app sin PKCE.\n"
-                    "• El código de autorización se usa una sola vez; si recargaste la página, volvé a Conectar."
+                    "â€¢ redirect_uri debe coincidir EXACTAMENTE con el configurado en MercadoLibre Developers.\n"
+                    "â€¢ Si tu app tiene PKCE habilitado, desactivÃ¡ PKCE en la app o recreÃ¡ la app sin PKCE.\n"
+                    "â€¢ El cÃ³digo de autorizaciÃ³n se usa una sola vez; si recargaste la pÃ¡gina, volvÃ© a Conectar."
                 )
                 if "invalid" in err_msg.lower() or "validating grant" in err_msg.lower():
                     causas += (
-                        "\n\n⚠️ ¿Intentabas conectar QuickBooks? Si es así, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
+                        "\n\nâš ï¸ Â¿Intentabas conectar QuickBooks? Si es asÃ­, el Redirect URI en developer.intuit.com debe ser /qb/callback, NO /ml/callback. Cada app (ML y QB) tiene su propia URL."
                     )
                 ui.label(causas).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"❌ Error al obtener token: {e}").classes("text-negative mb-4")
+                ui.label(f"âŒ Error al obtener token: {e}").classes("text-negative mb-4")
             return
         data = resp.json()
         access_token = data.get("access_token")
@@ -799,7 +799,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"❌ Respuesta inesperada: {data}").classes("text-negative mb-4")
+                ui.label(f"âŒ Respuesta inesperada: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -828,21 +828,21 @@ def index(request: Request) -> None:  # type: ignore[override]
                     set_ml_nickname(user["id"], nickname)
         except Exception:
             pass
-        # Redirigir a / sin el code para limpiar la URL (el usuario verá el panel y una notificación)
+        # Redirigir a / sin el code para limpiar la URL (el usuario verÃ¡ el panel y una notificaciÃ³n)
         return RedirectResponse(url="/", status_code=302)
 
     if qb_oauth_code:
         user = get_current_user()
         if not user:
             with root:
-                ui.label("Debes iniciar sesión en BDC systems antes de vincular QuickBooks.").classes("text-lg mb-4")
-                ui.link("Ir a inicio de sesión", "/").classes("text-primary")
+                ui.label("Debes iniciar sesiÃ³n en BDC systems antes de vincular QuickBooks.").classes("text-lg mb-4")
+                ui.link("Ir a inicio de sesiÃ³n", "/").classes("text-primary")
             return
         qb_app_creds = get_qb_app_credentials(user["id"])
         if not qb_app_creds:
             with root:
-                ui.label("❌ Configurá Client ID y Client Secret de QuickBooks en Configuración antes de conectar.").classes("text-negative mb-4")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.label("âŒ ConfigurÃ¡ Client ID y Client Secret de QuickBooks en ConfiguraciÃ³n antes de conectar.").classes("text-negative mb-4")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         client_id = qb_app_creds["client_id"]
         client_secret = qb_app_creds["client_secret"]
@@ -877,19 +877,19 @@ def index(request: Request) -> None:  # type: ignore[override]
                 if resp_err is not None and resp_err.text:
                     err_msg = resp_err.text[:500]
             with root:
-                ui.label("❌ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
+                ui.label("âŒ Error al obtener token de QuickBooks").classes("text-negative text-lg mb-2")
                 ui.label(f"Detalle: {err_msg}").classes("text-sm text-gray-600 mb-2")
                 ui.label(
                     "Posibles causas:\n"
-                    "• Redirect URI: en developer.intuit.com → Keys debe ser EXACTAMENTE la misma URL que en Configuración (con /qb/callback).\n"
-                    "• NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
-                    "• El código de autorización se usa una sola vez; si recargaste, volvé a Conectar."
+                    "â€¢ Redirect URI: en developer.intuit.com â†’ Keys debe ser EXACTAMENTE la misma URL que en ConfiguraciÃ³n (con /qb/callback).\n"
+                    "â€¢ NO uses /ml/callback para QuickBooks; debe ser /qb/callback.\n"
+                    "â€¢ El cÃ³digo de autorizaciÃ³n se usa una sola vez; si recargaste, volvÃ© a Conectar."
                 ).classes("text-sm text-gray-600 mb-4 whitespace-pre-line")
-                ui.link("Volver a Configuración", "/").classes("text-primary")
+                ui.link("Volver a ConfiguraciÃ³n", "/").classes("text-primary")
             return
         except Exception as e:
             with root:
-                ui.label(f"❌ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
+                ui.label(f"âŒ Error al obtener token de QuickBooks: {e}").classes("text-negative mb-4")
                 ui.link("Volver al inicio", "/").classes("text-primary")
             return
         data = resp.json()
@@ -898,7 +898,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         expires_in = data.get("expires_in")
         if not access_token:
             with root:
-                ui.label(f"❌ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
+                ui.label(f"âŒ Respuesta inesperada de Intuit: {data}").classes("text-negative mb-4")
             return
         expires_at = None
         if isinstance(expires_in, (int, float)):
@@ -943,7 +943,7 @@ def _iniciar_ngrok(port: int) -> None:
         except Exception:
             pass
     except FileNotFoundError:
-        print("  Ngrok no encontrado en PATH. Ejecutá 'ngrok http', PORT manualmente si lo necesitás.")
+        print("  Ngrok no encontrado en PATH. EjecutÃ¡ 'ngrok http', PORT manualmente si lo necesitÃ¡s.")
     except Exception as e:
         print(f"  No se pudo iniciar ngrok: {e}")
 
@@ -970,10 +970,10 @@ def main() -> None:
     env_path = Path(__file__).parent / ".env"
     load_dotenv(env_path)
     try:
-        import fitz  # noqa: F401  # pymupdf ”” Invoices «Otra»
+        import fitz  # noqa: F401  # pymupdf â€â€ Invoices Â«OtraÂ»
     except ImportError:
         logging.warning(
-            "PyMuPDF no instalado (pip install pymupdf). Invoices → botón «Otra» no funcionará hasta instalarlo "
+            "PyMuPDF no instalado (pip install pymupdf). Invoices â†’ botÃ³n Â«OtraÂ» no funcionarÃ¡ hasta instalarlo "
             "en el mismo entorno que ejecuta esta app (p. ej. %s -m pip install pymupdf).",
             sys.executable or "python3",
         )
@@ -997,9 +997,10 @@ def main() -> None:
         port=port,
         storage_secret=os.getenv("STORAGE_SECRET", ""),
         reconnect_timeout=120,  # Evita "Connection lost" durante carga pesada (Precios con muchos productos)
-        message_history_length=2000,  # Más mensajes al reconectar para restaurar UI
+        message_history_length=2000,  # MÃ¡s mensajes al reconectar para restaurar UI
     )
 
 
 if __name__ == "__main__":
     main()
+
