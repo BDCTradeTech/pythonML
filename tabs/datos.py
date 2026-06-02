@@ -605,7 +605,7 @@ def build_tab_datos() -> None:
                             ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
 
         with ui.row().classes("w-full gap-4 flex-wrap").style("align-items:flex-start"):
-            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", icon="ti-ruler-2", card_ancho="w-fit", collapsed=True)
+            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", icon="ti-ruler-2", card_ancho="w-fit")
             _tabla_editable("posicion", ["posicion", "seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"],
                 ["Posicion", "Seguro", "Flete", "Derechos", "Estadisticas", "IVA", "Despachante", "Cambio PA"],
                 tabla_posicion_data, "Tasas por Posición", icon="ti-list-numbers", card_ancho="w-fit")
@@ -613,7 +613,7 @@ def build_tab_datos() -> None:
                 ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envío MercadoLibre",
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
                 computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
-                col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store", collapsed=True)
+                col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store")
             _tabla_editable("courier", ["courier", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
                 ["Courier", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
                 tabla_courier_data, "Costos por Courier",
