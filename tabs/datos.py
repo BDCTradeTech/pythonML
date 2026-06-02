@@ -292,9 +292,9 @@ def build_tab_datos() -> None:
                 ui.html('<i class="ti ti-device-floppy" style="font-size:14px; margin-right:6px; vertical-align:middle"></i>')
                 ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
 
-        # ── Columnas masonry (3 cols) ──────────────────────────────────────
+        # ── Columnas masonry (4 cols) ──────────────────────────────────────
         with ui.element("div").style(
-            "column-count:3; column-gap:10px; width:100%"
+            "column-count:4; column-gap:10px; width:100%"
         ):
             _CARD_STYLE = "display:inline-block; width:100%; break-inside:avoid; margin-bottom:10px; box-sizing:border-box"
 
