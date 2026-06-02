@@ -141,7 +141,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # VersiÃ³n del sistema: formato 2.aa.mm.dd.hh (aa=aÃ±o, mm=mes, dd=dÃ­a, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.02.34"
+VERSION = "3.26.06.02.35"
 
 
 # ==========================
@@ -1003,4 +1003,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 

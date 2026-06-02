@@ -45,22 +45,28 @@ def build_tab_flex() -> None:
                 return
             for z in zonas:
                 tarifa_fmt = f"$ {int(z['tarifa']):,}".replace(",", ".")
-                with ui.card().classes("p-2 gap-0.5").style("min-width:0"):
-                    with ui.row().classes("w-full justify-between items-start gap-1"):
-                        with ui.column().classes("gap-0.5").style("flex:1; min-width:0"):
-                            ui.label(z["nombre"]).classes("font-semibold text-sm leading-tight")
-                            ui.label(tarifa_fmt).classes("text-sm font-medium").style("color:#0C447C")
-                            ui.label(z["codigos_postales"] or "—").classes(
-                                "text-xs text-gray-400 leading-tight"
-                            ).style(
-                                "word-break:break-all; overflow:hidden; display:-webkit-box; "
-                                "-webkit-line-clamp:2; -webkit-box-orient:vertical"
-                            )
-                        with ui.column().classes("gap-0 items-end").style("flex-shrink:0"):
-                            ui.button(
-                                icon="edit",
-                                on_click=lambda z=z: _edit_dialog(z, grid, bar_lbl)
-                            ).props("flat dense size=sm")
+                with ui.card().classes("p-0 gap-0").style("min-width:0; overflow:hidden"):
+                    # Header: nombre + lápiz
+                    with ui.row().classes("w-full items-center justify-between gap-1").style("padding:8px 10px 4px"):
+                        ui.label(z["nombre"]).style(
+                            "font-size:13px; font-weight:500; flex:1; min-width:0; "
+                            "overflow:hidden; text-overflow:ellipsis; white-space:nowrap"
+                        )
+                        ui.html(
+                            '<i class="ti ti-pencil" style="font-size:15px;color:#9ca3af;cursor:pointer" aria-hidden="true"></i>'
+                        ).on("click", lambda z=z: _edit_dialog(z, grid, bar_lbl)).style("flex-shrink:0")
+                    # Precio
+                    ui.label(tarifa_fmt).style(
+                        "font-size:15px; font-weight:500; color:#185FA5; padding:0 10px 6px"
+                    )
+                    # Separador
+                    ui.element("div").style("height:0; border-top:0.5px solid #e5e7eb; margin:0")
+                    # CPs
+                    ui.label(z["codigos_postales"] or "—").style(
+                        "font-size:11px; color:#6b7280; padding:5px 10px 7px; "
+                        "word-break:break-all; overflow:hidden; display:-webkit-box; "
+                        "-webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.4"
+                    )
 
     def _new_dialog(container: Any, bar_label: Any) -> None:
         with ui.dialog() as dlg, ui.card().style("min-width:420px"):
@@ -137,11 +143,15 @@ def build_tab_flex() -> None:
     # ── Layout principal ──────────────────────────────────────────────────────
     with ui.column().classes("w-full").style("padding:16px; gap:12px"):
         with ui.row().classes("w-full items-center justify-between p-3 rounded").style("background:#f3f4f6"):
-            bar_lbl = ui.label("…").classes("text-sm text-gray-600 font-medium")
+            with ui.row().classes("items-center gap-2"):
+                ui.html('<i class="ti ti-map-pin" style="font-size:16px;color:#6b7280" aria-hidden="true"></i>')
+                bar_lbl = ui.label("…").classes("text-sm text-gray-600 font-medium")
             ui.button(
                 "+ Agregar zona",
                 on_click=lambda: _new_dialog(grid, bar_lbl)
-            ).props("flat dense").style("color:#0C447C")
+            ).props("flat dense").style(
+                "color:#185FA5; border:1px solid #378ADD; border-radius:4px; font-size:12px"
+            )
 
         grid = ui.element("div").classes("w-full").style(
             "display:grid; grid-template-columns:repeat(3,1fr); gap:10px"
