@@ -441,6 +441,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE productos ADD COLUMN gan_pct REAL DEFAULT NULL")
     if "stock" not in _prod_cols:
         cur.execute("ALTER TABLE productos ADD COLUMN stock INTEGER DEFAULT NULL")
+    if "catalog_status" not in _prod_cols:
+        cur.execute("ALTER TABLE productos ADD COLUMN catalog_status TEXT DEFAULT NULL")
 
     cur.execute(
         """

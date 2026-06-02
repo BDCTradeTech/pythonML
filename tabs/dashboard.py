@@ -135,7 +135,23 @@ def _query_productos(user_id: int) -> Dict[str, int]:
             (user_id,))
         gan_neg = cur.fetchone()[0]
 
-        return {"sin_costo": sin_costo, "sin_fob": sin_fob, "stock_susp": stock_susp, "gan_neg": gan_neg}
+        cur.execute(
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND catalog_status='winning' AND stock > 0",
+            (user_id,))
+        cat_ganando = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND catalog_status='sharing_first_place' AND stock > 0",
+            (user_id,))
+        cat_empatando = cur.fetchone()[0]
+
+        cur.execute(
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND catalog_status IN ('competing','listed') AND stock > 0",
+            (user_id,))
+        cat_perdiendo = cur.fetchone()[0]
+
+        return {"sin_costo": sin_costo, "sin_fob": sin_fob, "stock_susp": stock_susp, "gan_neg": gan_neg,
+                "cat_ganando": cat_ganando, "cat_empatando": cat_empatando, "cat_perdiendo": cat_perdiendo}
     finally:
         conn.close()
 
@@ -375,6 +391,20 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
         conn.close()
 
 
+def _detail_cat_status(user_id: int, statuses: List[str]) -> List[Dict]:
+    conn = get_connection()
+    try:
+        ph = ",".join("?" * len(statuses))
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT sku, marca, nombre FROM productos"
+            f" WHERE user_id=? AND catalog_status IN ({ph}) AND stock > 0 ORDER BY sku",
+            [user_id] + statuses)
+        return [{"sku": r[0], "marca": r[1], "nombre": r[2]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def _detail_gan_neg_prod(user_id: int) -> List[Dict]:
     conn = get_connection()
     try:
@@ -537,6 +567,30 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 [("SKU",      lambda r: r.get("sku")    or "—"),
                                  ("Producto", lambda r: r.get("nombre") or "—"),
                                  ("Gan$",     lambda r: f"${r['gan']:,.0f}" if r.get("gan") is not None else "—")]))
+                        _stat_row_popup(
+                            "Ganando", str(prod["cat_ganando"]),
+                            _GREEN,
+                            lambda: _open_popup_list(
+                                "Ganando en catálogo", _detail_cat_status(uid, ["winning"]),
+                                [("SKU",      lambda r: r.get("sku")    or "—"),
+                                 ("Marca",    lambda r: r.get("marca")  or "—"),
+                                 ("Producto", lambda r: r.get("nombre") or "—")]))
+                        _stat_row_popup(
+                            "Empatando", str(prod["cat_empatando"]),
+                            _YELLOW if prod["cat_empatando"] > 0 else _GREEN,
+                            lambda: _open_popup_list(
+                                "Empatando en catálogo", _detail_cat_status(uid, ["sharing_first_place"]),
+                                [("SKU",      lambda r: r.get("sku")    or "—"),
+                                 ("Marca",    lambda r: r.get("marca")  or "—"),
+                                 ("Producto", lambda r: r.get("nombre") or "—")]))
+                        _stat_row_popup(
+                            "Perdiendo", str(prod["cat_perdiendo"]),
+                            _RED if prod["cat_perdiendo"] > 0 else _GREEN,
+                            lambda: _open_popup_list(
+                                "Perdiendo en catálogo", _detail_cat_status(uid, ["competing", "listed"]),
+                                [("SKU",      lambda r: r.get("sku")    or "—"),
+                                 ("Marca",    lambda r: r.get("marca")  or "—"),
+                                 ("Producto", lambda r: r.get("nombre") or "—")]))
 
                 # --- Fila 1, Col 2: Ventas ---
                 ven_color = (_RED    if ventas["gan_neg"]     > 0
