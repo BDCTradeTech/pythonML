@@ -159,12 +159,12 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
         conn.close()
 
 
-def _query_arca() -> Dict[str, Any]:
+def _query_arca(user_id: int) -> Dict[str, Any]:
     return {
-        "siper":   get_arca_datos("siper"),
-        "iva":     get_arca_datos("iva"),
-        "deuda":   get_arca_datos("deuda"),
-        "ml_rows": get_arca_multilateral(),
+        "siper":   get_arca_datos("siper", user_id),
+        "iva":     get_arca_datos("iva",   user_id),
+        "deuda":   get_arca_datos("deuda", user_id),
+        "ml_rows": get_arca_multilateral(user_id),
     }
 
 
@@ -431,7 +431,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
     prod         = _query_productos(uid)
     ventas       = _query_ventas(uid)
-    arca_data    = _query_arca()
+    arca_data    = _query_arca(uid)
     arca_al      = _arca_alerts(arca_data)
     access_token = get_ml_access_token(uid)
     desde_dt     = datetime.now() - timedelta(days=30)

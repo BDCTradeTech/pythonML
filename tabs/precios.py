@@ -655,18 +655,18 @@ def _mostrar_tabla_precios(
         finally:
             _conn_gan.close()
 
-    _nombre_rows = [
-        (str(row.get("title") or ""), row.get("seller_sku"))
+    _no_costo_rows = [
+        (row.get("available_quantity"), str(row.get("title") or ""), row.get("seller_sku"))
         for row in items_loaded
-        if row.get("margen_pesos") is None and row.get("seller_sku") and row.get("title")
+        if row.get("margen_pesos") is None and row.get("seller_sku")
     ]
-    if _nombre_rows:
+    if _no_costo_rows:
         _now_nombre = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         _conn_nombre = get_connection()
         try:
             _conn_nombre.executemany(
-                "UPDATE productos SET nombre=?, updated_at=? WHERE sku=? AND user_id=? AND (nombre IS NULL OR nombre='')",
-                [(n[0], _now_nombre, n[1], _uid) for n in _nombre_rows],
+                "UPDATE productos SET stock=?, nombre=COALESCE(NULLIF(nombre,''),?), updated_at=? WHERE sku=? AND user_id=?",
+                [(n[0], n[1], _now_nombre, n[2], _uid) for n in _no_costo_rows],
             )
             _conn_nombre.commit()
         finally:

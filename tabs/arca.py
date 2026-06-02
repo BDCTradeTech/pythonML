@@ -122,16 +122,16 @@ def build_tab_arca(container) -> None:
     if not user:
         return
     with container:
-        _build_arca()
+        _build_arca(user["id"])
 
 
-def _build_arca() -> None:
+def _build_arca(user_id: int) -> None:
     # ── Cargar datos guardados ────────────────────────────────────────────────
-    siper_d = get_arca_datos("siper")
-    iva_d   = get_arca_datos("iva")
-    deuda_d = get_arca_datos("deuda")
-    ml_rows = get_arca_multilateral()
-    clae_d  = get_arca_datos("clae")
+    siper_d = get_arca_datos("siper", user_id)
+    iva_d   = get_arca_datos("iva",   user_id)
+    deuda_d = get_arca_datos("deuda", user_id)
+    ml_rows = get_arca_multilateral(user_id)
+    clae_d  = get_arca_datos("clae",  user_id)
 
     # ── Colores iniciales ─────────────────────────────────────────────────────
     c_siper = _color_siper(siper_d.get("categoria_siper", ""))
@@ -193,7 +193,7 @@ def _build_arca() -> None:
 
                 def _save_siper() -> None:
                     now = datetime.now().isoformat(timespec="seconds")
-                    save_arca_datos("siper", {"categoria_siper": inp_cat.value, "_ts": now})
+                    save_arca_datos("siper", {"categoria_siper": inp_cat.value, "_ts": now}, user_id)
                     siper_ts.text = _fmt_ts(now)
                     _upd_siper()
                     ui.notify("SIPER guardado", color="positive")
@@ -235,7 +235,7 @@ def _build_arca() -> None:
                         "saldo_tecnico":              str(inp_tec.value or 0),
                         "saldo_libre_disponibilidad": str(inp_lib.value or 0),
                         "_ts": now,
-                    })
+                    }, user_id)
                     iva_ts.text = _fmt_ts(now)
                     _upd_iva()
                     ui.notify("IVA guardado", color="positive")
@@ -282,7 +282,7 @@ def _build_arca() -> None:
                         "planes_activos":   str(int(inp_planes.value or 0)),
                         "tiene_intimacion": "true" if inp_intim.value else "false",
                         "_ts": now,
-                    })
+                    }, user_id)
                     deuda_ts.text = _fmt_ts(now)
                     _upd_deuda()
                     ui.notify("Deuda guardado", color="positive")
@@ -318,7 +318,7 @@ def _build_arca() -> None:
                         "actividad_principal":  inp_princ.value,
                         "actividad_secundaria": inp_sec.value,
                         "_ts": now,
-                    })
+                    }, user_id)
                     clae_ts.text = _fmt_ts(now)
                     _upd_clae()
                     ui.notify("CLAE guardado", color="positive")
@@ -409,7 +409,7 @@ def _build_arca() -> None:
                 _render_ml()
 
             def _save_multi() -> None:
-                save_arca_multilateral(_ml)
+                save_arca_multilateral(_ml, user_id)
                 now = datetime.now().isoformat(timespec="seconds")
                 multi_ts.text = _fmt_ts(now)
                 _upd_multi()

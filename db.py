@@ -529,19 +529,43 @@ def init_db() -> None:
     if "factura_courier" not in inv_extra_cols:
         cur.execute("ALTER TABLE invoice_extra ADD COLUMN factura_courier TEXT")
 
-    # ARCA: datos fiscales manuales por bloque (global, sin user_id)
+    # ARCA: datos fiscales manuales por bloque (por usuario)
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS arca_datos (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL DEFAULT 1,
             bloque     TEXT NOT NULL,
             campo      TEXT NOT NULL,
             valor      TEXT,
             updated_at TEXT,
-            UNIQUE(bloque, campo)
+            UNIQUE(user_id, bloque, campo)
         )
         """
     )
+    # Migración: si la tabla ya existía sin user_id, recrear con constraint correcto
+    cur.execute("PRAGMA table_info(arca_datos)")
+    _ad_cols = [r[1] for r in cur.fetchall()]
+    if "user_id" not in _ad_cols:
+        cur.execute("ALTER TABLE arca_datos RENAME TO arca_datos_old")
+        cur.execute(
+            """
+            CREATE TABLE arca_datos (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id    INTEGER NOT NULL DEFAULT 1,
+                bloque     TEXT NOT NULL,
+                campo      TEXT NOT NULL,
+                valor      TEXT,
+                updated_at TEXT,
+                UNIQUE(user_id, bloque, campo)
+            )
+            """
+        )
+        cur.execute(
+            "INSERT INTO arca_datos (user_id, bloque, campo, valor, updated_at) "
+            "SELECT 1, bloque, campo, valor, updated_at FROM arca_datos_old"
+        )
+        cur.execute("DROP TABLE arca_datos_old")
 
     # ARCA: Convenio Multilateral por provincia
     cur.execute(
@@ -568,6 +592,11 @@ def init_db() -> None:
             cur.execute(f"ALTER TABLE arca_multilateral ADD COLUMN {_col_def}")
         except sqlite3.OperationalError:
             pass
+    # Migración: agregar user_id a arca_multilateral si no existe
+    cur.execute("PRAGMA table_info(arca_multilateral)")
+    _am_cols = [r[1] for r in cur.fetchall()]
+    if "user_id" not in _am_cols:
+        cur.execute("ALTER TABLE arca_multilateral ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1")
 
     # Migración: dar permisos por defecto a usuarios existentes (admin para el usuario con id más bajo)
     cur.execute("SELECT MIN(id) FROM users")
@@ -1523,50 +1552,54 @@ def save_query(
 # ---------------------------------------------------------------------------
 
 
-def get_arca_datos(bloque: str) -> Dict[str, str]:
-    """Devuelve {campo: valor} para un bloque ARCA."""
+def get_arca_datos(bloque: str, user_id: int = 1) -> Dict[str, str]:
+    """Devuelve {campo: valor} para un bloque ARCA del usuario."""
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT campo, valor FROM arca_datos WHERE bloque = ?", (bloque,))
+        cur.execute(
+            "SELECT campo, valor FROM arca_datos WHERE user_id = ? AND bloque = ?",
+            (user_id, bloque),
+        )
         return {r["campo"]: (r["valor"] or "") for r in cur.fetchall()}
     finally:
         conn.close()
 
 
-def save_arca_datos(bloque: str, datos: Dict[str, str]) -> None:
-    """Guarda o actualiza los campos de un bloque ARCA."""
+def save_arca_datos(bloque: str, datos: Dict[str, str], user_id: int = 1) -> None:
+    """Guarda o actualiza los campos de un bloque ARCA para el usuario."""
     now = datetime.now().isoformat(timespec="seconds")
     conn = get_connection()
     try:
         cur = conn.cursor()
         for campo, valor in datos.items():
             cur.execute(
-                "INSERT INTO arca_datos (bloque, campo, valor, updated_at) VALUES (?, ?, ?, ?) "
-                "ON CONFLICT(bloque, campo) DO UPDATE SET valor=excluded.valor, updated_at=excluded.updated_at",
-                (bloque, campo, str(valor), now),
+                "INSERT INTO arca_datos (user_id, bloque, campo, valor, updated_at) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(user_id, bloque, campo) DO UPDATE SET valor=excluded.valor, updated_at=excluded.updated_at",
+                (user_id, bloque, campo, str(valor), now),
             )
         conn.commit()
     finally:
         conn.close()
 
 
-def get_arca_multilateral() -> List[Dict[str, Any]]:
-    """Devuelve todas las filas del Convenio Multilateral."""
+def get_arca_multilateral(user_id: int = 1) -> List[Dict[str, Any]]:
+    """Devuelve todas las filas del Convenio Multilateral del usuario."""
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
             "SELECT id, provincia, alicuota, a_favor_contrib, a_favor_fisco, a_pagar, updated_at "
-            "FROM arca_multilateral ORDER BY id"
+            "FROM arca_multilateral WHERE user_id = ? ORDER BY id",
+            (user_id,),
         )
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
 
 
-def save_arca_multilateral(filas: List[Dict[str, Any]]) -> None:
-    """Reemplaza todas las filas del Convenio Multilateral."""
+def save_arca_multilateral(filas: List[Dict[str, Any]], user_id: int = 1) -> None:
+    """Reemplaza todas las filas del Convenio Multilateral del usuario."""
     now = datetime.now().isoformat(timespec="seconds")
     conn = get_connection()
 
@@ -1578,13 +1611,14 @@ def save_arca_multilateral(filas: List[Dict[str, Any]]) -> None:
 
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM arca_multilateral")
+        cur.execute("DELETE FROM arca_multilateral WHERE user_id = ?", (user_id,))
         for f in filas:
             cur.execute(
                 "INSERT INTO arca_multilateral "
-                "(provincia, alicuota, a_favor_contrib, a_favor_fisco, a_pagar, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                "(user_id, provincia, alicuota, a_favor_contrib, a_favor_fisco, a_pagar, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
+                    user_id,
                     str(f.get("provincia") or ""),
                     _f(f.get("alicuota")),
                     _f(f.get("a_favor_contrib")),
