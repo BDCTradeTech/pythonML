@@ -41,11 +41,11 @@ def build_tab_flex() -> None:
         container.clear()
         with container:
             if not zonas:
-                ui.label("No hay zonas configuradas.").classes("text-sm text-gray-400 col-span-3")
+                ui.label("No hay zonas configuradas.").classes("text-sm text-gray-400 col-span-2")
                 return
             for z in zonas:
                 tarifa_fmt = f"$ {int(z['tarifa']):,}".replace(",", ".")
-                with ui.card().classes("p-3 gap-1").style("min-width:0"):
+                with ui.card().classes("p-3 gap-1").style("min-width:0; min-height:120px"):
                     with ui.row().classes("w-full justify-between items-start gap-1"):
                         with ui.column().classes("gap-0.5").style("flex:1; min-width:0"):
                             ui.label(z["nombre"]).classes("font-semibold text-sm leading-tight")
@@ -53,18 +53,14 @@ def build_tab_flex() -> None:
                             ui.label(z["codigos_postales"] or "—").classes(
                                 "text-xs text-gray-400 leading-tight"
                             ).style(
-                                "overflow:hidden; display:-webkit-box; "
-                                "-webkit-line-clamp:3; -webkit-box-orient:vertical"
+                                "word-break:break-all; overflow:hidden; display:-webkit-box; "
+                                "-webkit-line-clamp:2; -webkit-box-orient:vertical"
                             )
                         with ui.column().classes("gap-0 items-end").style("flex-shrink:0"):
                             ui.button(
                                 icon="edit",
                                 on_click=lambda z=z: _edit_dialog(z, grid, bar_lbl)
                             ).props("flat dense size=sm")
-                            ui.button(
-                                icon="delete",
-                                on_click=lambda zid=z["id"]: _delete(zid, grid, bar_lbl)
-                            ).props("flat dense size=sm color=red")
 
     def _new_dialog(container: Any, bar_label: Any) -> None:
         with ui.dialog() as dlg, ui.card().style("min-width:420px"):
@@ -105,40 +101,41 @@ def build_tab_flex() -> None:
             inp_tarifa = ui.input("Tarifa ($)", value=str(int(z["tarifa"]))).props("dense outlined").classes("w-full")
             cps_display = (z["codigos_postales"] or "").replace(",", "\n")
             inp_cps = ui.textarea("Códigos postales", value=cps_display).props("dense outlined").classes("w-full")
-            with ui.row().classes("gap-2 justify-end w-full mt-1"):
-                ui.button("Cancelar", on_click=dlg.close).props("flat dense")
-                def _save(dlg=dlg, z=z):
-                    try:
-                        tarifa = float(inp_tarifa.value or 0)
-                    except ValueError:
-                        tarifa = 0.0
-                    cps = ",".join(
-                        p.strip()
-                        for p in inp_cps.value.replace("\n", ",").split(",")
-                        if p.strip()
-                    )
+            with ui.row().classes("gap-2 justify-between w-full mt-1"):
+                def _delete_confirm(dlg=dlg, z=z):
                     conn = get_connection()
-                    conn.execute(
-                        "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
-                        (inp_nombre.value.strip(), tarifa, cps, z["id"]),
-                    )
+                    conn.execute("DELETE FROM flex_zonas WHERE id=?", (z["id"],))
                     conn.commit()
                     conn.close()
                     dlg.close()
                     _refresh(container, bar_label)
-                ui.button("Guardar", on_click=_save, color="primary").props("dense")
+                ui.button("Eliminar zona", on_click=_delete_confirm).props("flat dense color=negative")
+                with ui.row().classes("gap-2"):
+                    ui.button("Cancelar", on_click=dlg.close).props("flat dense")
+                    def _save(dlg=dlg, z=z):
+                        try:
+                            tarifa = float(inp_tarifa.value or 0)
+                        except ValueError:
+                            tarifa = 0.0
+                        cps = ",".join(
+                            p.strip()
+                            for p in inp_cps.value.replace("\n", ",").split(",")
+                            if p.strip()
+                        )
+                        conn = get_connection()
+                        conn.execute(
+                            "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
+                            (inp_nombre.value.strip(), tarifa, cps, z["id"]),
+                        )
+                        conn.commit()
+                        conn.close()
+                        dlg.close()
+                        _refresh(container, bar_label)
+                    ui.button("Guardar", on_click=_save, color="primary").props("dense")
         dlg.open()
-
-    def _delete(zid: int, container: Any, bar_label: Any) -> None:
-        conn = get_connection()
-        conn.execute("DELETE FROM flex_zonas WHERE id=?", (zid,))
-        conn.commit()
-        conn.close()
-        _refresh(container, bar_label)
 
     # ── Layout principal ──────────────────────────────────────────────────────
     with ui.column().classes("w-full").style("padding:16px; gap:12px"):
-        # Barra superior gris
         with ui.row().classes("w-full items-center justify-between p-3 rounded").style("background:#f3f4f6"):
             bar_lbl = ui.label("…").classes("text-sm text-gray-600 font-medium")
             ui.button(
@@ -146,8 +143,7 @@ def build_tab_flex() -> None:
                 on_click=lambda: _new_dialog(grid, bar_lbl)
             ).props("flat dense").style("color:#0C447C")
 
-        # Grilla 3 columnas
         grid = ui.element("div").classes("w-full").style(
-            "display:grid; grid-template-columns:repeat(3,1fr); gap:12px"
+            "display:grid; grid-template-columns:repeat(2,1fr); gap:12px"
         )
         _refresh(grid, bar_lbl)
