@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from nicegui import app, background_tasks, run, ui
 
 from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral
-from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item
+from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions
 
 _GREEN  = "#3B6D11"
 _YELLOW = "#BA7517"
@@ -235,12 +235,12 @@ def _arca_alerts(data: Dict) -> List[Tuple[str, str]]:
     return alerts
 
 
-def _rep_rate(m: Dict) -> float:
+def _rep_rate(m: Dict) -> Optional[float]:
     exc = (m or {}).get("excluded") or {}
     r = exc.get("real_rate")
     if isinstance(r, (int, float)): return float(r)
     r = (m or {}).get("rate")
-    return float(r) if isinstance(r, (int, float)) else 0.0
+    return float(r) if isinstance(r, (int, float)) else None
 
 
 def _rep_alerts(metrics: Dict) -> List[Tuple[str, str]]:
@@ -249,10 +249,10 @@ def _rep_alerts(metrics: Dict) -> List[Tuple[str, str]]:
     rm  = _rep_rate(metrics.get("mediations")            or {})
     rca = _rep_rate(metrics.get("cancellations")         or {})
     rd  = _rep_rate(metrics.get("delayed_handling_time") or {})
-    if rc  > MAX_CLAIMS:  alerts.append((_RED, f"Reclamos ML: {rc*100:.1f}% (máx {MAX_CLAIMS*100:.0f}%)"))
-    if rm  > MAX_MEDIAT:  alerts.append((_RED, f"Mediaciones ML: {rm*100:.1f}% (máx {MAX_MEDIAT*100:.1f}%)"))
-    if rca > MAX_CANC:    alerts.append((_RED, f"Cancelaciones ML: {rca*100:.1f}% (máx {MAX_CANC*100:.1f}%)"))
-    if rd  > MAX_DELAYED: alerts.append((_RED, f"Demora envíos ML: {rd*100:.0f}% (máx {MAX_DELAYED*100:.0f}%)"))
+    if rc  is not None and rc  > MAX_CLAIMS:  alerts.append((_RED, f"Reclamos ML: {rc*100:.1f}% (máx {MAX_CLAIMS*100:.0f}%)"))
+    if rm  is not None and rm  > MAX_MEDIAT:  alerts.append((_RED, f"Mediaciones ML: {rm*100:.1f}% (máx {MAX_MEDIAT*100:.1f}%)"))
+    if rca is not None and rca > MAX_CANC:    alerts.append((_RED, f"Cancelaciones ML: {rca*100:.1f}% (máx {MAX_CANC*100:.1f}%)"))
+    if rd  is not None and rd  > MAX_DELAYED: alerts.append((_RED, f"Demora envíos ML: {rd*100:.0f}% (máx {MAX_DELAYED*100:.0f}%)"))
     return alerts
 
 
@@ -317,7 +317,10 @@ def _stat_row(label: str, value: str, color: str):
         ui.label(label).classes("text-xs text-gray-700 flex-1")
         ui.label(value).classes("text-xs font-semibold").style(f"color:{color}")
 
-def _rep_stat_row(label: str, rate: float, maxv: float):
+def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
+    if rate is None:
+        _stat_row(f"{label} (máx {maxv*100:.1f}%)", "—", "#9ca3af")
+        return
     c = _RED if rate > maxv else (_YELLOW if rate > maxv * 0.7 else _GREEN)
     _stat_row(f"{label} (máx {maxv*100:.1f}%)", f"{rate*100:.2f}%", c)
 
@@ -796,6 +799,22 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             data      = await run.io_bound(ml_get_my_items, access_token, True)
             all_items = data.get("results", [])
 
+            # ── Obtener seller_id y preguntas sin responder ───────────────────────
+            seller_id = ""
+            try:
+                profile = await run.io_bound(ml_get_user_profile, access_token)
+                seller_id = str((profile or {}).get("id") or "")
+            except Exception:
+                pass
+
+            questions: List[Dict[str, Any]] = []
+            if seller_id:
+                try:
+                    questions = await run.io_bound(ml_get_unanswered_questions, access_token, seller_id)
+                except Exception:
+                    pass
+            n_questions = len(questions)
+
             # ── Publicaciones ML (under_review) ──────────────────────────────
             ur_pend_doc = [it for it in all_items
                            if str(it.get("status", "")).lower() == "under_review"
@@ -805,7 +824,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                            and "held" in (it.get("sub_status") or [])]
             active_count = sum(1 for it in all_items if str(it.get("status", "")).lower() == "active")
 
-            ml_pubs_ov = (_RED if ur_pend_doc else _YELLOW if ur_held else _GREEN)
+            ml_pubs_ov = (_RED if ur_pend_doc or n_questions > 0 else _YELLOW if ur_held else _GREEN)
             _col_defs_ur = [
                 ("ID ML",      lambda r: str(r.get("id") or "—")),
                 ("Título",     lambda r: (r.get("title") or "—")[:45]),
@@ -829,6 +848,14 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         lambda rows=ur_held: _open_popup_list(
                             "Retenidas por ML", rows, _col_defs_ur))
                     _stat_row("Activas sin problemas", str(active_count), _GREEN)
+                    _stat_row_popup(
+                        "Preguntas sin responder", str(n_questions),
+                        _RED if n_questions > 0 else _GREEN,
+                        lambda q=questions: _open_popup_list(
+                            "Preguntas sin responder", q,
+                            [("Fecha",    lambda r: (r.get("date_created") or "")[:10]),
+                             ("Item",     lambda r: str(r.get("item_id") or "—")),
+                             ("Pregunta", lambda r: (r.get("text") or "—")[:100])]))
 
             if ur_pend_doc:
                 n = len(ur_pend_doc)
@@ -899,13 +926,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             break
                 if rid:
                     rep_ids.append(rid)
-
-            seller_id = ""
-            try:
-                profile = await run.io_bound(ml_get_user_profile, access_token)
-                seller_id = str((profile or {}).get("id") or "")
-            except Exception:
-                pass
 
             promo_data: dict = {}
             for iid in rep_ids:
