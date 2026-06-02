@@ -2155,9 +2155,7 @@ def _mostrar_tabla_precios(
                                 _row_bg = "bg-yellow-50"
                             else:
                                 _row_bg = ""
-                            _gan_neg_r = row.get("margen_pesos") is not None and (row.get("margen_pesos") or 0) < 0
-                            _row_extra = "text-red-600" if _gan_neg_r else ""
-                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg} {_row_extra}"):
+                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}"):
                                 for col in columns_precios:
                                     field = col.get("field", col["name"])
                                     val = row.get(field)
