@@ -140,7 +140,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.02.10"
+VERSION = "3.26.06.02.15"
 
 
 # ==========================
@@ -378,7 +378,7 @@ def show_main_layout(container) -> None:
                 build_tab_balance(balance_container)
             elif val == "Dashboard" and not dashboard_cargado[0]:
                 dashboard_cargado[0] = True
-                build_tab_dashboard(dashboard_container)
+                build_tab_dashboard(dashboard_container, navigate_to)
             elif val == "Históricos" and not historicos_cargado[0]:
                 historicos_cargado[0] = True
                 build_tab_historicos(historicos_container)
@@ -401,6 +401,9 @@ def show_main_layout(container) -> None:
                 app.storage.user["last_tab"] = lbl
                 _lazy_load(lbl)
             return f
+
+        def navigate_to(lbl: str) -> None:
+            _go(lbl)()
 
         # Barra gris: navegación principal + secundaria | semáforos, versión, usuario
         # Menús secundarios se abren al pasar el mouse (hover). No se cierran al mover hacia los items.
