@@ -115,12 +115,12 @@ def _query_productos(user_id: int) -> Dict[str, int]:
         cur = conn.cursor()
         cur.execute(
             "SELECT COUNT(*) FROM productos WHERE user_id=?"
-            " AND (costo_usd IS NULL OR costo_usd=0)",
+            " AND (costo_usd IS NULL OR costo_usd=0) AND stock > 0",
             (user_id,))
         sin_costo = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)",
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0) AND stock > 0",
             (user_id,))
         sin_fob = cur.fetchone()[0]
 
@@ -353,7 +353,7 @@ def _detail_sin_costo(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
+            " WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0) AND stock > 0"
             " ORDER BY sku",
             (user_id,))
         return [dict(r) for r in cur.fetchall()]
@@ -367,7 +367,7 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)"
+            " WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0) AND stock > 0"
             " ORDER BY sku",
             (user_id,))
         return [dict(r) for r in cur.fetchall()]
@@ -531,7 +531,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             lambda: _open_popup_list(
                                 "A pérdida (Productos)", _detail_gan_neg_prod(uid),
                                 [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
                                  ("Producto", lambda r: r.get("nombre") or "—"),
                                  ("Gan$",     lambda r: f"${r['gan']:,.0f}" if r.get("gan") is not None else "—")]))
 
@@ -749,8 +748,8 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             _col_defs_ur = [
                 ("ID ML",      lambda r: str(r.get("id") or "—")),
                 ("Título",     lambda r: (r.get("title") or "—")[:45]),
-                ("Estado",     lambda r: r.get("status") or "—"),
-                ("Sub-estado", lambda r: ", ".join(r.get("sub_status") or []) or "—"),
+                ("Estado",     lambda r: (r.get("status") or "—").replace("_", " ")),
+                ("Sub-estado", lambda r: ", ".join((s or "").replace("_", " ") for s in (r.get("sub_status") or [])) or "—"),
                 ("Precio",     lambda r: f"${r['price']:,.0f}" if r.get("price") else "—"),
                 ("Stock",      lambda r: str(r.get("available_quantity") or 0)),
             ]
