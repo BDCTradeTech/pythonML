@@ -292,12 +292,14 @@ def build_tab_datos() -> None:
                 ui.html('<i class="ti ti-device-floppy" style="font-size:14px; margin-right:6px; vertical-align:middle"></i>')
                 ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
 
-        # ── Fila 1: 4 cards iguales ──────────────────────────────────────────
+        # ── Masonry CSS columns: 4 columnas ──────────────────────────────────
         with ui.element("div").style(
-            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px"
+            "column-count:4; column-gap:10px; width:100%"
         ):
+            _CS = "break-inside:avoid; margin-bottom:10px; width:100%; display:inline-block"
+
             # 1. DÓLAR
-            with ui.card().classes("p-3 datos-card"):
+            with ui.card().classes("p-3 datos-card").style(_CS):
                 _card_header("ti-currency-dollar", "Dólar")
                 for lbl, key in [
                     ("Oficial",  "dolar_oficial"),
@@ -307,8 +309,25 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_dolar, key, lbl)
 
-            # 2. MIAMI + Traída × kilo
-            with ui.card().classes("p-3 datos-card"):
+            # 2. CUOTAS
+            with ui.card().classes("p-3 datos-card").style(_CS):
+                _card_header("ti-credit-card", "Cuotas")
+                for lbl, key, unit in [
+                    ("3x",  "cuotas_3x",  "%"),
+                    ("6x",  "cuotas_6x",  "%"),
+                    ("9x",  "cuotas_9x",  "%"),
+                    ("12x", "cuotas_12x", "%"),
+                ]:
+                    _add_field(inp_cuotas, key, lbl, unit)
+                _divider()
+                for lbl, key in [
+                    ("ML ×3", "ml_3cuotas"),
+                    ("ML ×6", "ml_6cuotas"),
+                ]:
+                    _add_field(inp_cuotas, key, lbl)
+
+            # 3. MIAMI + Traída × kilo
+            with ui.card().classes("p-3 datos-card").style(_CS):
                 _card_header("ti-plane", "Miami")
                 for lbl, key, unit in [
                     ("KG",            "valor_kg_miami",           "u$"),
@@ -321,8 +340,18 @@ def build_tab_datos() -> None:
                 _divider("Traída × kilo")
                 _add_field(inp_miami, "kilo", "Precio u$/kg")
 
-            # 3. CHINA
-            with ui.card().classes("p-3 datos-card"):
+            # 4. IMPUESTOS
+            with ui.card().classes("p-3 datos-card").style(_CS):
+                _card_header("ti-receipt-tax", "Impuestos")
+                for lbl, key in [
+                    ("IVA 10,5%", "iva_105"),
+                    ("IVA 21%",   "iva_21"),
+                    ("IIBB LHS",  "iibb_lhs"),
+                ]:
+                    _add_field(inp_impuestos, key, lbl, "%")
+
+            # 5. CHINA
+            with ui.card().classes("p-3 datos-card").style(_CS):
                 _card_header("ti-world", "China")
                 for lbl, key, unit in [
                     ("KG",              "valor_kg_china",           "u$"),
@@ -338,8 +367,8 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_china, key, lbl, unit)
 
-            # 4. MERCADOLIBRE
-            with ui.card().classes("p-3 datos-card"):
+            # 6. MERCADOLIBRE
+            with ui.card().classes("p-3 datos-card").style(_CS):
                 _card_header("ti-building-store", "MercadoLibre")
                 for lbl, key, unit in [
                     ("Comisión", "ml_comision",  "%"),
@@ -357,37 +386,6 @@ def build_tab_datos() -> None:
                     ("Envíos gratis", "ml_envios_gratuitos",    "$"),
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
-
-        # ── Fila 2: Cuotas (cols 1-2) | Impuestos (cols 3-4) ─────────────────
-        with ui.element("div").style(
-            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px"
-        ):
-            # 5. CUOTAS (cols 1-2)
-            with ui.card().classes("p-3 datos-card").style("grid-column: 1 / 3"):
-                _card_header("ti-credit-card", "Cuotas")
-                for lbl, key, unit in [
-                    ("3x",  "cuotas_3x",  "%"),
-                    ("6x",  "cuotas_6x",  "%"),
-                    ("9x",  "cuotas_9x",  "%"),
-                    ("12x", "cuotas_12x", "%"),
-                ]:
-                    _add_field(inp_cuotas, key, lbl, unit)
-                _divider()
-                for lbl, key in [
-                    ("ML ×3", "ml_3cuotas"),
-                    ("ML ×6", "ml_6cuotas"),
-                ]:
-                    _add_field(inp_cuotas, key, lbl)
-
-            # 6. IMPUESTOS (cols 3-4)
-            with ui.card().classes("p-3 datos-card").style("grid-column: 3 / 5"):
-                _card_header("ti-receipt-tax", "Impuestos")
-                for lbl, key in [
-                    ("IVA 10,5%", "iva_105"),
-                    ("IVA 21%",   "iva_21"),
-                    ("IIBB LHS",  "iibb_lhs"),
-                ]:
-                    _add_field(inp_impuestos, key, lbl, "%")
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
