@@ -17,6 +17,7 @@ from ml_api import (
     ml_get_orders,
     ml_get_shipments_today,
     ml_get_my_items,
+    ml_get_unanswered_questions,
 )
 from db import get_cotizador_param
 
@@ -74,7 +75,7 @@ def _cuotas_key(it: dict) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -328,7 +329,7 @@ def _pintar_home_inline(
                     bar_pct = 0.0
                 elif rate_f == 0:
                     rate_pct_str = "0,00%"
-                    color = "#16a34a"
+                    color = "#3B6D11"
                     bar_pct = 0.0
                 else:
                     rate_pct_str = f"{rate_f * 100:.2f}%".replace(".", ",")
@@ -372,6 +373,17 @@ def _pintar_home_inline(
                         _semaforo(rate_mediat, MAX_MEDIAT, f"Mediaciones (máx {MAX_MEDIAT*100:.1f}%)")
                         _semaforo(rate_canc, MAX_CANC, f"Cancelaciones (máx {MAX_CANC*100:.1f}%)")
                         _semaforo(rate_delayed, MAX_DELAYED, f"Demora envíos (máx {MAX_DELAYED*100:.0f}%)")
+                        if questions is not None:
+                            n_q = len(questions)
+                            q_color = "#3B6D11" if n_q == 0 else "#A32D2D"
+                            with ui.element("div").style("margin-bottom:5px"):
+                                with ui.element("div").style("display:flex;align-items:center;gap:6px"):
+                                    with ui.element("div").style(
+                                        f"width:8px;height:8px;border-radius:50%;"
+                                        f"background:{q_color};flex-shrink:0"):
+                                        pass
+                                    ui.label("Preguntas sin responder").style("font-size:11px;flex:1;color:#374151")
+                                    ui.label(str(n_q)).style(f"font-size:11px;font-weight:600;color:{q_color}")
 
                 # Card Ventas períodos
                 with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
@@ -840,6 +852,12 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
                 pass
+            questions: List[Dict[str, Any]] = []
+            if seller_id:
+                try:
+                    questions = await run.io_bound(ml_get_unanswered_questions, access_token, str(seller_id))
+                except Exception:
+                    pass
         except Exception as e:
             estadisticas_container.clear()
             with estadisticas_container:
@@ -847,6 +865,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions)
 
     cargar_y_pintar()

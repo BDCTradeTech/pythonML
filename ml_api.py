@@ -1173,6 +1173,23 @@ def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, i
     return {"flex": flex_count, "me": me_count}
 
 
+def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[str, Any]]:
+    """GET /questions/search?status=unanswered — preguntas sin responder del vendedor."""
+    if not access_token or not seller_id:
+        return []
+    try:
+        resp = requests.get(
+            "https://api.mercadolibre.com/questions/search",
+            params={"seller_id": seller_id, "status": "unanswered", "limit": 50},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        return resp.json().get("questions", [])
+    except Exception:
+        return []
+
+
 def ml_search_similar(
     query: str, limit: int = 20, access_token: Optional[str] = None, solo_propias: bool = False
 ) -> Dict[str, Any]:
