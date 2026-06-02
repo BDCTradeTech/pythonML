@@ -748,9 +748,9 @@ def build_tab_ventas(container) -> None:
             estado_val = str(filtro_estado_ref.get("val", "todas") or "todas")
             ventas_filtradas = ventas_raw
             if estado_val == "pagada":
-                ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered")]
+                ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered") and v.get("pay_status") != "rejected" and not v.get("has_refund")]
             elif estado_val == "cancelada":
-                ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower()]
+                ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower() or v.get("pay_status") == "rejected" or v.get("has_refund")]
             pub_val = str(filtro_publicacion_ref.get("val", "todas") or "todas")
             if pub_val == "propias":
                 ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Propia"]
@@ -1296,6 +1296,8 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = calc["gan_cos_pct"]
                     v["logistic_type"] = calc["logistic_type"]
                     v["pay_status"] = calc.get("pay_status")
+                    if calc.get("pay_status") == "rejected" and v.get("status") not in ("Cancelada", "Devolución"):
+                        v["status"] = "Cancelada"
                     ventas_cache_ref[pid] = db_row
                     procesadas += 1
 
@@ -1714,6 +1716,8 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["pay_status"] = c.get("pay_status")
                     v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
+                    if c.get("pay_status") == "rejected" and v.get("status") not in ("Cancelada", "Devolución"):
+                        v["status"] = "Cancelada"
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(True)
