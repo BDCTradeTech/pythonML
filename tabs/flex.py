@@ -25,92 +25,129 @@ def build_tab_flex() -> None:
         return
     uid: int = user["id"]
 
-    def _build_flex(container: Any) -> None:
+    def _load_zonas():
         conn = get_connection()
-        zonas = conn.execute(
-            "SELECT id, nombre, codigos_postales, tarifa FROM flex_zonas ORDER BY tarifa"
+        rows = conn.execute(
+            "SELECT id, nombre, codigos_postales, tarifa FROM flex_zonas WHERE user_id=? ORDER BY tarifa",
+            (uid,)
         ).fetchall()
         conn.close()
+        return rows
+
+    def _refresh(container: Any, bar_label: Any) -> None:
+        zonas = _load_zonas()
+        n = len(zonas)
+        bar_label.set_text(f"{n} zona{'s' if n != 1 else ''} configurada{'s' if n != 1 else ''}")
         container.clear()
         with container:
             if not zonas:
-                ui.label("No hay zonas cargadas.").style("font-size:13px; color:gray")
+                ui.label("No hay zonas configuradas.").classes("text-sm text-gray-400 col-span-3")
+                return
             for z in zonas:
                 tarifa_fmt = f"$ {int(z['tarifa']):,}".replace(",", ".")
-                with ui.card().classes("w-full p-3").style("margin-bottom:8px"):
-                    with ui.row().classes("w-full items-start justify-between"):
-                        with ui.column().style("gap:4px; flex:1"):
-                            with ui.row().classes("items-center gap-2"):
-                                ui.label(z["nombre"]).style("font-size:14px; font-weight:600")
-                                ui.label(tarifa_fmt).style("font-size:14px; color:#0C447C; font-weight:500")
-                            ui.label(z["codigos_postales"] or "—").style(
-                                "font-size:11px; color:gray; white-space:pre-wrap; word-break:break-all"
+                with ui.card().classes("p-3 gap-1").style("min-width:0"):
+                    with ui.row().classes("w-full justify-between items-start gap-1"):
+                        with ui.column().classes("gap-0.5").style("flex:1; min-width:0"):
+                            ui.label(z["nombre"]).classes("font-semibold text-sm leading-tight")
+                            ui.label(tarifa_fmt).classes("text-sm font-medium").style("color:#0C447C")
+                            ui.label(z["codigos_postales"] or "—").classes(
+                                "text-xs text-gray-400 leading-tight"
+                            ).style(
+                                "overflow:hidden; display:-webkit-box; "
+                                "-webkit-line-clamp:3; -webkit-box-orient:vertical"
                             )
-                        with ui.row().classes("items-center gap-1"):
-                            ui.button(icon="edit", on_click=lambda z=z: _edit_zona(z, container)).props("flat dense size=sm")
-                            ui.button(icon="delete", on_click=lambda zid=z["id"]: _delete_zona(zid, container)).props("flat dense size=sm color=red")
-            ui.button("+ Nueva zona", on_click=lambda: _new_zona_form(container)).props("flat dense").style("margin-top:8px")
+                        with ui.column().classes("gap-0 items-end").style("flex-shrink:0"):
+                            ui.button(
+                                icon="edit",
+                                on_click=lambda z=z: _edit_dialog(z, grid, bar_lbl)
+                            ).props("flat dense size=sm")
+                            ui.button(
+                                icon="delete",
+                                on_click=lambda zid=z["id"]: _delete(zid, grid, bar_lbl)
+                            ).props("flat dense size=sm color=red")
 
-    def _edit_zona(z: Any, container: Any) -> None:
-        with ui.dialog() as dlg, ui.card().style("min-width:400px"):
-            ui.label("Editar zona").style("font-size:14px; font-weight:600")
-            inp_nombre = ui.input("Nombre", value=z["nombre"]).props("dense outlined").classes("w-full")
-            inp_tarifa = ui.input("Tarifa ($)", value=str(int(z["tarifa"]))).props("dense outlined").classes("w-full")
-            inp_cps = ui.textarea("Códigos postales", value=z["codigos_postales"] or "").props("dense outlined").classes("w-full")
-            with ui.row().classes("gap-2 justify-end w-full"):
+    def _new_dialog(container: Any, bar_label: Any) -> None:
+        with ui.dialog() as dlg, ui.card().style("min-width:420px"):
+            ui.label("Nueva zona").classes("text-sm font-semibold mb-1")
+            inp_nombre = ui.input("Nombre").props("dense outlined").classes("w-full")
+            inp_tarifa = ui.input("Tarifa ($)").props("dense outlined").classes("w-full")
+            inp_cps = ui.textarea(
+                "Códigos postales (uno por línea o separados por coma)"
+            ).props("dense outlined").classes("w-full")
+            with ui.row().classes("gap-2 justify-end w-full mt-1"):
                 ui.button("Cancelar", on_click=dlg.close).props("flat dense")
-                def _save(dlg=dlg, z=z) -> None:
+                def _save(dlg=dlg):
                     try:
                         tarifa = float(inp_tarifa.value or 0)
                     except ValueError:
                         tarifa = 0.0
+                    cps = ",".join(
+                        p.strip()
+                        for p in inp_cps.value.replace("\n", ",").split(",")
+                        if p.strip()
+                    )
                     conn = get_connection()
                     conn.execute(
-                        "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
-                        (inp_nombre.value.strip(), tarifa, inp_cps.value.strip(), z["id"]),
+                        "INSERT INTO flex_zonas (user_id, nombre, codigos_postales, tarifa) VALUES (?,?,?,?)",
+                        (uid, inp_nombre.value.strip(), cps, tarifa),
                     )
                     conn.commit()
                     conn.close()
                     dlg.close()
-                    _build_flex(container)
+                    _refresh(container, bar_label)
+                ui.button("Crear", on_click=_save, color="primary").props("dense")
+        dlg.open()
+
+    def _edit_dialog(z: Any, container: Any, bar_label: Any) -> None:
+        with ui.dialog() as dlg, ui.card().style("min-width:420px"):
+            ui.label("Editar zona").classes("text-sm font-semibold mb-1")
+            inp_nombre = ui.input("Nombre", value=z["nombre"]).props("dense outlined").classes("w-full")
+            inp_tarifa = ui.input("Tarifa ($)", value=str(int(z["tarifa"]))).props("dense outlined").classes("w-full")
+            cps_display = (z["codigos_postales"] or "").replace(",", "\n")
+            inp_cps = ui.textarea("Códigos postales", value=cps_display).props("dense outlined").classes("w-full")
+            with ui.row().classes("gap-2 justify-end w-full mt-1"):
+                ui.button("Cancelar", on_click=dlg.close).props("flat dense")
+                def _save(dlg=dlg, z=z):
+                    try:
+                        tarifa = float(inp_tarifa.value or 0)
+                    except ValueError:
+                        tarifa = 0.0
+                    cps = ",".join(
+                        p.strip()
+                        for p in inp_cps.value.replace("\n", ",").split(",")
+                        if p.strip()
+                    )
+                    conn = get_connection()
+                    conn.execute(
+                        "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
+                        (inp_nombre.value.strip(), tarifa, cps, z["id"]),
+                    )
+                    conn.commit()
+                    conn.close()
+                    dlg.close()
+                    _refresh(container, bar_label)
                 ui.button("Guardar", on_click=_save, color="primary").props("dense")
         dlg.open()
 
-    def _delete_zona(zid: int, container: Any) -> None:
+    def _delete(zid: int, container: Any, bar_label: Any) -> None:
         conn = get_connection()
         conn.execute("DELETE FROM flex_zonas WHERE id=?", (zid,))
         conn.commit()
         conn.close()
-        _build_flex(container)
+        _refresh(container, bar_label)
 
-    def _new_zona_form(container: Any) -> None:
-        with ui.dialog() as dlg, ui.card().style("min-width:400px"):
-            ui.label("Nueva zona").style("font-size:14px; font-weight:600")
-            inp_nombre = ui.input("Nombre").props("dense outlined").classes("w-full")
-            inp_tarifa = ui.input("Tarifa ($)").props("dense outlined").classes("w-full")
-            inp_cps = ui.textarea("Códigos postales (uno por línea)").props("dense outlined").classes("w-full")
-            with ui.row().classes("gap-2 justify-end w-full"):
-                ui.button("Cancelar", on_click=dlg.close).props("flat dense")
-                def _save_new(dlg=dlg) -> None:
-                    try:
-                        tarifa = float(inp_tarifa.value or 0)
-                    except ValueError:
-                        tarifa = 0.0
-                    conn = get_connection()
-                    conn.execute(
-                        "INSERT INTO flex_zonas (user_id, nombre, codigos_postales, tarifa) VALUES (?,?,?,?)",
-                        (uid, inp_nombre.value.strip(), inp_cps.value.strip(), tarifa),
-                    )
-                    conn.commit()
-                    conn.close()
-                    dlg.close()
-                    _build_flex(container)
-                ui.button("Crear", on_click=_save_new, color="primary").props("dense")
-        dlg.open()
-
+    # ── Layout principal ──────────────────────────────────────────────────────
     with ui.column().classes("w-full").style("padding:16px; gap:12px"):
-        with ui.row().classes("items-center gap-2"):
-            ui.html('<i class="ti ti-motorbike" style="font-size:20px;color:#0C447C"></i>')
-            ui.label("Envíos Flex").style("font-size:18px; font-weight:600; color:#0C447C")
-        flex_container = ui.column().classes("w-full")
-        _build_flex(flex_container)
+        # Barra superior gris
+        with ui.row().classes("w-full items-center justify-between p-3 rounded").style("background:#f3f4f6"):
+            bar_lbl = ui.label("…").classes("text-sm text-gray-600 font-medium")
+            ui.button(
+                "+ Agregar zona",
+                on_click=lambda: _new_dialog(grid, bar_lbl)
+            ).props("flat dense").style("color:#0C447C")
+
+        # Grilla 3 columnas
+        grid = ui.element("div").classes("w-full").style(
+            "display:grid; grid-template-columns:repeat(3,1fr); gap:12px"
+        )
+        _refresh(grid, bar_lbl)
