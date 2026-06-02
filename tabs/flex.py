@@ -110,7 +110,7 @@ def build_tab_flex() -> None:
             with ui.row().classes("gap-2 justify-between w-full mt-1"):
                 def _delete_confirm(dlg=dlg, z=z):
                     conn = get_connection()
-                    conn.execute("DELETE FROM flex_zonas WHERE id=?", (z["id"],))
+                    conn.execute("DELETE FROM flex_zonas WHERE id=? AND user_id=?", (z["id"], uid))
                     conn.commit()
                     conn.close()
                     dlg.close()
@@ -130,8 +130,8 @@ def build_tab_flex() -> None:
                         )
                         conn = get_connection()
                         conn.execute(
-                            "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=?",
-                            (inp_nombre.value.strip(), tarifa, cps, z["id"]),
+                            "UPDATE flex_zonas SET nombre=?, tarifa=?, codigos_postales=? WHERE id=? AND user_id=?",
+                            (inp_nombre.value.strip(), tarifa, cps, z["id"], uid),
                         )
                         conn.commit()
                         conn.close()
