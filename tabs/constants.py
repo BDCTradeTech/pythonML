@@ -18,6 +18,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("ventas", "Ventas"),
     ("productos", "Productos"),
     ("cuotas", "Cuotas"),
+    ("flex", "Flex"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
     ("dashboard", "Dashboard"),
@@ -37,7 +38,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "historicos", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "flex", "historicos", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "busqueda": "buscar productos en el catálogo.",
     "balance": "gastos, ingresos y resultados.",
     "dashboard": "resumen ejecutivo con alertas, KPIs de productos, ventas y reputación ML.",
+    "flex": "gestión de zonas de envíos Flex con tarifas y códigos postales.",
     "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
     "stock": "inventario de QuickBooks (Items con cantidad disponible).",
     "compras_lista": "cargar y gestionar compras a cotizar (marca, producto, SKU, cantidad, precio).",
@@ -70,6 +72,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "busqueda": "Búsqueda",
     "balance": "Balance",
     "dashboard": "Dashboard",
+    "flex": "Flex",
     "compras": "Invoices",
     "stock": "Stock",
     "compras_lista": "Compras",
