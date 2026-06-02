@@ -1193,6 +1193,24 @@ def build_tab_ventas(container) -> None:
                 finally:
                     conn.close()
 
+            def _save_placeholders(rows: List[Dict]) -> None:
+                if not rows:
+                    return
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    for rd in rows:
+                        cur.execute(
+                            "INSERT OR IGNORE INTO ventas_datos "
+                            "(payment_id, user_id, order_id, fetched_at, order_date) "
+                            "VALUES (?,?,?,?,?)",
+                            (rd["payment_id"], rd["user_id"], rd.get("order_id"),
+                             rd.get("fetched_at"), rd.get("order_date")),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+
             BATCH = 20
             procesadas = 0
             for i in range(0, total, BATCH):
@@ -1219,17 +1237,28 @@ def build_tab_ventas(container) -> None:
                 batch_results = await run.io_bound(_fetch_batch, batch)
 
                 db_rows: List[Dict] = []
+                placeholder_rows: List[Dict] = []
                 for v, pay_data, ship_data in batch_results:
                     lt = ship_data.get("logistic_type") or ""
                     if lt:
                         v["logistic_type"] = lt
+                    pid = v["payment_id"]
                     if not pay_data:
+                        placeholder_rows.append({
+                            "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
+                            "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                            "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
+                        })
                         continue
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
                     calc = await run.io_bound(_compute, pay_data, v)
                     if not calc:
+                        placeholder_rows.append({
+                            "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
+                            "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                            "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
+                        })
                         continue
-                    pid = v["payment_id"]
                     db_row = {
                         "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
                         "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
@@ -1247,6 +1276,8 @@ def build_tab_ventas(container) -> None:
 
                 if db_rows:
                     await run.io_bound(_save_batch, db_rows)
+                if placeholder_rows:
+                    await run.io_bound(_save_placeholders, placeholder_rows)
 
                 # CAMBIO 2: actualizar dialog sin llamar _pintar_tabla en cada batch
                 if dlg and lbl_progreso and barra:
