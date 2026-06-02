@@ -188,20 +188,29 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
     if not ml_user_id:
         return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener el usuario de ML"}
 
-    # 2. Listar IDs: activas siempre; pausadas y closed solo si include_paused (catálogo vendido puede estar en closed)
-    # ML limita offset a 1000; pasarlo devuelve 400 Bad Request
+    # 2. Listar IDs: activas siempre; pausadas, closed y under_review solo si include_paused.
+    # ML no soporta status=under_review en /items/search; se usa sub_status=pending_documentation
+    # y sub_status=held para obtener esos items (confirmado por diagnóstico).
+    # ML limita offset a 1000; pasarlo devuelve 400 Bad Request.
     item_ids = []
     seen: set = set()
     MAX_OFFSET = 1000
-    statuses = ("active", "paused", "closed", "under_review") if include_paused else ("active",)
-    for status_val in statuses:
+    param_sets = [{"status": "active"}]
+    if include_paused:
+        param_sets += [
+            {"status": "paused"},
+            {"status": "closed"},
+            {"sub_status": "pending_documentation"},
+            {"sub_status": "held"},
+        ]
+    for extra_params in param_sets:
         offset = 0
         limit = 50
         while offset <= MAX_OFFSET:
             search = requests.get(
                 f"{base}/users/{ml_user_id}/items/search",
                 headers=headers,
-                params={"limit": limit, "offset": offset, "status": status_val},
+                params={"limit": limit, "offset": offset, **extra_params},
                 timeout=15,
             )
             search.raise_for_status()
