@@ -39,6 +39,46 @@ def _to_float(val, default=0.0):
         return default
 
 
+def _pr(s: Any, d: float = 0.0) -> float:
+    if s is None or str(s).strip() == "":
+        return d
+    try:
+        v = float(str(s).strip().replace(",", "."))
+        return v if v <= 1.5 else v / 100.0
+    except (ValueError, TypeError):
+        return d
+
+def _load_params_prod(user_id: int) -> dict:
+    ev = float(str(get_cotizador_param("ml_envios", user_id) or 5823).replace(",", "."))
+    if ev <= 100:
+        ev = 5823.0
+    do = float(str(get_cotizador_param("dolar_oficial", user_id) or "1475").replace(",", ".")) or 1475.0
+    if do <= 0:
+        do = 1475.0
+    return {
+        "ml_comision":         _pr(get_cotizador_param("ml_comision",          user_id), 0.15),
+        "ml_debcre":           _pr(get_cotizador_param("ml_debcre",            user_id), 0.006),
+        "ml_iibb_per":         _pr(get_cotizador_param("ml_iibb_per",          user_id), 0.055),
+        "ml_envios_gratuitos": float(str(get_cotizador_param("ml_envios_gratuitos", user_id) or 33000).replace(",", ".")),
+        "ml_envios_val":       ev,
+        "dolar_oficial":       do,
+    }
+
+def _calc_margen_prod(precio: float, costo_usd: float, tipo_iva: float, p: dict) -> Optional[float]:
+    if precio <= 0 or costo_usd <= 0:
+        return None
+    comision    = precio * p["ml_comision"]
+    cobrado     = precio - comision
+    deb_cred    = precio * p["ml_debcre"]
+    iibb        = precio * p["ml_iibb_per"]
+    iva_meli    = comision * 0.21 / 1.21
+    iva_impor   = 0.09 * costo_usd * p["dolar_oficial"]
+    iva_total   = precio * tipo_iva / (1 + tipo_iva) - iva_meli - iva_impor
+    envio       = 0.0 if precio < p["ml_envios_gratuitos"] else p["ml_envios_val"]
+    costo_pesos = costo_usd * p["dolar_oficial"]
+    return cobrado - costo_pesos - iva_total - iibb - deb_cred - envio
+
+
 # ── Color helpers ─────────────────────────────────────────────────────────────
 
 def _color_siper(cat: str) -> str:
@@ -70,8 +110,7 @@ def _color_multilateral(filas: List[Dict]) -> str:
 # ── DB Queries ────────────────────────────────────────────────────────────────
 
 def _query_productos(user_id: int) -> Dict[str, int]:
-    dolar   = _to_float(get_cotizador_param("dolar_sistema", user_id), 1500.0)
-    cobrado = _to_float(get_cotizador_param("ml_cobrado",    user_id), 0.836)
+    params = _load_params_prod(user_id)
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -91,14 +130,18 @@ def _query_productos(user_id: int) -> Dict[str, int]:
         stock_susp = cur.fetchone()[0]
 
         cur.execute(
-            """SELECT COUNT(DISTINCT p.sku)
+            """SELECT p.sku, pub.precio, p.costo_usd, COALESCE(p.tipo_iva, 0.105)
                FROM productos p
                JOIN ml_publicaciones pub ON pub.sku=p.sku AND pub.user_id=p.user_id
                WHERE p.user_id=? AND LOWER(pub.estado)='active'
-                 AND p.costo_usd > 0
-                 AND (pub.precio * ?) < (p.costo_usd * ?)""",
-            (user_id, cobrado, dolar))
-        gan_neg = cur.fetchone()[0]
+                 AND p.costo_usd > 0""",
+            (user_id,))
+        neg_skus: set = set()
+        for r in cur.fetchall():
+            mg = _calc_margen_prod(float(r[1] or 0), float(r[2] or 0), float(r[3] or 0.105), params)
+            if mg is not None and mg < 0:
+                neg_skus.add(r[0])
+        gan_neg = len(neg_skus)
         return {"sin_costo": sin_costo, "sin_fob": sin_fob, "stock_susp": stock_susp, "gan_neg": gan_neg}
     finally:
         conn.close()
@@ -334,22 +377,26 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
 
 
 def _detail_gan_neg_prod(user_id: int) -> List[Dict]:
-    cobrado = _to_float(get_cotizador_param("ml_cobrado",    user_id), 0.836)
-    dolar   = _to_float(get_cotizador_param("dolar_sistema", user_id), 1500.0)
+    params = _load_params_prod(user_id)
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT p.sku, p.marca, p.nombre,"
-            " ROUND(pub.precio * ? - p.costo_usd * ?, 2) AS gan"
+            "SELECT p.sku, p.marca, p.nombre, pub.precio, p.costo_usd, COALESCE(p.tipo_iva, 0.105)"
             " FROM productos p"
             " JOIN ml_publicaciones pub ON pub.sku=p.sku AND pub.user_id=p.user_id"
             " WHERE p.user_id=? AND LOWER(pub.estado)='active'"
             "   AND p.costo_usd > 0"
-            "   AND (pub.precio * ?) < (p.costo_usd * ?)"
-            " ORDER BY gan",
-            (cobrado, dolar, user_id, cobrado, dolar))
-        return [dict(r) for r in cur.fetchall()]
+            " ORDER BY p.sku",
+            (user_id,))
+        sku_best: Dict[str, Dict] = {}
+        for r in cur.fetchall():
+            sku = r[0]
+            mg = _calc_margen_prod(float(r[3] or 0), float(r[4] or 0), float(r[5] or 0.105), params)
+            if mg is not None and mg < 0:
+                if sku not in sku_best or mg < sku_best[sku]["gan"]:
+                    sku_best[sku] = {"sku": sku, "marca": r[1], "nombre": r[2], "gan": round(mg, 2)}
+        return sorted(sku_best.values(), key=lambda x: x["gan"])
     finally:
         conn.close()
 
