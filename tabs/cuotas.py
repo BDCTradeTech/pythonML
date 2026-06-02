@@ -20,7 +20,6 @@ from ml_api import (
     ml_get_promotion_item_discounts_by_user,
     ml_get_promotion_item_discounts_by_campaign,
     ml_update_item_price,
-    ml_get_item_wholesale_price,
 )
 
 
@@ -95,7 +94,7 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
 # Tabla de cuotas
 # ---------------------------------------------------------------------------
 
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None, mayorista_data: Optional[Dict[str, Any]] = None) -> None:
+def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
@@ -207,15 +206,14 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             "x6":            _slot(x6),
             "x9":            _slot(x9),
             "x12":           _slot(x12),
+            "has_pxq":       any("standard_price_by_quantity" in (it.get("tags") or []) for it in group),
         }
 
     rows_all = [_build_row(g) for g in groups.values()]
     rows_all.sort(key=lambda r: r.get("title", "").lower())
     _pd = promo_data or {}
-    _md = mayorista_data or {}
     for _row in rows_all:
-        _row["promo"]     = _pd.get(_row.get("promo_item_id", ""), {"price_promo": None, "meli_pct": None, "seller_pct": None})
-        _row["mayorista"] = _md.get(_row.get("promo_item_id", ""))
+        _row["promo"] = _pd.get(_row.get("promo_item_id", ""), {"price_promo": None, "meli_pct": None, "seller_pct": None})
 
     filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
     sort_col_ref:  Dict[str, str]   = {"val": "title"}
@@ -250,7 +248,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         "stock":          lambda r: int(r.get("stock") or 0),
         "propia_price":   lambda r: r["propia"]["price"]   if r["propia"]["price"]   is not None else -1,
         "catalogo_price":  lambda r: r["catalogo"]["price"] if r["catalogo"]["price"] is not None else -1,
-        "mayorista_price": lambda r: float((r.get("mayorista") or {}).get("amount") or -1),
+        "mayorista_price": lambda r: 1 if r.get("has_pxq") else 0,
         "x3_price":        lambda r: r["x3"]["price"]       if r["x3"]["price"]       is not None else -1,
         "x6_price":       lambda r: r["x6"]["price"]       if r["x6"]["price"]       is not None else -1,
         "x9_price":       lambda r: r["x9"]["price"]       if r["x9"]["price"]       is not None else -1,
@@ -267,8 +265,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     n_x6       = sum(1 for r in rows_all if r["x6"]["id"])
     n_x9       = sum(1 for r in rows_all if r["x9"]["id"])
     n_x12      = sum(1 for r in rows_all if r["x12"]["id"])
-    n_promos     = sum(1 for r in rows_all if r.get("promo", {}).get("price_promo") is not None)
-    n_mayorista  = sum(1 for r in rows_all if r.get("mayorista") is not None)
+    n_promos = sum(1 for r in rows_all if r.get("promo", {}).get("price_promo") is not None)
+    n_pxq    = sum(1 for r in rows_all if r.get("has_pxq"))
     _tot = len(rows_all)
     pct_x3  = n_x3  / _tot * 100 if _tot else 0
     pct_x6  = n_x6  / _tot * 100 if _tot else 0
@@ -288,7 +286,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                         (f"En 9 cuotas ({pct_x9:.0f}%)",  n_x9),
                         (f"En 12 cuotas ({pct_x12:.0f}%)", n_x12),
                         ("En promoción",                  n_promos),
-                        ("Con precio mayorista",          n_mayorista),
+                        ("Con PxQ",                       n_pxq),
                     ]:
                         with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:80px"):
                             ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
@@ -321,9 +319,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 value="todos", label="Check%"
             ).classes("w-36").props("outlined dense")
             filtro_mayorista_sel = ui.select(
-                {"todos": "Todos", "con_mayorista": "Con precio mayorista", "sin_mayorista": "Sin precio mayorista"},
+                {"todos": "Todos", "con_pxq": "Con PxQ", "sin_pxq": "Sin PxQ"},
                 value="todos", label="Mayorista"
-            ).classes("w-44").props("outlined dense")
+            ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
         header_div = ui.element("div").style("width:100%;overflow:hidden")
@@ -369,10 +367,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                         ui.element("col").style("width:4%")
                         ui.element("col").style("width:3%")
                     elif gkey == "mayorista":
-                        ui.element("col").style("width:2%")
-                        ui.element("col").style("width:4%")
                         ui.element("col").style("width:3%")
-                        ui.element("col").style("width:2%")
                     else:
                         ui.element("col").style("width:4%")
                         ui.element("col").style("width:3%")
@@ -398,7 +393,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 ui.label("Promociones")
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 if gkey == "mayorista":
-                                    _cspan = "4"
+                                    _cspan = "1"
                                 elif gkey in ("propia", "catalogo"):
                                     _cspan = "2"
                                 else:
@@ -420,14 +415,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
                                 elif gkey == "mayorista":
-                                    with ui.element("th").style(f"{TH_HDR2};width:2%;border-left:2px solid {gborder};text-align:center"):
-                                        ui.label("Cant")
-                                    with ui.element("th").style(f"{TH_HDR2};width:4%;text-align:center;cursor:pointer").on("click", lambda pk="mayorista_price": _on_sort(pk)):
-                                        ui.label("Precio" + _ind("mayorista_price"))
-                                    with ui.element("th").style(f"{TH_HDR2};width:3%;text-align:center"):
-                                        ui.label("% vs Propia")
-                                    with ui.element("th").style(f"{TH_HDR2};width:2%;text-align:center"):
-                                        ui.label("Check")
+                                    with ui.element("th").style(f"{TH_HDR2};width:3%;border-left:2px solid {gborder};text-align:center"):
+                                        ui.label("")
                                 else:
                                     with ui.element("th").style(f"{TH_HDR2};width:4%;border-left:2px solid {gborder};text-align:center;cursor:pointer").on("click", lambda pk=pcol: _on_sort(pk)):
                                         ui.label("Precio" + _ind(pcol))
@@ -604,29 +593,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     gbg = gbg_e if idx % 2 == 0 else gbg_o
                                     _gb = f"background:{gbg};border-bottom:1px solid #e5e7eb;font-size:10px"
                                     if gkey == "mayorista":
-                                        may = row.get("mayorista")
-                                        _pp2 = row["propia"]["price"]
                                         with ui.element("td").style(f"{_gb};border-left:2px solid {gborder};padding:3px 6px;text-align:center"):
-                                            if may and may.get("min_quantity") is not None:
-                                                ui.label(str(may["min_quantity"]))
-                                        with ui.element("td").style(f"{_gb};padding:3px 6px;font-weight:600;text-align:right"):
-                                            if may and may.get("amount") is not None:
-                                                ui.label(fmt_moneda(may["amount"]))
-                                        with ui.element("td").style(f"{_gb};padding:3px 6px;text-align:center"):
-                                            if may and may.get("amount") is not None and _pp2 is not None and float(_pp2) != 0:
-                                                _pct_m = (float(may["amount"]) - float(_pp2)) / float(_pp2) * 100
-                                                if abs(_pct_m) < 0.05:
-                                                    ui.label("=").style("color:#757575")
-                                                elif _pct_m > 0:
-                                                    ui.label(f"+{_pct_m:.1f}%").style("color:#43a047;font-weight:500")
-                                                else:
-                                                    ui.label(f"{_pct_m:.1f}%").style("color:#e53935;font-weight:500")
-                                        with ui.element("td").style(f"{_gb};padding:3px 4px;text-align:center"):
-                                            if may and may.get("amount") is not None and _pp2 is not None and float(_pp2) != 0:
-                                                if float(may["amount"]) < float(_pp2):
-                                                    ui.label("✓").style("color:#1976d2;font-weight:700;font-size:12px")
-                                                else:
-                                                    ui.label("↑").style("color:#e53935;font-weight:700;font-size:12px")
+                                            if row.get("has_pxq"):
+                                                ui.label("✓").style("color:#1976d2;font-weight:700;font-size:13px")
                                         continue
                                     slot = row[gkey]
                                     item_id   = slot["id"]
@@ -752,10 +721,10 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
             elif promo_val == "sin_promo":
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is None]
-            if mayorista_val == "con_mayorista":
-                result = [r for r in result if r.get("mayorista") is not None]
-            elif mayorista_val == "sin_mayorista":
-                result = [r for r in result if r.get("mayorista") is None]
+            if mayorista_val == "con_pxq":
+                result = [r for r in result if r.get("has_pxq")]
+            elif mayorista_val == "sin_pxq":
+                result = [r for r in result if not r.get("has_pxq")]
             if check_val != "todos":
                 _rates = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
                 def _check_match(r: dict, target: str) -> bool:
@@ -853,15 +822,13 @@ def build_tab_cuotas(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     promo_lbl = ui.label(f"Cargando promociones 0/{total_grupos}...").classes("text-xl text-gray-700")
-            promo_data:    Dict[str, Dict] = {}
-            mayorista_data: Dict[str, Any] = {}
+            promo_data: Dict[str, Dict] = {}
             for _i, _iid in enumerate(rep_ids):
-                promo_data[_iid]    = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
-                mayorista_data[_iid] = await run.io_bound(ml_get_item_wholesale_price, access_token, _iid)
+                promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
             try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"], mayorista_data)
+                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
             except Exception as e:
                 result_area.clear()
                 with result_area:
