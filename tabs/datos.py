@@ -292,13 +292,14 @@ def build_tab_datos() -> None:
                 ui.html('<i class="ti ti-device-floppy" style="font-size:14px; margin-right:6px; vertical-align:middle"></i>')
                 ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
 
-        # ── Grilla 4 columnas ──────────────────────────────────────────
+        # ── Columnas masonry (3 cols) ──────────────────────────────────────
         with ui.element("div").style(
-            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px; align-items:start; width:100%"
+            "column-count:3; column-gap:10px; width:100%"
         ):
+            _CARD_STYLE = "display:inline-block; width:100%; break-inside:avoid; margin-bottom:10px; box-sizing:border-box"
 
             # 1. DÓLAR
-            with ui.card().classes("p-3 datos-card"):
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
                 _card_header("ti-currency-dollar", "Dólar")
                 for lbl, key in [
                     ("Oficial",  "dolar_oficial"),
@@ -308,25 +309,39 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_dolar, key, lbl)
 
-            # 2. CUOTAS
-            with ui.card().classes("p-3 datos-card"):
-                _card_header("ti-credit-card", "Cuotas")
+            # 2. MIAMI + Traída × kilo
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
+                _card_header("ti-plane", "Miami")
                 for lbl, key, unit in [
-                    ("3x",  "cuotas_3x",  "%"),
-                    ("6x",  "cuotas_6x",  "%"),
-                    ("9x",  "cuotas_9x",  "%"),
-                    ("12x", "cuotas_12x", "%"),
+                    ("KG",            "valor_kg_miami",           "u$"),
+                    ("Almac. día/kg", "almacenaje_dias_kg_miami",  "u$"),
+                    ("Seguro",        "seguro_miami",              ""),
+                    ("Días almac.",   "dias_almacenaje_miami",     ""),
+                    ("Almac. ×2",     "almacenaje_miami_x2",       "u$"),
                 ]:
-                    _add_field(inp_cuotas, key, lbl, unit)
-                _divider()
-                for lbl, key in [
-                    ("ML ×3", "ml_3cuotas"),
-                    ("ML ×6", "ml_6cuotas"),
-                ]:
-                    _add_field(inp_cuotas, key, lbl)
+                    _add_field(inp_miami, key, lbl, unit)
+                _divider("Traída × kilo")
+                _add_field(inp_miami, "kilo", "Precio u$/kg")
 
-            # 3. MERCADOLIBRE
-            with ui.card().classes("p-3 datos-card"):
+            # 3. CHINA
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
+                _card_header("ti-world", "China")
+                for lbl, key, unit in [
+                    ("KG",              "valor_kg_china",           "u$"),
+                    ("Almac. día/kg",   "almacenaje_dias_kg_china",  "u$"),
+                    ("Seguro",          "seguro_china",              ""),
+                    ("Días almac.",     "dias_almacenaje_china",     ""),
+                    ("Almac. ×3",       "almacenaje_china_x3",       "u$"),
+                    ("Res 3244",        "res_3244",                  ""),
+                    ("Gas. operativos", "gastos_operativos",         ""),
+                    ("Gas. origen",     "gastos_origen",             ""),
+                    ("Envío domicilio", "envio_domicilio",           ""),
+                    ("Ajuste ANA",      "ajuste_valor_ana",          ""),
+                ]:
+                    _add_field(inp_china, key, lbl, unit)
+
+            # 4. MERCADOLIBRE
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
                 _card_header("ti-building-store", "MercadoLibre")
                 for lbl, key, unit in [
                     ("Comisión", "ml_comision",  "%"),
@@ -345,8 +360,25 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
 
-            # 4. IMPUESTOS
-            with ui.card().classes("p-3 datos-card"):
+            # 5. CUOTAS
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
+                _card_header("ti-credit-card", "Cuotas")
+                for lbl, key, unit in [
+                    ("3x",  "cuotas_3x",  "%"),
+                    ("6x",  "cuotas_6x",  "%"),
+                    ("9x",  "cuotas_9x",  "%"),
+                    ("12x", "cuotas_12x", "%"),
+                ]:
+                    _add_field(inp_cuotas, key, lbl, unit)
+                _divider()
+                for lbl, key in [
+                    ("ML ×3", "ml_3cuotas"),
+                    ("ML ×6", "ml_6cuotas"),
+                ]:
+                    _add_field(inp_cuotas, key, lbl)
+
+            # 6. IMPUESTOS
+            with ui.card().classes("p-3 datos-card").style(_CARD_STYLE):
                 _card_header("ti-receipt-tax", "Impuestos")
                 for lbl, key in [
                     ("IVA 10,5%", "iva_105"),
@@ -354,37 +386,6 @@ def build_tab_datos() -> None:
                     ("IIBB LHS",  "iibb_lhs"),
                 ]:
                     _add_field(inp_impuestos, key, lbl, "%")
-
-            # 5. MIAMI + Traída × kilo
-            with ui.card().classes("p-3 datos-card"):
-                _card_header("ti-plane", "Miami")
-                for lbl, key, unit in [
-                    ("KG",            "valor_kg_miami",           "u$"),
-                    ("Almac. día/kg", "almacenaje_dias_kg_miami",  "u$"),
-                    ("Seguro",        "seguro_miami",              ""),
-                    ("Días almac.",   "dias_almacenaje_miami",     ""),
-                    ("Almac. ×2",     "almacenaje_miami_x2",       "u$"),
-                ]:
-                    _add_field(inp_miami, key, lbl, unit)
-                _divider("Traída × kilo")
-                _add_field(inp_miami, "kilo", "Precio u$/kg")
-
-            # 6. CHINA
-            with ui.card().classes("p-3 datos-card"):
-                _card_header("ti-world", "China")
-                for lbl, key, unit in [
-                    ("KG",              "valor_kg_china",           "u$"),
-                    ("Almac. día/kg",   "almacenaje_dias_kg_china",  "u$"),
-                    ("Seguro",          "seguro_china",              ""),
-                    ("Días almac.",     "dias_almacenaje_china",     ""),
-                    ("Almac. ×3",       "almacenaje_china_x3",       "u$"),
-                    ("Res 3244",        "res_3244",                  ""),
-                    ("Gas. operativos", "gastos_operativos",         ""),
-                    ("Gas. origen",     "gastos_origen",             ""),
-                    ("Envío domicilio", "envio_domicilio",           ""),
-                    ("Ajuste ANA",      "ajuste_valor_ana",          ""),
-                ]:
-                    _add_field(inp_china, key, lbl, unit)
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
