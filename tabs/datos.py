@@ -435,15 +435,35 @@ def build_tab_datos() -> None:
             except (ValueError, TypeError):
                 return str(s).strip()
 
-        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, icon: str = "ti-table", compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True, col_formato: Optional[Dict[str, str]] = None) -> None:
-            wrap_classes = card_ancho if card_ancho else ("flex-1 min-w-[140px] max-w-[220px]" if compact else "w-full")
-            with ui.column().classes(wrap_classes).style("gap:0"):
-                with ui.row().classes("items-center gap-2").style("margin-bottom:8px"):
-                    ui.html(f'<i class="ti {icon}" style="font-size:16px;color:#6b7280"></i>')
-                    ui.label(titulo).style("font-size:15px; font-weight:500; color:#374151")
+        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, icon: str = "ti-table", compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True, col_formato: Optional[Dict[str, str]] = None, collapsed: bool = False) -> None:
+            is_collapsed = [collapsed]
+            with ui.element("div").style(
+                "background:white; border:0.5px solid #e5e7eb; border-radius:12px; overflow:hidden; width:fit-content"
+            ):
                 with ui.element("div").style(
-                    "background:white; border:0.5px solid #e5e7eb; border-radius:12px; overflow:hidden"
-                ):
+                    "background:#f3f4f6; padding:10px 14px; cursor:pointer; "
+                    "display:flex; align-items:center; justify-content:space-between; gap:12px; "
+                    "border-bottom:0.5px solid #e5e7eb"
+                ) as header_el:
+                    with ui.row().classes("items-center gap-2"):
+                        ui.html(f'<i class="ti {icon}" style="font-size:15px;color:#6b7280"></i>')
+                        ui.label(titulo).style("font-size:15px; font-weight:500; color:#374151")
+                    chev = ui.html(
+                        '<i class="ti ' + ('ti-chevron-right' if collapsed else 'ti-chevron-down') +
+                        '" style="font-size:16px;color:#9ca3af"></i>'
+                    )
+                body = ui.element("div")
+                if collapsed:
+                    body.set_visibility(False)
+                def _toggle():
+                    is_collapsed[0] = not is_collapsed[0]
+                    body.set_visibility(not is_collapsed[0])
+                    chev.set_content(
+                        '<i class="ti ' + ('ti-chevron-right' if is_collapsed[0] else 'ti-chevron-down') +
+                        '" style="font-size:16px;color:#9ca3af"></i>'
+                    )
+                header_el.on("click", lambda: _toggle())
+                with body:
                     cont = ui.element("div")
                     edit_rows: List[Dict[str, Any]] = []
 
@@ -451,7 +471,7 @@ def build_tab_datos() -> None:
                         cont.clear()
                         edit_rows.clear()
                         with cont:
-                            with ui.element("table").classes("w-full datos-tabla").style("border-collapse:collapse; table-layout:fixed"):
+                            with ui.element("table").classes("datos-tabla").style("border-collapse:collapse; table-layout:auto"):
                                 with ui.element("thead"):
                                     with ui.element("tr").style("background:#f3f4f6"):
                                         for j, h in enumerate(headers):
@@ -584,8 +604,8 @@ def build_tab_datos() -> None:
                             ui.html('<i class="ti ti-device-floppy" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
                             ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
 
-        with ui.row().classes("w-full gap-4 flex-wrap"):
-            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", icon="ti-ruler-2", card_ancho="w-fit")
+        with ui.row().classes("w-full gap-4 flex-wrap").style("align-items:flex-start"):
+            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", icon="ti-ruler-2", card_ancho="w-fit", collapsed=True)
             _tabla_editable("posicion", ["posicion", "seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"],
                 ["Posicion", "Seguro", "Flete", "Derechos", "Estadisticas", "IVA", "Despachante", "Cambio PA"],
                 tabla_posicion_data, "Tasas por Posición", icon="ti-list-numbers", card_ancho="w-fit")
@@ -593,7 +613,7 @@ def build_tab_datos() -> None:
                 ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envío MercadoLibre",
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
                 computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
-                col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store")
+                col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store", collapsed=True)
             _tabla_editable("courier", ["courier", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
                 ["Courier", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
                 tabla_courier_data, "Costos por Courier",
@@ -609,14 +629,31 @@ def build_tab_datos() -> None:
                 return True
             return False
 
-        with ui.row().classes("items-center gap-2").style("margin-bottom:8px"):
-            ui.html('<i class="ti ti-checklist" style="font-size:16px;color:#6b7280"></i>')
-            ui.label("IVA vs Exento").style("font-size:15px; font-weight:500; color:#374151")
+        iva_is_collapsed = [False]
         with ui.element("div").style(
             "background:white; border:0.5px solid #e5e7eb; border-radius:12px; overflow:hidden; width:fit-content"
         ):
-            iva_vs_exento_cont = ui.element("div")
-            iva_vs_exento_edit_rows: List[Dict[str, Any]] = []
+            with ui.element("div").style(
+                "background:#f3f4f6; padding:10px 14px; cursor:pointer; "
+                "display:flex; align-items:center; justify-content:space-between; gap:12px; "
+                "border-bottom:0.5px solid #e5e7eb"
+            ) as iva_header_el:
+                with ui.row().classes("items-center gap-2"):
+                    ui.html('<i class="ti ti-checklist" style="font-size:15px;color:#6b7280"></i>')
+                    ui.label("IVA vs Exento").style("font-size:15px; font-weight:500; color:#374151")
+                iva_chev = ui.html('<i class="ti ti-chevron-down" style="font-size:16px;color:#9ca3af"></i>')
+            iva_body = ui.element("div")
+            def _toggle_iva():
+                iva_is_collapsed[0] = not iva_is_collapsed[0]
+                iva_body.set_visibility(not iva_is_collapsed[0])
+                iva_chev.set_content(
+                    '<i class="ti ' + ('ti-chevron-right' if iva_is_collapsed[0] else 'ti-chevron-down') +
+                    '" style="font-size:16px;color:#9ca3af"></i>'
+                )
+            iva_header_el.on("click", lambda: _toggle_iva())
+            with iva_body:
+                iva_vs_exento_cont = ui.element("div")
+                iva_vs_exento_edit_rows: List[Dict[str, Any]] = []
 
             def repintar_iva() -> None:
                 iva_vs_exento_cont.clear()
@@ -709,19 +746,20 @@ def build_tab_datos() -> None:
                 repintar_iva()
                 ui.notify("Tabla IVA vs Exento guardada", color="positive")
 
-            with ui.row().style(
-                "background:#f9fafb; border-top:1px solid #e5e7eb; padding:10px 14px; gap:8px"
-            ):
-                with ui.button(on_click=agregar_fila_iva).props("flat dense no-caps").style(
-                    "color:#185FA5; border:1px solid #378ADD; border-radius:4px; font-size:12px; padding:4px 12px"
+            with iva_body:
+                with ui.row().style(
+                    "background:#f9fafb; border-top:1px solid #e5e7eb; padding:10px 14px; gap:8px"
                 ):
-                    ui.html('<i class="ti ti-plus" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
-                    ui.label("Agregar fila").style("font-size:12px; vertical-align:middle")
-                with ui.button(on_click=guardar_tabla_iva).props("flat dense no-caps").style(
-                    "color:#3B6D11; border:1px solid #639922; border-radius:4px; font-size:12px; padding:4px 12px"
-                ):
-                    ui.html('<i class="ti ti-device-floppy" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
-                    ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
+                    with ui.button(on_click=agregar_fila_iva).props("flat dense no-caps").style(
+                        "color:#185FA5; border:1px solid #378ADD; border-radius:4px; font-size:12px; padding:4px 12px"
+                    ):
+                        ui.html('<i class="ti ti-plus" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                        ui.label("Agregar fila").style("font-size:12px; vertical-align:middle")
+                    with ui.button(on_click=guardar_tabla_iva).props("flat dense no-caps").style(
+                        "color:#3B6D11; border:1px solid #639922; border-radius:4px; font-size:12px; padding:4px 12px"
+                    ):
+                        ui.html('<i class="ti ti-device-floppy" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                        ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
 
 
 # ==========================
