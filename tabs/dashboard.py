@@ -112,12 +112,12 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND (gan_pesos IS NULL OR gan_pesos = 0)"
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos IS NULL"
             " AND (pay_status IS NULL OR pay_status != 'rejected') AND fetched_at >= ?",
             (user_id, desde))
         sin_revisar = cur.fetchone()[0]
         cur.execute(
-            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos < 0 AND fetched_at >= ?",
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos < 0 AND gan_pesos IS NOT NULL AND fetched_at >= ?",
             (user_id, desde))
         gan_neg = cur.fetchone()[0]
         return {"sin_revisar": sin_revisar, "gan_neg": gan_neg}
@@ -365,7 +365,7 @@ def _detail_sin_revisar(user_id: int, desde: str) -> List[Dict]:
         cur.execute(
             "SELECT order_id, payment_id, fetched_at"
             " FROM ventas_datos"
-            " WHERE user_id=? AND (gan_pesos IS NULL OR gan_pesos=0)"
+            " WHERE user_id=? AND gan_pesos IS NULL"
             " AND (pay_status IS NULL OR pay_status != 'rejected') AND fetched_at >= ?"
             " ORDER BY fetched_at DESC",
             (user_id, desde))
@@ -409,7 +409,7 @@ def build_tab_dashboard(container) -> None:
     db_alerts: List[Tuple[str, str]] = []
     if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$s/IVA: {prod['sin_costo']}"))
     if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones suspendidas: {prod['stock_susp']}"))
-    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas (últimos 30 días) con ganancia negativa: {ventas['gan_neg']}"))
+    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
     if prod["gan_neg"]       > 0: db_alerts.append((_YELLOW, f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
     if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar (últimos 30 días): {ventas['sin_revisar']}"))
@@ -509,10 +509,10 @@ def build_tab_dashboard(container) -> None:
                     _card_header("Ventas — últimos 30 días", ven_color)
                     with ui.column().classes("w-full gap-2"):
                         _stat_row_popup(
-                            "Gan$ negativa", str(ventas["gan_neg"]),
+                            "A pérdida", str(ventas["gan_neg"]),
                             _RED if ventas["gan_neg"] > 0 else _GREEN,
                             lambda: _open_popup_list(
-                                "Ganancia negativa — Ventas",
+                                "A pérdida — Ventas",
                                 _detail_gan_neg_ventas(uid, desde_sql),
                                 [("Orden",  lambda r: str(r.get("order_id")   or "—")),
                                  ("Pago",   lambda r: str(r.get("payment_id") or "—")),
@@ -760,9 +760,9 @@ def build_tab_dashboard(container) -> None:
                     _cuotas_row("9 cuotas",  n_x9  / denom * 100)
                     _cuotas_row("12 cuotas", n_x12 / denom * 100)
                 with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
-                    for col, rng in [("#3B6D11", "76–100%"), ("#639922", "50–75%"),
-                                     ("#BA7517", "35–49%"),  ("#E24B4A", "26–34%"),
-                                     ("#A32D2D", "0–25%")]:
+                    for col, rng in [("#A32D2D", "0–25%"),   ("#E24B4A", "26–34%"),
+                                     ("#BA7517", "35–49%"),  ("#639922", "50–75%"),
+                                     ("#3B6D11", "76–100%")]:
                         with ui.row().classes("items-center gap-1"):
                             ui.element("span").style(
                                 f"display:inline-block;width:10px;height:10px;"
