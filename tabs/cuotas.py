@@ -214,42 +214,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     for _row in rows_all:
         _row["promo"] = _pd.get(_row.get("promo_item_id", ""), {"price_promo": None, "meli_pct": None, "seller_pct": None})
 
-    _skus_cu = [r["seller_sku"] for r in rows_all if r.get("seller_sku")]
-    _prod_cu: Dict[str, Dict] = {}
-    if _skus_cu:
-        _conn_cu = get_connection()
-        try:
-            _ph_cu = ",".join("?" * len(_skus_cu))
-            for _r in _conn_cu.execute(
-                f"SELECT sku, costo_usd, tipo_iva FROM productos WHERE user_id = ? AND sku IN ({_ph_cu})",
-                [uid] + _skus_cu,
-            ).fetchall():
-                _prod_cu[_r["sku"]] = {
-                    "costo_usd": float(_r["costo_usd"] or 0),
-                    "tipo_iva":  float(_r["tipo_iva"]  or 0.105),
-                }
-        finally:
-            _conn_cu.close()
-    for _row in rows_all:
-        _pm = _prod_cu.get(_row.get("seller_sku") or "", {})
-        _row["costo_usd"] = _pm.get("costo_usd", 0.0)
-        _row["tipo_iva"]  = _pm.get("tipo_iva",  0.105)
-
-    def _calc_margen(precio: float, costo_usd: float, tipo_iva: float, cuotas_tasa: float) -> Optional[float]:
-        if precio <= 0 or costo_usd <= 0:
-            return None
-        comision     = precio * ml_comision
-        cobrado      = precio - comision
-        deb_cred     = precio * ml_debcre
-        iibb         = precio * ml_iibb_per
-        iva_meli     = comision * 0.21 / 1.21
-        iva_impor    = 0.09 * costo_usd * dolar_oficial
-        iva_total    = precio * tipo_iva / (1 + tipo_iva) - iva_meli - iva_impor
-        envio        = 0.0 if precio < ml_envios_gratuitos else ml_envios_val
-        costo_pesos  = costo_usd * dolar_oficial
-        costo_cuotas = precio * cuotas_tasa
-        return cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
-
     filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
     sort_col_ref:  Dict[str, str]   = {"val": "title"}
     sort_asc_ref:  Dict[str, bool]  = {"val": True}
@@ -346,7 +310,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 value="cualquiera", label="Promos"
             ).classes("w-36").props("outlined dense")
             filtro_check_sel = ui.select(
-                {"todos": "Todos", "ok": "OK", "alto": "Precio alto", "bajo": "Precio bajo", "perdida": "A pérdida"},
+                {"todos": "Todos", "ok": "OK", "alto": "Precio alto", "bajo": "Precio bajo"},
                 value="todos", label="Check%"
             ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
@@ -695,10 +659,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 _pct_c  = (float(price) - float(propia_price)) / float(propia_price) * 100
                                                 _tasa_v = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(gkey, 0)
                                                 _diff   = _pct_c - _tasa_v * 100
-                                                _mg     = _calc_margen(float(price), float(row.get("costo_usd") or 0), float(row.get("tipo_iva") or 0.105), _tasa_v)
-                                                if _mg is not None and _mg < 0:
-                                                    ui.label("P").style("color:#c62828;font-weight:700;font-size:12px;cursor:default").props('title="A pérdida"')
-                                                elif abs(_diff) <= 0.5:
+                                                if abs(_diff) <= 0.5:
                                                     ui.label("✓").style("color:#1976d2;font-weight:700;font-size:12px")
                                                 elif _diff > 0.5:
                                                     ui.label("↑").style("color:#43a047;font-weight:700;font-size:12px")
@@ -738,15 +699,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             if check_val != "todos":
                 _rates = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
                 def _check_match(r: dict, target: str) -> bool:
-                    if target == "perdida":
-                        for gk, tasa in _rates.items():
-                            p = r[gk]["price"]
-                            if p is None:
-                                continue
-                            mg = _calc_margen(float(p), float(r.get("costo_usd") or 0), float(r.get("tipo_iva") or 0.105), tasa)
-                            if mg is not None and mg < 0:
-                                return True
-                        return False
                     pp = r["propia"]["price"]
                     if pp is None or float(pp) == 0:
                         return False
