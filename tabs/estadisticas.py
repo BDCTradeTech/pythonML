@@ -305,7 +305,7 @@ def _pintar_home_inline(
             rate_claims = _get_rate(claims, tot)
             rate_canc = _get_rate(canc, tot)
             rate_delayed = _get_rate(delayed, tot)
-            rate_mediat = _get_rate(mediat, tot) if mediat else None
+            rate_mediat = _get_rate(mediat, tot) if mediat else 0.0
             level_id = rep.get("level_id") or "—"
             level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
             level_colors = {"1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308", "4_light_green": "#84cc16", "5_green": "#22c55e"}
