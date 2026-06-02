@@ -435,6 +435,10 @@ def init_db() -> None:
         cur.execute("ALTER TABLE productos ADD COLUMN fob_usd REAL DEFAULT NULL")
     if "price_updated_at" not in _prod_cols:
         cur.execute("ALTER TABLE productos ADD COLUMN price_updated_at TEXT")
+    if "gan_pesos" not in _prod_cols:
+        cur.execute("ALTER TABLE productos ADD COLUMN gan_pesos REAL DEFAULT NULL")
+    if "gan_pct" not in _prod_cols:
+        cur.execute("ALTER TABLE productos ADD COLUMN gan_pct REAL DEFAULT NULL")
 
     cur.execute(
         """

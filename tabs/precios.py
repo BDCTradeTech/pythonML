@@ -622,6 +622,23 @@ def _mostrar_tabla_precios(
             "dias_sin_modificar":   _dias_sin_modif,
         })
 
+    _gan_rows = [
+        (row["margen_pesos"], row.get("margen_venta_pct"), row.get("seller_sku"))
+        for row in items_loaded
+        if row.get("margen_pesos") is not None and row.get("seller_sku")
+    ]
+    if _gan_rows:
+        _now_gan = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _conn_gan = get_connection()
+        try:
+            _conn_gan.executemany(
+                "UPDATE productos SET gan_pesos=?, gan_pct=?, updated_at=? WHERE sku=? AND user_id=?",
+                [(g[0], g[1], _now_gan, g[2], _uid) for g in _gan_rows],
+            )
+            _conn_gan.commit()
+        finally:
+            _conn_gan.close()
+
     publicaciones_totales = len(items_loaded)
     publicaciones_con_stock = sum(1 for i in items_loaded if (i.get("available_quantity") or 0) > 0)
     publicaciones_propias_con_stock = sum(1 for i in items_loaded if i.get("tipo") == "Propia" and (i.get("available_quantity") or 0) > 0)
