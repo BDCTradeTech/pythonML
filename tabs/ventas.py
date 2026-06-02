@@ -1014,7 +1014,11 @@ def build_tab_ventas(container) -> None:
                                 _build_colgroup_ventas()
                                 with ui.element("tbody"):
                                     for idx, v in enumerate(ventas_orden, 1):
-                                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                        _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
+                                        _is_rej_row = v.get("pay_status") == "rejected"
+                                        _is_dev_row = bool(v.get("has_refund"))
+                                        _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
+                                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                 ui.label(str(idx))
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
@@ -1047,17 +1051,15 @@ def build_tab_ventas(container) -> None:
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs"):
                                                 ui.label(v["monto_fmt"])
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
-                                                _gp    = v.get("gan_pesos")
-                                                _is_rej = v.get("pay_status") == "rejected"
-                                                if _is_rej:
-                                                    ui.label("Rechazado").classes("text-negative text-xs font-medium")
-                                                elif _gp is None:
+                                                _gp = v.get("gan_pesos")
+                                                _hide_gan = _is_cancelled_row or _is_rej_row or _is_dev_row
+                                                if _hide_gan or _gp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
                                                     ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
                                             with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
                                                 _gvp = v.get("gan_vta_pct")
-                                                if _gvp is None:
+                                                if _hide_gan or _gvp is None:
                                                     ui.label("—").classes("text-gray-400 text-xs")
                                                 else:
                                                     ui.label(f"{_gvp:.2f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
@@ -1130,6 +1132,8 @@ def build_tab_ventas(container) -> None:
             def _compute(pay_data: Dict, v: Dict) -> Optional[Dict]:
                 charges     = pay_data.get("charges_details") or []
                 is_rejected = pay_data.get("status") == "rejected"
+                is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
+                has_refund_v = bool(v.get("has_refund"))
                 if not charges and not is_rejected:
                     return None
                 unit_price  = float(v.get("unit_price") or 0)
@@ -1159,7 +1163,7 @@ def build_tab_ventas(container) -> None:
                 envio_real = shp_xd if shp_xd > 0 else float(p.get("ml_envios") or 5823)
                 logistic_type = v.get("logistic_type") or ""
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
-                if not is_rejected and has_calc:
+                if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
                     gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
@@ -1169,6 +1173,7 @@ def build_tab_ventas(container) -> None:
                     "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
                     "envio_real": envio_real, "logistic_type": logistic_type, "net_rcv": net_rcv,
                     "pay_status": "rejected" if is_rejected else None,
+                    "_skip_overwrite": is_cancelled or has_refund_v,
                 }
 
             def _save_batch(db_rows: List[Dict]) -> None:
@@ -1176,19 +1181,34 @@ def build_tab_ventas(container) -> None:
                 try:
                     cur = conn.cursor()
                     for rd in db_rows:
-                        cur.execute(
-                            "INSERT OR REPLACE INTO ventas_datos "
-                            "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
-                            "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                            "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                            (rd["payment_id"], rd["user_id"], rd.get("order_id"),
-                             rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
-                             rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
-                             rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
-                             rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
-                             rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date")),
-                        )
+                        if rd.get("_skip_overwrite"):
+                            cur.execute(
+                                "INSERT OR IGNORE INTO ventas_datos "
+                                "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
+                                "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
+                                "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (rd["payment_id"], rd["user_id"], rd.get("order_id"),
+                                 rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
+                                 rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
+                                 rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
+                                 rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
+                                 rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date")),
+                            )
+                        else:
+                            cur.execute(
+                                "INSERT OR REPLACE INTO ventas_datos "
+                                "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
+                                "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
+                                "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                (rd["payment_id"], rd["user_id"], rd.get("order_id"),
+                                 rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
+                                 rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
+                                 rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
+                                 rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
+                                 rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date")),
+                            )
                     conn.commit()
                 finally:
                     conn.close()
@@ -1571,7 +1591,8 @@ def build_tab_ventas(container) -> None:
                 except (TypeError, ValueError):
                     ord_total = 0.0
                 status_raw = (ord_item.get("status") or "").strip().lower()
-                status_display = status_map.get(status_raw, status_raw or "—")
+                has_refund = bool(ord_item.get("refunds"))
+                status_display = "Devolución" if has_refund else status_map.get(status_raw, status_raw or "—")
                 items = ord_item.get("order_items") or ord_item.get("items") or []
                 ord_qty = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
                 for it in items:
@@ -1639,6 +1660,7 @@ def build_tab_ventas(container) -> None:
                         "payment_type": _payment_type,
                         "gan_pesos": None,
                         "gan_vta_pct": None,
+                        "has_refund": has_refund,
                     })
             def _insert_placeholders_bulk(rows: List[Dict]) -> None:
                 if not rows:
