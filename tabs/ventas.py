@@ -466,6 +466,7 @@ def build_tab_ventas(container) -> None:
                             "envio_real": envio_real, "logistic_type": _lt, "net_rcv": net_rcv,
                             "fetched_at": _now,
                             "pay_status": "rejected" if is_rejected else None,
+                            "order_date": row["dt"].strftime("%Y-%m-%d") if row.get("dt") else None,
                         }
                         ventas_cache_ref[payment_id] = _ce
                         for _vr in ventas_raw:
@@ -483,14 +484,14 @@ def build_tab_ventas(container) -> None:
                                     "INSERT OR REPLACE INTO ventas_datos "
                                     "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                                    "envio_real, logistic_type, net_rcv, fetched_at, pay_status) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                     (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
                                      _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
                                      _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
                                      _ce.get("deb_cred"), _ce.get("iibb_ret"), _ce.get("sirtac"),
                                      _ce.get("envio_real"), _ce.get("logistic_type"), _ce.get("net_rcv"),
-                                     _ce.get("fetched_at"), _ce.get("pay_status")),
+                                     _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date")),
                                 )
                                 conn.commit()
                             finally:
@@ -1179,14 +1180,14 @@ def build_tab_ventas(container) -> None:
                             "INSERT OR REPLACE INTO ventas_datos "
                             "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                             "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                            "envio_real, logistic_type, net_rcv, fetched_at, pay_status) "
-                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                             (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                              rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                              rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
                              rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
                              rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
-                             rd.get("fetched_at"), rd.get("pay_status")),
+                             rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date")),
                         )
                     conn.commit()
                 finally:
@@ -1232,6 +1233,7 @@ def build_tab_ventas(container) -> None:
                     db_row = {
                         "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
                         "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                        "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
                         **calc,
                     }
                     db_rows.append(db_row)
@@ -1327,6 +1329,7 @@ def build_tab_ventas(container) -> None:
                                 "envio_real": _env, "logistic_type": v.get("logistic_type") or "", "net_rcv": None,
                                 "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                 "pay_status": None,
+                                "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
                             }
                             ventas_cache_ref[_pid] = _am_db
                             _am_rows.append(_am_db)
