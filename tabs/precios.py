@@ -495,6 +495,21 @@ def _mostrar_tabla_precios(
         finally:
             _conn_prod.close()
 
+    _new_skus = [s for s in _skus_dedup if s not in _prod_map]
+    if _new_skus:
+        _now_create = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _conn_ins = get_connection()
+        try:
+            _conn_ins.executemany(
+                "INSERT OR IGNORE INTO productos (sku, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
+                [(s, _uid, _now_create, _now_create) for s in _new_skus],
+            )
+            _conn_ins.commit()
+            for s in _new_skus:
+                _prod_map[s] = {"costo_usd": None, "fob_usd": None, "tipo_iva": 0.105, "price_updated_at": None}
+        finally:
+            _conn_ins.close()
+
     dolar_str = get_cotizador_param("dolar_oficial", user["id"]) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
     dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
     if dolar_oficial <= 0:
@@ -623,7 +638,7 @@ def _mostrar_tabla_precios(
         })
 
     _gan_rows = [
-        (row["margen_pesos"], row.get("margen_venta_pct"), row.get("seller_sku"))
+        (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"), row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is not None and row.get("seller_sku")
     ]
@@ -632,8 +647,8 @@ def _mostrar_tabla_precios(
         _conn_gan = get_connection()
         try:
             _conn_gan.executemany(
-                "UPDATE productos SET gan_pesos=?, gan_pct=?, updated_at=? WHERE sku=? AND user_id=?",
-                [(g[0], g[1], _now_gan, g[2], _uid) for g in _gan_rows],
+                "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, updated_at=? WHERE sku=? AND user_id=?",
+                [(g[0], g[1], g[2], _now_gan, g[3], _uid) for g in _gan_rows],
             )
             _conn_gan.commit()
         finally:
@@ -2122,7 +2137,9 @@ def _mostrar_tabla_precios(
                                 _row_bg = "bg-yellow-50"
                             else:
                                 _row_bg = ""
-                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}"):
+                            _gan_neg_r = row.get("margen_pesos") is not None and (row.get("margen_pesos") or 0) < 0
+                            _row_extra = "text-red-600" if _gan_neg_r else ""
+                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg} {_row_extra}"):
                                 for col in columns_precios:
                                     field = col.get("field", col["name"])
                                     val = row.get(field)
