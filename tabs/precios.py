@@ -2001,7 +2001,7 @@ def _mostrar_tabla_precios(
         {"name": "sold_quantity", "label": "Ventas", "field": "sold_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
         {"name": "subtotal", "label": "Subtotal", "field": "subtotal", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js},
         {"name": "dias_sin_modificar", "label": "Ult. Mod.", "field": "dias_sin_modificar", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
-        {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Suspendida'"},
+        {"name": "status", "label": "Estado", "field": "status", "sortable": True, "align": "center", "headerStyle": header_style, ":format": "(val) => (val || '').toLowerCase() === 'active' ? 'Activa' : 'Pausada'"},
     ]
 
     def _build_colgroup_precios() -> None:
@@ -2183,7 +2183,7 @@ def _mostrar_tabla_precios(
                                             if s == "active":
                                                 ui.label("Activa").classes("text-center")
                                             else:
-                                                ui.label("Suspendida").classes("text-center text-red-500")
+                                                ui.label("Pausada").classes("text-center text-red-500")
                                         elif col["name"] == "quality_score":
                                             qs = row.get("quality_score")
                                             if qs is None:
@@ -2279,7 +2279,7 @@ def _mostrar_tabla_precios(
                 label="Stock",
             ).classes("w-32").props("outlined dense")
             filtro_estado = ui.select(
-                {"activas": "Activas", "suspendidas": "Suspendidas", "todas": "Todas"},
+                {"activas": "Activas", "suspendidas": "Pausadas", "todas": "Todas"},
                 value="todas",
                 label="Estado",
             ).classes("w-32").props("outlined dense")
