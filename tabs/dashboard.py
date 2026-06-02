@@ -668,22 +668,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
         return
 
-    async def _cargar_productos_header() -> None:
-        try:
-            prod2       = await run.io_bound(_query_productos, uid)
-            prod_color2 = (_RED    if prod2["sin_costo"] > 0 or prod2["stock_susp"] > 0 or prod2["gan_neg"] > 0
-                           else _YELLOW if prod2["sin_fob"] > 0
-                           else _GREEN)
-            prod_header_row.clear()
-            with prod_header_row:
-                _dot(prod_color2)
-                ui.label("Productos").classes("font-bold text-base text-gray-800")
-        except Exception:
-            prod_header_row.clear()
-            with prod_header_row:
-                _dot("#6b7280")
-                ui.label("Productos").classes("font-bold text-base text-gray-800")
-
     async def _cargar_rep() -> None:
         try:
             profile  = await run.io_bound(ml_get_user_profile, access_token)
@@ -819,6 +803,13 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             if cnt_susp > 0:
                 _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}",
                            on_nav=(lambda: navigate_to("Productos")) if navigate_to else None)
+            _pc = (_RED    if prod["sin_costo"] > 0 or cnt_susp > 0 or prod["gan_neg"] > 0
+                   else _YELLOW if prod["sin_fob"] > 0
+                   else _GREEN)
+            prod_header_row.clear()
+            with prod_header_row:
+                _dot(_pc)
+                ui.label("Productos").classes("font-bold text-base text-gray-800")
             items = [it for it in all_items if str(it.get("status", "")).lower() == "active"]
 
             # Deduplicar por SKU/catálogo — igual que cuotas.py
@@ -890,6 +881,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
         except Exception:
             _susp_lbl.set_text("—")
+            prod_header_row.clear()
+            with prod_header_row:
+                _dot(prod_color)
+                ui.label("Productos").classes("font-bold text-base text-gray-800")
             ml_pubs_card.clear()
             with ml_pubs_card:
                 _card_header("Publicaciones ML", "#6b7280")
@@ -899,6 +894,5 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 _card_header("Cuotas", "#6b7280")
                 ui.label("Datos no disponibles").classes("text-xs text-gray-400")
 
-    background_tasks.create(_cargar_productos_header(), name="dashboard_prod_header")
     background_tasks.create(_cargar_rep(),    name="dashboard_rep")
     background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
