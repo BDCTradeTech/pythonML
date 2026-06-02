@@ -110,7 +110,6 @@ def _color_multilateral(filas: List[Dict]) -> str:
 # ── DB Queries ────────────────────────────────────────────────────────────────
 
 def _query_productos(user_id: int) -> Dict[str, int]:
-    params = _load_params_prod(user_id)
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -133,18 +132,10 @@ def _query_productos(user_id: int) -> Dict[str, int]:
         stock_susp = cur.fetchone()[0]
 
         cur.execute(
-            """SELECT p.sku, pub.precio, p.costo_usd, COALESCE(p.tipo_iva, 0.105)
-               FROM productos p
-               JOIN ml_publicaciones pub ON pub.sku=p.sku AND pub.user_id=p.user_id
-               WHERE p.user_id=? AND LOWER(pub.estado)='active'
-                 AND p.costo_usd > 0""",
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND gan_pesos < 0",
             (user_id,))
-        neg_skus: set = set()
-        for r in cur.fetchall():
-            mg = _calc_margen_prod(float(r[1] or 0), float(r[2] or 0), float(r[3] or 0.105), params)
-            if mg is not None and mg < 0:
-                neg_skus.add(r[0])
-        gan_neg = len(neg_skus)
+        gan_neg = cur.fetchone()[0]
+
         return {"sin_costo": sin_costo, "sin_fob": sin_fob, "stock_susp": stock_susp, "gan_neg": gan_neg}
     finally:
         conn.close()
@@ -382,26 +373,16 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
 
 
 def _detail_gan_neg_prod(user_id: int) -> List[Dict]:
-    params = _load_params_prod(user_id)
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT p.sku, p.marca, p.nombre, pub.precio, p.costo_usd, COALESCE(p.tipo_iva, 0.105)"
-            " FROM productos p"
-            " JOIN ml_publicaciones pub ON pub.sku=p.sku AND pub.user_id=p.user_id"
-            " WHERE p.user_id=? AND LOWER(pub.estado)='active'"
-            "   AND p.costo_usd > 0"
-            " ORDER BY p.sku",
+            "SELECT sku, marca, nombre, gan_pesos FROM productos"
+            " WHERE user_id=? AND gan_pesos < 0"
+            " ORDER BY gan_pesos ASC",
             (user_id,))
-        sku_best: Dict[str, Dict] = {}
-        for r in cur.fetchall():
-            sku = r[0]
-            mg = _calc_margen_prod(float(r[3] or 0), float(r[4] or 0), float(r[5] or 0.105), params)
-            if mg is not None and mg < 0:
-                if sku not in sku_best or mg < sku_best[sku]["gan"]:
-                    sku_best[sku] = {"sku": sku, "marca": r[1], "nombre": r[2], "gan": round(mg, 2)}
-        return sorted(sku_best.values(), key=lambda x: x["gan"])
+        return [{"sku": r[0], "marca": r[1], "nombre": r[2], "gan": round(r[3], 2)}
+                for r in cur.fetchall()]
     finally:
         conn.close()
 
