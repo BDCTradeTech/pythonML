@@ -318,10 +318,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 {"todos": "Todos", "alto": "Precio alto", "bajo": "Precio bajo"},
                 value="todos", label="Check%"
             ).classes("w-36").props("outlined dense")
-            filtro_mayorista_sel = ui.select(
-                {"todos": "Todos", "con_pxq": "Con PxQ", "sin_pxq": "Sin PxQ"},
-                value="todos", label="Mayorista"
-            ).classes("w-36").props("outlined dense")
             filtro_input = ui.input(placeholder="Filtrar por SKU o Nombre...").props("outlined dense clearable").classes("w-72")
 
         header_div = ui.element("div").style("width:100%;overflow:hidden")
@@ -705,7 +701,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             cuotas_val    = filtro_cuotas_sel.value
             promo_val     = filtro_promo_sel.value
             check_val     = filtro_check_sel.value
-            mayorista_val = filtro_mayorista_sel.value
             result = list(rows_all)
             if txt:
                 result = [
@@ -721,10 +716,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is not None]
             elif promo_val == "sin_promo":
                 result = [r for r in result if r.get("promo", {}).get("price_promo") is None]
-            if mayorista_val == "con_pxq":
-                result = [r for r in result if r.get("has_pxq")]
-            elif mayorista_val == "sin_pxq":
-                result = [r for r in result if not r.get("has_pxq")]
             if check_val != "todos":
                 _rates = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
                 def _check_match(r: dict, target: str) -> bool:
@@ -747,7 +738,6 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         filtro_cuotas_sel.on_value_change(lambda *a: _on_filtro(None))
         filtro_promo_sel.on_value_change(lambda *a: _on_filtro(None))
         filtro_check_sel.on_value_change(lambda *a: _on_filtro(None))
-        filtro_mayorista_sel.on_value_change(lambda *a: _on_filtro(None))
         _render(_sort_rows(rows_all))
 
 
