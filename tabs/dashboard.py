@@ -115,12 +115,15 @@ def _query_productos(user_id: int) -> Dict[str, int]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE (costo_usd IS NULL OR costo_usd=0)"
-            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')")
+            "SELECT COUNT(*) FROM productos WHERE user_id=?"
+            " AND (costo_usd IS NULL OR costo_usd=0)"
+            " AND (marca IS NOT NULL AND marca != '' OR nombre IS NOT NULL AND nombre != '')",
+            (user_id,))
         sin_costo = cur.fetchone()[0]
 
         cur.execute(
-            "SELECT COUNT(*) FROM productos WHERE (fob_usd IS NULL OR fob_usd=0)")
+            "SELECT COUNT(*) FROM productos WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)",
+            (user_id,))
         sin_fob = cur.fetchone()[0]
 
         cur.execute(
@@ -355,9 +358,10 @@ def _detail_sin_costo(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE (costo_usd IS NULL OR costo_usd=0)"
+            " WHERE user_id=? AND (costo_usd IS NULL OR costo_usd=0)"
             " AND (marca IS NOT NULL AND marca!='' OR nombre IS NOT NULL AND nombre!='')"
-            " ORDER BY sku")
+            " ORDER BY sku",
+            (user_id,))
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -369,8 +373,9 @@ def _detail_sin_fob(user_id: int) -> List[Dict]:
         cur = conn.cursor()
         cur.execute(
             "SELECT sku, marca, nombre FROM productos"
-            " WHERE (fob_usd IS NULL OR fob_usd=0)"
-            " ORDER BY sku")
+            " WHERE user_id=? AND (fob_usd IS NULL OR fob_usd=0)"
+            " ORDER BY sku",
+            (user_id,))
         return [dict(r) for r in cur.fetchall()]
     finally:
         conn.close()
