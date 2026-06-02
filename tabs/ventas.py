@@ -393,7 +393,7 @@ def build_tab_ventas(container) -> None:
                     sirtac      = float(_cached.get("sirtac") or 0)
                     net_rcv     = _cached.get("net_rcv")
                     envio_real     = float(_cached.get("envio_real") or 0)
-                    envio_efectivo = 0.0 if unit_price >= ml_env_grat else envio_real
+                    envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
                     _lt         = _cached.get("logistic_type") or ""
                     if _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2"):
                         envio_lbl = "Envío Correo"
@@ -452,7 +452,7 @@ def build_tab_ventas(container) -> None:
                         envio_lbl  = None
                         _lt = ""
 
-                    envio_efectivo = 0.0 if unit_price >= ml_env_grat else envio_real
+                    envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
@@ -548,7 +548,7 @@ def build_tab_ventas(container) -> None:
                             _iva_meli_e   = _meli_fee_e * 0.21 / 1.21
                             _iva_impor_e  = 0.09 * costo_usd * dolar * cantidad
                             _iva_total_e  = _iva_venta_e - _iva_meli_e - _iva_impor_e
-                            _envio_e      = 0.0 if unit_price >= _ml_env_grat else _ml_env
+                            _envio_e      = 0.0 if unit_price < _ml_env_grat else _ml_env
                             _gan_pesos_e = _gan_vta_pct_e = _gan_cos_pct_e = None
                             if has_calc:
                                 _gan_pesos_e   = total_price - _meli_fee_e - _cuotas_fee_e - _iva_total_e - _deb_cred_e - _iibb_perc_e - _envio_e - total_costo
@@ -1165,7 +1165,7 @@ def build_tab_ventas(container) -> None:
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
                 envio_real = shp_xd if shp_xd > 0 else float(p.get("ml_envios") or 5823)
                 ml_env_grat_c  = float(p.get("ml_envios_gratuitos") or 33000)
-                envio_efectivo = 0.0 if unit_price >= ml_env_grat_c else envio_real
+                envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 logistic_type = v.get("logistic_type") or ""
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
