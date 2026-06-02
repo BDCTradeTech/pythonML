@@ -39,14 +39,14 @@ def _require_login() -> Optional[Dict[str, Any]]:
 # Flex tarifa lookup
 # ---------------------------------------------------------------------------
 
-def _get_flex_tarifa(user_id: int, zip_code: str) -> float:
-    """Busca tarifa Flex para un CP. Soporta CPs individuales y rangos (ej: 1000-1599)."""
+def _get_flex_zona(user_id: int, zip_code: str) -> tuple:
+    """Busca tarifa y nombre de zona Flex para un CP. Retorna (tarifa, nombre)."""
     if not zip_code or not zip_code.strip().isdigit():
-        return 0.0
+        return 0.0, ""
     cp = zip_code.strip()
     conn = get_connection()
     zonas = conn.execute(
-        "SELECT tarifa, codigos_postales FROM flex_zonas WHERE user_id=?", (user_id,)
+        "SELECT tarifa, nombre, codigos_postales FROM flex_zonas WHERE user_id=?", (user_id,)
     ).fetchall()
     conn.close()
     for zona in zonas:
@@ -58,12 +58,12 @@ def _get_flex_tarifa(user_id: int, zip_code: str) -> float:
                 try:
                     lo, hi = tok.split("-", 1)
                     if int(lo) <= int(cp) <= int(hi):
-                        return float(zona["tarifa"])
+                        return float(zona["tarifa"]), zona["nombre"] or ""
                 except ValueError:
                     pass
             elif tok == cp:
-                return float(zona["tarifa"])
-    return 0.0
+                return float(zona["tarifa"]), zona["nombre"] or ""
+    return 0.0, ""
 
 
 # ---------------------------------------------------------------------------
@@ -424,15 +424,18 @@ def build_tab_ventas(container) -> None:
                     iibb_ret    = float(_cached.get("iibb_ret") or 0)
                     sirtac      = float(_cached.get("sirtac") or 0)
                     net_rcv     = _cached.get("net_rcv")
-                    envio_real     = float(_cached.get("envio_real") or 0)
-                    envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
+                    envio_real  = float(_cached.get("envio_real") or 0)
                     _lt         = _cached.get("logistic_type") or ""
                     if _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2"):
                         envio_lbl = "Envío Correo"
                     elif _lt in ("self_service", "flex"):
-                        envio_lbl = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
+                        _flex_tarifa, _flex_zona = _get_flex_zona(user["id"], zip_code)
+                        envio_real = _flex_tarifa
+                        _zona_txt  = f" ({_flex_zona})" if _flex_zona else " (zona no encontrada)"
+                        envio_lbl  = f"Envío Flex  {zip_code}{_zona_txt}" if zip_code else "Envío Flex"
                     else:
                         envio_lbl = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
+                    envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
                     iibb_perc   = total_price * ml_iibb
                     iva_venta   = total_price * tipo_iva / (1 + tipo_iva)
                     iva_meli    = meli_fee * 0.21 / 1.21
@@ -476,9 +479,11 @@ def build_tab_ventas(container) -> None:
                         envio_lbl  = "Envío Correo"
                         _lt = "cross_docking"
                     elif has_api:
-                        envio_real = float(p.get("ml_envios") or 5823)
-                        envio_lbl  = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
                         _lt = "self_service"
+                        _flex_tarifa, _flex_zona = _get_flex_zona(user["id"], zip_code)
+                        envio_real = _flex_tarifa
+                        _zona_txt  = f" ({_flex_zona})" if _flex_zona else " (zona no encontrada)"
+                        envio_lbl  = f"Envío Flex  {zip_code}{_zona_txt}" if zip_code else "Envío Flex"
                     else:
                         envio_real = 0.0
                         envio_lbl  = None
@@ -709,12 +714,8 @@ def build_tab_ventas(container) -> None:
                                 # 9. Envío + separador
                                 with ui.column().classes("w-full border-b-2 border-gray-300 pb-2 mb-2 gap-0"):
                                     with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                        _lbl(envio_lbl or "Envío", envio_es_real)
+                                        _lbl(envio_lbl or "Envío", False if _lt in ("self_service", "flex") else envio_es_real)
                                         ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
-                                    if _lt in ("self_service", "flex") and zip_code:
-                                        _ftarifa = _get_flex_tarifa(user["id"], zip_code)
-                                        _ffmt = f"$ {int(_ftarifa):,}".replace(",", ".")
-                                        ui.label(f"CP {zip_code} — Flex Real {_ffmt}").classes("text-xs text-gray-400 -mt-0.5")
                                 # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
                                 if gan_pesos is not None:
                                     _gcls = "text-positive" if gan_pesos >= 0 else "text-negative"
