@@ -252,12 +252,17 @@ def _card_header(title: str, color: str):
         _dot(color)
         ui.label(title).classes("font-bold text-base text-gray-800")
 
-def _alert_row(container, color: str, msg: str):
+def _alert_row(container, color: str, msg: str, on_nav=None):
     with container:
         with ui.row().classes("items-center gap-2 w-full px-3 py-2 rounded").style(
             f"background:{_BG.get(color, '#f9f9f9')}"):
             _dot(color)
-            ui.label(msg).classes("text-sm text-gray-800")
+            ui.label(msg).classes("text-sm text-gray-800 flex-1")
+            if on_nav:
+                (ui.element("i")
+                 .classes("ti ti-arrow-right cursor-pointer flex-shrink-0")
+                 .style("font-size:14px;color:#9ca3af")
+                 .on("click", on_nav))
 
 def _progress_bar(label: str, pct: float, count: int, total: int):
     with ui.column().classes("w-full gap-1"):
@@ -418,7 +423,7 @@ def _detail_gan_neg_ventas(user_id: int, desde: str) -> List[Dict]:
 
 # ── Función exportada ─────────────────────────────────────────────────────────
 
-def build_tab_dashboard(container) -> None:
+def build_tab_dashboard(container, navigate_to=None) -> None:
     user = _require_login()
     if not user:
         return
@@ -433,20 +438,20 @@ def build_tab_dashboard(container) -> None:
     desde_fmt    = desde_dt.strftime("%d/%m/%Y")
 
     # Alertas de DB (sin reputación todavía)
-    db_alerts: List[Tuple[str, str]] = []
-    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}"))
-    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones pausadas: {prod['stock_susp']}"))
-    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}"))
-    if prod["gan_neg"]       > 0: db_alerts.append((_RED,    f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
-    if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
-    if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar (últimos 30 días): {ventas['sin_revisar']}"))
+    db_alerts: List[Tuple[str, str, str]] = []
+    if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$: {prod['sin_costo']}",                     "Productos"))
+    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones pausadas: {prod['stock_susp']}",                    "Productos"))
+    if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}",         "Ventas"))
+    if prod["gan_neg"]       > 0: db_alerts.append((_RED,    f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}", "Productos"))
+    if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}",                        "Productos"))
+    if ventas["sin_revisar"] > 0: db_alerts.append((_YELLOW, f"Ventas sin revisar (últimos 30 días): {ventas['sin_revisar']}",   "Ventas"))
     for ac, am in arca_al:
         if ac != _GREEN:
-            db_alerts.append((ac, am))
+            db_alerts.append((ac, am, "ARCA"))
     db_alerts.sort(key=lambda x: {_RED: 0, _YELLOW: 1}.get(x[0], 2))
 
-    n_red_init    = sum(1 for c, _ in db_alerts if c == _RED)
-    n_yellow_init = sum(1 for c, _ in db_alerts if c == _YELLOW)
+    n_red_init    = sum(1 for item in db_alerts if item[0] == _RED)
+    n_yellow_init = sum(1 for item in db_alerts if item[0] == _YELLOW)
     _susp_items_ref: Dict[str, Any] = {"val": []}
     desde_sql = desde_dt.strftime("%Y-%m-%d")
 
@@ -466,15 +471,16 @@ def build_tab_dashboard(container) -> None:
                         ui.label("importante(s)").classes("text-sm text-gray-600")
                     ui.element("div").classes("flex-1")
                     ui.button("Actualizar", icon="refresh",
-                              on_click=lambda: (container.clear(), build_tab_dashboard(container))
+                              on_click=lambda: (container.clear(), build_tab_dashboard(container, navigate_to))
                               ).props("flat dense")
 
             # ── ALERTAS ───────────────────────────────────────────────────
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 ui.label("Alertas activas").classes("font-bold text-base text-gray-800 mb-2")
                 alerts_col = ui.column().classes("w-full gap-1")
-                for color, msg in db_alerts:
-                    _alert_row(alerts_col, color, msg)
+                for color, msg, tab in db_alerts:
+                    _alert_row(alerts_col, color, msg,
+                               on_nav=(lambda t=tab: navigate_to(t)) if navigate_to else None)
                 rep_placeholder = ui.row().classes("items-center gap-2 w-full px-3 py-2")
                 with rep_placeholder:
                     ui.spinner(size="xs")
@@ -676,11 +682,12 @@ def build_tab_dashboard(container) -> None:
             rep_placeholder.delete()
             if ra:
                 for color, msg in ra:
-                    _alert_row(alerts_col, color, msg)
+                    _alert_row(alerts_col, color, msg,
+                               on_nav=(lambda: navigate_to("Estadísticas")) if navigate_to else None)
 
-            n_red_total    = (sum(1 for c, _ in db_alerts if c == _RED)
+            n_red_total    = (sum(1 for item in db_alerts if item[0] == _RED)
                               + sum(1 for c, _ in ra if c == _RED))
-            n_yellow_total = (sum(1 for c, _ in db_alerts if c == _YELLOW)
+            n_yellow_total = (sum(1 for item in db_alerts if item[0] == _YELLOW)
                               + sum(1 for c, _ in ra if c == _YELLOW))
             red_count_lbl.set_text(str(n_red_total))
             yel_count_lbl.set_text(str(n_yellow_total))
@@ -726,7 +733,8 @@ def build_tab_dashboard(container) -> None:
             _susp_lbl.set_text(str(cnt_susp))
             _susp_lbl.style(f"color:{_c}")
             if cnt_susp > 0:
-                _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}")
+                _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}",
+                           on_nav=(lambda: navigate_to("Productos")) if navigate_to else None)
             items = [it for it in items if str(it.get("status", "")).lower() == "active"]
 
             # Deduplicar por SKU/catálogo — igual que cuotas.py
