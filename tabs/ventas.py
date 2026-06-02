@@ -90,6 +90,7 @@ def build_tab_ventas(container) -> None:
     filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
     filtro_tipo_ref: Dict[str, str] = {"val": "todas"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
+    filtro_envio_ref: Dict[str, str] = {"val": "todos"}
     filtro_texto_ref: Dict[str, str] = {"val": ""}
     agrupar_ref: Dict[str, bool] = {"val": False}  # Por defecto desagrupado
     margenes_ref: Dict[str, str] = {}  # productos -> margen editable
@@ -800,6 +801,14 @@ def build_tab_ventas(container) -> None:
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "promo"]
             elif tipo_val == "regular":
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("tipo") or "").lower() == "regular"]
+            envio_val = str(filtro_envio_ref.get("val", "todos") or "todos")
+            if envio_val == "correo":
+                ventas_filtradas = [v for v in ventas_filtradas
+                    if (v.get("logistic_type") or "").lower()
+                    in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2")]
+            elif envio_val == "flex":
+                ventas_filtradas = [v for v in ventas_filtradas
+                    if (v.get("logistic_type") or "").lower() in ("self_service", "flex")]
             texto_val = (filtro_texto_ref.get("val") or "").strip().lower()
             if texto_val:
                 ventas_filtradas = [v for v in ventas_filtradas if
@@ -1800,6 +1809,12 @@ def build_tab_ventas(container) -> None:
                     label="Estado",
                 ).classes("w-36").bind_value(filtro_estado_ref, "val")
                 filtro_estado.on_value_change(lambda: _pintar_tabla())
+                filtro_envio = ui.select(
+                    {"todos": "Todos", "correo": "Correo", "flex": "Flex"},
+                    value=filtro_envio_ref.get("val", "todos"),
+                    label="Envíos",
+                ).classes("w-28").bind_value(filtro_envio_ref, "val")
+                filtro_envio.on_value_change(lambda: _pintar_tabla())
                 filtro_texto = ui.input(placeholder="Buscar producto...").props("outlined dense clearable").classes("w-64")
                 filtro_texto.bind_value(filtro_texto_ref, "val")
                 filtro_texto.on_value_change(lambda: _pintar_tabla())
