@@ -1640,6 +1640,28 @@ def build_tab_ventas(container) -> None:
                         "gan_pesos": None,
                         "gan_vta_pct": None,
                     })
+            def _insert_placeholders_bulk(rows: List[Dict]) -> None:
+                if not rows:
+                    return
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    now_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    for v in rows:
+                        pid = v.get("payment_id") or ""
+                        if not pid:
+                            continue
+                        order_date = v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None
+                        cur.execute(
+                            "INSERT OR IGNORE INTO ventas_datos "
+                            "(payment_id, user_id, order_id, fetched_at, order_date) "
+                            "VALUES (?,?,?,?,?)",
+                            (pid, _uid_v, v.get("order_id"), now_str, order_date),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+            await run.io_bound(_insert_placeholders_bulk, ventas_mes)
             def _load_ventas_cache(uid: int) -> Dict[str, Dict]:
                 conn = get_connection()
                 try:
