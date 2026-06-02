@@ -408,7 +408,7 @@ def build_tab_dashboard(container) -> None:
     # Alertas de DB (sin reputación todavía)
     db_alerts: List[Tuple[str, str]] = []
     if prod["sin_costo"]     > 0: db_alerts.append((_RED,    f"Productos sin costo u$s/IVA: {prod['sin_costo']}"))
-    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones suspendidas: {prod['stock_susp']}"))
+    if prod["stock_susp"]    > 0: db_alerts.append((_RED,    f"Publicaciones pausadas: {prod['stock_susp']}"))
     if ventas["gan_neg"]     > 0: db_alerts.append((_RED,    f"Ventas a pérdida (últimos 30 días): {ventas['gan_neg']}"))
     if prod["sin_fob"]       > 0: db_alerts.append((_YELLOW, f"Productos sin FOB u$: {prod['sin_fob']}"))
     if prod["gan_neg"]       > 0: db_alerts.append((_YELLOW, f"Publicaciones con ganancia negativa estimada: {prod['gan_neg']}"))
@@ -474,12 +474,12 @@ def build_tab_dashboard(container) -> None:
                             _susp_dot = ui.element("span").style(
                                 "display:inline-block;width:10px;height:10px;border-radius:9999px;"
                                 "background:#9ca3af;flex-shrink:0")
-                            ui.label("Suspendidas con stock").classes("text-sm text-gray-700 flex-1")
+                            ui.label("Pausadas con stock").classes("text-sm text-gray-700 flex-1")
                             _susp_lbl = (ui.label("...").classes(
                                 "text-sm font-semibold cursor-pointer hover:underline")
                                 .style("color:#9ca3af"))
                             _susp_lbl.on("click", lambda: _open_popup_list(
-                                "Suspendidas con stock",
+                                "Pausadas con stock",
                                 _susp_items_ref["val"],
                                 [("SKU",    lambda r: r.get("seller_sku") or "—"),
                                  ("ID ML",  lambda r: str(r.get("id")     or "—")),
@@ -699,7 +699,7 @@ def build_tab_dashboard(container) -> None:
             _susp_lbl.set_text(str(cnt_susp))
             _susp_lbl.style(f"color:{_c}")
             if cnt_susp > 0:
-                _alert_row(alerts_col, _RED, f"Publicaciones suspendidas: {cnt_susp}")
+                _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}")
             items = [it for it in items if str(it.get("status", "")).lower() == "active"]
 
             # Deduplicar por SKU/catálogo — igual que cuotas.py
