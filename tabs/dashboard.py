@@ -474,17 +474,15 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                               on_click=lambda: (container.clear(), build_tab_dashboard(container, navigate_to))
                               ).props("flat dense")
 
-            # ── ALERTAS ───────────────────────────────────────────────────
-            with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
-                ui.label("Alertas activas").classes("font-bold text-base text-gray-800 mb-2")
-                alerts_col = ui.grid(columns=3).classes("w-full gap-2")
+            # ── ALERTAS (ocultas — refs usadas por async tasks) ──────────
+            with ui.element("div").classes("hidden"):
+                alerts_col = ui.grid(columns=3)
                 for color, msg, tab in db_alerts:
                     _alert_row(alerts_col, color, msg,
                                on_nav=(lambda t=tab: navigate_to(t)) if navigate_to else None)
-                rep_placeholder = ui.row().classes("items-center gap-2 w-full px-3 py-2")
+                rep_placeholder = ui.row()
                 with rep_placeholder:
                     ui.spinner(size="xs")
-                    ui.label("Cargando estadísticas ML...").classes("text-xs text-gray-400")
 
             # ── GRILLA PRINCIPAL: 3 columnas ──────────────────────────────
             # Fila 1: Productos | Ventas | Cuotas
