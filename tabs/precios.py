@@ -638,7 +638,8 @@ def _mostrar_tabla_precios(
         })
 
     _gan_rows = [
-        (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"), row.get("seller_sku"))
+        (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"),
+         str(row.get("title") or ""), row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is not None and row.get("seller_sku")
     ]
@@ -647,12 +648,29 @@ def _mostrar_tabla_precios(
         _conn_gan = get_connection()
         try:
             _conn_gan.executemany(
-                "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, updated_at=? WHERE sku=? AND user_id=?",
-                [(g[0], g[1], g[2], _now_gan, g[3], _uid) for g in _gan_rows],
+                "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
+                [(g[0], g[1], g[2], g[3], _now_gan, g[4], _uid) for g in _gan_rows],
             )
             _conn_gan.commit()
         finally:
             _conn_gan.close()
+
+    _nombre_rows = [
+        (str(row.get("title") or ""), row.get("seller_sku"))
+        for row in items_loaded
+        if row.get("margen_pesos") is None and row.get("seller_sku") and row.get("title")
+    ]
+    if _nombre_rows:
+        _now_nombre = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _conn_nombre = get_connection()
+        try:
+            _conn_nombre.executemany(
+                "UPDATE productos SET nombre=?, updated_at=? WHERE sku=? AND user_id=? AND (nombre IS NULL OR nombre='')",
+                [(n[0], _now_nombre, n[1], _uid) for n in _nombre_rows],
+            )
+            _conn_nombre.commit()
+        finally:
+            _conn_nombre.close()
 
     publicaciones_totales = len(items_loaded)
     publicaciones_con_stock = sum(1 for i in items_loaded if (i.get("available_quantity") or 0) > 0)
