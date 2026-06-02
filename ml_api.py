@@ -1190,6 +1190,21 @@ def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[
         return []
 
 
+def ml_delete_question(access_token: str, question_id: int) -> bool:
+    """DELETE /questions/{id} — eliminar pregunta. Returns True on success."""
+    if not access_token or not question_id:
+        return False
+    try:
+        resp = requests.delete(
+            f"https://api.mercadolibre.com/questions/{question_id}",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=15,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
 def ml_search_similar(
     query: str, limit: int = 20, access_token: Optional[str] = None, solo_propias: bool = False
 ) -> Dict[str, Any]:

@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from nicegui import app, background_tasks, run, ui
 
 from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral
-from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions
+from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions, ml_delete_question
 
 _GREEN  = "#3B6D11"
 _YELLOW = "#BA7517"
@@ -331,6 +331,76 @@ def _stat_row_popup(label: str, value: str, color: str, on_click) -> None:
         ui.label(label).classes("text-xs text-gray-700 flex-1")
         ui.label(value).classes("text-xs font-semibold cursor-pointer hover:underline").style(
             f"color:{color}").on("click", lambda: on_click())
+
+
+def _open_questions_popup(q_list: list, access_token: str, on_deleted) -> None:
+    """Popup de preguntas sin responder con botón de eliminar por fila."""
+    dlg = ui.dialog()
+    content_ref = [None]
+
+    def _build_rows() -> None:
+        c = content_ref[0]
+        c.clear()
+        with c:
+            if not q_list:
+                ui.label("Sin preguntas sin responder").classes("text-sm text-gray-400 p-2")
+                return
+            with ui.scroll_area().style("max-height:400px"):
+                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
+                    with ui.element("thead"):
+                        with ui.element("tr"):
+                            for hdr in ["Fecha", "Item", "Pregunta", ""]:
+                                with ui.element("th").style(
+                                        "padding:4px 8px;background:#1976d2;color:white;"
+                                        "text-align:left;font-weight:600"):
+                                    ui.label(hdr)
+                    with ui.element("tbody"):
+                        for i, q in enumerate(q_list):
+                            bg = "#f9fafb" if i % 2 == 0 else "#ffffff"
+                            with ui.element("tr").style(f"background:{bg}"):
+                                for val in [
+                                    (q.get("date_created") or "")[:10],
+                                    str(q.get("item_id") or "—"),
+                                    (q.get("text") or "—")[:100],
+                                ]:
+                                    with ui.element("td").style(
+                                            "padding:3px 8px;border-bottom:1px solid #e5e7eb"):
+                                        ui.label(val)
+                                with ui.element("td").style(
+                                        "padding:3px 8px;border-bottom:1px solid #e5e7eb;width:32px"):
+                                    def _try_delete(q=q) -> None:
+                                        conf = ui.dialog()
+                                        with conf:
+                                            with ui.card().classes("p-4"):
+                                                ui.label("¿Eliminar esta pregunta?").classes("text-sm font-semibold mb-2")
+                                                ui.label((q.get("text") or "")[:80]).classes("text-xs text-gray-500 mb-3")
+                                                with ui.row().classes("gap-2 justify-end"):
+                                                    ui.button("Cancelar", on_click=conf.close).props("flat dense")
+                                                    async def _do_delete(q=q, conf=conf) -> None:
+                                                        ok = await run.io_bound(
+                                                            ml_delete_question, access_token, q["id"])
+                                                        conf.close()
+                                                        if ok:
+                                                            if q in q_list:
+                                                                q_list.remove(q)
+                                                            _build_rows()
+                                                            on_deleted(len(q_list))
+                                                        else:
+                                                            ui.notify("Error al eliminar la pregunta", color="negative")
+                                                    ui.button("Eliminar", on_click=_do_delete, color="negative").props("dense")
+                                        conf.open()
+                                    ui.html(
+                                        '<i class="ti ti-trash" style="font-size:14px;color:#dc2626;cursor:pointer" aria-hidden="true"></i>'
+                                    ).on("click", _try_delete)
+
+    with dlg:
+        with ui.card().classes("p-4 min-w-[560px] max-w-[800px]"):
+            with ui.row().classes("w-full justify-between items-center mb-3"):
+                ui.label("Preguntas sin responder").classes("text-base font-semibold")
+                ui.button("✕", on_click=dlg.close).props("flat dense")
+            content_ref[0] = ui.column().classes("w-full gap-0")
+            _build_rows()
+    dlg.open()
 
 
 def _open_popup_list(title: str, rows: list, col_defs: list) -> None:
@@ -848,14 +918,24 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         lambda rows=ur_held: _open_popup_list(
                             "Retenidas por ML", rows, _col_defs_ur))
                     _stat_row("Activas sin problemas", str(active_count), _GREEN)
-                    _stat_row_popup(
-                        "Preguntas sin responder", str(n_questions),
-                        _RED if n_questions > 0 else _GREEN,
-                        lambda q=questions: _open_popup_list(
-                            "Preguntas sin responder", q,
-                            [("Fecha",    lambda r: (r.get("date_created") or "")[:10]),
-                             ("Item",     lambda r: str(r.get("item_id") or "—")),
-                             ("Pregunta", lambda r: (r.get("text") or "—")[:100])]))
+                    q_list = list(questions)
+                    q_row_container = ui.element("div").classes("w-full")
+
+                    def _rebuild_q_row(n_q: int, tok: str = access_token, ql=q_list, cont=q_row_container) -> None:
+                        color = _RED if n_q > 0 else _GREEN
+                        cont.clear()
+                        with cont:
+                            with ui.row().classes("items-center gap-2 w-full"):
+                                _dot(color)
+                                ui.label("Preguntas sin responder").classes("text-xs text-gray-700 flex-1")
+                                ui.label(str(n_q)).classes(
+                                    "text-xs font-semibold cursor-pointer hover:underline"
+                                ).style(f"color:{color}").on(
+                                    "click", lambda tok=tok, ql=ql, cont=cont: _open_questions_popup(
+                                        ql, tok,
+                                        lambda n, cont=cont, tok=tok, ql=ql: _rebuild_q_row(n, tok, ql, cont)))
+
+                    _rebuild_q_row(n_questions)
 
             if ur_pend_doc:
                 n = len(ur_pend_doc)
