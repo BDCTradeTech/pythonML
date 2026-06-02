@@ -1178,7 +1178,7 @@ def build_tab_ventas(container) -> None:
                 except Exception:
                     return {}
 
-            def _compute(pay_data: Dict, v: Dict) -> Optional[Dict]:
+            def _compute(pay_data: Dict, v: Dict, zip_code: str = "") -> Optional[Dict]:
                 charges     = pay_data.get("charges_details") or []
                 is_rejected = pay_data.get("status") == "rejected"
                 is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
@@ -1209,10 +1209,16 @@ def build_tab_ventas(container) -> None:
                 iva_impor  = 0.09 * costo_usd * dolar * cantidad
                 iva_total  = iva_venta - iva_meli - iva_impor
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
-                envio_real = shp_xd if shp_xd > 0 else float(p.get("ml_envios") or 5823)
+                logistic_type = v.get("logistic_type") or ""
+                if logistic_type in ("self_service", "flex"):
+                    _flex_t, _ = _get_flex_zona(_uid, zip_code)
+                    envio_real = _flex_t
+                elif shp_xd > 0:
+                    envio_real = shp_xd
+                else:
+                    envio_real = float(p.get("ml_envios") or 5823)
                 ml_env_grat_c  = float(p.get("ml_envios_gratuitos") or 33000)
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
-                logistic_type = v.get("logistic_type") or ""
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
                     gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
@@ -1313,6 +1319,7 @@ def build_tab_ventas(container) -> None:
                     lt = ship_data.get("logistic_type") or ""
                     if lt:
                         v["logistic_type"] = lt
+                    zip_code_v = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
                     pid = v["payment_id"]
                     if not pay_data:
                         placeholder_rows.append({
@@ -1322,7 +1329,7 @@ def build_tab_ventas(container) -> None:
                         })
                         continue
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
-                    calc = await run.io_bound(_compute, pay_data, v)
+                    calc = await run.io_bound(_compute, pay_data, v, zip_code_v)
                     if not calc:
                         placeholder_rows.append({
                             "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
