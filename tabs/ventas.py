@@ -377,6 +377,7 @@ def build_tab_ventas(container) -> None:
                     return {}
 
                 _cached = ventas_cache_ref.get(payment_id or "")
+                ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
 
                 if _cached and payment_id:
                     item_coro2 = run.io_bound(_get_item, access_token, _iid) if _iid else _noop()
@@ -391,7 +392,8 @@ def build_tab_ventas(container) -> None:
                     iibb_ret    = float(_cached.get("iibb_ret") or 0)
                     sirtac      = float(_cached.get("sirtac") or 0)
                     net_rcv     = _cached.get("net_rcv")
-                    envio_real  = float(_cached.get("envio_real") or 0)
+                    envio_real     = float(_cached.get("envio_real") or 0)
+                    envio_efectivo = 0.0 if unit_price >= ml_env_grat else envio_real
                     _lt         = _cached.get("logistic_type") or ""
                     if _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2"):
                         envio_lbl = "Envío Correo"
@@ -406,7 +408,7 @@ def build_tab_ventas(container) -> None:
                     iva_total   = iva_venta - iva_meli - iva_impor
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                     for _vr in ventas_raw:
@@ -450,9 +452,10 @@ def build_tab_ventas(container) -> None:
                         envio_lbl  = None
                         _lt = ""
 
+                    envio_efectivo = 0.0 if unit_price >= ml_env_grat else envio_real
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
 
@@ -545,7 +548,7 @@ def build_tab_ventas(container) -> None:
                             _iva_meli_e   = _meli_fee_e * 0.21 / 1.21
                             _iva_impor_e  = 0.09 * costo_usd * dolar * cantidad
                             _iva_total_e  = _iva_venta_e - _iva_meli_e - _iva_impor_e
-                            _envio_e      = 0.0 if unit_price < _ml_env_grat else _ml_env
+                            _envio_e      = 0.0 if unit_price >= _ml_env_grat else _ml_env
                             _gan_pesos_e = _gan_vta_pct_e = _gan_cos_pct_e = None
                             if has_calc:
                                 _gan_pesos_e   = total_price - _meli_fee_e - _cuotas_fee_e - _iva_total_e - _deb_cred_e - _iibb_perc_e - _envio_e - total_costo
@@ -674,7 +677,7 @@ def build_tab_ventas(container) -> None:
                                 # 9. Envío + separador
                                 with ui.row().classes("w-full justify-between items-center py-0.5 border-b-2 border-gray-300 pb-2 mb-2"):
                                     _lbl(envio_lbl or "Envío", envio_es_real)
-                                    ui.label(fmt_moneda(envio_real)).classes("text-sm text-negative")
+                                    ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
                                 # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
                                 if gan_pesos is not None:
                                     _gcls = "text-positive" if gan_pesos >= 0 else "text-negative"
@@ -1161,10 +1164,12 @@ def build_tab_ventas(container) -> None:
                 iva_total  = iva_venta - iva_meli - iva_impor
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
                 envio_real = shp_xd if shp_xd > 0 else float(p.get("ml_envios") or 5823)
+                ml_env_grat_c  = float(p.get("ml_envios_gratuitos") or 33000)
+                envio_efectivo = 0.0 if unit_price >= ml_env_grat_c else envio_real
                 logistic_type = v.get("logistic_type") or ""
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
-                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_real - total_costo
+                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                 return {
