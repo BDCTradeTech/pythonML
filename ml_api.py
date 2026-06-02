@@ -686,7 +686,11 @@ def ml_get_item_prices(access_token: Optional[str], item_id: str) -> Optional[fl
 
 
 def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
-    """GET /items/{id}/prices — retorna {'amount': float, 'min_quantity': int} o None si no hay entrada wholesale."""
+    """GET /items/{id}/prices — retorna {'amount': float, 'min_quantity': int} o None.
+
+    "Precio por cantidad" usa type='standard' con conditions.min_purchase_unit > 1.
+    Retorna la primera entrada con min_purchase_unit > 1 (menor umbral mayorista).
+    """
     if not access_token or not str(item_id).strip():
         return None
     try:
@@ -697,14 +701,20 @@ def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Op
         )
         resp.raise_for_status()
         prices = resp.json().get("prices") or []
+        tiers = []
         for p in prices:
-            if isinstance(p, dict) and p.get("type") == "wholesale":
+            if not isinstance(p, dict) or p.get("type") != "standard":
+                continue
+            cond = p.get("conditions") or {}
+            min_pu = cond.get("min_purchase_unit")
+            if min_pu is not None and int(min_pu) > 1:
                 amt = p.get("amount")
-                if amt is None:
-                    continue
-                cond = p.get("conditions") or {}
-                min_q = cond.get("min_quantity")
-                return {"amount": float(amt), "min_quantity": int(min_q) if min_q is not None else None}
+                if amt is not None:
+                    tiers.append((int(min_pu), float(amt)))
+        if tiers:
+            tiers.sort(key=lambda x: x[0])
+            min_q, amt = tiers[0]
+            return {"amount": amt, "min_quantity": min_q}
     except Exception:
         pass
     return None
