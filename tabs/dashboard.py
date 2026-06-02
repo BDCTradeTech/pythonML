@@ -236,6 +236,26 @@ def _progress_bar(label: str, pct: float, count: int, total: int):
                 f"width:{min(max(pct, 0), 100):.1f}%;height:100%;"
                 f"background:{_BLUE};border-radius:4px;transition:width 0.3s")
 
+def _cuotas_color(pct: float) -> str:
+    if pct <= 25:  return "#A32D2D"
+    if pct <= 34:  return "#E24B4A"
+    if pct <= 49:  return "#BA7517"
+    if pct <= 75:  return "#639922"
+    return "#3B6D11"
+
+def _cuotas_row(label: str, pct: float):
+    color = _cuotas_color(pct)
+    with ui.row().classes("w-full items-center gap-2"):
+        ui.label(label).style("width:72px;min-width:72px;font-size:13px;color:#374151")
+        outer = ui.element("div").style(
+            "flex:1;background:#e5e7eb;height:8px;border-radius:4px;overflow:hidden")
+        with outer:
+            ui.element("div").style(
+                f"width:{min(max(pct,0),100):.1f}%;height:100%;"
+                f"background:{color};border-radius:4px;transition:width 0.3s")
+        ui.label(f"{pct:.0f}%").style(
+            f"min-width:38px;text-align:right;font-size:13px;font-weight:600;color:{color}")
+
 def _stat_row(label: str, value: str, color: str):
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
@@ -731,14 +751,23 @@ def build_tab_dashboard(container) -> None:
 
             cuotas_card.clear()
             with cuotas_card:
-                _card_header("Cuotas", _BLUE)
-                with ui.column().classes("w-full gap-3"):
-                    _progress_bar("Publicaciones únicas", 100,                    _tot,     _tot)
-                    _progress_bar("Promos",               n_promos / denom * 100, n_promos, _tot)
-                    _progress_bar("En 3 cuotas",          n_x3     / denom * 100, n_x3,     _tot)
-                    _progress_bar("En 6 cuotas",          n_x6     / denom * 100, n_x6,     _tot)
-                    _progress_bar("En 9 cuotas",          n_x9     / denom * 100, n_x9,     _tot)
-                    _progress_bar("En 12 cuotas",         n_x12    / denom * 100, n_x12,    _tot)
+                _card_header(f"Cuotas — {_tot} publicaciones", _BLUE)
+                with ui.column().classes("w-full gap-2"):
+                    _cuotas_row("Promos",    n_promos / denom * 100)
+                    ui.separator().style("margin:2px 0")
+                    _cuotas_row("3 cuotas",  n_x3  / denom * 100)
+                    _cuotas_row("6 cuotas",  n_x6  / denom * 100)
+                    _cuotas_row("9 cuotas",  n_x9  / denom * 100)
+                    _cuotas_row("12 cuotas", n_x12 / denom * 100)
+                with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
+                    for col, rng in [("#3B6D11", "76–100%"), ("#639922", "50–75%"),
+                                     ("#BA7517", "35–49%"),  ("#E24B4A", "26–34%"),
+                                     ("#A32D2D", "0–25%")]:
+                        with ui.row().classes("items-center gap-1"):
+                            ui.element("span").style(
+                                f"display:inline-block;width:10px;height:10px;"
+                                f"border-radius:2px;background:{col};flex-shrink:0")
+                            ui.label(rng).style("font-size:12px;color:#6b7280")
 
         except Exception:
             _susp_lbl.set_text("—")
