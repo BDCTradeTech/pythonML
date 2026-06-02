@@ -292,9 +292,9 @@ def build_tab_datos() -> None:
                 ui.html('<i class="ti ti-device-floppy" style="font-size:14px; margin-right:6px; vertical-align:middle"></i>')
                 ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
 
-        # ── Grid: fila 1 × 4 cols, fila 2 × 2 cols ──────────────────────────
+        # ── Fila 1: 4 cards iguales ──────────────────────────────────────────
         with ui.element("div").style(
-            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px; align-items:start"
+            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px"
         ):
             # 1. DÓLAR
             with ui.card().classes("p-3 datos-card"):
@@ -358,18 +358,12 @@ def build_tab_datos() -> None:
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
 
-            # 5. IMPUESTOS (span 2)
-            with ui.card().classes("p-3 datos-card").style("grid-column:span 2"):
-                _card_header("ti-receipt-tax", "Impuestos")
-                for lbl, key in [
-                    ("IVA 10,5%", "iva_105"),
-                    ("IVA 21%",   "iva_21"),
-                    ("IIBB LHS",  "iibb_lhs"),
-                ]:
-                    _add_field(inp_impuestos, key, lbl, "%")
-
-            # 6. CUOTAS (span 2)
-            with ui.card().classes("p-3 datos-card").style("grid-column:span 2"):
+        # ── Fila 2: Cuotas (cols 1-2) | Impuestos (cols 3-4) ─────────────────
+        with ui.element("div").style(
+            "display:grid; grid-template-columns:repeat(4,1fr); gap:10px"
+        ):
+            # 5. CUOTAS (cols 1-2)
+            with ui.card().classes("p-3 datos-card").style("grid-column: 1 / 3"):
                 _card_header("ti-credit-card", "Cuotas")
                 for lbl, key, unit in [
                     ("3x",  "cuotas_3x",  "%"),
@@ -384,6 +378,16 @@ def build_tab_datos() -> None:
                     ("ML ×6", "ml_6cuotas"),
                 ]:
                     _add_field(inp_cuotas, key, lbl)
+
+            # 6. IMPUESTOS (cols 3-4)
+            with ui.card().classes("p-3 datos-card").style("grid-column: 3 / 5"):
+                _card_header("ti-receipt-tax", "Impuestos")
+                for lbl, key in [
+                    ("IVA 10,5%", "iva_105"),
+                    ("IVA 21%",   "iva_21"),
+                    ("IIBB LHS",  "iibb_lhs"),
+                ]:
+                    _add_field(inp_impuestos, key, lbl, "%")
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
