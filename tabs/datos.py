@@ -88,6 +88,16 @@ def build_tab_datos() -> None:
 .datos-card .q-field__bottom { display: none !important; }
 .datos-card .q-field__native { padding: 0 4px !important; font-size: 11px !important; line-height: 26px !important; }
 .datos-card .nicegui-input { margin: 0 !important; padding: 0 !important; }
+.datos-tabla .q-field { padding-bottom:0 !important; margin-bottom:0 !important; }
+.datos-tabla .q-field__inner { min-height:0 !important; padding-bottom:0 !important; }
+.datos-tabla .q-field__bottom { display:none !important; }
+.datos-tabla .q-field__control { min-height:28px !important; height:28px !important; background:#f9fafb !important; border:0.5px solid #e5e7eb !important; border-radius:4px !important; padding:0 !important; box-shadow:none !important; }
+.datos-tabla .q-field__control::before, .datos-tabla .q-field__control::after { display:none !important; }
+.datos-tabla .q-field__native { padding:0 6px !important; font-size:12px !important; text-align:right !important; color:#374151 !important; }
+.datos-tabla .nicegui-input { margin:0 !important; padding:0 !important; }
+.datos-tabla-fila:hover td { background:#f9fafb; }
+.datos-trash { transition:color 0.15s; }
+.datos-trash:hover { color:#dc2626 !important; }
 </style>''')
 
     def _get(key: str) -> str:
@@ -425,144 +435,170 @@ def build_tab_datos() -> None:
             except (ValueError, TypeError):
                 return str(s).strip()
 
-        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True, col_formato: Optional[Dict[str, str]] = None) -> None:
-            card_classes = "p-4"
-            if card_ancho:
-                card_classes += f" {card_ancho}"
-            elif compact:
-                card_classes += " flex-1 min-w-[140px] max-w-[220px]"
-            else:
-                card_classes += " w-full"
-            with ui.card().classes(card_classes):
-                ui.label(titulo).classes("text-lg font-semibold mb-3")
-                cont = ui.column().classes("w-full gap-2")
-                edit_rows: List[Dict[str, Any]] = []
+        def _tabla_editable(nombre: str, cols: List[str], headers: List[str], data: List[Dict[str, Any]], titulo: str, icon: str = "ti-table", compact: bool = False, col_widths: Optional[List[str]] = None, card_ancho: Optional[str] = None, computed: Optional[Dict[str, Any]] = None, computed_deps: Optional[Dict[str, List[str]]] = None, ordenable: bool = True, col_formato: Optional[Dict[str, str]] = None) -> None:
+            wrap_classes = card_ancho if card_ancho else ("flex-1 min-w-[140px] max-w-[220px]" if compact else "w-full")
+            with ui.column().classes(wrap_classes).style("gap:0"):
+                with ui.row().classes("items-center gap-2").style("margin-bottom:8px"):
+                    ui.html(f'<i class="ti {icon}" style="font-size:16px;color:#6b7280"></i>')
+                    ui.label(titulo).style("font-size:15px; font-weight:500; color:#374151")
+                with ui.element("div").style(
+                    "background:white; border:0.5px solid #e5e7eb; border-radius:12px; overflow:hidden"
+                ):
+                    cont = ui.element("div")
+                    edit_rows: List[Dict[str, Any]] = []
 
-                def repintar() -> None:
-                    cont.clear()
-                    edit_rows.clear()
-                    with cont:
-                        with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
-                            with ui.element("thead"):
-                                with ui.element("tr").classes("bg-blue-100 dark:bg-blue-900"):
-                                    for j, h in enumerate(headers):
-                                        th = ui.element("th").classes("font-semibold px-1.5 py-0.5 text-left border border-gray-300")
-                                        if col_widths and j < len(col_widths):
-                                            th.style(col_widths[j])
-                                        with th:
-                                            ui.label(h)
-                                    if ordenable:
-                                        with ui.element("th").classes("font-semibold px-0.5 py-0.5 text-center border border-gray-300 text-xs").style("min-width: 48px; width: 48px;"):
-                                            ui.label("Ordenar")
-                                    with ui.element("th").classes("font-semibold px-0.5 py-0.5 text-center border border-gray-300 text-xs").style("min-width: 52px; width: 52px;"):
-                                        ui.label("Borrar")
-                            with ui.element("tbody"):
-                                for idx, row in enumerate(data):
-                                    rinputs: Dict[str, Any] = {}
-                                    with ui.element("tr"):
-                                        for col in cols:
-                                            val = str(row.get(col, ""))
-                                            if col_formato and col in col_formato:
-                                                val = _fmt_pesos_display(val) if val else ""
-                                            with ui.element("td").classes("p-0.5 border border-gray-200"):
-                                                if computed and col in computed:
-                                                    disp = computed[col](row) if callable(computed[col]) else str(row.get(col, ""))
-                                                    if col_formato and col in col_formato:
-                                                        disp = _fmt_pesos_display(disp) if disp else ""
-                                                    lbl = ui.label(disp).classes("text-xs")
-                                                    rinputs[col] = lbl
-                                                else:
-                                                    inp = ui.input(value=val).classes("w-full border-0 text-xs").props("dense")
-                                                    rinputs[col] = inp
-                                        if computed and computed_deps:
-                                            def make_updater(comp_col: str, lbl_ref: Any) -> None:
-                                                def upd() -> None:
-                                                    row = {}
-                                                    for c in cols:
-                                                        if c in (computed or {}):
-                                                            continue
-                                                        raw = str(rinputs[c].value or "")
-                                                        if col_formato and c in col_formato:
-                                                            raw = _parse_pesos_fmt(raw)
-                                                        row[c] = raw
-                                                    disp = computed[comp_col](row)
-                                                    if col_formato and comp_col in col_formato:
-                                                        disp = _fmt_pesos_display(disp) if disp else ""
-                                                    lbl_ref.text = disp
-                                                return upd
-                                            for comp_col, deps in computed_deps.items():
-                                                if comp_col in rinputs:
-                                                    upd = make_updater(comp_col, rinputs[comp_col])
-                                                    for d in deps:
-                                                        if d in rinputs and hasattr(rinputs[d], "on_value_change"):
-                                                            rinputs[d].on_value_change(upd)
+                    def repintar() -> None:
+                        cont.clear()
+                        edit_rows.clear()
+                        with cont:
+                            with ui.element("table").classes("w-full datos-tabla").style("border-collapse:collapse; table-layout:fixed"):
+                                with ui.element("thead"):
+                                    with ui.element("tr").style("background:#f3f4f6"):
+                                        for j, h in enumerate(headers):
+                                            th = ui.element("th").style(
+                                                "font-size:11px; font-weight:600; text-transform:uppercase; "
+                                                "color:#6b7280; padding:10px 14px; text-align:left; white-space:nowrap"
+                                            )
+                                            if col_widths and j < len(col_widths):
+                                                th.style(col_widths[j])
+                                            with th:
+                                                ui.label(h)
                                         if ordenable:
-                                            with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 48px; width: 48px;"):
-                                                def subir(i: int) -> None:
-                                                    if i > 0:
-                                                        data[i], data[i - 1] = data[i - 1], data[i]
+                                            with ui.element("th").style(
+                                                "font-size:11px; font-weight:600; text-transform:uppercase; color:#6b7280; "
+                                                "padding:10px 8px; text-align:center; width:48px; min-width:48px"
+                                            ):
+                                                ui.label("Ord.")
+                                        with ui.element("th").style(
+                                            "padding:10px 8px; width:44px; min-width:44px"
+                                        ):
+                                            ui.label("")
+                                with ui.element("tbody"):
+                                    for idx, row in enumerate(data):
+                                        rinputs: Dict[str, Any] = {}
+                                        with ui.element("tr").classes("datos-tabla-fila"):
+                                            for col in cols:
+                                                val = str(row.get(col, ""))
+                                                if col_formato and col in col_formato:
+                                                    val = _fmt_pesos_display(val) if val else ""
+                                                with ui.element("td").style("padding:8px 14px; border-bottom:0.5px solid #e5e7eb"):
+                                                    if computed and col in computed:
+                                                        disp = computed[col](row) if callable(computed[col]) else str(row.get(col, ""))
+                                                        if col_formato and col in col_formato:
+                                                            disp = _fmt_pesos_display(disp) if disp else ""
+                                                        lbl = ui.label(disp).style("font-size:12px; color:#374151")
+                                                        rinputs[col] = lbl
+                                                    else:
+                                                        inp = ui.input(value=val).props("dense hide-bottom-space").style("width:100%")
+                                                        rinputs[col] = inp
+                                            if computed and computed_deps:
+                                                def make_updater(comp_col: str, lbl_ref: Any) -> None:
+                                                    def upd() -> None:
+                                                        row = {}
+                                                        for c in cols:
+                                                            if c in (computed or {}):
+                                                                continue
+                                                            raw = str(rinputs[c].value or "")
+                                                            if col_formato and c in col_formato:
+                                                                raw = _parse_pesos_fmt(raw)
+                                                            row[c] = raw
+                                                        disp = computed[comp_col](row)
+                                                        if col_formato and comp_col in col_formato:
+                                                            disp = _fmt_pesos_display(disp) if disp else ""
+                                                        lbl_ref.text = disp
+                                                    return upd
+                                                for comp_col, deps in computed_deps.items():
+                                                    if comp_col in rinputs:
+                                                        upd = make_updater(comp_col, rinputs[comp_col])
+                                                        for d in deps:
+                                                            if d in rinputs and hasattr(rinputs[d], "on_value_change"):
+                                                                rinputs[d].on_value_change(upd)
+                                            if ordenable:
+                                                with ui.element("td").style(
+                                                    "padding:4px 8px; border-bottom:0.5px solid #e5e7eb; "
+                                                    "text-align:center; width:48px; min-width:48px"
+                                                ):
+                                                    def subir(i: int) -> None:
+                                                        if i > 0:
+                                                            data[i], data[i - 1] = data[i - 1], data[i]
+                                                            repintar()
+                                                    def bajar(i: int) -> None:
+                                                        if i < len(data) - 1:
+                                                            data[i], data[i + 1] = data[i + 1], data[i]
+                                                            repintar()
+                                                    with ui.row().classes("gap-0 justify-center"):
+                                                        ui.button("▲", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                                        ui.button("▼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                            with ui.element("td").style(
+                                                "padding:4px 8px; border-bottom:0.5px solid #e5e7eb; "
+                                                "text-align:center; width:44px; min-width:44px"
+                                            ):
+                                                def borrar_fila(i: int) -> None:
+                                                    if 0 <= i < len(data):
+                                                        data.pop(i)
                                                         repintar()
-                                                def bajar(i: int) -> None:
-                                                    if i < len(data) - 1:
-                                                        data[i], data[i + 1] = data[i + 1], data[i]
-                                                        repintar()
-                                                with ui.row().classes("gap-0 justify-center"):
-                                                    ui.button("▲", on_click=lambda i=idx: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                                    ui.button("▼", on_click=lambda i=idx: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                        with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 52px; width: 52px;"):
-                                            def borrar_fila(i: int) -> None:
-                                                if 0 <= i < len(data):
-                                                    data.pop(i)
-                                                    repintar()
-                                            ui.button("×", on_click=lambda i=idx: borrar_fila(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
-                                    edit_rows.append(rinputs)
+                                                ui.html(
+                                                    '<i class="ti ti-trash datos-trash" '
+                                                    'style="font-size:15px;color:#9ca3af;cursor:pointer"></i>'
+                                                ).on("click", lambda i=idx: borrar_fila(i))
+                                        edit_rows.append(rinputs)
 
-                repintar()
-
-                def agregar_fila() -> None:
-                    data.append({c: "" for c in cols})
                     repintar()
 
-                def guardar_tabla() -> None:
-                    new_data = []
-                    for rinputs in edit_rows:
-                        row: Dict[str, Any] = {}
-                        for c in cols:
-                            if computed and c in computed:
-                                continue
-                            raw = str(rinputs[c].value or "")
-                            if col_formato and c in col_formato:
-                                raw = _parse_pesos_fmt(raw)
-                            row[c] = raw
-                        if computed:
-                            for c in computed:
-                                row[c] = computed[c](row)
-                        new_data.append(row)
-                    set_cotizador_tabla(nombre, new_data, uid)
-                    data.clear()
-                    data.extend(new_data)
-                    repintar()
-                    ui.notify(f"Tabla {titulo} guardada", color="positive")
+                    def agregar_fila() -> None:
+                        data.append({c: "" for c in cols})
+                        repintar()
 
-                with ui.row().classes("gap-2"):
-                    ui.button("Agregar Fila", on_click=agregar_fila, color="primary")
-                    ui.button("Guardar tabla", on_click=guardar_tabla, color="secondary")
+                    def guardar_tabla() -> None:
+                        new_data = []
+                        for rinputs in edit_rows:
+                            row: Dict[str, Any] = {}
+                            for c in cols:
+                                if computed and c in computed:
+                                    continue
+                                raw = str(rinputs[c].value or "")
+                                if col_formato and c in col_formato:
+                                    raw = _parse_pesos_fmt(raw)
+                                row[c] = raw
+                            if computed:
+                                for c in computed:
+                                    row[c] = computed[c](row)
+                            new_data.append(row)
+                        set_cotizador_tabla(nombre, new_data, uid)
+                        data.clear()
+                        data.extend(new_data)
+                        repintar()
+                        ui.notify(f"Tabla {titulo} guardada", color="positive")
+
+                    with ui.row().style(
+                        "background:#f9fafb; border-top:1px solid #e5e7eb; padding:10px 14px; gap:8px"
+                    ):
+                        with ui.button(on_click=agregar_fila).props("flat dense no-caps").style(
+                            "color:#185FA5; border:1px solid #378ADD; border-radius:4px; font-size:12px; padding:4px 12px"
+                        ):
+                            ui.html('<i class="ti ti-plus" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                            ui.label("Agregar fila").style("font-size:12px; vertical-align:middle")
+                        with ui.button(on_click=guardar_tabla).props("flat dense no-caps").style(
+                            "color:#3B6D11; border:1px solid #639922; border-radius:4px; font-size:12px; padding:4px 12px"
+                        ):
+                            ui.html('<i class="ti ti-device-floppy" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                            ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
 
         with ui.row().classes("w-full gap-4 flex-wrap"):
-            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", card_ancho="w-fit")
+            _tabla_editable("trafo_gramos", ["trafo", "gramos"], ["Trafo", "Gramos"], tabla_trafo_gramos_data, "Trafo y Gramos", icon="ti-ruler-2", card_ancho="w-fit")
             _tabla_editable("posicion", ["posicion", "seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"],
                 ["Posicion", "Seguro", "Flete", "Derechos", "Estadisticas", "IVA", "Despachante", "Cambio PA"],
-                tabla_posicion_data, "Tasas por Posición", card_ancho="w-fit")
+                tabla_posicion_data, "Tasas por Posición", icon="ti-list-numbers", card_ancho="w-fit")
             _tabla_editable("envios_ml", ["envio", "importe", "porc_10", "costo"],
                 ["Envios ML", "Importe", "0,10", "Costo"], tabla_envios_data, "Costos envío MercadoLibre",
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
                 computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
-                col_formato={"importe": "$", "porc_10": "$", "costo": "$"})
+                col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store")
             _tabla_editable("courier", ["courier", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
                 ["Courier", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
                 tabla_courier_data, "Costos por Courier",
                 computed={"kg_real": lambda r: f"{_parse_num(r.get('valor_kg')) / max(0.001, _parse_num(r.get('descuento'))):.2f}"},
-                computed_deps={"kg_real": ["valor_kg", "descuento"]}, card_ancho="w-fit")
+                computed_deps={"kg_real": ["valor_kg", "descuento"]}, card_ancho="w-fit", icon="ti-truck-delivery")
 
         # Tabla IVA vs Exento
         tabla_iva_vs_exento_data = list(_get_tabla("iva_vs_exento", TABLA_IVA_VS_EXENTO_DEFAULT))
@@ -573,36 +609,49 @@ def build_tab_datos() -> None:
                 return True
             return False
 
-        with ui.card().classes("p-4 w-fit"):
-            ui.label("IVA vs Exento").classes("text-lg font-semibold mb-3")
-            iva_vs_exento_cont = ui.column().classes("w-full gap-2")
+        with ui.row().classes("items-center gap-2").style("margin-bottom:8px"):
+            ui.html('<i class="ti ti-checklist" style="font-size:16px;color:#6b7280"></i>')
+            ui.label("IVA vs Exento").style("font-size:15px; font-weight:500; color:#374151")
+        with ui.element("div").style(
+            "background:white; border:0.5px solid #e5e7eb; border-radius:12px; overflow:hidden; width:fit-content"
+        ):
+            iva_vs_exento_cont = ui.element("div")
             iva_vs_exento_edit_rows: List[Dict[str, Any]] = []
 
             def repintar_iva() -> None:
                 iva_vs_exento_cont.clear()
                 iva_vs_exento_edit_rows.clear()
                 with iva_vs_exento_cont:
-                    with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
+                    with ui.element("table").classes("datos-tabla").style("border-collapse:collapse"):
                         with ui.element("thead"):
-                            with ui.element("tr").classes("bg-blue-100 dark:bg-blue-900"):
+                            with ui.element("tr").style("background:#f3f4f6"):
                                 for h in iva_vs_exento_headers:
-                                    with ui.element("th").classes("font-semibold px-1.5 py-0.5 text-center border border-gray-300"):
+                                    with ui.element("th").style(
+                                        "font-size:11px; font-weight:600; text-transform:uppercase; "
+                                        "color:#6b7280; padding:10px 14px; text-align:center; white-space:nowrap"
+                                    ):
                                         ui.label(h)
-                                with ui.element("th").classes("font-semibold px-0.5 py-0.5 text-center border border-gray-300 text-xs").style("min-width: 52px; width: 52px;"):
-                                    ui.label("Borrar")
+                                with ui.element("th").style(
+                                    "padding:10px 8px; width:44px; min-width:44px"
+                                ):
+                                    ui.label("")
                         with ui.element("tbody"):
                             for idx, row in enumerate(tabla_iva_vs_exento_data):
                                 rinputs: Dict[str, Any] = {}
-                                with ui.element("tr"):
-                                    with ui.element("td").classes("p-0.5 border border-gray-200"):
-                                        inp_courier = ui.input(value=str(row.get("courier", ""))).classes("w-full border-0 text-xs min-w-[100px]").props("dense")
+                                with ui.element("tr").classes("datos-tabla-fila"):
+                                    with ui.element("td").style("padding:8px 14px; border-bottom:0.5px solid #e5e7eb"):
+                                        inp_courier = ui.input(value=str(row.get("courier", ""))).props("dense hide-bottom-space").style("width:100%; min-width:100px")
                                         rinputs["courier"] = inp_courier
                                     for col in ["almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "precio_con_iva"]:
-                                        with ui.element("td").classes("p-0.5 border border-gray-200 text-center"):
+                                        with ui.element("td").style(
+                                            "padding:8px 14px; border-bottom:0.5px solid #e5e7eb; text-align:center"
+                                        ):
                                             default_val = True if col == "precio_con_iva" else False
                                             chk = ui.checkbox(value=_parse_bool(row.get(col, default_val)))
                                             rinputs[col] = chk
-                                    with ui.element("td").classes("p-0.5 border border-gray-200 text-center").style("min-width: 52px; width: 52px;"):
+                                    with ui.element("td").style(
+                                        "padding:4px 8px; border-bottom:0.5px solid #e5e7eb; text-align:center; width:44px; min-width:44px"
+                                    ):
                                         def borrar_iva(i: int) -> None:
                                             if 0 <= i < len(tabla_iva_vs_exento_data):
                                                 for j, rinputs in enumerate(iva_vs_exento_edit_rows):
@@ -618,7 +667,10 @@ def build_tab_datos() -> None:
                                                         }
                                                 tabla_iva_vs_exento_data.pop(i)
                                                 repintar_iva()
-                                        ui.button("×", on_click=lambda i=idx: borrar_iva(i)).classes("text-red-600 font-bold text-sm min-w-0 px-1").props("flat dense no-caps")
+                                        ui.html(
+                                            '<i class="ti ti-trash datos-trash" '
+                                            'style="font-size:15px;color:#9ca3af;cursor:pointer"></i>'
+                                        ).on("click", lambda i=idx: borrar_iva(i))
                                 iva_vs_exento_edit_rows.append(rinputs)
 
             repintar_iva()
@@ -657,9 +709,19 @@ def build_tab_datos() -> None:
                 repintar_iva()
                 ui.notify("Tabla IVA vs Exento guardada", color="positive")
 
-            with ui.row().classes("gap-2"):
-                ui.button("Agregar Fila", on_click=agregar_fila_iva, color="primary")
-                ui.button("Guardar tabla", on_click=guardar_tabla_iva, color="secondary")
+            with ui.row().style(
+                "background:#f9fafb; border-top:1px solid #e5e7eb; padding:10px 14px; gap:8px"
+            ):
+                with ui.button(on_click=agregar_fila_iva).props("flat dense no-caps").style(
+                    "color:#185FA5; border:1px solid #378ADD; border-radius:4px; font-size:12px; padding:4px 12px"
+                ):
+                    ui.html('<i class="ti ti-plus" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                    ui.label("Agregar fila").style("font-size:12px; vertical-align:middle")
+                with ui.button(on_click=guardar_tabla_iva).props("flat dense no-caps").style(
+                    "color:#3B6D11; border:1px solid #639922; border-radius:4px; font-size:12px; padding:4px 12px"
+                ):
+                    ui.html('<i class="ti ti-device-floppy" style="font-size:13px;margin-right:5px;vertical-align:middle"></i>')
+                    ui.label("Guardar tabla").style("font-size:12px; vertical-align:middle")
 
 
 # ==========================
