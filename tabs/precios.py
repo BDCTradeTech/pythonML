@@ -710,6 +710,23 @@ def _mostrar_tabla_precios(
                 r["catalog_reason"]       = d.get("reason")
                 r["catalog_competitors"]  = d.get("competitors")
 
+    _cs_rows = [
+        (r.get("catalog_status"), r.get("seller_sku"))
+        for r in items_loaded
+        if r.get("seller_sku")
+    ]
+    if _cs_rows:
+        _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        _conn_cs = get_connection()
+        try:
+            _conn_cs.executemany(
+                "UPDATE productos SET catalog_status=?, updated_at=? WHERE sku=? AND user_id=?",
+                [(cs, _now_cs, sku, _uid) for cs, sku in _cs_rows],
+            )
+            _conn_cs.commit()
+        finally:
+            _conn_cs.close()
+
     _items_para_quality = [
         r for r in items_loaded
         if str(r.get("status") or "").lower() == "active"
