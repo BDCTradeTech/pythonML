@@ -335,11 +335,11 @@ def _pintar_home_inline(
                     rate_pct_str = f"{rate_f * 100:.2f}%".replace(".", ",")
                     ratio = rate_f / max_val if max_val > 0 else 1.0
                     if ratio < 0.5:
-                        color = "#16a34a"
+                        color = "#3B6D11"
                     elif ratio < 0.9:
-                        color = "#f59e0b"
+                        color = "#BA7517"
                     else:
-                        color = "#ef4444"
+                        color = "#A32D2D"
                     bar_pct = min(ratio * 100, 100)
                 with ui.element("div").style("margin-bottom:5px"):
                     with ui.element("div").style("display:flex;align-items:center;gap:6px"):
