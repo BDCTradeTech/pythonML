@@ -36,6 +36,37 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Flex tarifa lookup
+# ---------------------------------------------------------------------------
+
+def _get_flex_tarifa(user_id: int, zip_code: str) -> float:
+    """Busca tarifa Flex para un CP. Soporta CPs individuales y rangos (ej: 1000-1599)."""
+    if not zip_code or not zip_code.strip().isdigit():
+        return 0.0
+    cp = zip_code.strip()
+    conn = get_connection()
+    zonas = conn.execute(
+        "SELECT tarifa, codigos_postales FROM flex_zonas WHERE user_id=?", (user_id,)
+    ).fetchall()
+    conn.close()
+    for zona in zonas:
+        for tok in (zona["codigos_postales"] or "").split(","):
+            tok = tok.strip()
+            if not tok:
+                continue
+            if "-" in tok and tok.replace("-", "").isdigit():
+                try:
+                    lo, hi = tok.split("-", 1)
+                    if int(lo) <= int(cp) <= int(hi):
+                        return float(zona["tarifa"])
+                except ValueError:
+                    pass
+            elif tok == cp:
+                return float(zona["tarifa"])
+    return 0.0
+
+
+# ---------------------------------------------------------------------------
 # Tab principal
 # ---------------------------------------------------------------------------
 
@@ -675,9 +706,14 @@ def build_tab_ventas(container) -> None:
                                         else:
                                             ui.label(f"{fmt_usd(costo_usd)} × {fmt_moneda(dolar)}").classes("text-xs text-gray-400")
                                 # 9. Envío + separador
-                                with ui.row().classes("w-full justify-between items-center py-0.5 border-b-2 border-gray-300 pb-2 mb-2"):
-                                    _lbl(envio_lbl or "Envío", envio_es_real)
-                                    ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
+                                with ui.column().classes("w-full border-b-2 border-gray-300 pb-2 mb-2 gap-0"):
+                                    with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                        _lbl(envio_lbl or "Envío", envio_es_real)
+                                        ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
+                                    if _lt in ("self_service", "flex") and zip_code:
+                                        _ftarifa = _get_flex_tarifa(user["id"], zip_code)
+                                        _ffmt = f"$ {int(_ftarifa):,}".replace(",", ".")
+                                        ui.label(f"CP {zip_code} — Flex Real {_ffmt}").classes("text-xs text-gray-400 -mt-0.5")
                                 # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
                                 if gan_pesos is not None:
                                     _gcls = "text-positive" if gan_pesos >= 0 else "text-negative"
