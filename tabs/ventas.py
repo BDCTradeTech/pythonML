@@ -1193,7 +1193,20 @@ def build_tab_ventas(container) -> None:
                 except Exception:
                     return {}
 
-            def _compute(pay_data: Dict, v: Dict, zip_code: str = "") -> Optional[Dict]:
+            def _fetch_ship_costs(sid: str) -> Dict:
+                if not sid:
+                    return {}
+                try:
+                    r = requests.get(
+                        f"https://api.mercadolibre.com/shipments/{sid}/costs",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=15,
+                    )
+                    return r.json() if r.status_code == 200 else {}
+                except Exception:
+                    return {}
+
+            def _compute(pay_data: Dict, v: Dict, zip_code: str = "", bonif_flex: float = 0.0) -> Optional[Dict]:
                 charges     = pay_data.get("charges_details") or []
                 is_rejected = pay_data.get("status") == "rejected"
                 is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
@@ -1236,7 +1249,7 @@ def build_tab_ventas(container) -> None:
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
-                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
+                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                 return {
@@ -1311,10 +1324,16 @@ def build_tab_ventas(container) -> None:
                 def _fetch_batch(batch_rows: List[Dict]) -> List[tuple]:
                     max_w = min(16, len(batch_rows) * 2)
                     with ThreadPoolExecutor(max_workers=max_w) as ex:
-                        pay_futs = [(v, ex.submit(_fetch_one, v["payment_id"])) for v in batch_rows]
-                        ship_futs = [(v, ex.submit(_fetch_ship, v.get("shipping_id") or "")) for v in batch_rows]
+                        pay_futs        = [(v, ex.submit(_fetch_one,        v["payment_id"])) for v in batch_rows]
+                        ship_futs       = [(v, ex.submit(_fetch_ship,       v.get("shipping_id") or "")) for v in batch_rows]
+                        ship_costs_futs = [
+                            (v, ex.submit(_fetch_ship_costs, v.get("shipping_id") or "")
+                             if v.get("logistic_type") in ("self_service", "flex") and v.get("shipping_id")
+                             else ex.submit(lambda: {}))
+                            for v in batch_rows
+                        ]
                     results = []
-                    for (v, pf), (_, sf) in zip(pay_futs, ship_futs):
+                    for (v, pf), (_, sf), (_, scf) in zip(pay_futs, ship_futs, ship_costs_futs):
                         try:
                             pay_data = pf.result()
                         except Exception:
@@ -1323,18 +1342,24 @@ def build_tab_ventas(container) -> None:
                             ship_data = sf.result()
                         except Exception:
                             ship_data = {}
-                        results.append((v, pay_data, ship_data))
+                        try:
+                            ship_costs_data = scf.result()
+                        except Exception:
+                            ship_costs_data = {}
+                        results.append((v, pay_data, ship_data, ship_costs_data))
                     return results
 
                 batch_results = await run.io_bound(_fetch_batch, batch)
 
                 db_rows: List[Dict] = []
                 placeholder_rows: List[Dict] = []
-                for v, pay_data, ship_data in batch_results:
+                for v, pay_data, ship_data, ship_costs_data in batch_results:
                     lt = ship_data.get("logistic_type") or ""
                     if lt:
                         v["logistic_type"] = lt
                     zip_code_v = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
+                    _senders_b   = ship_costs_data.get("senders") or []
+                    bonif_flex_b = float((_senders_b[0].get("save") if _senders_b else 0) or 0)
                     pid = v["payment_id"]
                     if not pay_data:
                         placeholder_rows.append({
@@ -1344,7 +1369,7 @@ def build_tab_ventas(container) -> None:
                         })
                         continue
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
-                    calc = await run.io_bound(_compute, pay_data, v, zip_code_v)
+                    calc = await run.io_bound(_compute, pay_data, v, zip_code_v, bonif_flex_b)
                     if not calc:
                         placeholder_rows.append({
                             "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
