@@ -405,16 +405,23 @@ def build_tab_ventas(container) -> None:
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
+                def _get_ship_costs(tok, sid):
+                    r = requests.get(f"https://api.mercadolibre.com/shipments/{sid}/costs",
+                                     headers={"Authorization": f"Bearer {tok}"}, timeout=15)
+                    return r.json() if r.status_code == 200 else {}
+
                 async def _noop():
                     return {}
 
                 _cached = ventas_cache_ref.get(payment_id or "")
                 ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
 
+                bonif_flex = 0.0
                 if _cached and payment_id:
-                    item_coro2 = run.io_bound(_get_item, access_token, _iid) if _iid else _noop()
-                    ship_coro2 = run.io_bound(_get_ship, access_token, shipping_id) if shipping_id else _noop()
-                    item_data, ship_data = await asyncio.gather(item_coro2, ship_coro2)
+                    item_coro2       = run.io_bound(_get_item,       access_token, _iid)        if _iid        else _noop()
+                    ship_coro2       = run.io_bound(_get_ship,        access_token, shipping_id) if shipping_id else _noop()
+                    ship_costs_coro2 = run.io_bound(_get_ship_costs,  access_token, shipping_id) if shipping_id else _noop()
+                    item_data, ship_data, ship_costs_data = await asyncio.gather(item_coro2, ship_coro2, ship_costs_coro2)
                     zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
                     has_api     = True
                     is_rejected = _cached.get("pay_status") == "rejected"
@@ -433,6 +440,8 @@ def build_tab_ventas(container) -> None:
                         envio_real = _flex_tarifa
                         _zona_txt  = f" ({_flex_zona})" if _flex_zona else " (zona no encontrada)"
                         envio_lbl  = f"Envío Flex  {zip_code}{_zona_txt}" if zip_code else "Envío Flex"
+                        _senders   = ship_costs_data.get("senders") or []
+                        bonif_flex = float((_senders[0].get("save") if _senders else 0) or 0)
                     else:
                         envio_lbl = f"Envío Flex (CP {zip_code})" if zip_code else "Envío Flex"
                     envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
@@ -443,7 +452,7 @@ def build_tab_ventas(container) -> None:
                     iva_total   = iva_venta - iva_meli - iva_impor
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                     for _vr in ventas_raw:
@@ -452,10 +461,11 @@ def build_tab_ventas(container) -> None:
                             _vr["gan_vta_pct"] = gan_vta_pct
                             break
                 else:
-                    pay_coro  = run.io_bound(_get_pay,  access_token, payment_id) if payment_id else _noop()
-                    item_coro = run.io_bound(_get_item, access_token, _iid)        if _iid       else _noop()
-                    ship_coro = run.io_bound(_get_ship, access_token, shipping_id) if shipping_id else _noop()
-                    pay_data, item_data, ship_data = await asyncio.gather(pay_coro, item_coro, ship_coro)
+                    pay_coro        = run.io_bound(_get_pay,        access_token, payment_id) if payment_id  else _noop()
+                    item_coro       = run.io_bound(_get_item,       access_token, _iid)        if _iid        else _noop()
+                    ship_coro       = run.io_bound(_get_ship,        access_token, shipping_id) if shipping_id else _noop()
+                    ship_costs_coro = run.io_bound(_get_ship_costs,  access_token, shipping_id) if shipping_id else _noop()
+                    pay_data, item_data, ship_data, ship_costs_data = await asyncio.gather(pay_coro, item_coro, ship_coro, ship_costs_coro)
                     zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
 
                     is_rejected = pay_data.get("status") == "rejected"
@@ -484,6 +494,8 @@ def build_tab_ventas(container) -> None:
                         envio_real = _flex_tarifa
                         _zona_txt  = f" ({_flex_zona})" if _flex_zona else " (zona no encontrada)"
                         envio_lbl  = f"Envío Flex  {zip_code}{_zona_txt}" if zip_code else "Envío Flex"
+                        _senders   = ship_costs_data.get("senders") or []
+                        bonif_flex = float((_senders[0].get("save") if _senders else 0) or 0)
                     else:
                         envio_real = 0.0
                         envio_lbl  = None
@@ -492,7 +504,7 @@ def build_tab_ventas(container) -> None:
                     envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
 
@@ -716,6 +728,10 @@ def build_tab_ventas(container) -> None:
                                     with ui.row().classes("w-full justify-between items-center py-0.5"):
                                         _lbl(envio_lbl or "Envío", False if _lt in ("self_service", "flex") else envio_es_real)
                                         ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
+                                    if bonif_flex > 0:
+                                        with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                            _lbl("Bonificación envío", True)
+                                            ui.label(f"+{fmt_moneda(bonif_flex)}").classes("text-sm text-positive")
                                 # 10. Gan $ / Gan Vta % / Gan % Cos en una fila
                                 if gan_pesos is not None:
                                     _gcls = "text-positive" if gan_pesos >= 0 else "text-negative"
