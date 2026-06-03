@@ -841,8 +841,7 @@ def build_tab_ventas(container) -> None:
             n_ventas_ok = len(ventas_filtradas)
             ticket_promedio = total_monto_ok / n_ventas_ok if n_ventas_ok > 0 else 0
             ganancia_total = sum(v["gan_pesos"] for v in ventas_filtradas if v.get("gan_pesos") is not None)
-            _gvp_lista = [v["gan_vta_pct"] for v in ventas_filtradas if v.get("gan_vta_pct") is not None]
-            gan_prom_pct = sum(_gvp_lista) / len(_gvp_lista) if _gvp_lista else None
+            gan_prom_pct = (ganancia_total / total_monto_ok * 100) if total_monto_ok > 0 else 0.0
             ventas_diarias = total_monto_ok / dias_total if dias_total > 0 else 0
             ventas_diarias_u = total_unidades_ok / dias_total if dias_total > 0 else 0
             gan_prom_dia = ganancia_total / dias_total if dias_total > 0 else 0
