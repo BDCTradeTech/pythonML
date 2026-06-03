@@ -37,20 +37,24 @@ def build_tab_promos(container) -> None:
         conn = get_connection()
         try:
             rows = conn.execute(
-                """SELECT mp.ml_id, mp.sku, mp.titulo, mp.precio, mp.stock,
-                          mp.listing_type_id, mp.catalog_listing, mp.sold_quantity,
-                          p.nombre, p.costo_usd, p.tipo_iva
-                   FROM ml_publicaciones mp
-                   LEFT JOIN productos p ON p.sku = mp.sku AND p.user_id = mp.user_id
-                   WHERE mp.user_id = ?
-                   ORDER BY COALESCE(p.nombre, mp.titulo) COLLATE NOCASE""",
+                """SELECT mp.ml_id, p.sku, COALESCE(mp.titulo, '') AS titulo,
+                          p.nombre, p.marca, p.costo_usd, p.tipo_iva,
+                          COALESCE(mp.precio, 0) AS precio,
+                          COALESCE(mp.stock, 0) AS stock,
+                          COALESCE(mp.listing_type_id, '') AS listing_type_id,
+                          COALESCE(mp.catalog_listing, 0) AS catalog_listing,
+                          COALESCE(mp.sold_quantity, 0) AS sold_quantity
+                   FROM productos p
+                   LEFT JOIN ml_publicaciones mp ON mp.sku = p.sku AND mp.user_id = p.user_id
+                   WHERE p.user_id = ?
+                   ORDER BY COALESCE(p.nombre, p.marca, p.sku) COLLATE NOCASE""",
                 (uid,),
             ).fetchall()
         finally:
             conn.close()
 
         if not rows:
-            ui.label("No hay publicaciones sincronizadas. Cargá la pestaña Productos primero.").classes("text-gray-500 p-4")
+            ui.label("No hay productos registrados. Cargá la pestaña Datos primero.").classes("text-gray-500 p-4")
             return
 
         # Dedup por sku: elegir item principal
@@ -77,7 +81,9 @@ def build_tab_promos(container) -> None:
                 items_by_sku[sku] = merged
 
         all_opts: Dict[str, str] = {
-            sku: (item.get("nombre") or item.get("titulo") or sku)
+            sku: (item.get("nombre") or
+                  (f"{item.get('marca', '')} {sku}".strip() if item.get("marca") else None) or
+                  item.get("titulo") or sku)
             for sku, item in items_by_sku.items()
         }
         all_opts = dict(sorted(all_opts.items(), key=lambda x: x[1].lower()))
