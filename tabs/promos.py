@@ -102,6 +102,18 @@ def build_tab_promos(container) -> None:
                 grps.setdefault(_cuotas_key(it), []).append(it)
             rep_items: List[dict] = [max(grp, key=_cuotas_score) for grp in grps.values()]
 
+            # Para cada grupo, usar gold_special para verificar promo (igual que cuotas.py)
+            # gold_pro gana el score de display pero la promo se aplica sobre gold_special
+            _promo_ids: Dict[str, str] = {}
+            for rep_it, grp in zip(rep_items, grps.values()):
+                rep_id = str(rep_it.get("id") or "")
+                check_id = rep_id
+                for _it in grp:
+                    if not _it.get("catalog_listing") and str(_it.get("listing_type_id") or "").lower() == "gold_special":
+                        check_id = str(_it.get("id") or "")
+                        break
+                _promo_ids[rep_id] = check_id
+
             # Paso 3: fetch promo data con progreso
             total = len(rep_items)
             main_area.clear()
@@ -114,8 +126,9 @@ def build_tab_promos(container) -> None:
             promo_by_id: Dict[str, dict] = {}
             for i, it in enumerate(rep_items):
                 iid = str(it.get("id") or "")
+                check_id = _promo_ids.get(iid, iid)
                 if iid:
-                    promo_by_id[iid] = await run.io_bound(_get_promo_data, access_token, iid, seller_id)
+                    promo_by_id[iid] = await run.io_bound(_get_promo_data, access_token, check_id, seller_id)
                 if promo_lbl:
                     promo_lbl.set_text(f"Verificando promos {i + 1}/{total}...")
 
