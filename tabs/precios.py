@@ -668,6 +668,7 @@ def _mostrar_tabla_precios(
             "quality_level":        None,
             "price_updated_at":     _price_upd_at,
             "dias_sin_modificar":   _dias_sin_modif,
+            "has_promo":            tiene_promo,
         })
 
     _gan_rows = [
@@ -785,6 +786,33 @@ def _mostrar_tabla_precios(
                 d = _quality_map[_qid] or {}
                 r["quality_score"] = d.get("score")
                 r["quality_level"] = d.get("level")
+
+    _sp_item_ids = [str(r["id"]) for r in items_loaded if r.get("id")]
+    if _sp_item_ids and access_token:
+        def _fetch_has_promo(ids):
+            def _one(iid):
+                sp = ml_get_item_sale_price_full(access_token, iid)
+                if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
+                    try:
+                        return float(sp["amount"]) < float(sp["regular_amount"]) - 0.01
+                    except (TypeError, ValueError):
+                        pass
+                return False
+            res = {}
+            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                futures = {ex.submit(_one, iid): iid for iid in ids}
+                for fut in as_completed(futures):
+                    iid = futures[fut]
+                    try:
+                        res[iid] = fut.result()
+                    except Exception:
+                        res[iid] = False
+            return res
+        _promo_map = _fetch_has_promo(_sp_item_ids)
+        for r in items_loaded:
+            _rid = str(r.get("id") or "")
+            if _rid in _promo_map:
+                r["has_promo"] = _promo_map[_rid]
 
     _hoy_str = datetime.now().strftime("%Y-%m-%d")
     _conn_rev_clean = get_connection()
@@ -2095,6 +2123,7 @@ def _mostrar_tabla_precios(
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "catalog_price_to_win", "label": "Precio Ganador", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
+        {"name": "promo", "label": "Promo", "field": "has_promo", "sortable": False, "align": "center", "headerStyle": header_style, "style": "min-width: 36px"},
         {"name": "margen_pesos",     "label": "Gan $",  "field": "margen_pesos",     "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 65px"},
         {"name": "margen_venta_pct", "label": "Gan Vta%", "field": "margen_venta_pct", "sortable": True, "align": "right", "headerStyle": header_style, "style": "min-width: 50px"},
         {"name": "available_quantity", "label": "Stock", "field": "available_quantity", "sortable": True, "align": "center", "headerStyle": header_style, ":format": fmt_num_js},
@@ -2110,7 +2139,7 @@ def _mostrar_tabla_precios(
             "fob_usd": "50px", "costo_usd": "60px", "tipo_iva": "40px",
             "quality_score": "55px", "catalog_pos": "55px",
             "catalog_price_to_win": "65px",
-            "price": "65px", "margen_pesos": "60px", "margen_venta_pct": "50px",
+            "price": "65px", "promo": "38px", "margen_pesos": "60px", "margen_venta_pct": "50px",
             "available_quantity": "42px", "sold_quantity": "45px", "subtotal": "75px", "dias_sin_modificar": "38px", "status": "48px",
         }
         with ui.element("colgroup"):
@@ -2260,6 +2289,11 @@ def _mostrar_tabla_precios(
                                             ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "price":
                                             ui.label(fmt_moneda(val) if val is not None else "$0")
+                                        elif col["name"] == "promo":
+                                            if row.get("has_promo"):
+                                                ui.html('<i class="ti ti-discount-2" style="font-size:16px;color:#E24B4A"></i>')
+                                            else:
+                                                ui.label("—").classes("text-gray-400 text-xs")
                                         elif col["name"] == "margen_pesos":
                                             v = row.get("margen_pesos")
                                             if v is None:
