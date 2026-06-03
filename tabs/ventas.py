@@ -816,14 +816,13 @@ def build_tab_ventas(container) -> None:
                     texto_val in (v.get("productos") or "").lower() or
                     texto_val in (v.get("title") or "").lower() or
                     texto_val in (v.get("item_id") or "").lower()]
-            ventas_ok = [v for v in ventas_raw if "cancel" not in (v.get("status_raw") or "").lower()]
             hoy = datetime.now().date()
             fecha_val = filtro_fecha_ref.get("val", "hoy")
             date_ini_pt, date_fin_pt = _rango_desde_filtro(fecha_val, hoy)
             dias_total = (date_fin_pt - date_ini_pt).days + 1
-            total_monto_ok = sum(v["monto"] for v in ventas_ok)
-            total_unidades_ok = sum(v["cantidad"] for v in ventas_ok)
-            n_ventas_ok = len(ventas_ok)
+            total_monto_ok = sum(v["monto"] for v in ventas_filtradas)
+            total_unidades_ok = sum(v["cantidad"] for v in ventas_filtradas)
+            n_ventas_ok = len(ventas_filtradas)
             ticket_promedio = total_monto_ok / n_ventas_ok if n_ventas_ok > 0 else 0
             ganancia_total = sum(v["gan_pesos"] for v in ventas_filtradas if v.get("gan_pesos") is not None)
             _gvp_lista = [v["gan_vta_pct"] for v in ventas_filtradas if v.get("gan_vta_pct") is not None]
