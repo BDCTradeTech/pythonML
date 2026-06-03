@@ -220,26 +220,33 @@ def _show_item_detail_dialog(
         mcls = "font-bold text-black" if cp <= 0 else ("font-bold text-positive" if mp > 0 else "font-bold text-negative")
         cont.clear()
         with cont:
-            for lbl_r, key_r, cls_r in [
-                ("Comisión",  "comision",  "text-sm text-negative"),
-                ("Cobrado",   "cobrado",   "text-sm font-bold text-primary"),
-                ("Costo Cuotas", "costo_cuotas", "text-sm text-negative"),
-                ("IVA venta", "iva_venta", "text-sm"),
-                ("IVA neto", "iva_total", "text-sm text-negative"),
-                ("Deb-Cred",  "deb_cred",  "text-sm text-negative"),
-                ("IIBB",      "iibb",      "text-sm text-negative"),
-                ("Envío",     "envio",     "text-sm text-negative"),
-            ]:
-                with ui.row().classes("w-full justify-between py-0.5 gap-4" + (" border-b-2 border-gray-300" if lbl_r == "Envío" else "")):
-                    ui.label(lbl_r).classes("text-sm font-medium text-gray-600")
-                    ui.label(fmt_moneda(data.get(key_r))).classes(cls_r)
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                with ui.row().classes("gap-4"):
-                    ui.label("IVA Meli").classes("text-sm font-medium text-gray-600")
-                    ui.label(fmt_moneda(data.get("iva_meli"))).classes("text-sm")
-                with ui.row().classes("gap-4"):
-                    ui.label("IVA impor").classes("text-sm font-medium text-gray-600")
-                    ui.label(fmt_moneda(data.get("iva_impor"))).classes("text-sm")
+                ui.label("Comisión ML").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("costo_cuotas"))).classes("text-sm text-negative")
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                ui.label("IVA neto").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("iva_total"))).classes("text-sm text-negative")
+            with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
+                for lbl_s, key_s in [
+                    ("IVA venta",              "iva_venta"),
+                    ("IVA Meli (crédito)",     "iva_meli"),
+                    ("IVA importación (créd)", "iva_impor"),
+                ]:
+                    with ui.row().classes("w-full justify-between"):
+                        ui.label(lbl_s).classes("text-xs font-medium text-gray-600")
+                        ui.label(fmt_moneda(data.get(key_s))).classes("text-xs text-gray-600")
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                ui.label("Deb/Cred").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("deb_cred"))).classes("text-sm text-negative")
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                ui.label("IIBB ret.").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("iibb"))).classes("text-sm text-negative")
+            with ui.row().classes("w-full justify-between py-0.5 gap-4 border-b-2 border-gray-300"):
+                ui.label("Envío promedio Flex/Correo").classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("envio"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-1 gap-4"):
                 ui.label("Gan $").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("margen_pesos"))).classes(mcls)
@@ -249,6 +256,10 @@ def _show_item_detail_dialog(
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_pct2(data.get("margen_costo_pct"))).classes(mcls)
+            ui.separator()
+            with ui.row().classes("items-center gap-1 text-xs").style("color: var(--color-text-secondary)"):
+                ui.html('<i class="ti ti-calculator" style="font-size:12px;color:#BA7517" aria-hidden="true"></i>')
+                ui.label("Valor estimado")
 
     def _guardar(dlg):
         item_id  = str(row.get("id", ""))
@@ -377,7 +388,7 @@ def _show_item_detail_dialog(
                     inp_fob_dlg  = ui.input(value=_fob_str_dlg).classes("text-sm w-24").props("dense type=number min=0 step=0.01")
                     inp_refs["fob_usd"] = inp_fob_dlg
                 with ui.row().classes("w-full justify-between py-1 items-center"):
-                    ui.label("Precio").classes("text-sm font-medium text-gray-600")
+                    ui.label("Precio de Venta").classes("text-sm font-medium text-gray-600")
                     inp_precio = ui.input(value=fmt_moneda(row.get("precio")), on_change=lambda _: _recalcular()).classes("text-sm w-32").props("dense")
                     inp_refs["precio"] = inp_precio
                 with ui.row().classes("w-full justify-between py-1 items-center"):
