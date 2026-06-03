@@ -218,16 +218,24 @@ def _show_item_detail_dialog(
         mp  = float(data.get("margen_pesos") or 0)
         cp  = float(data.get("costo_pesos") or 0)
         mcls = "font-bold text-black" if cp <= 0 else ("font-bold text-positive" if mp > 0 else "font-bold text-negative")
+        _ICO = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517"></i>'
+        _ICO_XS = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517"></i>'
         cont.clear()
         with cont:
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("Comisión ML").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Comisión ML").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("costo_cuotas"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("IVA neto").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("IVA neto").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("iva_total"))).classes("text-sm text-negative")
             with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
                 for lbl_s, key_s in [
@@ -236,25 +244,39 @@ def _show_item_detail_dialog(
                     ("IVA importación (créd)", "iva_impor"),
                 ]:
                     with ui.row().classes("w-full justify-between"):
-                        ui.label(lbl_s).classes("text-xs font-medium text-gray-600")
+                        with ui.row().classes("items-center gap-1"):
+                            ui.html(_ICO_XS)
+                            ui.label(lbl_s).classes("text-xs font-medium text-gray-600")
                         ui.label(fmt_moneda(data.get(key_s))).classes("text-xs text-gray-600")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("Deb/Cred").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Deb/Cred").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("deb_cred"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("IIBB ret.").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("IIBB ret.").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("iibb"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4 border-b-2 border-gray-300"):
-                ui.label("Envío promedio Flex/Correo").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Envío promedio Flex/Correo").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("envio"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-1 gap-4"):
-                ui.label("Gan $").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Gan $").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("margen_pesos"))).classes(mcls)
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Gan Vta %").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_pct2(data.get("margen_venta_pct"))).classes(mcls)
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(_ICO)
+                    ui.label("Gan % Cos").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_pct2(data.get("margen_costo_pct"))).classes(mcls)
             ui.separator()
             with ui.row().classes("items-center gap-1 text-xs").style("color: var(--color-text-secondary)"):
