@@ -1289,3 +1289,14 @@ def ml_search_similar(
         return {"results": [], "paging": {"total": 0}, "error": last_403_msg or "No se pudo conectar con el catalogo de MercadoLibre."}
 
     return {"results": [], "paging": {"total": 0}, "error": "Vincular la cuenta en Configuracion para buscar."}
+
+
+def ml_get_dispatch_schedule(access_token: str, seller_id: str, logistic_type: str = "xd_drop_off") -> Optional[Dict[str, Any]]:
+    url = f"https://api.mercadolibre.com/users/{seller_id}/shipping/schedule/{logistic_type}"
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
