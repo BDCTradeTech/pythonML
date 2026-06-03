@@ -86,8 +86,8 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
             access_token, item_id, seller_id, total_pct
         )
     if d:
-        return {"price_promo": amt_f, "meli_pct": d.get("meli_pct"), "seller_pct": d.get("seller_pct")}
-    return {"price_promo": amt_f, "meli_pct": None, "seller_pct": None}
+        return {"price_promo": amt_f, "regular_amount": reg_f, "meli_pct": d.get("meli_pct"), "seller_pct": d.get("seller_pct")}
+    return {"price_promo": amt_f, "regular_amount": reg_f, "meli_pct": None, "seller_pct": None}
 
 
 # ---------------------------------------------------------------------------
