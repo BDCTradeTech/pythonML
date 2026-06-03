@@ -18,6 +18,7 @@ from ml_api import (
     ml_get_shipments_today,
     ml_get_my_items,
     ml_get_unanswered_questions,
+    ml_get_dispatch_schedule,
 )
 from db import get_cotizador_param
 
@@ -75,7 +76,7 @@ def _cuotas_key(it: dict) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -255,7 +256,8 @@ def _pintar_home_inline(
                             ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
-                            ui.label("CORREO HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            correo_lbl = f"CORREO HOY (antes {dispatch_deadline} hs)" if dispatch_deadline else "CORREO HOY"
+                            ui.label(correo_lbl).style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding-left:14px"):
@@ -329,13 +331,13 @@ def _pintar_home_inline(
                     bar_pct = 0.0
                 elif rate_f == 0:
                     rate_pct_str = "0,00%"
-                    color = "#3B6D11"
+                    color = "#16A34A"
                     bar_pct = 0.0
                 else:
                     rate_pct_str = f"{rate_f * 100:.2f}%".replace(".", ",")
                     ratio = rate_f / max_val if max_val > 0 else 1.0
                     if ratio < 0.5:
-                        color = "#3B6D11"
+                        color = "#16A34A"
                     elif ratio < 0.9:
                         color = "#BA7517"
                     else:
@@ -375,7 +377,7 @@ def _pintar_home_inline(
                         _semaforo(rate_delayed, MAX_DELAYED, f"Demora envíos (máx {MAX_DELAYED*100:.0f}%)")
                         if questions is not None:
                             n_q = len(questions)
-                            q_color = "#3B6D11" if n_q == 0 else "#A32D2D"
+                            q_color = "#16A34A" if n_q == 0 else "#A32D2D"
                             with ui.element("div").style("margin-bottom:5px"):
                                 with ui.element("div").style("display:flex;align-items:center;gap:6px"):
                                     with ui.element("div").style(
@@ -848,6 +850,23 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                     shipments_today = await run.io_bound(ml_get_shipments_today, access_token, shipping_ids_hoy)
                 except Exception:
                     pass
+            dispatch_deadline: Optional[str] = None
+            if seller_id:
+                try:
+                    _sched = await run.io_bound(ml_get_dispatch_schedule, access_token, str(seller_id))
+                    if _sched:
+                        _days = {0: "monday", 1: "tuesday", 2: "wednesday",
+                                 3: "thursday", 4: "friday", 5: "saturday", 6: "sunday"}
+                        _day_key = _days[datetime.now().weekday()]
+                        _day_data = (_sched.get("schedule") or {}).get(_day_key, {})
+                        if _day_data.get("work") and _day_data.get("detail"):
+                            _from = (_day_data["detail"][0].get("from") or "")
+                            if _from and ":" in _from:
+                                _h, _m = map(int, _from.split(":"))
+                                _dl = datetime(2000, 1, 1, _h, _m) - timedelta(minutes=30)
+                                dispatch_deadline = f"{_dl.hour:02d}:{_dl.minute:02d}"
+                except Exception:
+                    pass
             try:
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception:
@@ -865,6 +884,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline)
 
     cargar_y_pintar()
