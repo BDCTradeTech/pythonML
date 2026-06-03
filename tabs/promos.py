@@ -105,14 +105,18 @@ def build_tab_promos(container) -> None:
             # Para cada grupo, usar gold_special para verificar promo (igual que cuotas.py)
             # gold_pro gana el score de display pero la promo se aplica sobre gold_special
             _promo_ids: Dict[str, str] = {}
+            _check_items: Dict[str, dict] = {}
             for rep_it, grp in zip(rep_items, grps.values()):
                 rep_id = str(rep_it.get("id") or "")
                 check_id = rep_id
+                check_item = rep_it
                 for _it in grp:
                     if not _it.get("catalog_listing") and str(_it.get("listing_type_id") or "").lower() == "gold_special":
                         check_id = str(_it.get("id") or "")
+                        check_item = _it
                         break
                 _promo_ids[rep_id] = check_id
+                _check_items[rep_id] = check_item
 
             # Paso 3: fetch promo data con progreso
             total = len(rep_items)
@@ -210,7 +214,9 @@ def build_tab_promos(container) -> None:
                 pd          = promo_by_id.get(item_id, {})
                 price_promo = pd.get("price_promo")
                 has_promo   = price_promo is not None
-                price_o     = float(it.get("price") or 0)
+                # Si hay promo, precio y tipo de publicación vienen del gold_special
+                calc_item   = _check_items.get(item_id, it) if has_promo else it
+                price_o     = float(pd.get("regular_amount") or calc_item.get("price") or 0)
                 pv          = float(price_promo or price_o)
                 disc_pct    = (price_o - pv) / price_o * 100 if has_promo and price_o > 0 else 0.0
                 meli_pct    = pd.get("meli_pct")
@@ -221,7 +227,7 @@ def build_tab_promos(container) -> None:
                 costo_usd = float(costs.get("costo_usd") or 0)
                 tipo_iva  = float(costs.get("tipo_iva")  or 0.105)
 
-                ltype        = str(it.get("listing_type_id") or "").lower()
+                ltype        = str(calc_item.get("listing_type_id") or "").lower()
                 tasa_cuotas  = cuotas_6x_p if ltype == "gold_pro" else 0.0
                 comision     = pv * ml_comision_p
                 deb_cred     = pv * ml_debcre_p
