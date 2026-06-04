@@ -860,10 +860,13 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                         _day_key = _days[datetime.now().weekday()]
                         _day_data = (_sched.get("schedule") or {}).get(_day_key, {})
                         if _day_data.get("work") and _day_data.get("detail"):
-                            _from = (_day_data["detail"][0].get("from") or "")
-                            if _from and ":" in _from:
-                                _h, _m = map(int, _from.split(":"))
-                                _dl = datetime(2000, 1, 1, _h, _m) - timedelta(minutes=30)
+                            _cutoff = (_day_data["detail"][0].get("cutoff") or "")
+                            _from   = (_day_data["detail"][0].get("from") or "")
+                            _ref    = _cutoff if _cutoff and ":" in _cutoff else _from
+                            _sign   = 1 if (_cutoff and ":" in _cutoff) else -1
+                            if _ref and ":" in _ref:
+                                _h, _m = map(int, _ref.split(":"))
+                                _dl = datetime(2000, 1, 1, _h, _m) + timedelta(minutes=30 * _sign)
                                 dispatch_deadline = f"{_dl.hour:02d}:{_dl.minute:02d}"
                 except Exception:
                     pass
