@@ -801,30 +801,73 @@ def _mostrar_tabla_precios(
                 sp = ml_get_item_sale_price_full(access_token, cid)
                 if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
                     try:
-                        return float(sp["amount"]) < float(sp["regular_amount"]) - 0.01
+                        amt = float(sp["amount"])
+                        if amt < float(sp["regular_amount"]) - 0.01:
+                            return amt
                     except (TypeError, ValueError):
                         pass
-                return False
+                return None
             _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
-            res: Dict[str, bool] = {}
+            res: Dict[str, Optional[float]] = {}
             with ThreadPoolExecutor(max_workers=min(8, max(1, len(_pairs)))) as ex:
                 futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
                 for fut in as_completed(futures):
                     rid, _ = futures[fut]
                     try:
-                        has_p = fut.result()
+                        price_p = fut.result()
                     except Exception:
-                        has_p = False
-                    if has_p:
-                        res[rid] = True
+                        price_p = None
+                    if price_p is not None:
+                        if rid not in res or res[rid] is None:
+                            res[rid] = price_p
                     elif rid not in res:
-                        res[rid] = False
+                        res[rid] = None
             return res
         _promo_map = _fetch_has_promo(_sp_item_ids)
+        _gan_promo_rows = []
         for r in items_loaded:
             _rid = str(r.get("id") or "")
             if _rid in _promo_map:
-                r["has_promo"] = _promo_map[_rid]
+                _pp = _promo_map[_rid]
+                r["has_promo"] = _pp is not None
+                if _pp is not None:
+                    r["price_promo"] = _pp
+                    _costo_rp = float(r.get("costo_usd") or 0)
+                    if _costo_rp > 0 and _pp > 0:
+                        _lt_rp    = str(r.get("listing_type_id") or "").lower()
+                        _tasa_rp  = cuotas_6x_p if _lt_rp == "gold_pro" else 0.0
+                        _tiva_rp  = float(r.get("tipo_iva") or 0.105)
+                        _com_rp   = _pp * ml_comision_p
+                        _cob_rp   = _pp - _com_rp
+                        _ivav_rp  = _pp * _tiva_rp / (1 + _tiva_rp)
+                        _ivam_rp  = _com_rp * 0.21 / 1.21
+                        _ivai_rp  = 0.09 * _costo_rp * dolar_oficial
+                        _ivat_rp  = _ivav_rp - _ivam_rp - _ivai_rp
+                        _deb_rp   = _pp * ml_debcre_p
+                        _iibb_rp  = _pp * ml_iibb_per_p
+                        _env_rp   = ml_envios_p if _pp >= ml_envios_grat_p else 0.0
+                        _ccuot_rp = _pp * _tasa_rp if _tasa_rp else 0.0
+                        _cp_rp    = _costo_rp * dolar_oficial
+                        _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp
+                        r["margen_pesos"]     = _mgn_rp
+                        r["margen_venta_pct"] = (_mgn_rp / _pp * 100) if _pp > 0 else 0.0
+                        if r.get("seller_sku"):
+                            _gan_promo_rows.append((
+                                r["margen_pesos"], r["margen_venta_pct"],
+                                r.get("available_quantity"), str(r.get("title") or ""),
+                                r["seller_sku"]
+                            ))
+        if _gan_promo_rows:
+            _now_gp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            _conn_gp = get_connection()
+            try:
+                _conn_gp.executemany(
+                    "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
+                    [(g[0], g[1], g[2], g[3], _now_gp, g[4], _uid) for g in _gan_promo_rows],
+                )
+                _conn_gp.commit()
+            finally:
+                _conn_gp.close()
 
     _hoy_str = datetime.now().strftime("%Y-%m-%d")
     _conn_rev_clean = get_connection()
@@ -2297,10 +2340,18 @@ def _mostrar_tabla_precios(
                                             else:
                                                 ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
                                         elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
-                                            precio_str = fmt_moneda(val) if val is not None else "$0"
-                                            ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                                            pp = row.get("price_promo")
+                                            if pp is not None:
+                                                ui.button(fmt_moneda(pp), on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium hover:underline").style("color:#E24B4A")
+                                            else:
+                                                precio_str = fmt_moneda(val) if val is not None else "$0"
+                                                ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
                                         elif col["name"] == "price":
-                                            ui.label(fmt_moneda(val) if val is not None else "$0")
+                                            pp = row.get("price_promo")
+                                            if pp is not None:
+                                                ui.label(fmt_moneda(pp)).style("color:#E24B4A")
+                                            else:
+                                                ui.label(fmt_moneda(val) if val is not None else "$0")
                                         elif col["name"] == "promo":
                                             if row.get("has_promo"):
                                                 ui.html('<i class="ti ti-discount-2" style="font-size:16px;color:#E24B4A"></i>')
