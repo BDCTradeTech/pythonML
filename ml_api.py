@@ -406,6 +406,26 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
     return None
 
 
+def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> List[Dict[str, Any]]:
+    """GET /seller-promotions/items/{item_id}?app_version=v2 — todas las promos del ítem (todos los status)."""
+    if not access_token or not str(item_id).strip():
+        return []
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
+            params={"app_version": "v2"},
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
 def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
     """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason, competitors."""
     if not access_token or not str(item_id).strip():
