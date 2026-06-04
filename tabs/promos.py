@@ -135,18 +135,28 @@ def build_tab_promos(container) -> None:
         }
 
         def _render_promos_table(all_promos: List[dict]) -> None:
-            sorted_promos = sorted(
-                all_promos,
-                key=lambda p: STATUS_ORDER.get((p.get("status") or "").lower(), 9),
-            )
-            for promo in sorted_promos:
-                status    = (promo.get("status") or "").lower()
-                meli_pct  = promo.get("meli_percentage")
+            key_order: List[tuple] = []
+            key_map: Dict[tuple, dict] = {}
+            key_count: Dict[tuple, int] = {}
+            for promo in all_promos:
+                k = ((promo.get("status") or "").lower(), (promo.get("type") or ""), promo.get("price"))
+                if k not in key_map:
+                    key_order.append(k)
+                    key_map[k] = promo
+                    key_count[k] = 1
+                else:
+                    key_count[k] += 1
+            sorted_keys = sorted(key_order, key=lambda k: STATUS_ORDER.get(k[0], 9))
+            for k in sorted_keys:
+                promo      = key_map[k]
+                count      = key_count[k]
+                status     = (promo.get("status") or "").lower()
+                meli_pct   = promo.get("meli_percentage")
                 seller_pct = promo.get("seller_percentage")
-                price     = promo.get("price")
-                start     = (promo.get("start_date") or "")[:10]
-                finish    = (promo.get("finish_date") or "")[:10]
-                vigencia  = f"{start} — {finish}" if (start or finish) else "—"
+                price      = promo.get("price")
+                start      = (promo.get("start_date") or "")[:10]
+                finish     = (promo.get("finish_date") or "")[:10]
+                vigencia   = f"{start} — {finish}" if (start or finish) else "—"
                 if meli_pct is not None and seller_pct is not None:
                     split_txt = f"ML {fmt_p1(meli_pct)} / Yo {fmt_p1(seller_pct)}"
                     split_cls = "text-blue-700"
@@ -156,14 +166,16 @@ def build_tab_promos(container) -> None:
                 else:
                     split_txt = "—"
                     split_cls = "text-gray-400"
-
+                name = promo.get("name") or "—"
+                if count > 1:
+                    name = f"{name} × {count}"
                 with ui.row().classes("w-full items-center gap-2 py-1 border-b border-gray-100 flex-wrap"):
                     lbl = STATUS_LABELS.get(status, status or "—")
                     sty = STATUS_STYLES.get(status, "background:#888;color:#fff")
                     ui.label(lbl).style(
                         f"{sty};border-radius:4px;padding:1px 8px;font-size:11px;font-weight:600;white-space:nowrap"
                     )
-                    ui.label(promo.get("name") or "—").classes("text-xs font-medium flex-1 min-w-32")
+                    ui.label(name).classes("text-xs font-medium flex-1 min-w-32")
                     ui.label(promo.get("type") or "—").classes("text-xs text-gray-400 w-20")
                     ui.label(vigencia).classes("text-xs text-gray-400 whitespace-nowrap")
                     ui.label(fmt_m(price) if price is not None else "—").classes("text-xs font-semibold w-20")
@@ -201,10 +213,14 @@ def build_tab_promos(container) -> None:
             # Tipo badge
             if "pro" in ltype:
                 type_sty = "background:#e3f2fd;color:#1565c0"
-                type_lbl = "GOLD PRO"
+                type_base = "Premium"
             else:
                 type_sty = "background:#f3e5f5;color:#6a1b9a"
-                type_lbl = "GOLD SPECIAL"
+                type_base = "Clásica"
+            if cuotas_str and cuotas_str != "x1":
+                type_lbl = f"{type_base} ({cuotas_str.lstrip('x')} cuotas)"
+            else:
+                type_lbl = f"{type_base} (sin cuotas)"
 
             with ui.card().classes("w-full p-3 border border-gray-200"):
                 # Cabecera de variante
@@ -213,9 +229,6 @@ def build_tab_promos(container) -> None:
                     ui.label(type_lbl).style(
                         f"{type_sty};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600"
                     )
-                    q_lbl = cuotas_str if cuotas_str else "x1"
-                    q_cls = "text-xs font-bold text-green-700" if q_lbl != "x1" else "text-xs text-gray-400"
-                    ui.label(q_lbl).classes(q_cls)
 
                 # Precio
                 with ui.row().classes("items-baseline gap-2 mb-1 flex-wrap"):
@@ -228,14 +241,18 @@ def build_tab_promos(container) -> None:
 
                 # Promos activas en esta variante
                 for p in active_promos:
+                    if not (p.get("name") or "").strip():
+                        continue
                     with ui.row().classes("items-center gap-1 mb-0.5"):
                         ui.label("▶").classes("text-xs").style("color:#1B7A3E;font-size:10px")
-                        ui.label(p.get("name") or "").classes("text-xs text-gray-600")
+                        ui.label(p.get("name")).classes("text-xs text-gray-600")
                 # Candidatas/pendientes
                 for p in candidate_promos:
+                    if not (p.get("name") or "").strip():
+                        continue
                     with ui.row().classes("items-center gap-1 mb-0.5"):
                         ui.label("○").classes("text-xs text-gray-400").style("font-size:10px")
-                        ui.label(p.get("name") or "").classes("text-xs text-gray-400 italic")
+                        ui.label(p.get("name")).classes("text-xs text-gray-400 italic")
 
                 ui.separator().classes("my-1")
 
@@ -539,7 +556,7 @@ def build_tab_promos(container) -> None:
                         all_variants = with_promo + without_promo
                         groups = _group_by_fingerprint(all_variants)
                         with ui.element("div").style(
-                            "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:start;margin-top:8px"
+                            "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:stretch;margin-top:8px"
                         ):
                             with ui.card().classes("w-full p-3 border border-gray-200"):
                                 ui.label("Promociones").classes(
