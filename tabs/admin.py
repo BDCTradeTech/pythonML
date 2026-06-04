@@ -406,11 +406,6 @@ def build_tab_admin(container) -> None:
 TABLA_CAMBIO_PA_DEFAULT = [{"valor": "$0"}, {"valor": "$100"}, {"valor": "$150"}, {"valor": "$200"}, {"valor": "$250"}, {"valor": "$300"}]
 TABLA_DERECHOS_DEFAULT = [{"valor": "0,35"}, {"valor": "0,2"}, {"valor": "0,108"}, {"valor": "0"}]
 TABLA_ESTADISTICAS_DEFAULT = [{"valor": "0"}, {"valor": "0,03"}]
-TABLA_TRAFO_GRAMOS_DEFAULT = [
-    {"trafo": "No", "gramos": "0"}, {"trafo": "Mi stick", "gramos": "28"}, {"trafo": "Roku", "gramos": "30"},
-    {"trafo": "Chromecast", "gramos": "33"}, {"trafo": "Onn", "gramos": "58"}, {"trafo": "Echo", "gramos": "122"},
-    {"trafo": "Mini PC", "gramos": "244"},
-]
 
 TABLA_PESARIO_DEFAULT = [
     {"marca": "Amazon", "producto": "Echo Buds 2", "peso": "181", "fuente": "0", "total": "181"},
@@ -473,12 +468,6 @@ TABLA_POSICION_DEFAULT = [
     {"posicion": "21I + 35D + 3E", "seguro": "0.02", "flete": "0.030", "derechos": "0.350", "estadisticas": "0.03", "iva": "0.21", "despachante": "0.214", "cambio_pa": "0"},
 ]
 
-TABLA_ENVIOS_ML_DEFAULT = [
-    {"envio": "Flex - Caba", "importe": "4611", "porc_10": "461", "costo": "4150"},
-    {"envio": "Flex - 1er cordon", "importe": "7371", "porc_10": "737", "costo": "6634"},
-    {"envio": "Flex - 2do cordon", "importe": "10246", "porc_10": "1025", "costo": "9221"},
-    {"envio": "Correo", "importe": "11646", "porc_10": "-", "costo": "5823"},
-]
 
 TABLA_COURIER_DEFAULT = [
     {"courier": "Mia LHS",     "posicion": "Cambio PA",          "valor_kg": "13.50", "descuento": "1.33267522", "kg_real": "10.13", "almacenaje": "1.80", "seguro": "24.75", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},

@@ -326,15 +326,15 @@ def build_tab_importacion() -> None:
     with ui.column().classes("w-full gap-2 p-2 flex flex-col"):
         ui.label("Importación - Cotizador Courier").classes("text-xl font-semibold")
 
-        cols_input = ["productos", "origen", "impuestos", "fob", "qty", "peso_unitario", "extras", "trafo", "cambio_pa", "venta_ml"]
+        cols_input = ["productos", "origen", "impuestos", "fob", "qty", "peso_unitario", "extras", "cambio_pa", "venta_ml"]
         cols_calc = ["fob_total", "peso_total", "derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "total_courier", "total", "traida_excel", "costo_pesos", "costo_usd", "cuotas3", "cuotas6", "markup", "cobrado_ml", "comi_ml", "iva_impor", "iva_meli", "iva_venta", "iva_total", "deb_cred", "iibb_per", "envio", "costo_vta", "margen", "margen_vta", "margen_costo"]
         headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA Total", "IIBB", "Courier", "Total", "Traída", "Costo$ s/iva", "Costo u$ s/iva", "3ctas", "6ctas", "MarkUp", "Cobrado", "Comision", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "Cos Vta", "Margen$", "MargVta", "MargCos"]
-        headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Trafo", "Cam.PA", "Venta"]
+        headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Cam.PA", "Venta"]
 
         opciones_origen = [r.get("courier", "") for r in courier_data if r.get("courier")]
         opciones_impuestos = [r.get("posicion", "") for r in posicion_data if r.get("posicion")]
         cols_ocultas = ["derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "cuotas3", "cuotas6", "iva_impor", "iva_meli", "iva_venta"]
-        cols_input_ocultas = ["extras", "trafo"]
+        cols_input_ocultas = ["extras"]
         vista_completa = [False]
 
         table_container = ui.column().classes("w-full overflow-auto")
@@ -473,7 +473,7 @@ def build_tab_importacion() -> None:
                                             inp = ui.input(value=val).classes("min-w-[40px]").props("dense").style("text-align: center")
                                         elif c == "cambio_pa":
                                             inp = ui.input(value=val).classes("min-w-[52px] text-right").props("dense")
-                                        elif c in ("extras", "trafo"):
+                                        elif c == "extras":
                                             inp = ui.input(value=val).classes("min-w-[55px]").props("dense")
                                         elif c == "venta_ml":
                                             inp_cls = "min-w-[60px] text-right"
@@ -682,7 +682,7 @@ def build_tab_importacion() -> None:
         def add_row() -> None:
             row = {}
             for c in cols_input + cols_calc:
-                row[c] = "0" if c in ("extras", "trafo") else ""
+                row[c] = "0" if c == "extras" else ""
             importacion_rows.append(row)
             recalcular()
 
