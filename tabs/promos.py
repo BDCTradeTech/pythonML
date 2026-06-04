@@ -527,49 +527,45 @@ def build_tab_promos(container) -> None:
                 detail_col.clear()
                 detail_col.style("display:block")
                 with detail_col:
-                    with ui.card().classes("w-full p-4"):
-
-                        # ── BLOQUE 1: HEADER ─────────────────────────────────
-                        with ui.row().classes("w-full gap-3 mb-3 items-start"):
-                            if thumb:
-                                ui.image(thumb).classes("w-16 h-16 object-contain rounded border")
-                            with ui.column().classes("flex-1 min-w-0 gap-1"):
-                                ui.label(f"{item_id}" + (f" · {sku_rep}" if sku_rep else "")).classes(
-                                    "text-xs font-mono text-gray-500"
-                                )
-                                ui.label(title[:120]).classes("text-sm font-bold")
-                                with ui.row().classes("gap-2 items-center flex-wrap"):
-                                    if pd0.get("price_promo") is not None:
-                                        p0 = float(pd0.get("regular_amount") or it.get("price") or 0)
-                                        pv0 = float(pd0["price_promo"])
-                                        d0 = (p0 - pv0) / p0 * 100 if p0 > 0 else 0
-                                        ui.label(fmt_m(p0)).classes("text-sm line-through text-gray-400")
-                                        ui.label(fmt_m(pv0)).classes("text-sm font-bold").style("color:#E24B4A")
-                                        ui.label(f"↓ {fmt_p1(d0)}").classes("text-xs").style("color:#E24B4A")
-                                    else:
-                                        ui.label(fmt_m(it.get("price"))).classes("text-sm font-bold")
-                                        ui.label("Sin promo").classes("text-xs text-gray-400")
-                                    ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500")
-
-                        # ── BLOQUES 2-4: GRILLA CON PROMOS + VARIANTES ──────
-                        ui.separator()
-                        all_variants = with_promo + without_promo
-                        groups = _group_by_fingerprint(all_variants)
-                        with ui.element("div").style(
-                            "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:stretch;margin-top:8px"
-                        ):
-                            with ui.card().classes("w-full p-3 border border-gray-200"):
-                                ui.label("Promociones").classes(
-                                    "text-xs font-bold text-gray-600 mb-1 uppercase tracking-wide"
-                                )
-                                if all_promos:
-                                    _render_promos_table(list(all_promos.values()))
-                                else:
-                                    ui.label("Sin promociones registradas").classes(
-                                        "text-xs text-gray-400 italic"
+                    all_variants = with_promo + without_promo
+                    groups = _group_by_fingerprint(all_variants)
+                    with ui.element("div").style(
+                        "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:stretch"
+                    ):
+                        with ui.card().classes("w-full p-3 border border-gray-200"):
+                            # Datos del producto
+                            with ui.row().classes("w-full gap-3 mb-2 items-start"):
+                                if thumb:
+                                    ui.image(thumb).classes("w-14 h-14 object-contain rounded border flex-shrink-0")
+                                with ui.column().classes("flex-1 min-w-0 gap-0.5"):
+                                    ui.label(f"{item_id}" + (f" · {sku_rep}" if sku_rep else "")).classes(
+                                        "text-xs font-mono text-gray-500"
                                     )
-                            for grp in groups:
-                                _render_variant_cost(grp["items"], grp["pd"], grp["sp_list"])
+                                    ui.label(title[:120]).classes("text-xs font-bold leading-tight")
+                                    with ui.row().classes("gap-2 items-center flex-wrap mt-0.5"):
+                                        if pd0.get("price_promo") is not None:
+                                            p0  = float(pd0.get("regular_amount") or it.get("price") or 0)
+                                            pv0 = float(pd0["price_promo"])
+                                            d0  = (p0 - pv0) / p0 * 100 if p0 > 0 else 0
+                                            ui.label(fmt_m(p0)).classes("text-xs line-through text-gray-400")
+                                            ui.label(fmt_m(pv0)).classes("text-xs font-bold").style("color:#E24B4A")
+                                            ui.label(f"↓ {fmt_p1(d0)}").classes("text-xs").style("color:#E24B4A")
+                                        else:
+                                            ui.label(fmt_m(it.get("price"))).classes("text-xs font-bold text-gray-700")
+                                            ui.label("Sin promo").classes("text-xs text-gray-400")
+                                        ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500")
+                            ui.separator().classes("my-1")
+                            ui.label("Promociones").classes(
+                                "text-xs font-bold text-gray-600 mb-1 uppercase tracking-wide"
+                            )
+                            if all_promos:
+                                _render_promos_table(list(all_promos.values()))
+                            else:
+                                ui.label("Sin promociones registradas").classes(
+                                    "text-xs text-gray-400 italic"
+                                )
+                        for grp in groups:
+                            _render_variant_cost(grp["items"], grp["pd"], grp["sp_list"])
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
