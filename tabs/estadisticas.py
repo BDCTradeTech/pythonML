@@ -19,6 +19,7 @@ from ml_api import (
     ml_get_my_items,
     ml_get_unanswered_questions,
     ml_get_dispatch_schedule,
+    ml_get_shipping_preferences,
 )
 from db import get_cotizador_param
 
@@ -854,20 +855,22 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             if seller_id:
                 try:
                     _sched = await run.io_bound(ml_get_dispatch_schedule, access_token, str(seller_id))
+                    _prefs = await run.io_bound(ml_get_shipping_preferences, access_token, str(seller_id))
+                    _picking_type = ((_prefs or {}).get("picking_type") or "")
                     if _sched:
                         _days = {0: "monday", 1: "tuesday", 2: "wednesday",
                                  3: "thursday", 4: "friday", 5: "saturday", 6: "sunday"}
                         _day_key = _days[datetime.now().weekday()]
                         _day_data = (_sched.get("schedule") or {}).get(_day_key, {})
                         if _day_data.get("work") and _day_data.get("detail"):
-                            _cutoff = (_day_data["detail"][0].get("cutoff") or "")
-                            _from   = (_day_data["detail"][0].get("from") or "")
-                            _ref    = _cutoff if _cutoff and ":" in _cutoff else _from
-                            _sign   = 1 if (_cutoff and ":" in _cutoff) else -1
-                            if _ref and ":" in _ref:
-                                _h, _m = map(int, _ref.split(":"))
-                                _dl = datetime(2000, 1, 1, _h, _m) + timedelta(minutes=30 * _sign)
-                                dispatch_deadline = f"{_dl.hour:02d}:{_dl.minute:02d}"
+                            _from = (_day_data["detail"][0].get("from") or "")
+                            if _from and ":" in _from:
+                                _h, _m = map(int, _from.split(":"))
+                                if _picking_type == "cross_docking":
+                                    dispatch_deadline = f"{_h:02d}:{_m:02d}"
+                                else:
+                                    _dl = datetime(2000, 1, 1, _h, _m) - timedelta(minutes=30)
+                                    dispatch_deadline = f"{_dl.hour:02d}:{_dl.minute:02d}"
                 except Exception:
                     pass
             try:
