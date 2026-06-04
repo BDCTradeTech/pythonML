@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import asyncio
+
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
@@ -199,7 +201,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             "title":         best.get("title") or "",
             "thumbnail":     best.get("thumbnail") or "",
             "stock":         stock_val,
-            "promo_item_id": str(best.get("id") or ""),
+            "promo_item_id": str(rep.get("id") or ""),
             "propia":        _slot(propia),
             "catalogo":      _slot(catalogo),
             "x3":            _slot(x3),
@@ -766,22 +768,12 @@ def build_tab_cuotas(container) -> None:
             grps: Dict[tuple, list] = {}
             for _it in items_raw:
                 grps.setdefault(_cuotas_key(_it), []).append(_it)
-            rep_ids: list = []
-            for _g in grps.values():
-                _rid = ""
-                for _it in _g:
-                    if not _it.get("catalog_listing") and str(_it.get("listing_type_id") or "").lower() == "gold_special":
-                        _rid = str(_it.get("id") or "")
-                        break
-                if not _rid:
-                    for _it in _g:
-                        if _it.get("catalog_listing"):
-                            _rid = str(_it.get("id") or "")
-                            break
-                if not _rid and _g:
-                    _rid = str(_g[0].get("id") or "")
-                if _rid:
-                    rep_ids.append(_rid)
+            _grp_list = list(grps.values())
+            rep_ids: list = [str(max(_g, key=_cuotas_score).get("id") or "") for _g in _grp_list if _g]
+            _all_iids_per_grp: List[List[str]] = [
+                [str(_it.get("id") or "") for _it in _g if _it.get("id")]
+                for _g in _grp_list if _g
+            ]
             seller_id = ""
             try:
                 profile = await run.io_bound(ml_get_user_profile, access_token)
@@ -795,9 +787,22 @@ def build_tab_cuotas(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     promo_lbl = ui.label(f"Cargando promociones 0/{total_grupos}...").classes("text-xl text-gray-700")
+            _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
             promo_data: Dict[str, Dict] = {}
-            for _i, _iid in enumerate(rep_ids):
-                promo_data[_iid] = await run.io_bound(_get_promo_data, access_token, _iid, seller_id)
+            for _i, (_rep_id, _iids) in enumerate(zip(rep_ids, _all_iids_per_grp)):
+                if not _iids:
+                    promo_data[_rep_id] = _empty_pd
+                    continue
+                _pds = await asyncio.gather(*[
+                    run.io_bound(_get_promo_data, access_token, _iid, seller_id)
+                    for _iid in _iids
+                ])
+                best_pd, best_price = _empty_pd, None
+                for _pd in _pds:
+                    _pp = _pd.get("price_promo")
+                    if _pp is not None and (best_price is None or float(_pp) < best_price):
+                        best_price, best_pd = float(_pp), _pd
+                promo_data[_rep_id] = best_pd
                 if promo_lbl:
                     promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
             try:
