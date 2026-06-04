@@ -1279,6 +1279,14 @@ def _mostrar_tabla_precios(
                 "price_original": None, "promo_ml_pct": None,
                 "promo_yo_pct":   None, "price_promo":  None,
             }
+            # Pre-popular promo desde datos de la tabla (cubre variantes del grupo)
+            _pp_base = row_base.get("price_promo")
+            if _pp_base is not None:
+                _base_p = float(row_base.get("price") or 0)
+                row["precio"]         = float(_pp_base)
+                row["price_original"] = _base_p
+                row["promo_yo_pct"]   = ((_base_p - float(_pp_base)) / _base_p * 100) if _base_p > 0 else 0.0
+                row["price_promo"]    = float(_pp_base)
             if item_id and access_token:
                 try:
                     with cl:
@@ -1299,15 +1307,19 @@ def _mostrar_tabla_precios(
                         row["tipo_iva"] = float(_pr["tipo_iva"] or 0.105)
                     if sp_data and sp_data.get("amount") is not None:
                         amt_f = float(sp_data["amount"])
-                        row["precio"] = amt_f
                         reg = sp_data.get("regular_amount")
                         if reg is not None and float(reg) > 0 and abs(float(reg) - amt_f) > 0.01:
+                            # API fresca confirma promo — override con datos frescos
                             reg_f = float(reg)
                             pct   = (reg_f - amt_f) / reg_f * 100
+                            row["precio"]         = amt_f
                             row["price_original"] = reg_f
                             row["promo_ml_pct"]   = 0.0
                             row["promo_yo_pct"]   = pct
-                            row["price_promo"]    = reg_f * (1 - pct / 100)
+                            row["price_promo"]    = amt_f
+                        elif row.get("price_promo") is None:
+                            # Sin promo en API ni en tabla — usar precio base de la API
+                            row["precio"] = amt_f
                 except Exception:
                     pass
             with cl:
