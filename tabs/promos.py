@@ -75,7 +75,7 @@ def build_tab_promos(container) -> None:
         with main_area:
             with ui.card().classes("w-full p-8 items-center gap-4"):
                 ui.spinner(size="xl")
-                ui.label("Cargando publicaciones...").classes("text-xl text-gray-700")
+                ui.label("Cargando promos...").classes("text-xl text-gray-700")
 
         async def _cargar_async() -> None:
             # Paso 1: obtener items de ML
