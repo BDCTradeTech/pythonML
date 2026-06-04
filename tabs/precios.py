@@ -486,9 +486,13 @@ def _mostrar_tabla_precios(
         groups_sku.setdefault(_cuotas_key(i), []).append(i)
 
     items_dedup: List[Dict[str, Any]] = []
+    _grp_ids_map: Dict[str, List[str]] = {}
     for grupo in groups_sku.values():
         if len(grupo) == 1:
             items_dedup.append(grupo[0])
+            _iid0 = str(grupo[0].get("id") or "")
+            if _iid0:
+                _grp_ids_map[_iid0] = [_iid0]
             continue
         total_sold = sum(int(x.get("sold_quantity") or 0) for x in grupo)
         principal = max(
@@ -505,6 +509,9 @@ def _mostrar_tabla_precios(
         fusionado["catalog_item_id"] = catalog_item["id"] if catalog_item else None
         fusionado["catalog_product_id"] = catalog_item.get("catalog_product_id") if catalog_item else principal.get("catalog_product_id")
         items_dedup.append(fusionado)
+        _rep_id = str(principal.get("id") or "")
+        if _rep_id:
+            _grp_ids_map[_rep_id] = [str(x.get("id") or "") for x in grupo if x.get("id")]
 
     _uid = user["id"]
     _skus_dedup = [i.get("seller_sku") for i in items_dedup if i.get("seller_sku")]
@@ -790,23 +797,28 @@ def _mostrar_tabla_precios(
     _sp_item_ids = [str(r["id"]) for r in items_loaded if r.get("id")]
     if _sp_item_ids and access_token:
         def _fetch_has_promo(ids):
-            def _one(iid):
-                sp = ml_get_item_sale_price_full(access_token, iid)
+            def _one(cid):
+                sp = ml_get_item_sale_price_full(access_token, cid)
                 if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
                     try:
                         return float(sp["amount"]) < float(sp["regular_amount"]) - 0.01
                     except (TypeError, ValueError):
                         pass
                 return False
-            res = {}
-            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
-                futures = {ex.submit(_one, iid): iid for iid in ids}
+            _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
+            res: Dict[str, bool] = {}
+            with ThreadPoolExecutor(max_workers=min(8, max(1, len(_pairs)))) as ex:
+                futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
                 for fut in as_completed(futures):
-                    iid = futures[fut]
+                    rid, _ = futures[fut]
                     try:
-                        res[iid] = fut.result()
+                        has_p = fut.result()
                     except Exception:
-                        res[iid] = False
+                        has_p = False
+                    if has_p:
+                        res[rid] = True
+                    elif rid not in res:
+                        res[rid] = False
             return res
         _promo_map = _fetch_has_promo(_sp_item_ids)
         for r in items_loaded:
