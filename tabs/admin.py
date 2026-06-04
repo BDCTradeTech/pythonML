@@ -403,12 +403,6 @@ def build_tab_admin(container) -> None:
                     _refresh_despachantes()
 
 
-TABLA_ORIGEN_DEFAULT = [
-    {"origen": "Mia LHS", "posicion": "Cambio PA"},
-    {"origen": "Mia Rosario", "posicion": "21I + 20D + 3E"},
-    {"origen": "Mia Richard", "posicion": "10,5I + 10,8D + 0E"},
-    {"origen": "China", "posicion": "10,5I + 0D + 0E"},
-]
 TABLA_CAMBIO_PA_DEFAULT = [{"valor": "$0"}, {"valor": "$100"}, {"valor": "$150"}, {"valor": "$200"}, {"valor": "$250"}, {"valor": "$300"}]
 TABLA_DERECHOS_DEFAULT = [{"valor": "0,35"}, {"valor": "0,2"}, {"valor": "0,108"}, {"valor": "0"}]
 TABLA_ESTADISTICAS_DEFAULT = [{"valor": "0"}, {"valor": "0,03"}]
@@ -487,10 +481,10 @@ TABLA_ENVIOS_ML_DEFAULT = [
 ]
 
 TABLA_COURIER_DEFAULT = [
-    {"courier": "Mia LHS", "valor_kg": "13.50", "descuento": "1.33267522", "kg_real": "10.13", "almacenaje": "1.80", "seguro": "24.75", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},
-    {"courier": "Mia Rosario", "valor_kg": "26.00", "descuento": "1", "kg_real": "22.00", "almacenaje": "0", "seguro": "0", "res_3244": "0", "gas_ope": "0", "env_dom": "0", "iibb": "0", "cif": "0.7$+0.01%"},
-    {"courier": "Mia Richard", "valor_kg": "9.50", "descuento": "1", "kg_real": "9.50", "almacenaje": "1.90", "seguro": "29.75", "res_3244": "5.00", "gas_ope": "25.00", "env_dom": "10.00", "iibb": "0", "cif": "3$+2%"},
-    {"courier": "China", "valor_kg": "27.00", "descuento": "1.33267522", "kg_real": "20.26", "almacenaje": "2.70", "seguro": "29.35", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},
+    {"courier": "Mia LHS",     "posicion": "Cambio PA",          "valor_kg": "13.50", "descuento": "1.33267522", "kg_real": "10.13", "almacenaje": "1.80", "seguro": "24.75", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},
+    {"courier": "Mia Rosario", "posicion": "21I + 20D + 3E",     "valor_kg": "26.00", "descuento": "1",          "kg_real": "22.00", "almacenaje": "0",    "seguro": "0",     "res_3244": "0",     "gas_ope": "0",     "env_dom": "0",     "iibb": "0",    "cif": "0.7$+0.01%"},
+    {"courier": "Mia Richard", "posicion": "10,5I + 10,8D + 0E", "valor_kg": "9.50",  "descuento": "1",          "kg_real": "9.50",  "almacenaje": "1.90", "seguro": "29.75", "res_3244": "5.00",  "gas_ope": "25.00", "env_dom": "10.00", "iibb": "0",    "cif": "3$+2%"},
+    {"courier": "China",       "posicion": "10,5I + 0D + 0E",    "valor_kg": "27.00", "descuento": "1.33267522", "kg_real": "20.26", "almacenaje": "2.70", "seguro": "29.35", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},
 ]
 
 TABLA_IVA_VS_EXENTO_DEFAULT: List[Dict[str, Any]] = []

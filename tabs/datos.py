@@ -398,7 +398,7 @@ def build_tab_datos() -> None:
                     _add_field(inp_ml, key, lbl, unit)
 
         # Eliminar tablas obsoletas de la BD si existían
-        for k in ["tabla_origen", "tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
+        for k in ["tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
             delete_cotizador_param(k, uid)
 
         # ══════════════════════════════════════════════════════════════════
@@ -614,8 +614,8 @@ def build_tab_datos() -> None:
                 computed={"costo": lambda r: str(int(_parse_num(r.get("importe")) + _parse_num(r.get("porc_10"))))},
                 computed_deps={"costo": ["importe", "porc_10"]}, card_ancho="w-fit",
                 col_formato={"importe": "$", "porc_10": "$", "costo": "$"}, icon="ti-building-store")
-            _tabla_editable("courier", ["courier", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
-                ["Courier", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
+            _tabla_editable("courier", ["courier", "posicion", "valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cif"],
+                ["Courier", "Posición", "Valor KG", "Descuento", "KG Real", "Almacenaje", "Seguro", "Res 3244", "Gas Ope", "Env Dom", "IIBB", "CIF"],
                 tabla_courier_data, "Costos por Courier",
                 computed={"kg_real": lambda r: f"{_parse_num(r.get('valor_kg')) / max(0.001, _parse_num(r.get('descuento'))):.2f}"},
                 computed_deps={"kg_real": ["valor_kg", "descuento"]}, card_ancho="w-fit", icon="ti-truck-delivery")

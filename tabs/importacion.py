@@ -17,7 +17,6 @@ from db import (
     COTIZADOR_DEFAULTS,
 )
 from tabs.admin import (
-    TABLA_ORIGEN_DEFAULT,
     TABLA_POSICION_DEFAULT,
     TABLA_COURIER_DEFAULT,
     TABLA_IVA_VS_EXENTO_DEFAULT,
@@ -286,7 +285,6 @@ def build_tab_importacion() -> None:
         except (TypeError, ValueError):
             return 0.0
 
-    origen_data = _get_tabla("origen", TABLA_ORIGEN_DEFAULT)
     posicion_data = _get_tabla("posicion", TABLA_POSICION_DEFAULT)
     courier_data = _get_tabla("courier", TABLA_COURIER_DEFAULT)
 
@@ -294,7 +292,7 @@ def build_tab_importacion() -> None:
     posicion_by_name = {str(r.get("posicion", "")).strip(): {c: _parse_float(r.get(c)) for c in ["seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"]} for r in posicion_data if r.get("posicion")}
     courier_by_origen = {str(r.get("courier", "")).strip(): {c: _parse_float(r.get(c)) for c in ["valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb"]} for r in courier_data if r.get("courier")}
 
-    origen_posicion = {str(r.get("origen", "")).strip(): str(r.get("posicion", "")).strip() for r in origen_data if r.get("origen")}
+    origen_posicion = {str(r.get("courier", "")).strip(): str(r.get("posicion", "")).strip() for r in courier_data if r.get("courier")}
 
     # Cargar filas guardadas o empezar con una vacía
     importacion_rows: List[Dict[str, Any]] = get_importacion_filas(user["id"])
@@ -333,7 +331,7 @@ def build_tab_importacion() -> None:
         headers_calc = ["FOB Tot", "Peso", "Derech", "Estad", "Flete", "Almac", "Res3244", "Seguro", "GasOp", "EnvDom", "IVA Total", "IIBB", "Courier", "Total", "Traída", "Costo$ s/iva", "Costo u$ s/iva", "3ctas", "6ctas", "MarkUp", "Cobrado", "Comision", "IVAImp", "IVAMel", "IVAVta", "IVA", "Deb/Cred", "IIBB+PER", "Envio", "Cos Vta", "Margen$", "MargVta", "MargCos"]
         headers_input = ["Productos", "Origen", "Impuestos", "FOB", "QTY", "Peso U", "Extras", "Trafo", "Cam.PA", "Venta"]
 
-        opciones_origen = [r.get("origen", "") for r in origen_data if r.get("origen")]
+        opciones_origen = [r.get("courier", "") for r in courier_data if r.get("courier")]
         opciones_impuestos = [r.get("posicion", "") for r in posicion_data if r.get("posicion")]
         cols_ocultas = ["derechos", "estadistica", "flete_int", "almacenaje", "res_3244", "seguro", "gas_ope", "env_dom", "iva_lhs", "iibb", "cuotas3", "cuotas6", "iva_impor", "iva_meli", "iva_venta"]
         cols_input_ocultas = ["extras", "trafo"]
@@ -646,11 +644,10 @@ def build_tab_importacion() -> None:
             params_actual = {k: _parse_float(_get(k)) for k in COTIZADOR_DEFAULTS}
             posicion_actual = _get_tabla("posicion", TABLA_POSICION_DEFAULT)
             courier_actual = _get_tabla("courier", TABLA_COURIER_DEFAULT)
-            origen_actual = _get_tabla("origen", TABLA_ORIGEN_DEFAULT)
             iva_vs_exento_actual = _get_tabla("iva_vs_exento", TABLA_IVA_VS_EXENTO_DEFAULT)
             posicion_by_name_actual = {str(r.get("posicion", "")).strip(): {c: _parse_float(r.get(c)) for c in ["seguro", "flete", "derechos", "estadisticas", "iva", "despachante", "cambio_pa"]} for r in posicion_actual if r.get("posicion")}
             courier_by_origen_actual = {str(r.get("courier", "")).strip(): {c: _parse_float(r.get(c)) for c in ["valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb"]} for r in courier_actual if r.get("courier")}
-            origen_posicion_actual = {str(r.get("origen", "")).strip(): str(r.get("posicion", "")).strip() for r in origen_actual if r.get("origen")}
+            origen_posicion_actual = {str(r.get("courier", "")).strip(): str(r.get("posicion", "")).strip() for r in courier_actual if r.get("courier")}
             iva_vs_exento_by_courier_actual = {}
             for r in iva_vs_exento_actual:
                 courier_nom = str(r.get("courier", "")).strip()
