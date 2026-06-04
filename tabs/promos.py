@@ -170,8 +170,9 @@ def build_tab_promos(container) -> None:
                     ui.label(split_txt).classes(f"text-xs {split_cls}")
 
         # ── Tarjeta de costos por variante ───────────────────────────────────
-        def _render_variant_cost(it_v: dict, pd: dict, sp_list: List[dict]) -> None:
-            vid        = str(it_v.get("id") or "")
+        def _render_variant_cost(items_v: List[dict], pd: dict, sp_list: List[dict]) -> None:
+            it_v       = items_v[0]
+            vids       = " / ".join(str(it.get("id") or "") for it in items_v)
             cuotas_str = _cuotas_desde_item(it_v)
             ltype      = str(it_v.get("listing_type_id") or "").lower()
             price_promo = pd.get("price_promo")
@@ -205,10 +206,10 @@ def build_tab_promos(container) -> None:
                 type_sty = "background:#f3e5f5;color:#6a1b9a"
                 type_lbl = "GOLD SPECIAL"
 
-            with ui.card().classes("flex-1 p-3 border border-gray-200").style("min-width:260px;max-width:400px"):
+            with ui.card().classes("w-full p-3 border border-gray-200"):
                 # Cabecera de variante
                 with ui.row().classes("items-center gap-2 mb-1 flex-wrap"):
-                    ui.label(vid).classes("text-xs font-mono text-gray-500")
+                    ui.label(vids).classes("text-xs font-mono text-gray-500")
                     ui.label(type_lbl).style(
                         f"{type_sty};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600"
                     )
@@ -293,6 +294,30 @@ def build_tab_promos(container) -> None:
                                 ui.html(ICO)
                                 ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
                             ui.label(fmt_p2(val) if isp else fmt_m(val)).classes(f"text-xs {mcls}")
+
+        def _group_by_fingerprint(variants: List[tuple]) -> List[dict]:
+            groups: Dict[tuple, dict] = {}
+            for it_v, pd, sp_list in variants:
+                price_orig  = round(float(pd.get("regular_amount") or it_v.get("price") or 0), 2)
+                pp          = pd.get("price_promo")
+                price_promo = round(float(pp), 2) if pp is not None else None
+                listing     = str(it_v.get("listing_type_id") or "").lower()
+                cuotas      = _cuotas_desde_item(it_v)
+                key = (price_orig, price_promo, listing, cuotas)
+                if key not in groups:
+                    groups[key] = {"items": [], "pd": pd, "sp_lists": []}
+                groups[key]["items"].append(it_v)
+                groups[key]["sp_lists"].append(sp_list)
+            result = []
+            for g in groups.values():
+                merged: Dict[str, dict] = {}
+                for sl in g["sp_lists"]:
+                    for promo in sl:
+                        pid = str(promo.get("id") or promo.get("name") or id(promo))
+                        if pid not in merged:
+                            merged[pid] = promo
+                result.append({"items": g["items"], "pd": g["pd"], "sp_list": list(merged.values())})
+            return result
 
         # ── Carga asíncrona principal ─────────────────────────────────────────
         async def _cargar_async() -> None:
@@ -509,36 +534,25 @@ def build_tab_promos(container) -> None:
                                         ui.label("Sin promo").classes("text-xs text-gray-400")
                                     ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500")
 
-                        # ── BLOQUE 2: TABLA DE PROMOS ────────────────────────
-                        if all_promos:
-                            ui.separator()
-                            ui.label("Promociones activas y programadas").classes(
-                                "text-xs font-bold text-gray-600 mt-2 mb-1 uppercase tracking-wide"
-                            )
-                            _render_promos_table(list(all_promos.values()))
-                        else:
-                            ui.separator()
-                            ui.label("Sin promociones registradas").classes("text-xs text-gray-400 mt-2 italic")
-
-                        # ── BLOQUE 3: VARIANTES CON PROMO ────────────────────
-                        if with_promo:
-                            ui.separator()
-                            ui.label("Variantes con promo activa").classes(
-                                "text-xs font-bold mt-3 mb-1 uppercase tracking-wide"
-                            ).style("color:#1B7A3E")
-                            with ui.row().classes("w-full gap-3 flex-wrap mt-1"):
-                                for _it, pd, sp_list in with_promo:
-                                    _render_variant_cost(_it, pd, sp_list)
-
-                        # ── BLOQUE 4: VARIANTES SIN PROMO ───────────────────
-                        if without_promo:
-                            ui.separator()
-                            ui.label("Sin promo activa").classes(
-                                "text-xs font-bold text-gray-400 mt-3 mb-1 uppercase tracking-wide"
-                            )
-                            with ui.row().classes("w-full gap-3 flex-wrap mt-1"):
-                                for _it, pd, sp_list in without_promo:
-                                    _render_variant_cost(_it, pd, sp_list)
+                        # ── BLOQUES 2-4: GRILLA CON PROMOS + VARIANTES ──────
+                        ui.separator()
+                        all_variants = with_promo + without_promo
+                        groups = _group_by_fingerprint(all_variants)
+                        with ui.element("div").style(
+                            "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:start;margin-top:8px"
+                        ):
+                            with ui.card().classes("w-full p-3 border border-gray-200"):
+                                ui.label("Promociones").classes(
+                                    "text-xs font-bold text-gray-600 mb-1 uppercase tracking-wide"
+                                )
+                                if all_promos:
+                                    _render_promos_table(list(all_promos.values()))
+                                else:
+                                    ui.label("Sin promociones registradas").classes(
+                                        "text-xs text-gray-400 italic"
+                                    )
+                            for grp in groups:
+                                _render_variant_cost(grp["items"], grp["pd"], grp["sp_list"])
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
