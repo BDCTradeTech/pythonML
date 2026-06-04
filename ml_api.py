@@ -1300,3 +1300,14 @@ def ml_get_dispatch_schedule(access_token: str, seller_id: str, logistic_type: s
     except Exception:
         pass
     return None
+
+
+def ml_get_shipping_preferences(access_token: str, seller_id: str) -> Optional[Dict[str, Any]]:
+    url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_preferences"
+    try:
+        resp = requests.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return None
