@@ -5,6 +5,7 @@ El filtro del primer select re-puebla el segundo en tiempo real.
 """
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
@@ -102,21 +103,11 @@ def build_tab_promos(container) -> None:
                 grps.setdefault(_cuotas_key(it), []).append(it)
             rep_items: List[dict] = [max(grp, key=_cuotas_score) for grp in grps.values()]
 
-            # Para cada grupo, usar gold_special para verificar promo (igual que cuotas.py)
-            # gold_pro gana el score de display pero la promo se aplica sobre gold_special
-            _promo_ids: Dict[str, str] = {}
+            _grps_by_rep: Dict[str, List[dict]] = {
+                str(rep_it.get("id") or ""): [_it for _it in grp if _it.get("id")]
+                for rep_it, grp in zip(rep_items, grps.values())
+            }
             _check_items: Dict[str, dict] = {}
-            for rep_it, grp in zip(rep_items, grps.values()):
-                rep_id = str(rep_it.get("id") or "")
-                check_id = rep_id
-                check_item = rep_it
-                for _it in grp:
-                    if not _it.get("catalog_listing") and str(_it.get("listing_type_id") or "").lower() == "gold_special":
-                        check_id = str(_it.get("id") or "")
-                        check_item = _it
-                        break
-                _promo_ids[rep_id] = check_id
-                _check_items[rep_id] = check_item
 
             # Paso 3: fetch promo data con progreso
             total = len(rep_items)
@@ -127,12 +118,24 @@ def build_tab_promos(container) -> None:
                     ui.spinner(size="xl")
                     promo_lbl = ui.label(f"Verificando promos 0/{total}...").classes("text-xl text-gray-700")
 
+            _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
             promo_by_id: Dict[str, dict] = {}
             for i, it in enumerate(rep_items):
                 iid = str(it.get("id") or "")
-                check_id = _promo_ids.get(iid, iid)
-                if iid:
-                    promo_by_id[iid] = await run.io_bound(_get_promo_data, access_token, check_id, seller_id)
+                if not iid:
+                    continue
+                _grp_items = _grps_by_rep.get(iid, [it])
+                _pds = await asyncio.gather(*[
+                    run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), seller_id)
+                    for _it in _grp_items
+                ])
+                best_pd, best_price, best_item = _empty_pd, None, it
+                for _it2, _pd in zip(_grp_items, _pds):
+                    _pp = _pd.get("price_promo")
+                    if _pp is not None and (best_price is None or float(_pp) < best_price):
+                        best_price, best_pd, best_item = float(_pp), _pd, _it2
+                promo_by_id[iid] = best_pd
+                _check_items[iid] = best_item
                 if promo_lbl:
                     promo_lbl.set_text(f"Verificando promos {i + 1}/{total}...")
 
@@ -214,7 +217,6 @@ def build_tab_promos(container) -> None:
                 pd          = promo_by_id.get(item_id, {})
                 price_promo = pd.get("price_promo")
                 has_promo   = price_promo is not None
-                # Si hay promo, precio y tipo de publicación vienen del gold_special
                 calc_item   = _check_items.get(item_id, it) if has_promo else it
                 price_o     = float(pd.get("regular_amount") or calc_item.get("price") or 0)
                 pv          = float(price_promo or price_o)
