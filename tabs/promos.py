@@ -11,7 +11,12 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, background_tasks, run, ui
 
 from db import get_connection, get_cotizador_param, COTIZADOR_DEFAULTS
-from ml_api import get_ml_access_token, ml_get_my_items
+from ml_api import (
+    get_ml_access_token,
+    ml_get_my_items,
+    _cuotas_desde_item,
+    ml_get_seller_promotions_item,
+)
 from tabs.cuotas import _cuotas_key, _cuotas_score, _get_promo_data
 
 
@@ -50,7 +55,10 @@ def build_tab_promos(container) -> None:
 
         dolar_oficial  = max(float(str(get_cotizador_param("dolar_oficial", uid) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")).replace(",", ".")), 0.01)
         ml_comision_p  = _pr(get_cotizador_param("ml_comision",         uid) or COTIZADOR_DEFAULTS.get("ml_comision",         "0.15"))
+        cuotas_3x_p    = _pr(get_cotizador_param("cuotas_3x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_3x",           "0.094"))
         cuotas_6x_p    = _pr(get_cotizador_param("cuotas_6x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_6x",           "0.151"))
+        cuotas_9x_p    = _pr(get_cotizador_param("cuotas_9x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_9x",           "0.207"))
+        cuotas_12x_p   = _pr(get_cotizador_param("cuotas_12x",          uid) or COTIZADOR_DEFAULTS.get("cuotas_12x",          "0.259"))
         ml_iibb_per_p  = _pr(get_cotizador_param("ml_iibb_per",         uid) or COTIZADOR_DEFAULTS.get("ml_iibb_per",         "0.055"))
         ml_debcre_p    = _pr(get_cotizador_param("ml_debcre",           uid) or COTIZADOR_DEFAULTS.get("ml_debcre",           "0.006"))
         ml_envios_p    = max(_pf(get_cotizador_param("ml_envios",        uid) or COTIZADOR_DEFAULTS.get("ml_envios",          "5823")), 100.0)
@@ -71,6 +79,34 @@ def build_tab_promos(container) -> None:
             try: return f"{float(v):.2f}%".replace(".", ",")
             except: return "0,00%"
 
+        def _tasa_cuotas(cuotas_str: str) -> float:
+            return {"x3": cuotas_3x_p, "x6": cuotas_6x_p, "x9": cuotas_9x_p, "x12": cuotas_12x_p}.get(cuotas_str, 0.0)
+
+        def _calc(pv: float, cuotas_str: str, costo_usd: float, tipo_iva: float) -> dict:
+            tasa_q       = _tasa_cuotas(cuotas_str)
+            comision     = pv * ml_comision_p
+            costo_cuotas = pv * tasa_q
+            deb_cred     = pv * ml_debcre_p
+            iibb         = pv * ml_iibb_per_p
+            iva_venta    = pv * tipo_iva / (1 + tipo_iva) if tipo_iva else 0.0
+            iva_meli     = comision * 0.21 / 1.21
+            iva_impor    = 0.09 * costo_usd * dolar_oficial
+            iva_total    = iva_venta - iva_meli - iva_impor
+            envio        = ml_envios_p if pv >= ml_envios_grat else 0.0
+            costo_pesos  = costo_usd * dolar_oficial
+            cobrado      = pv - comision
+            if costo_pesos > 0:
+                margen = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
+                mgvta  = margen / pv * 100 if pv > 0 else 0.0
+                mgcos  = margen / costo_pesos * 100
+            else:
+                margen = mgvta = mgcos = 0.0
+            return dict(
+                comision=comision, costo_cuotas=costo_cuotas, deb_cred=deb_cred, iibb=iibb,
+                iva_venta=iva_venta, iva_meli=iva_meli, iva_impor=iva_impor, iva_total=iva_total,
+                envio=envio, costo_pesos=costo_pesos, margen=margen, mgvta=mgvta, mgcos=mgcos,
+            )
+
         # ── Área principal ───────────────────────────────────────────────────
         main_area = ui.column().classes("w-full gap-2")
         with main_area:
@@ -78,8 +114,188 @@ def build_tab_promos(container) -> None:
                 ui.spinner(size="xl")
                 ui.label("Cargando promos...").classes("text-xl text-gray-700")
 
+        # Estado compartido entre _cargar_async y _render_detail_async
+        _state: Dict[str, Any] = {
+            "seller_id":   "",
+            "rep_items":   [],
+            "grps_by_rep": {},
+            "promo_by_id": {},
+            "check_items": {},
+            "prod_costs":  {},
+        }
+
+        # ── Tabla de promociones (render helper, sin estado UI) ──────────────
+        STATUS_ORDER  = {"started": 0, "pending": 1, "candidate": 2, "finished": 3}
+        STATUS_LABELS = {"started": "Activa", "pending": "Pendiente", "candidate": "Candidata", "finished": "Finalizada"}
+        STATUS_STYLES = {
+            "started":   "background:#1B7A3E;color:#fff",
+            "pending":   "background:#E6A817;color:#fff",
+            "candidate": "background:#888;color:#fff",
+            "finished":  "background:#C0392B;color:#fff",
+        }
+
+        def _render_promos_table(all_promos: List[dict]) -> None:
+            sorted_promos = sorted(
+                all_promos,
+                key=lambda p: STATUS_ORDER.get((p.get("status") or "").lower(), 9),
+            )
+            for promo in sorted_promos:
+                status    = (promo.get("status") or "").lower()
+                meli_pct  = promo.get("meli_percentage")
+                seller_pct = promo.get("seller_percentage")
+                price     = promo.get("price")
+                start     = (promo.get("start_date") or "")[:10]
+                finish    = (promo.get("finish_date") or "")[:10]
+                vigencia  = f"{start} — {finish}" if (start or finish) else "—"
+                if meli_pct is not None and seller_pct is not None:
+                    split_txt = f"ML {fmt_p1(meli_pct)} / Yo {fmt_p1(seller_pct)}"
+                    split_cls = "text-blue-700"
+                elif meli_pct is None and seller_pct is None:
+                    split_txt = "100% vendedor"
+                    split_cls = "text-orange-600 font-medium"
+                else:
+                    split_txt = "—"
+                    split_cls = "text-gray-400"
+
+                with ui.row().classes("w-full items-center gap-2 py-1 border-b border-gray-100 flex-wrap"):
+                    lbl = STATUS_LABELS.get(status, status or "—")
+                    sty = STATUS_STYLES.get(status, "background:#888;color:#fff")
+                    ui.label(lbl).style(
+                        f"{sty};border-radius:4px;padding:1px 8px;font-size:11px;font-weight:600;white-space:nowrap"
+                    )
+                    ui.label(promo.get("name") or "—").classes("text-xs font-medium flex-1 min-w-32")
+                    ui.label(promo.get("type") or "—").classes("text-xs text-gray-400 w-20")
+                    ui.label(vigencia).classes("text-xs text-gray-400 whitespace-nowrap")
+                    ui.label(fmt_m(price) if price is not None else "—").classes("text-xs font-semibold w-20")
+                    ui.label(split_txt).classes(f"text-xs {split_cls}")
+
+        # ── Tarjeta de costos por variante ───────────────────────────────────
+        def _render_variant_cost(it_v: dict, pd: dict, sp_list: List[dict]) -> None:
+            vid        = str(it_v.get("id") or "")
+            cuotas_str = _cuotas_desde_item(it_v)
+            ltype      = str(it_v.get("listing_type_id") or "").lower()
+            price_promo = pd.get("price_promo")
+            has_promo   = price_promo is not None
+            price_orig  = float(pd.get("regular_amount") or it_v.get("price") or 0)
+            pv          = float(price_promo or price_orig)
+            disc_pct    = (price_orig - pv) / price_orig * 100 if has_promo and price_orig > 0 else 0.0
+
+            sku       = (it_v.get("seller_sku") or "").strip()
+            costs     = _state["prod_costs"].get(sku, {})
+            costo_usd = float(costs.get("costo_usd") or 0)
+            tipo_iva  = float(costs.get("tipo_iva") or 0.105)
+
+            c      = _calc(pv, cuotas_str, costo_usd, tipo_iva)
+            margen = c["margen"]
+            mcls   = "font-bold text-black" if costo_usd <= 0 else (
+                "font-bold text-positive" if margen > 0 else "font-bold text-negative"
+            )
+
+            ICO   = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517"></i>'
+            ICO_S = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517"></i>'
+
+            active_promos    = [p for p in sp_list if (p.get("status") or "").lower() == "started"]
+            candidate_promos = [p for p in sp_list if (p.get("status") or "").lower() in ("candidate", "pending")]
+
+            # Tipo badge
+            if "pro" in ltype:
+                type_sty = "background:#e3f2fd;color:#1565c0"
+                type_lbl = "GOLD PRO"
+            else:
+                type_sty = "background:#f3e5f5;color:#6a1b9a"
+                type_lbl = "GOLD SPECIAL"
+
+            with ui.card().classes("flex-1 p-3 border border-gray-200").style("min-width:260px;max-width:400px"):
+                # Cabecera de variante
+                with ui.row().classes("items-center gap-2 mb-1 flex-wrap"):
+                    ui.label(vid).classes("text-xs font-mono text-gray-500")
+                    ui.label(type_lbl).style(
+                        f"{type_sty};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600"
+                    )
+                    q_lbl = cuotas_str if cuotas_str else "x1"
+                    q_cls = "text-xs font-bold text-green-700" if q_lbl != "x1" else "text-xs text-gray-400"
+                    ui.label(q_lbl).classes(q_cls)
+
+                # Precio
+                with ui.row().classes("items-baseline gap-2 mb-1 flex-wrap"):
+                    if has_promo:
+                        ui.label(fmt_m(price_orig)).classes("text-sm line-through text-gray-400")
+                        ui.label(fmt_m(pv)).classes("text-sm font-bold").style("color:#E24B4A")
+                        ui.label(f"↓ {fmt_p1(disc_pct)}").classes("text-xs").style("color:#E24B4A")
+                    else:
+                        ui.label(fmt_m(pv)).classes("text-sm font-bold text-gray-700")
+
+                # Promos activas en esta variante
+                for p in active_promos:
+                    with ui.row().classes("items-center gap-1 mb-0.5"):
+                        ui.label("▶").classes("text-xs").style("color:#1B7A3E;font-size:10px")
+                        ui.label(p.get("name") or "").classes("text-xs text-gray-600")
+                # Candidatas/pendientes
+                for p in candidate_promos:
+                    with ui.row().classes("items-center gap-1 mb-0.5"):
+                        ui.label("○").classes("text-xs text-gray-400").style("font-size:10px")
+                        ui.label(p.get("name") or "").classes("text-xs text-gray-400 italic")
+
+                ui.separator().classes("my-1")
+
+                # Desglose de costos
+                with ui.column().classes("gap-0 w-full"):
+                    with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.html(ICO)
+                            ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
+                        ui.label(fmt_m(pv)).classes("text-xs font-medium")
+                    for lbl_t, val in [
+                        ("Comisión ML",  c["comision"]),
+                        ("Costo Cuotas", c["costo_cuotas"]),
+                        ("IVA neto",     c["iva_total"]),
+                    ]:
+                        with ui.row().classes("w-full justify-between py-0.5"):
+                            with ui.row().classes("items-center gap-1"):
+                                ui.html(ICO)
+                                ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
+                            ui.label(fmt_m(val)).classes("text-xs text-negative")
+                    with ui.column().classes("w-full bg-gray-50 rounded px-2 py-0.5 mb-0.5 gap-0"):
+                        for sl, sv in [
+                            ("IVA venta",             c["iva_venta"]),
+                            ("IVA Meli (créd)",        c["iva_meli"]),
+                            ("IVA importación (créd)", c["iva_impor"]),
+                        ]:
+                            with ui.row().classes("w-full justify-between"):
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.html(ICO_S)
+                                    ui.label(sl).classes("text-xs font-medium text-gray-500")
+                                ui.label(fmt_m(sv)).classes("text-xs text-gray-500")
+                    for lbl_t, val in [
+                        ("Deb/Cred",          c["deb_cred"]),
+                        ("IIBB ret.",          c["iibb"]),
+                        ("Envío Flex/Correo",  c["envio"]),
+                    ]:
+                        with ui.row().classes("w-full justify-between py-0.5"):
+                            with ui.row().classes("items-center gap-1"):
+                                ui.html(ICO)
+                                ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
+                            ui.label(fmt_m(val)).classes("text-xs text-negative")
+                    ui.separator().classes("my-0.5")
+                    with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.html(ICO)
+                            ui.label("Costo producto").classes("text-xs font-medium text-gray-600")
+                        ui.label(fmt_m(c["costo_pesos"])).classes("text-xs text-negative")
+                    ui.separator().classes("my-0.5")
+                    for lbl_t, val, isp in [
+                        ("Gan $",     margen,       False),
+                        ("Gan Vta %", c["mgvta"],   True),
+                        ("Gan % Cos", c["mgcos"],   True),
+                    ]:
+                        with ui.row().classes("w-full justify-between py-0.5"):
+                            with ui.row().classes("items-center gap-1"):
+                                ui.html(ICO)
+                                ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
+                            ui.label(fmt_p2(val) if isp else fmt_m(val)).classes(f"text-xs {mcls}")
+
+        # ── Carga asíncrona principal ─────────────────────────────────────────
         async def _cargar_async() -> None:
-            # Paso 1: obtener items de ML
             try:
                 data = await run.io_bound(ml_get_my_items, access_token, False)
             except Exception as e:
@@ -89,7 +305,7 @@ def build_tab_promos(container) -> None:
                 return
 
             items_raw: List[dict] = data.get("results", [])
-            seller_id: str = str(data.get("seller_id") or "")
+            _state["seller_id"] = str(data.get("seller_id") or "")
 
             if not items_raw:
                 main_area.clear()
@@ -97,19 +313,23 @@ def build_tab_promos(container) -> None:
                     ui.label("No se encontraron publicaciones activas en MercadoLibre.").classes("text-gray-500 p-4")
                 return
 
-            # Paso 2: dedup por SKU (igual que cuotas)
+            # Dedup por SKU
             grps: Dict[tuple, List[dict]] = {}
             for it in items_raw:
                 grps.setdefault(_cuotas_key(it), []).append(it)
-            rep_items: List[dict] = [max(grp, key=_cuotas_score) for grp in grps.values()]
 
-            _grps_by_rep: Dict[str, List[dict]] = {
-                str(rep_it.get("id") or ""): [_it for _it in grp if _it.get("id")]
-                for rep_it, grp in zip(rep_items, grps.values())
-            }
-            _check_items: Dict[str, dict] = {}
+            rep_items: List[dict] = []
+            grps_by_rep: Dict[str, List[dict]] = {}
+            for grp in grps.values():
+                rep = max(grp, key=_cuotas_score)
+                rep_id = str(rep.get("id") or "")
+                rep_items.append(rep)
+                grps_by_rep[rep_id] = [_it for _it in grp if _it.get("id")]
 
-            # Paso 3: fetch promo data con progreso
+            _state["rep_items"]   = rep_items
+            _state["grps_by_rep"] = grps_by_rep
+
+            # Fetch promo data con progreso
             total = len(rep_items)
             main_area.clear()
             promo_lbl = None
@@ -120,13 +340,16 @@ def build_tab_promos(container) -> None:
 
             _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
             promo_by_id: Dict[str, dict] = {}
+            check_items: Dict[str, dict] = {}
+            sid = _state["seller_id"]
+
             for i, it in enumerate(rep_items):
                 iid = str(it.get("id") or "")
                 if not iid:
                     continue
-                _grp_items = _grps_by_rep.get(iid, [it])
+                _grp_items = grps_by_rep.get(iid, [it])
                 _pds = await asyncio.gather(*[
-                    run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), seller_id)
+                    run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), sid)
                     for _it in _grp_items
                 ])
                 best_pd, best_price, best_item = _empty_pd, None, it
@@ -135,18 +358,20 @@ def build_tab_promos(container) -> None:
                     if _pp is not None and (best_price is None or float(_pp) < best_price):
                         best_price, best_pd, best_item = float(_pp), _pd, _it2
                 promo_by_id[iid] = best_pd
-                _check_items[iid] = best_item
+                check_items[iid]  = best_item
                 if promo_lbl:
                     promo_lbl.set_text(f"Verificando promos {i + 1}/{total}...")
 
-            # Paso 4: costos desde BD
-            prod_costs: Dict[str, dict] = {}
+            _state["promo_by_id"] = promo_by_id
+            _state["check_items"] = check_items
+
+            # Costos desde BD
             try:
                 conn = get_connection()
                 for r in conn.execute(
                     "SELECT sku, costo_usd, tipo_iva FROM productos WHERE user_id = ?", (uid,)
                 ).fetchall():
-                    prod_costs[r["sku"]] = {
+                    _state["prod_costs"][r["sku"]] = {
                         "costo_usd": float(r["costo_usd"] or 0),
                         "tipo_iva":  float(r["tipo_iva"]  or 0.105),
                     }
@@ -154,7 +379,6 @@ def build_tab_promos(container) -> None:
             except Exception:
                 pass
 
-            # Paso 5: construir UI
             n_con_promo = sum(
                 1 for it in rep_items
                 if promo_by_id.get(str(it.get("id") or ""), {}).get("price_promo") is not None
@@ -163,7 +387,7 @@ def build_tab_promos(container) -> None:
             def _build_opts(filtro: str) -> Dict[str, str]:
                 opts: Dict[str, str] = {}
                 for it in rep_items:
-                    iid  = str(it.get("id") or "")
+                    iid   = str(it.get("id") or "")
                     has_p = promo_by_id.get(iid, {}).get("price_promo") is not None
                     if filtro == "con_promo" and not has_p:
                         continue
@@ -206,139 +430,115 @@ def build_tab_promos(container) -> None:
                 detail_col = ui.column().classes("w-full mt-2")
                 detail_col.style("display:none")
 
-            # ── Render detalle (100% desde memoria, sin API calls) ────────────
-            def _render_detail(item_id: str) -> None:
-                detail_col.clear()
+            # ── Render detalle async ─────────────────────────────────────────
+            async def _render_detail_async(item_id: str) -> None:
                 it = next((x for x in rep_items if str(x.get("id") or "") == item_id), None)
                 if not it:
+                    detail_col.clear()
                     detail_col.style("display:none")
                     return
 
-                pd          = promo_by_id.get(item_id, {})
-                price_promo = pd.get("price_promo")
-                has_promo   = price_promo is not None
-                calc_item   = _check_items.get(item_id, it) if has_promo else it
-                price_o     = float(pd.get("regular_amount") or calc_item.get("price") or 0)
-                pv          = float(price_promo or price_o)
-                disc_pct    = (price_o - pv) / price_o * 100 if has_promo and price_o > 0 else 0.0
-                meli_pct    = pd.get("meli_pct")
-                seller_pct  = pd.get("seller_pct")
+                grp_items = grps_by_rep.get(item_id, [it])
 
-                sku       = (it.get("seller_sku") or "").strip()
-                costs     = prod_costs.get(sku, {})
-                costo_usd = float(costs.get("costo_usd") or 0)
-                tipo_iva  = float(costs.get("tipo_iva")  or 0.105)
-
-                ltype        = str(calc_item.get("listing_type_id") or "").lower()
-                tasa_cuotas  = cuotas_6x_p if ltype == "gold_pro" else 0.0
-                comision     = pv * ml_comision_p
-                deb_cred     = pv * ml_debcre_p
-                iibb         = pv * ml_iibb_per_p
-                iva_venta    = pv * tipo_iva / (1 + tipo_iva) if tipo_iva else 0.0
-                iva_meli     = comision * 0.21 / 1.21
-                iva_impor    = 0.09 * costo_usd * dolar_oficial
-                iva_total    = iva_venta - iva_meli - iva_impor
-                envio        = ml_envios_p if pv >= ml_envios_grat else 0.0
-                costo_cuotas = pv * tasa_cuotas
-                costo_pesos  = costo_usd * dolar_oficial
-                cobrado      = pv - comision
-                if costo_pesos > 0:
-                    margen = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
-                    mgvta  = margen / pv * 100 if pv > 0 else 0.0
-                    mgcos  = margen / costo_pesos * 100
-                else:
-                    margen = mgvta = mgcos = 0.0
-                mcls = "font-bold text-black" if costo_pesos <= 0 else (
-                    "font-bold text-positive" if margen > 0 else "font-bold text-negative"
+                # Fetch seller-promotions + promo data por variante en paralelo
+                sp_results, pd_results = await asyncio.gather(
+                    asyncio.gather(*[
+                        run.io_bound(ml_get_seller_promotions_item, access_token, str(_it.get("id") or ""))
+                        for _it in grp_items
+                    ]),
+                    asyncio.gather(*[
+                        run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), _state["seller_id"])
+                        for _it in grp_items
+                    ]),
                 )
+                sp_lists = list(sp_results)
+                pd_list  = list(pd_results)
 
+                # Dedup promos por ID (misma campaña puede aparecer en varias variantes)
+                all_promos: Dict[str, dict] = {}
+                for sp_list in sp_lists:
+                    for promo in sp_list:
+                        pid = str(promo.get("id") or promo.get("name") or id(promo))
+                        if pid not in all_promos:
+                            all_promos[pid] = promo
+
+                # Clasificar variantes
+                with_promo:    List[tuple] = []
+                without_promo: List[tuple] = []
+                for _it, pd, sp_list in zip(grp_items, pd_list, sp_lists):
+                    has_active = (
+                        pd.get("price_promo") is not None or
+                        any((p.get("status") or "").lower() == "started" for p in sp_list)
+                    )
+                    if has_active:
+                        with_promo.append((_it, pd, sp_list))
+                    else:
+                        without_promo.append((_it, pd, sp_list))
+
+                # Info del rep-item para el header
                 thumb   = it.get("thumbnail") or ""
                 title   = it.get("title") or item_id
+                sku_rep = (it.get("seller_sku") or "").strip()
                 stock_v = int(it.get("available_quantity") or 0)
-                ICO     = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517"></i>'
-                ICO_S   = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517"></i>'
+                pd0     = promo_by_id.get(item_id, {})
 
+                detail_col.clear()
                 detail_col.style("display:block")
                 with detail_col:
                     with ui.card().classes("w-full p-4"):
-                        with ui.row().classes("w-full gap-3 mb-2 items-start"):
+
+                        # ── BLOQUE 1: HEADER ─────────────────────────────────
+                        with ui.row().classes("w-full gap-3 mb-3 items-start"):
                             if thumb:
                                 ui.image(thumb).classes("w-16 h-16 object-contain rounded border")
                             with ui.column().classes("flex-1 min-w-0 gap-1"):
-                                ui.label(f"{item_id}" + (f" · {sku}" if sku else "")).classes("text-xs font-mono text-gray-500")
+                                ui.label(f"{item_id}" + (f" · {sku_rep}" if sku_rep else "")).classes(
+                                    "text-xs font-mono text-gray-500"
+                                )
                                 ui.label(title[:120]).classes("text-sm font-bold")
                                 with ui.row().classes("gap-2 items-center flex-wrap"):
-                                    if has_promo:
-                                        ui.label(fmt_m(price_o)).classes("text-sm line-through text-gray-400")
-                                        ui.label(fmt_m(pv)).classes("text-sm font-bold").style("color:#E24B4A")
-                                        ui.label(f"↓ {fmt_p1(disc_pct)}").classes("text-xs").style("color:#E24B4A")
-                                        if meli_pct is not None:
-                                            ui.label(f"ML: {fmt_p1(meli_pct)}").classes("text-xs text-blue-600")
-                                        if seller_pct is not None:
-                                            clr = "text-gray-400" if float(seller_pct or 0) == 0 else "text-orange-600"
-                                            ui.label(f"Yo: {fmt_p1(seller_pct)}").classes(f"text-xs {clr}")
+                                    if pd0.get("price_promo") is not None:
+                                        p0 = float(pd0.get("regular_amount") or it.get("price") or 0)
+                                        pv0 = float(pd0["price_promo"])
+                                        d0 = (p0 - pv0) / p0 * 100 if p0 > 0 else 0
+                                        ui.label(fmt_m(p0)).classes("text-sm line-through text-gray-400")
+                                        ui.label(fmt_m(pv0)).classes("text-sm font-bold").style("color:#E24B4A")
+                                        ui.label(f"↓ {fmt_p1(d0)}").classes("text-xs").style("color:#E24B4A")
                                     else:
-                                        ui.label(fmt_m(price_o)).classes("text-sm font-bold")
+                                        ui.label(fmt_m(it.get("price"))).classes("text-sm font-bold")
                                         ui.label("Sin promo").classes("text-xs text-gray-400")
                                     ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500")
-                        ui.separator()
-                        with ui.column().classes("gap-0 pt-2 max-w-sm"):
-                            ui.label("Cotización" + (" con precio promo" if has_promo else "")).classes(
-                                "text-xs font-semibold text-gray-500 mb-1"
+
+                        # ── BLOQUE 2: TABLA DE PROMOS ────────────────────────
+                        if all_promos:
+                            ui.separator()
+                            ui.label("Promociones activas y programadas").classes(
+                                "text-xs font-bold text-gray-600 mt-2 mb-1 uppercase tracking-wide"
                             )
-                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                with ui.row().classes("items-center gap-1"):
-                                    ui.html(ICO)
-                                    ui.label("Precio de Venta").classes("text-sm font-medium text-gray-600")
-                                ui.label(fmt_m(pv)).classes("text-sm font-medium")
-                            for lbl_t, val in [
-                                ("Comisión ML",  comision),
-                                ("Costo Cuotas", costo_cuotas),
-                                ("IVA neto",     iva_total),
-                            ]:
-                                with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                    with ui.row().classes("items-center gap-1"):
-                                        ui.html(ICO)
-                                        ui.label(lbl_t).classes("text-sm font-medium text-gray-600")
-                                    ui.label(fmt_m(val)).classes("text-sm text-negative")
-                            with ui.column().classes("w-full bg-gray-50 rounded px-2 py-1 mb-0.5 gap-0"):
-                                for sl, sv in [
-                                    ("IVA venta",              iva_venta),
-                                    ("IVA Meli (créd)",         iva_meli),
-                                    ("IVA importación (créd)",  iva_impor),
-                                ]:
-                                    with ui.row().classes("w-full justify-between"):
-                                        with ui.row().classes("items-center gap-1"):
-                                            ui.html(ICO_S)
-                                            ui.label(sl).classes("text-xs font-medium text-gray-600")
-                                        ui.label(fmt_m(sv)).classes("text-xs text-gray-600")
-                            for lbl_t, val in [
-                                ("Deb/Cred",                  deb_cred),
-                                ("IIBB ret.",                  iibb),
-                                ("Envío promedio Flex/Correo", envio),
-                            ]:
-                                with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                    with ui.row().classes("items-center gap-1"):
-                                        ui.html(ICO)
-                                        ui.label(lbl_t).classes("text-sm font-medium text-gray-600")
-                                    ui.label(fmt_m(val)).classes("text-sm text-negative")
+                            _render_promos_table(list(all_promos.values()))
+                        else:
                             ui.separator()
-                            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                with ui.row().classes("items-center gap-1"):
-                                    ui.html(ICO)
-                                    ui.label("Costo producto").classes("text-sm font-medium text-gray-600")
-                                ui.label(fmt_m(costo_pesos)).classes("text-sm text-negative")
+                            ui.label("Sin promociones registradas").classes("text-xs text-gray-400 mt-2 italic")
+
+                        # ── BLOQUE 3: VARIANTES CON PROMO ────────────────────
+                        if with_promo:
                             ui.separator()
-                            for lbl_t, val, isp in [
-                                ("Gan $",     margen, False),
-                                ("Gan Vta %", mgvta,  True),
-                                ("Gan % Cos", mgcos,  True),
-                            ]:
-                                with ui.row().classes("w-full justify-between py-0.5 gap-4"):
-                                    with ui.row().classes("items-center gap-1"):
-                                        ui.html(ICO)
-                                        ui.label(lbl_t).classes("text-sm font-medium text-gray-600")
-                                    ui.label(fmt_p2(val) if isp else fmt_m(val)).classes(mcls)
+                            ui.label("Variantes con promo activa").classes(
+                                "text-xs font-bold mt-3 mb-1 uppercase tracking-wide"
+                            ).style("color:#1B7A3E")
+                            with ui.row().classes("w-full gap-3 flex-wrap mt-1"):
+                                for _it, pd, sp_list in with_promo:
+                                    _render_variant_cost(_it, pd, sp_list)
+
+                        # ── BLOQUE 4: VARIANTES SIN PROMO ───────────────────
+                        if without_promo:
+                            ui.separator()
+                            ui.label("Sin promo activa").classes(
+                                "text-xs font-bold text-gray-400 mt-3 mb-1 uppercase tracking-wide"
+                            )
+                            with ui.row().classes("w-full gap-3 flex-wrap mt-1"):
+                                for _it, pd, sp_list in without_promo:
+                                    _render_variant_cost(_it, pd, sp_list)
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
@@ -355,7 +555,13 @@ def build_tab_promos(container) -> None:
                     detail_col.clear()
                     detail_col.style("display:none")
                     return
-                _render_detail(str(iid))
+                detail_col.clear()
+                detail_col.style("display:block")
+                with detail_col:
+                    with ui.card().classes("w-full p-4 items-center gap-3"):
+                        ui.spinner()
+                        ui.label("Cargando detalle de promos...").classes("text-sm text-gray-500")
+                background_tasks.create(_render_detail_async(str(iid)), name="render_promo_detail")
 
             sel_promo.on_value_change(_on_filter_change)
             sel_prod.on_value_change(_on_product_change)
