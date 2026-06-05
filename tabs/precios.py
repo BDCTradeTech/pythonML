@@ -956,13 +956,34 @@ def _mostrar_tabla_precios(
                                     row["dias_sin_modificar"] = 0
                                     row["price_updated_at"] = _now.isoformat()
                                 await run.io_bound(_save_rev_cel)
+                            _costo_p = float(row.get("costo_usd") or 0)
+                            _tiva_p  = float(row.get("tipo_iva") or 0.105)
+                            _lt_p    = str(row.get("listing_type_id") or "").lower()
+                            _tasa_p  = cuotas_6x_p if _lt_p == "gold_pro" else 0.0
+                            if _costo_p > 0 and nuevo > 0:
+                                _com_p   = nuevo * ml_comision_p
+                                _cob_p   = nuevo - _com_p
+                                _ivav_p  = nuevo * _tiva_p / (1 + _tiva_p)
+                                _ivam_p  = _com_p * 0.21 / 1.21
+                                _ivai_p  = 0.09 * _costo_p * dolar_oficial
+                                _ivat_p  = _ivav_p - _ivam_p - _ivai_p
+                                _deb_p   = nuevo * ml_debcre_p
+                                _iibb_p  = nuevo * ml_iibb_per_p
+                                _env_p   = ml_envios_p if nuevo >= ml_envios_grat_p else 0.0
+                                _ccuot_p = nuevo * _tasa_p if _tasa_p else 0.0
+                                _cp_p    = _costo_p * dolar_oficial
+                                _mgn_p   = _cob_p - _cp_p - _ivat_p - _iibb_p - _deb_p - _env_p - _ccuot_p
+                                _mvta_p  = _mgn_p / nuevo * 100
+                            else:
+                                _mgn_p = _mvta_p = None
+                            row["precio"]           = nuevo
+                            row["price"]            = nuevo
+                            row["margen_pesos"]     = _mgn_p
+                            row["margen_venta_pct"] = _mvta_p
+                            _sku_key_inline = _sku_cel or str(row.get("id") or "").strip()
                             with client:
-                                ui.notify("Precio actualizado correctamente. Refrescando...", color="positive")
-                                if on_actualizar:
-                                    def _refrescar() -> None:
-                                        with client:
-                                            on_actualizar()
-                                    ui.timer(0.3, _refrescar, once=True)
+                                ui.notify("Precio actualizado correctamente.", color="positive")
+                                _actualizar_fila(_sku_key_inline, row)
                         except requests.exceptions.HTTPError as err:
                             with client:
                                 ui.notify(f"Error al actualizar: {err}", color="negative")
