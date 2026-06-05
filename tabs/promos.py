@@ -198,17 +198,20 @@ def build_tab_promos(container) -> None:
             costo_usd = float(costs.get("costo_usd") or 0)
             tipo_iva  = float(costs.get("tipo_iva") or 0.105)
 
-            c      = _calc(pv, cuotas_str, costo_usd, tipo_iva)
-            margen = c["margen"]
-            mcls   = "font-bold text-black" if costo_usd <= 0 else (
+            c = _calc(pv, cuotas_str, costo_usd, tipo_iva)
+
+            active_promos    = [p for p in sp_list if (p.get("status") or "").lower() == "started"]
+            candidate_promos = [p for p in sp_list if (p.get("status") or "").lower() in ("candidate", "pending")]
+
+            _act_ml  = next((p for p in active_promos if float(p.get("meli_percentage") or 0) > 0), None)
+            bonif_ml = float(_act_ml["meli_percentage"]) * price_orig / 100 if (_act_ml and has_promo) else 0.0
+            margen   = c["margen"] + bonif_ml
+            mcls     = "font-bold text-black" if costo_usd <= 0 else (
                 "font-bold text-positive" if margen > 0 else "font-bold text-negative"
             )
 
             ICO   = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517"></i>'
             ICO_S = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517"></i>'
-
-            active_promos    = [p for p in sp_list if (p.get("status") or "").lower() == "started"]
-            candidate_promos = [p for p in sp_list if (p.get("status") or "").lower() in ("candidate", "pending")]
 
             # Tipo badge
             if "pro" in ltype:
@@ -294,6 +297,12 @@ def build_tab_promos(container) -> None:
                                 ui.html(ICO)
                                 ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
                             ui.label(fmt_m(val)).classes("text-xs text-negative")
+                    if bonif_ml > 0:
+                        with ui.row().classes("w-full justify-between py-0.5"):
+                            with ui.row().classes("items-center gap-1"):
+                                ui.html(ICO)
+                                ui.label("ML aporta").classes("text-xs font-medium text-gray-600")
+                            ui.label("+" + fmt_m(bonif_ml)).classes("text-xs text-positive font-medium")
                     ui.separator().classes("my-0.5")
                     with ui.row().classes("w-full justify-between py-0.5"):
                         with ui.row().classes("items-center gap-1"):

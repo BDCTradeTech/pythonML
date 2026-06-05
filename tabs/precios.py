@@ -28,6 +28,7 @@ from ml_api import (
     ml_get_item_performance,
     ml_get_items_multiget_with_attributes,
     ml_get_orders,
+    ml_get_seller_promotions_item,
 )
 from tabs.cuotas import _cuotas_key
 
@@ -188,10 +189,13 @@ def _show_item_detail_dialog(
         costo    = float(row.get("costo") or 0)
         if precio < 1:
             precio = float(row.get("precio") or 0) or 1
-        tiene_promo = row.get("price_original") is not None and row.get("promo_yo_pct") is not None
-        precio_calc = precio
+        tiene_promo = row.get("price_promo") is not None
         if tiene_promo:
-            precio_calc = float(row.get("price_original") or 0) * (1 - float(row.get("promo_yo_pct") or 0) / 100)
+            precio_calc = float(row.get("price_promo") or 0)
+        else:
+            precio_calc = precio
+            if precio_calc < 1:
+                precio_calc = float(row.get("precio") or 0) or 1
         comision = precio_calc * ml_comision
         cobrado  = precio_calc - comision
         deb_cred = precio_calc * ml_debcre
@@ -203,16 +207,22 @@ def _show_item_detail_dialog(
         cuotas_val  = str(row.get("cuotas") or "x1").strip().lower()
         tasa        = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
         costo_cuotas = precio_calc * tasa if tasa else 0.0
+        bonif_ml = 0.0
+        if tiene_promo:
+            _ml_pct = float(row.get("promo_ml_pct") or 0)
+            _orig   = float(row.get("price_original") or 0)
+            bonif_ml = _orig * _ml_pct / 100
         if costo_pesos <= 0:
             margen_pesos = margen_costo_pct = margen_venta_pct = 0.0
         else:
-            margen_pesos     = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas
+            margen_pesos     = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas + bonif_ml
             margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
             margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
         data = {
             "comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas,
             "iva_venta": iva_venta, "iva_total": iva_total, "iva_meli": iva_meli, "iva_impor": iva_impor,
             "deb_cred": deb_cred, "iibb": iibb, "envio": envio, "costo_pesos": costo_pesos,
+            "bonif_ml": bonif_ml,
             "margen_pesos": margen_pesos, "margen_costo_pct": margen_costo_pct, "margen_venta_pct": margen_venta_pct,
         }
         _pintar_recalc(recalc_ref["container"], data)
@@ -261,11 +271,19 @@ def _show_item_detail_dialog(
                     ui.html(_ICO)
                     ui.label("IIBB ret.").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("iibb"))).classes("text-sm text-negative")
-            with ui.row().classes("w-full justify-between py-0.5 gap-4 border-b-2 border-gray-300"):
+            with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
                     ui.label("Envío promedio Flex/Correo").classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("envio"))).classes("text-sm text-negative")
+            if float(data.get("bonif_ml") or 0) > 0:
+                with ui.row().classes("w-full justify-between py-0.5 gap-4 border-b-2 border-gray-300"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.html(_ICO)
+                        ui.label("Promo ML aporta").classes("text-sm font-medium text-gray-600")
+                    ui.label("+" + fmt_moneda(data["bonif_ml"])).classes("text-sm text-positive font-medium")
+            else:
+                ui.separator().classes("border-b-2 border-gray-300 my-0")
             with ui.row().classes("w-full justify-between py-1 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
@@ -1323,8 +1341,9 @@ def _mostrar_tabla_precios(
                 try:
                     with cl:
                         ui.notify("Cargando detalles...", color="info", timeout=1)
-                    sp_data = await run.io_bound(ml_get_item_sale_price_full, access_token, item_id)
-                    bodies  = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, [item_id], "id,listing_type_id,attributes,sale_terms")
+                    sp_data   = await run.io_bound(ml_get_item_sale_price_full, access_token, item_id)
+                    sp_promos = await run.io_bound(ml_get_seller_promotions_item, access_token, item_id)
+                    bodies    = await run.io_bound(ml_get_items_multiget_with_attributes, access_token, [item_id], "id,listing_type_id,attributes,sale_terms")
                     row["cuotas"] = str(_cuotas_desde_item(bodies[0]) if bodies and bodies[0] else "x1").strip().lower()
                     _sku = str(row.get("seller_sku") or "").strip() or item_id
                     _conn = get_connection()
@@ -1341,14 +1360,22 @@ def _mostrar_tabla_precios(
                         amt_f = float(sp_data["amount"])
                         reg = sp_data.get("regular_amount")
                         if reg is not None and float(reg) > 0 and abs(float(reg) - amt_f) > 0.01:
-                            # API fresca confirma promo — override con datos frescos
                             reg_f = float(reg)
-                            pct   = (reg_f - amt_f) / reg_f * 100
+                            _act = next(
+                                (p for p in (sp_promos or [])
+                                 if (p.get("status") or "").lower() == "started"
+                                 and p.get("meli_percentage") is not None),
+                                None
+                            )
                             row["precio"]         = amt_f
                             row["price_original"] = reg_f
-                            row["promo_ml_pct"]   = 0.0
-                            row["promo_yo_pct"]   = pct
                             row["price_promo"]    = amt_f
+                            if _act is not None:
+                                row["promo_ml_pct"]  = float(_act.get("meli_percentage") or 0)
+                                row["promo_yo_pct"]  = float(_act.get("seller_percentage") or 0)
+                            else:
+                                row["promo_ml_pct"]  = 0.0
+                                row["promo_yo_pct"]  = (reg_f - amt_f) / reg_f * 100
                         elif row.get("price_promo") is None:
                             # Sin promo en API ni en tabla — usar precio base de la API
                             row["precio"] = amt_f
