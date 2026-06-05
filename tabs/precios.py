@@ -119,6 +119,7 @@ def _show_item_detail_dialog(
     uid: int,
     items_loaded: List[Dict[str, Any]],
     on_saved=None,
+    on_row_saved=None,
     revisiones_hoy: Optional[Dict[str, bool]] = None,
 ) -> None:
     def fmt_moneda(val):
@@ -170,7 +171,9 @@ def _show_item_detail_dialog(
             async def _refrescar_highlights():
                 await asyncio.sleep(0.1)
                 with _cl_rev:
-                    if on_saved:
+                    if on_row_saved:
+                        on_row_saved(_sku_rev, row)
+                    elif on_saved:
                         on_saved()
 
             background_tasks.create(_refrescar_highlights())
@@ -368,7 +371,10 @@ def _show_item_detail_dialog(
                         break
                 with cl:
                     if found_item is not None:
-                        _actualizar_fila(sku_grd, found_item)
+                        if on_row_saved:
+                            on_row_saved(sku_grd, found_item)
+                        elif on_saved:
+                            on_saved()
                     elif on_saved:
                         on_saved()
                     ui.notify("Precio actualizado correctamente.", color="positive")
@@ -1337,6 +1343,7 @@ def _mostrar_tabla_precios(
                     dolar_oficial=dolar_oficial, access_token=access_token,
                     uid=user["id"], items_loaded=items_loaded,
                     on_saved=filtrar_y_pintar,
+                    on_row_saved=_actualizar_fila,
                     revisiones_hoy=revisiones_hoy,
                 )
 
