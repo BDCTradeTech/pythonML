@@ -708,7 +708,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 with client_:
                                                     _render(_sort_rows(filtrados_ref["val"]))
                                             background_tasks.create(_do_fix())
-                                        ui.icon("ti-tool").style("color:#BA7517;font-size:16px;cursor:pointer").on("click", _fix_click)
+                                        with ui.element("div").style("display:inline-flex;align-items:center;cursor:pointer").on("click", _fix_click):
+                                            ui.html('<i class="ti ti-tool" style="color:#BA7517;font-size:16px"></i>')
                                     else:
                                         ui.label("—").classes("text-gray-400 text-xs")
                                 with ui.element("td").style(f"{TD_BASE};text-align:center"):
