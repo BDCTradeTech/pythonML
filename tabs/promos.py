@@ -225,16 +225,16 @@ def build_tab_promos(container) -> None:
             else:
                 type_lbl = f"{type_base} (sin cuotas)"
 
-            with ui.card().classes("w-full p-3 border border-gray-200"):
+            with ui.card().classes("w-full p-2 border border-gray-200"):
                 # Cabecera de variante
-                with ui.row().classes("items-center gap-2 mb-1 flex-wrap"):
+                with ui.row().classes("items-center gap-2 mb-0.5 flex-wrap"):
                     ui.label(vids).classes("text-xs font-mono text-gray-500")
                     ui.label(type_lbl).style(
                         f"{type_sty};border-radius:4px;padding:1px 6px;font-size:11px;font-weight:600"
                     )
 
                 # Precio
-                with ui.row().classes("items-baseline gap-2 mb-1 flex-wrap"):
+                with ui.row().classes("items-baseline gap-2 mb-0.5 flex-wrap"):
                     if has_promo:
                         ui.label(fmt_m(price_orig)).classes("text-sm line-through text-gray-400")
                         ui.label(fmt_m(pv)).classes("text-sm font-bold").style("color:#E24B4A")
@@ -246,22 +246,31 @@ def build_tab_promos(container) -> None:
                 for p in active_promos:
                     if not (p.get("name") or "").strip():
                         continue
-                    with ui.row().classes("items-center gap-1 mb-0.5"):
-                        ui.label("▶").classes("text-xs").style("color:#1B7A3E;font-size:10px")
-                        ui.label(p.get("name")).classes("text-xs text-gray-600")
+                    _mp = p.get("meli_percentage")
+                    _sp = p.get("seller_percentage")
+                    with ui.row().classes("items-center gap-1 mb-0.5 flex-wrap"):
+                        ui.label("▶").style("color:#1B7A3E;font-size:10px;line-height:1.2")
+                        ui.label(p.get("name")).classes("text-xs text-gray-600").style("line-height:1.2")
+                        if _mp is not None and _sp is not None:
+                            with ui.row().classes("items-center gap-0.5"):
+                                ui.label(f"ML {fmt_p1(_mp)}").style("font-size:11px;color:#1565c0;font-weight:500")
+                                ui.label("/").style("font-size:11px;color:#9e9e9e")
+                                ui.label(f"Yo {fmt_p1(_sp)}").style("font-size:11px;color:#E65100;font-weight:500")
+                        elif float(_mp or 0) == 0 and _sp is not None:
+                            ui.label("100% vendedor").style("font-size:11px;color:#E65100;font-weight:600")
                 # Candidatas/pendientes
                 for p in candidate_promos:
                     if not (p.get("name") or "").strip():
                         continue
                     with ui.row().classes("items-center gap-1 mb-0.5"):
                         ui.label("○").classes("text-xs text-gray-400").style("font-size:10px")
-                        ui.label(p.get("name")).classes("text-xs text-gray-400 italic")
+                        ui.label(p.get("name")).classes("text-xs text-gray-400 italic").style("line-height:1.2")
 
-                ui.separator().classes("my-1")
+                ui.separator().classes("my-0.5")
 
                 # Desglose de costos
-                with ui.column().classes("gap-0 w-full"):
-                    with ui.row().classes("w-full justify-between py-0.5"):
+                with ui.column().classes("gap-0.5 w-full"):
+                    with ui.row().classes("w-full justify-between py-0"):
                         with ui.row().classes("items-center gap-1"):
                             ui.html(ICO)
                             ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
@@ -271,7 +280,7 @@ def build_tab_promos(container) -> None:
                         ("Costo Cuotas", c["costo_cuotas"]),
                         ("IVA neto",     c["iva_total"]),
                     ]:
-                        with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("w-full justify-between py-0"):
                             with ui.row().classes("items-center gap-1"):
                                 ui.html(ICO)
                                 ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
@@ -292,30 +301,30 @@ def build_tab_promos(container) -> None:
                         ("IIBB ret.",          c["iibb"]),
                         ("Envío Flex/Correo",  c["envio"]),
                     ]:
-                        with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("w-full justify-between py-0"):
                             with ui.row().classes("items-center gap-1"):
                                 ui.html(ICO)
                                 ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
                             ui.label(fmt_m(val)).classes("text-xs text-negative")
                     if bonif_ml > 0:
-                        with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("w-full justify-between py-0"):
                             with ui.row().classes("items-center gap-1"):
                                 ui.html(ICO)
                                 ui.label("ML aporta").classes("text-xs font-medium text-gray-600")
                             ui.label("+" + fmt_m(bonif_ml)).classes("text-xs text-positive font-medium")
-                    ui.separator().classes("my-0.5")
+                    ui.separator().classes("my-0")
                     with ui.row().classes("w-full justify-between py-0.5"):
                         with ui.row().classes("items-center gap-1"):
                             ui.html(ICO)
                             ui.label("Costo producto").classes("text-xs font-medium text-gray-600")
                         ui.label(fmt_m(c["costo_pesos"])).classes("text-xs text-negative")
-                    ui.separator().classes("my-0.5")
+                    ui.separator().classes("my-0")
                     for lbl_t, val, isp in [
                         ("Gan $",     margen,       False),
                         ("Gan Vta %", c["mgvta"],   True),
                         ("Gan % Cos", c["mgcos"],   True),
                     ]:
-                        with ui.row().classes("w-full justify-between py-0.5"):
+                        with ui.row().classes("w-full justify-between py-0"):
                             with ui.row().classes("items-center gap-1"):
                                 ui.html(ICO)
                                 ui.label(lbl_t).classes("text-xs font-medium text-gray-600")
@@ -539,9 +548,9 @@ def build_tab_promos(container) -> None:
                     all_variants = with_promo + without_promo
                     groups = _group_by_fingerprint(all_variants)
                     with ui.element("div").style(
-                        "display:grid;grid-template-columns:repeat(4,1fr);gap:12px;width:100%;align-items:stretch"
+                        "display:grid;grid-template-columns:repeat(4,1fr);gap:8px;width:100%;align-items:stretch"
                     ):
-                        with ui.card().classes("w-full p-3 border border-gray-200"):
+                        with ui.card().classes("w-full p-2 border border-gray-200"):
                             # Datos del producto
                             with ui.row().classes("w-full gap-3 mb-2 items-start"):
                                 if thumb:
