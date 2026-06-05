@@ -1269,7 +1269,7 @@ def build_tab_ventas(container) -> None:
                     "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
                     "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
                     "envio_real": envio_real, "logistic_type": logistic_type, "net_rcv": net_rcv,
-                    "pay_status": "rejected" if is_rejected else None,
+                    "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
                     "_skip_overwrite": is_cancelled or has_refund_v,
                 }
 
@@ -1292,6 +1292,11 @@ def build_tab_ventas(container) -> None:
                                  rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date")),
                             )
+                            if rd.get("pay_status"):
+                                cur.execute(
+                                    "UPDATE ventas_datos SET pay_status=? WHERE payment_id=? AND user_id=? AND pay_status IS NULL",
+                                    (rd["pay_status"], rd["payment_id"], rd["user_id"])
+                                )
                         else:
                             cur.execute(
                                 "INSERT OR REPLACE INTO ventas_datos "
@@ -1319,11 +1324,16 @@ def build_tab_ventas(container) -> None:
                     for rd in rows:
                         cur.execute(
                             "INSERT OR IGNORE INTO ventas_datos "
-                            "(payment_id, user_id, order_id, fetched_at, order_date) "
-                            "VALUES (?,?,?,?,?)",
+                            "(payment_id, user_id, order_id, fetched_at, order_date, pay_status) "
+                            "VALUES (?,?,?,?,?,?)",
                             (rd["payment_id"], rd["user_id"], rd.get("order_id"),
-                             rd.get("fetched_at"), rd.get("order_date")),
+                             rd.get("fetched_at"), rd.get("order_date"), rd.get("pay_status")),
                         )
+                        if rd.get("pay_status"):
+                            cur.execute(
+                                "UPDATE ventas_datos SET pay_status=? WHERE payment_id=? AND user_id=? AND pay_status IS NULL",
+                                (rd["pay_status"], rd["payment_id"], rd["user_id"])
+                            )
                     conn.commit()
                 finally:
                     conn.close()
@@ -1374,19 +1384,23 @@ def build_tab_ventas(container) -> None:
                     bonif_flex_b = float((_senders_b[0].get("save") if _senders_b else 0) or 0)
                     pid = v["payment_id"]
                     if not pay_data:
+                        _v_sr_nodata = (v.get("status_raw") or "").lower()
                         placeholder_rows.append({
                             "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
                             "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                             "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
+                            "pay_status": "cancelled" if "cancel" in _v_sr_nodata else None,
                         })
                         continue
                     # CAMBIO 3: _compute en thread para no bloquear el event loop
                     calc = await run.io_bound(_compute, pay_data, v, zip_code_v, bonif_flex_b)
                     if not calc:
+                        _v_sr_nc = (v.get("status_raw") or "").lower()
                         placeholder_rows.append({
                             "payment_id": pid, "user_id": _uid, "order_id": v.get("order_id"),
                             "fetched_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                             "order_date": v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None,
+                            "pay_status": "cancelled" if "cancel" in _v_sr_nc else None,
                         })
                         continue
                     db_row = {
