@@ -534,8 +534,103 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                         if promo_d.get("seller_pct") is not None:
                                                             ui.label(f"% Vendedor: {promo_d['seller_pct']:.1f}%").style("color:#e65100")
                                                 ui.separator().classes("my-2")
-                                                with ui.row().classes("w-full justify-end"):
-                                                    ui.button("Cerrar", on_click=dlg.close).props("flat")
+                                                with ui.row().classes("w-full justify-end gap-2"):
+                                                    def _corregir_click(rr_c=r, d_c=dlg, af_c=_abrir_detalle) -> None:
+                                                        cl = context.client
+                                                        async def _do_corregir(client_=cl, rr2=rr_c, d2=d_c, af2=af_c) -> None:
+                                                            propia_p = rr2["propia"]["price"]
+                                                            if propia_p is None:
+                                                                with client_:
+                                                                    ui.notify("No hay precio de publicación propia.", color="warning")
+                                                                return
+                                                            try:
+                                                                propia_p = float(propia_p)
+                                                            except (TypeError, ValueError):
+                                                                with client_:
+                                                                    ui.notify("Precio propia inválido.", color="warning")
+                                                                return
+                                                            if propia_p == 0:
+                                                                with client_:
+                                                                    ui.notify("Precio propia es 0.", color="warning")
+                                                                return
+                                                            tasas = [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]
+                                                            to_correct = []
+                                                            for gkey, tasa in tasas:
+                                                                slot = rr2[gkey]
+                                                                iid = slot.get("id")
+                                                                cp = slot.get("price")
+                                                                if not iid or cp is None:
+                                                                    continue
+                                                                try:
+                                                                    cp = float(cp)
+                                                                except (TypeError, ValueError):
+                                                                    continue
+                                                                pc = round(propia_p * (1 + tasa))
+                                                                diff = (cp - propia_p) / propia_p * 100 - tasa * 100
+                                                                if abs(diff) <= 0.5:
+                                                                    continue
+                                                                to_correct.append((gkey, iid, cp, pc))
+                                                            if not to_correct:
+                                                                with client_:
+                                                                    ui.notify("Todas las variantes ya están correctas.", color="info")
+                                                                return
+                                                            promo_price_raw = rr2.get("promo", {}).get("price_promo")
+                                                            if promo_price_raw is not None:
+                                                                try:
+                                                                    promo_f = float(promo_price_raw)
+                                                                except (TypeError, ValueError):
+                                                                    promo_f = None
+                                                                if promo_f:
+                                                                    conflictos = [x for x in to_correct if x[3] < promo_f]
+                                                                    if conflictos:
+                                                                        confirmed_ev = asyncio.Event()
+                                                                        cancelled_ref = [False]
+                                                                        with client_:
+                                                                            conf_dlg = ui.dialog()
+                                                                            with conf_dlg:
+                                                                                with ui.card().classes("p-4 min-w-[320px]"):
+                                                                                    ui.label("Advertencia: promo activa").classes("text-base font-semibold mb-2")
+                                                                                    ui.label(
+                                                                                        f"{len(conflictos)} variante(s) quedarían con precio "
+                                                                                        f"menor al precio promo activo ({fmt_moneda(promo_f)}). "
+                                                                                        "Esto podría cancelar la promoción en ML."
+                                                                                    ).classes("text-sm text-gray-700 mb-3")
+                                                                                    with ui.row().classes("w-full justify-end gap-2"):
+                                                                                        def _conf_cancel(ev=confirmed_ev, cr=cancelled_ref, cd=conf_dlg) -> None:
+                                                                                            cr[0] = True; cd.close(); ev.set()
+                                                                                        def _conf_proceed(ev=confirmed_ev, cd=conf_dlg) -> None:
+                                                                                            cd.close(); ev.set()
+                                                                                        ui.button("Cancelar", on_click=_conf_cancel).props("flat")
+                                                                                        ui.button("Corregir igual", on_click=_conf_proceed).style(
+                                                                                            "background:#3B6D11;color:white;font-weight:600"
+                                                                                        ).props("no-caps")
+                                                                            conf_dlg.open()
+                                                                        await confirmed_ev.wait()
+                                                                        if cancelled_ref[0]:
+                                                                            return
+                                                            for gkey, iid, old_p, new_p in to_correct:
+                                                                try:
+                                                                    await run.io_bound(ml_update_item_price, access_token, iid, new_p)
+                                                                    rr2[gkey]["price"] = new_p
+                                                                    with client_:
+                                                                        ui.notify(
+                                                                            f"Corregido {iid} de {fmt_moneda(old_p)} a {fmt_moneda(new_p)}",
+                                                                            color="positive", timeout=4000,
+                                                                        )
+                                                                except Exception as err:
+                                                                    with client_:
+                                                                        ui.notify(f"Error al corregir {iid}: {err}", color="negative")
+                                                            with client_:
+                                                                _render(_sort_rows(filtrados_ref["val"]))
+                                                                d2.close()
+                                                                af2(rr2)
+                                                        background_tasks.create(_do_corregir())
+                                                    ui.button("Corregir", on_click=_corregir_click).style(
+                                                        "background:#3B6D11;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
+                                                    ).props("no-caps")
+                                                    ui.button("Cerrar", on_click=dlg.close).style(
+                                                        "background:#185FA5;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
+                                                    ).props("no-caps")
                                         dlg.open()
                                     ui.button(title_text, on_click=_abrir_detalle).props("flat dense align=left").style(
                                         "font-size:10px;padding:0 2px;min-height:0;text-transform:none;color:inherit;"
