@@ -7,7 +7,8 @@ from __future__ import annotations
 import asyncio
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+import calendar
+from datetime import date as _date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, context, run, ui
@@ -211,6 +212,18 @@ def build_tab_ventas(container) -> None:
             dias_map = {"hoy": 1, "dias_2": 2, "dias_3": 3, "dias_5": 5, "dias_7": 7, "dias_15": 15, "dias_21": 21, "dias_30": 30}
             if fecha_val in dias_map:
                 return hoy - timedelta(days=dias_map[fecha_val] - 1), hoy
+            if fecha_val.startswith("mes_") and fecha_val != "mes_actual":
+                try:
+                    n = int(fecha_val[4:])
+                    year, month = hoy.year, hoy.month
+                    for _ in range(n):
+                        month -= 1
+                        if month == 0:
+                            month = 12
+                            year -= 1
+                    return _date(year, month, 1), _date(year, month, calendar.monthrange(year, month)[1])
+                except (ValueError, IndexError):
+                    pass
             return primer_dia, hoy  # mes_actual y fallback
 
         def _aplicar_filtro_fecha() -> None:
@@ -1824,13 +1837,33 @@ def build_tab_ventas(container) -> None:
             filtro_controls.set_visibility(False)
             filtro_controls_ref.append(filtro_controls)
             with filtro_controls:
+                _meses_es = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                             "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+                _hoy_opts = datetime.now().date()
+                _oy, _om = _hoy_opts.year, _hoy_opts.month
+                _opciones_fecha = [
+                    {"label": "Hoy",             "value": "hoy"},
+                    {"label": "Últimos 2 días",  "value": "dias_2"},
+                    {"label": "Últimos 3 días",  "value": "dias_3"},
+                    {"label": "Últimos 5 días",  "value": "dias_5"},
+                    {"label": "Últimos 7 días",  "value": "dias_7"},
+                    {"label": "Últimos 15 días", "value": "dias_15"},
+                    {"label": "Últimos 21 días", "value": "dias_21"},
+                    {"label": "Últimos 30 días", "value": "dias_30"},
+                    {"label": "Mes actual",      "value": "mes_actual"},
+                    {"label": "────────────",    "value": "_sep", "disable": True},
+                ]
+                for _i in range(1, 4):
+                    _om -= 1
+                    if _om == 0:
+                        _om = 12
+                        _oy -= 1
+                    _opciones_fecha.append({"label": f"{_meses_es[_om - 1]} {_oy}", "value": f"mes_{_i}"})
                 filtro_fecha = ui.select(
-                    {"hoy": "Hoy", "dias_2": "Últimos 2 días", "dias_3": "Últimos 3 días",
-                     "dias_5": "Últimos 5 días", "dias_7": "Últimos 7 días", "dias_15": "Últimos 15 días",
-                     "dias_21": "Últimos 21 días", "dias_30": "Últimos 30 días", "mes_actual": "Mes actual"},
+                    _opciones_fecha,
                     value=filtro_fecha_ref.get("val", "hoy"),
                     label="Fecha",
-                ).classes("w-44").bind_value(filtro_fecha_ref, "val")
+                ).classes("w-48").bind_value(filtro_fecha_ref, "val")
                 filtro_fecha.on_value_change(lambda: _aplicar_filtro_fecha())
                 filtro_publicacion = ui.select(
                     {"todas": "Todas", "propias": "Propias", "catalogo": "Catálogo"},
