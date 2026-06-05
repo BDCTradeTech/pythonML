@@ -447,7 +447,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                                     with ui.element("thead"):
                                                         with ui.element("tr"):
-                                                            for _h in ["Tipo", "ID", "Precio", "% vs Propia"]:
+                                                            for _h in ["Tipo", "ID", "Precio", "% vs Propia", "Recomendada"]:
                                                                 with ui.element("th").style("padding:4px 8px;background:#1976d2;color:white;text-align:left;font-weight:600"):
                                                                     ui.label(_h)
                                                     with ui.element("tbody"):
@@ -521,6 +521,16 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                             ui.label(f"+{_pct:.1f}%").style("color:#43a047;font-weight:500")
                                                                         else:
                                                                             ui.label(f"{_pct:.1f}%").style("color:#e53935;font-weight:500")
+                                                                    else:
+                                                                        ui.label("—").classes("text-gray-400")
+                                                                with ui.element("td").style("padding:3px 8px;text-align:right"):
+                                                                    _tasa_map = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}
+                                                                    if _sk in _tasa_map and _pp is not None:
+                                                                        try:
+                                                                            _rec = round(float(_pp) * (1 + _tasa_map[_sk]))
+                                                                            ui.label(fmt_moneda(_rec)).style("font-weight:500")
+                                                                        except (TypeError, ValueError):
+                                                                            ui.label("—").classes("text-gray-400")
                                                                     else:
                                                                         ui.label("—").classes("text-gray-400")
                                                 promo_d = r.get("promo", {})
@@ -623,10 +633,9 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                             with client_:
                                                                 _render(_sort_rows(filtrados_ref["val"]))
                                                                 d2.close()
-                                                                af2(rr2)
                                                         background_tasks.create(_do_corregir())
                                                     ui.button("Corregir", on_click=_corregir_click).style(
-                                                        "background:#3B6D11;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
+                                                        "background:#BA7517;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
                                                     ).props("no-caps")
                                                     ui.button("Cerrar", on_click=dlg.close).style(
                                                         "background:#185FA5;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
