@@ -333,6 +333,7 @@ def _show_item_detail_dialog(
                     await run.io_bound(_save_db)
                     if revisiones_hoy is not None:
                         revisiones_hoy[sku_grd] = True
+                found_item = None
                 for it in items_loaded:
                     if str(it.get("id")) == item_id:
                         it["precio"]    = nuevo_precio
@@ -340,7 +341,7 @@ def _show_item_detail_dialog(
                         it["tipo_iva"]  = nuevo_tipo_iva
                         it["costo"]     = nuevo_costo
                         it["costo_usd"] = nuevo_costo
-                        it["fob_usd"] = nuevo_fob
+                        it["fob_usd"]   = nuevo_fob
                         tiene_promo = it.get("price_original") is not None and it.get("promo_yo_pct") is not None
                         pc2 = nuevo_precio
                         if tiene_promo:
@@ -363,9 +364,12 @@ def _show_item_detail_dialog(
                                    "iva_total": it2, "iva_meli": im2, "iva_impor": ii2,
                                    "deb_cred": deb2, "iibb": iibb2, "envio": env2,
                                    "margen_pesos": mg2, "margen_costo_pct": mc2, "margen_venta_pct": mv2})
+                        found_item = it
                         break
                 with cl:
-                    if on_saved:
+                    if found_item is not None:
+                        _actualizar_fila(sku_grd, found_item)
+                    elif on_saved:
                         on_saved()
                     ui.notify("Precio actualizado correctamente.", color="positive")
             except Exception as e:
@@ -1254,6 +1258,7 @@ def _mostrar_tabla_precios(
         d.open()
 
     current_filtrados: List[Dict[str, Any]] = []
+    row_refs: dict = {}
     todos_items_ref: List[Dict[str, Any]] = list(items_loaded)
     seller_id_ref: str = str(data.get("seller_id") or "")
     current_table: List[Any] = []
@@ -2213,6 +2218,133 @@ def _mostrar_tabla_precios(
             for col in columns_precios:
                 ui.element("col").style(f"width:{_col_w.get(col['name'], '80px')}")
 
+    def _render_row_cells(row: dict) -> None:
+        for col in columns_precios:
+            field = col.get("field", col["name"])
+            val = row.get(field)
+            if val is None:
+                val = row.get(col["name"])
+            if col["name"] == "title":
+                align = "text-left"
+            else:
+                align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
+            if col["name"] in ("title", "seller_sku"):
+                _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
+            else:
+                _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs")
+            with _td_el:
+                if col["name"] == "fob_usd":
+                    _fob_val = row.get("fob_usd")
+                    _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "—"
+                    ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                elif col["name"] == "costo_usd":
+                    _costo_val = row.get("costo_usd")
+                    _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "—"
+                    ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                elif col["name"] == "tipo_iva":
+                    _iva_val = row.get("tipo_iva") or 0.105
+                    _iva_lbl = "21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%"
+                    ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                elif col["name"] == "catalog_pos":
+                    cs = row.get("catalog_status")
+                    if cs == "winning":
+                        ui.label("Ganando").style("color:#27500A;font-size:11px;font-weight:500")
+                    elif cs == "sharing_first_place":
+                        ui.label("Empatando").style("color:#0C447C;font-size:11px;font-weight:500")
+                    elif cs == "competing":
+                        ui.label("Perdiendo").style("color:#791F1F;font-size:11px;font-weight:500")
+                    elif cs == "listed":
+                        ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
+                elif col["name"] == "catalog_price_to_win":
+                    ptw = row.get("catalog_price_to_win")
+                    ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
+                elif col["name"] == "title":
+                    _ttxt = str(val or "—")
+                    if row.get("tipo") in ("Propia", "Prop Comb"):
+                        ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
+                    elif row.get("tipo") == "Catalogo":
+                        ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-700 cursor-pointer hover:underline font-normal w-full")
+                    else:
+                        ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
+                elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
+                    pp = row.get("price_promo")
+                    if pp is not None:
+                        ui.button(fmt_moneda(pp), on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium hover:underline").style("color:#E24B4A")
+                    else:
+                        precio_str = fmt_moneda(val) if val is not None else "$0"
+                        ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                elif col["name"] == "price":
+                    pp = row.get("price_promo")
+                    if pp is not None:
+                        ui.label(fmt_moneda(pp)).style("color:#E24B4A")
+                    else:
+                        ui.label(fmt_moneda(val) if val is not None else "$0")
+                elif col["name"] == "promo":
+                    if row.get("has_promo"):
+                        ui.html('<i class="ti ti-discount-2" style="font-size:16px;color:#E24B4A"></i>')
+                    else:
+                        ui.label("—").classes("text-gray-400 text-xs")
+                elif col["name"] == "margen_pesos":
+                    v = row.get("margen_pesos")
+                    if v is None:
+                        ui.label("—").classes("text-gray-400 text-xs")
+                    else:
+                        ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
+                elif col["name"] == "margen_venta_pct":
+                    v = row.get("margen_venta_pct")
+                    if v is None:
+                        ui.label("—").classes("text-gray-400 text-xs")
+                    else:
+                        ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
+                elif col["name"] in ("available_quantity", "sold_quantity"):
+                    ui.label(fmt_miles(val) if val is not None else "0").classes("text-center")
+                elif col["name"] == "subtotal":
+                    ui.label(fmt_moneda(val) if val is not None else "$0")
+                elif col["name"] == "seller_sku":
+                    ui.label(str(val) if val else "-").classes("text-xs")
+                elif col["name"] == "status":
+                    s = str(val or "").lower()
+                    if s == "active":
+                        ui.label("Activa").classes("text-center")
+                    else:
+                        ui.label("Pausada").classes("text-center text-red-500")
+                elif col["name"] == "quality_score":
+                    qs = row.get("quality_score")
+                    if qs is None:
+                        ui.label("—").classes("text-gray-400 text-center w-full")
+                    else:
+                        qs_i = int(qs)
+                        _filled = round(qs_i / 20)
+                        if qs_i >= 65:
+                            _cs, _cm, _ce, _cn = "#639922", "#C0DD97", "#EAF3DE", "#27500A"
+                        elif qs_i >= 50:
+                            _cs, _cm, _ce, _cn = "#EF9F27", "#FAC775", "#FAEEDA", "#633806"
+                        else:
+                            _cs, _cm, _ce, _cn = "#E24B4A", "#F09595", "#FCEBEB", "#791F1F"
+                        with ui.element("div").style("display:flex;align-items:center;gap:4px;width:100%"):
+                            with ui.element("div").style("display:flex;gap:2px;flex:1"):
+                                for _si in range(5):
+                                    if _si >= _filled:
+                                        _sc = _ce
+                                    elif _si == _filled - 1 and qs_i % 20 != 0:
+                                        _sc = _cm
+                                    else:
+                                        _sc = _cs
+                                    ui.element("div").style(f"height:8px;border-radius:1px;flex:1;background:{_sc}")
+                            ui.label(str(qs_i)).style(f"font-size:11px;font-weight:500;color:{_cn};min-width:20px;text-align:right")
+                elif col["name"] == "dias_sin_modificar":
+                    _dias = row.get("dias_sin_modificar")
+                    if _dias is None:
+                        ui.label("—").classes("text-gray-400 text-center")
+                    elif _dias == 0:
+                        ui.label("hoy").classes("text-positive font-medium text-center")
+                    elif _dias <= 7:
+                        ui.label(str(_dias)).classes("text-orange-500 font-medium text-center")
+                    else:
+                        ui.label(str(_dias)).classes("text-negative font-medium text-center")
+                else:
+                    ui.label(str(val) if val is not None and str(val) != "''" else "—")
+
     def filtrar_y_pintar() -> None:
         filtrados = list(items_loaded)
         stock_val = getattr(filtro_stock, "value", "con_stock")
@@ -2286,149 +2418,26 @@ def _mostrar_tabla_precios(
                                     ui.button(col["label"], on_click=lambda c=col_name: _on_sort_click(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
                                 else:
                                     ui.label(col["label"])
+        row_refs.clear()
         table_container.clear()
         with table_container:
             with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
                 _build_colgroup_precios()
                 with ui.element("tbody"):
                     for row in filtrados:
-                            _sku_key = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
-                            _precio_ok_r = revisiones_hoy.get(_sku_key, False)
-                            _revisado_r  = _sku_key in revisiones_hoy
-                            if _precio_ok_r:
-                                _row_bg = "bg-green-50"
-                            elif _revisado_r:
-                                _row_bg = "bg-yellow-50"
-                            else:
-                                _row_bg = ""
-                            with ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}"):
-                                for col in columns_precios:
-                                    field = col.get("field", col["name"])
-                                    val = row.get(field)
-                                    if val is None:
-                                        val = row.get(col["name"])
-                                    if col["name"] == "title":
-                                        align = "text-left"
-                                    else:
-                                        align = "text-right" if col.get("align") == "right" else "text-center" if col.get("align") == "center" else "text-left"
-                                    if col["name"] == "title":
-                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
-                                    elif col["name"] == "seller_sku":
-                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0")
-                                    else:
-                                        _td_el = ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs")
-                                    with _td_el:
-                                        if col["name"] == "fob_usd":
-                                            _fob_val = row.get("fob_usd")
-                                            _fob_str = f"{_fob_val:.2f}" if _fob_val is not None else "—"
-                                            ui.button(_fob_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
-                                        elif col["name"] == "costo_usd":
-                                            _costo_val = row.get("costo_usd")
-                                            _costo_str = f"{_costo_val:.2f}" if _costo_val is not None else "—"
-                                            ui.button(_costo_str, on_click=lambda r=row: abrir_editar_fob_costo(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
-                                        elif col["name"] == "tipo_iva":
-                                            _iva_val = row.get("tipo_iva") or 0.105
-                                            _iva_lbl = "21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%"
-                                            ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
-                                        elif col["name"] == "catalog_pos":
-                                            cs = row.get("catalog_status")
-                                            if cs == "winning":
-                                                ui.label("Ganando").style("color:#27500A;font-size:11px;font-weight:500")
-                                            elif cs == "sharing_first_place":
-                                                ui.label("Empatando").style("color:#0C447C;font-size:11px;font-weight:500")
-                                            elif cs == "competing":
-                                                ui.label("Perdiendo").style("color:#791F1F;font-size:11px;font-weight:500")
-                                            elif cs == "listed":
-                                                ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
-                                        elif col["name"] == "catalog_price_to_win":
-                                            ptw = row.get("catalog_price_to_win")
-                                            ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
-                                        elif col["name"] == "title":
-                                            _ttxt = str(val or "—")
-                                            if row.get("tipo") in ("Propia", "Prop Comb"):
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _on_detalle_click(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-primary cursor-pointer hover:underline font-normal w-full")
-                                            elif row.get("tipo") == "Catalogo":
-                                                ui.button(_ttxt[:80], on_click=lambda r=row: _abrir_detalle_catalogo(r)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-700 cursor-pointer hover:underline font-normal w-full")
-                                            else:
-                                                ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
-                                        elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
-                                            pp = row.get("price_promo")
-                                            if pp is not None:
-                                                ui.button(fmt_moneda(pp), on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium hover:underline").style("color:#E24B4A")
-                                            else:
-                                                precio_str = fmt_moneda(val) if val is not None else "$0"
-                                                ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
-                                        elif col["name"] == "price":
-                                            pp = row.get("price_promo")
-                                            if pp is not None:
-                                                ui.label(fmt_moneda(pp)).style("color:#E24B4A")
-                                            else:
-                                                ui.label(fmt_moneda(val) if val is not None else "$0")
-                                        elif col["name"] == "promo":
-                                            if row.get("has_promo"):
-                                                ui.html('<i class="ti ti-discount-2" style="font-size:16px;color:#E24B4A"></i>')
-                                            else:
-                                                ui.label("—").classes("text-gray-400 text-xs")
-                                        elif col["name"] == "margen_pesos":
-                                            v = row.get("margen_pesos")
-                                            if v is None:
-                                                ui.label("—").classes("text-gray-400 text-xs")
-                                            else:
-                                                ui.label(fmt_moneda(v)).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
-                                        elif col["name"] == "margen_venta_pct":
-                                            v = row.get("margen_venta_pct")
-                                            if v is None:
-                                                ui.label("—").classes("text-gray-400 text-xs")
-                                            else:
-                                                ui.label(f"{v:.1f}%".replace(".", ",")).classes("font-medium " + ("text-positive" if v > 0 else "text-negative"))
-                                        elif col["name"] in ("available_quantity", "sold_quantity"):
-                                            ui.label(fmt_miles(val) if val is not None else "0").classes("text-center")
-                                        elif col["name"] == "subtotal":
-                                            ui.label(fmt_moneda(val) if val is not None else "$0")
-                                        elif col["name"] == "seller_sku":
-                                            ui.label(str(val) if val else "-").classes("text-xs")
-                                        elif col["name"] == "status":
-                                            s = str(val or "").lower()
-                                            if s == "active":
-                                                ui.label("Activa").classes("text-center")
-                                            else:
-                                                ui.label("Pausada").classes("text-center text-red-500")
-                                        elif col["name"] == "quality_score":
-                                            qs = row.get("quality_score")
-                                            if qs is None:
-                                                ui.label("—").classes("text-gray-400 text-center w-full")
-                                            else:
-                                                qs_i = int(qs)
-                                                _filled = round(qs_i / 20)
-                                                if qs_i >= 65:
-                                                    _cs, _cm, _ce, _cn = "#639922", "#C0DD97", "#EAF3DE", "#27500A"
-                                                elif qs_i >= 50:
-                                                    _cs, _cm, _ce, _cn = "#EF9F27", "#FAC775", "#FAEEDA", "#633806"
-                                                else:
-                                                    _cs, _cm, _ce, _cn = "#E24B4A", "#F09595", "#FCEBEB", "#791F1F"
-                                                with ui.element("div").style("display:flex;align-items:center;gap:4px;width:100%"):
-                                                    with ui.element("div").style("display:flex;gap:2px;flex:1"):
-                                                        for _si in range(5):
-                                                            if _si >= _filled:
-                                                                _sc = _ce
-                                                            elif _si == _filled - 1 and qs_i % 20 != 0:
-                                                                _sc = _cm
-                                                            else:
-                                                                _sc = _cs
-                                                            ui.element("div").style(f"height:8px;border-radius:1px;flex:1;background:{_sc}")
-                                                    ui.label(str(qs_i)).style(f"font-size:11px;font-weight:500;color:{_cn};min-width:20px;text-align:right")
-                                        elif col["name"] == "dias_sin_modificar":
-                                            _dias = row.get("dias_sin_modificar")
-                                            if _dias is None:
-                                                ui.label("—").classes("text-gray-400 text-center")
-                                            elif _dias == 0:
-                                                ui.label("hoy").classes("text-positive font-medium text-center")
-                                            elif _dias <= 7:
-                                                ui.label(str(_dias)).classes("text-orange-500 font-medium text-center")
-                                            else:
-                                                ui.label(str(_dias)).classes("text-negative font-medium text-center")
-                                        else:
-                                            ui.label(str(val) if val is not None and str(val) != "''" else "—")
+                        _sku_key = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+                        _precio_ok_r = revisiones_hoy.get(_sku_key, False)
+                        _revisado_r  = _sku_key in revisiones_hoy
+                        if _precio_ok_r:
+                            _row_bg = "bg-green-50"
+                        elif _revisado_r:
+                            _row_bg = "bg-yellow-50"
+                        else:
+                            _row_bg = ""
+                        _tr_el = ui.element("tr").classes(f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}")
+                        row_refs[_sku_key] = _tr_el
+                        with _tr_el:
+                            _render_row_cells(row)
             async def _recalc_padding() -> None:
                 await ui.run_javascript(
                     f"(function(){{"
@@ -2439,6 +2448,41 @@ def _mostrar_tabla_precios(
                 )
             background_tasks.create(_recalc_padding())
             current_table.clear()
+
+    def _actualizar_fila(sku_key: str, row_data: dict) -> None:
+        tr_el = row_refs.get(sku_key)
+        if tr_el is None:
+            filtrar_y_pintar()
+            return
+        _precio_ok_r = revisiones_hoy.get(sku_key, False)
+        _revisado_r  = sku_key in revisiones_hoy
+        if _precio_ok_r:
+            _row_bg = "bg-green-50"
+        elif _revisado_r:
+            _row_bg = "bg-yellow-50"
+        else:
+            _row_bg = ""
+        tr_el.classes(replace=f"border-t border-gray-200 hover:bg-gray-50 {_row_bg}")
+        tr_el.clear()
+        with tr_el:
+            _render_row_cells(row_data)
+        filtrados = current_filtrados
+        lbl_totales.set_text(str(len(filtrados)))
+        lbl_unidades.set_text(fmt_miles(sum(x.get("available_quantity") or 0 for x in filtrados if x.get("tipo") == "Propia")))
+        _costo_final_usd = sum(
+            float(x.get("costo_usd") or 0) * (1 + float(x.get("tipo_iva") or 0)) * float(x.get("available_quantity") or 0)
+            for x in filtrados if x.get("tipo") == "Propia"
+        )
+        _costo_final_pesos = _costo_final_usd * dolar_oficial if dolar_oficial else 0.0
+        lbl_pesos.set_text(fmt_moneda(_costo_final_pesos))
+        lbl_usd.set_text(f"u$s {fmt_miles(int(round(_costo_final_usd)))}")
+        lbl_marcas.set_text(str(len({
+            str(x.get("marca") or "").strip()
+            for x in filtrados
+            if x.get("tipo") == "Propia"
+            and str(x.get("marca") or "").strip()
+            and str(x.get("marca") or "").strip() != "''"
+        })))
 
     def _blanquear_revisiones():
         revisiones_hoy.clear()
