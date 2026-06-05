@@ -348,6 +348,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                 ui.element("col").style("width:4%")
                 ui.element("col").style("width:10%")
                 ui.element("col").style("width:20%")
+                ui.element("col").style("width:2%")
                 ui.element("col").style("width:3%")
                 ui.element("col").style("width:2%")
                 ui.element("col").style("width:2%")
@@ -378,6 +379,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 ui.label("SKU" + _ind("seller_sku"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:20%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:2%;text-align:center"):
+                                ui.label("Fix")
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
                             with ui.element("th").props('colspan="3"').style(f"{TH_HDR1};border-left:2px solid {PROMO_BORDER};text-align:center"):
@@ -635,7 +638,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                 d2.close()
                                                         background_tasks.create(_do_corregir())
                                                     ui.button("Corregir", on_click=_corregir_click).style(
-                                                        "background:#BA7517;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
+                                                        "background:#3B6D11;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
                                                     ).props("no-caps")
                                                     ui.button("Cerrar", on_click=dlg.close).style(
                                                         "background:#185FA5;color:white;font-weight:600;border-radius:4px;padding:4px 12px"
@@ -645,6 +648,69 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         "font-size:10px;padding:0 2px;min-height:0;text-transform:none;color:inherit;"
                                         "font-weight:normal;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left"
                                     )
+                                with ui.element("td").style(f"{TD_BASE};text-align:center;padding:2px"):
+                                    _propia_p_fix = row["propia"]["price"]
+                                    _needs_fix = False
+                                    if _propia_p_fix is not None:
+                                        try:
+                                            _propia_f = float(_propia_p_fix)
+                                        except (TypeError, ValueError):
+                                            _propia_f = 0.0
+                                        if _propia_f != 0:
+                                            for _gk_f, _tasa_f in [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]:
+                                                _cp_f = row[_gk_f]["price"]
+                                                if _cp_f is not None:
+                                                    try:
+                                                        _diff_f = (float(_cp_f) - _propia_f) / _propia_f * 100 - _tasa_f * 100
+                                                        if abs(_diff_f) > 0.5:
+                                                            _needs_fix = True
+                                                            break
+                                                    except (TypeError, ValueError):
+                                                        pass
+                                    if _needs_fix:
+                                        def _fix_click(r_fix=row) -> None:
+                                            cl = context.client
+                                            async def _do_fix(client_=cl, rr=r_fix) -> None:
+                                                _pp = rr["propia"]["price"]
+                                                if _pp is None or float(_pp) == 0:
+                                                    with client_:
+                                                        ui.notify("No hay precio de publicación propia.", color="warning")
+                                                    return
+                                                _pp = float(_pp)
+                                                _to_fix = []
+                                                for _gk, _tasa in [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]:
+                                                    _sl = rr[_gk]
+                                                    _iid = _sl.get("id")
+                                                    _cp = _sl.get("price")
+                                                    if not _iid or _cp is None:
+                                                        continue
+                                                    try:
+                                                        _cp = float(_cp)
+                                                    except (TypeError, ValueError):
+                                                        continue
+                                                    _pc = round(_pp * (1 + _tasa))
+                                                    if abs((_cp - _pp) / _pp * 100 - _tasa * 100) <= 0.5:
+                                                        continue
+                                                    _to_fix.append((_gk, _iid, _cp, _pc))
+                                                if not _to_fix:
+                                                    with client_:
+                                                        ui.notify("Todas las variantes ya están correctas.", color="info")
+                                                    return
+                                                for _gk, _iid, _old, _new in _to_fix:
+                                                    try:
+                                                        await run.io_bound(ml_update_item_price, access_token, _iid, _new)
+                                                        rr[_gk]["price"] = _new
+                                                        with client_:
+                                                            ui.notify(f"Corregido {_iid}: {fmt_moneda(_old)} → {fmt_moneda(_new)}", color="positive", timeout=4000)
+                                                    except Exception as _err:
+                                                        with client_:
+                                                            ui.notify(f"Error al corregir {_iid}: {_err}", color="negative")
+                                                with client_:
+                                                    _render(_sort_rows(filtrados_ref["val"]))
+                                            background_tasks.create(_do_fix())
+                                        ui.icon("ti-tool").style("color:#BA7517;font-size:16px;cursor:pointer").on("click", _fix_click)
+                                    else:
+                                        ui.label("—").classes("text-gray-400 text-xs")
                                 with ui.element("td").style(f"{TD_BASE};text-align:center"):
                                     sv = row.get("stock")
                                     ui.label(str(sv) if sv is not None else "")
