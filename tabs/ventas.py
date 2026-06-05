@@ -1841,24 +1841,23 @@ def build_tab_ventas(container) -> None:
                              "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
                 _hoy_opts = datetime.now().date()
                 _oy, _om = _hoy_opts.year, _hoy_opts.month
-                _opciones_fecha = [
-                    {"label": "Hoy",             "value": "hoy"},
-                    {"label": "Últimos 2 días",  "value": "dias_2"},
-                    {"label": "Últimos 3 días",  "value": "dias_3"},
-                    {"label": "Últimos 5 días",  "value": "dias_5"},
-                    {"label": "Últimos 7 días",  "value": "dias_7"},
-                    {"label": "Últimos 15 días", "value": "dias_15"},
-                    {"label": "Últimos 21 días", "value": "dias_21"},
-                    {"label": "Últimos 30 días", "value": "dias_30"},
-                    {"label": "Mes actual",      "value": "mes_actual"},
-                    {"label": "────────────",    "value": "_sep", "disable": True},
-                ]
+                _opciones_fecha = {
+                    "Hoy": "hoy",
+                    "Últimos 2 días": "dias_2",
+                    "Últimos 3 días": "dias_3",
+                    "Últimos 5 días": "dias_5",
+                    "Últimos 7 días": "dias_7",
+                    "Últimos 15 días": "dias_15",
+                    "Últimos 21 días": "dias_21",
+                    "Últimos 30 días": "dias_30",
+                    "Mes actual": "mes_actual",
+                }
                 for _i in range(1, 4):
                     _om -= 1
                     if _om == 0:
                         _om = 12
                         _oy -= 1
-                    _opciones_fecha.append({"label": f"{_meses_es[_om - 1]} {_oy}", "value": f"mes_{_i}"})
+                    _opciones_fecha[f"{_meses_es[_om - 1]} {_oy}"] = f"mes_{_i}"
                 filtro_fecha = ui.select(
                     _opciones_fecha,
                     value=filtro_fecha_ref.get("val", "hoy"),
