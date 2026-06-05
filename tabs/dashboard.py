@@ -163,7 +163,7 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
         cur = conn.cursor()
         cur.execute(
             "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos IS NULL"
-            " AND (pay_status IS NULL OR pay_status != 'rejected') AND COALESCE(order_date, fetched_at) >= ?",
+            " AND (pay_status IS NULL OR (pay_status NOT IN ('rejected', 'cancelled'))) AND COALESCE(order_date, fetched_at) >= ?",
             (user_id, desde))
         sin_revisar = cur.fetchone()[0]
         cur.execute(
@@ -501,7 +501,7 @@ def _detail_sin_revisar(user_id: int, desde: str) -> List[Dict]:
             "SELECT order_id, payment_id, fetched_at"
             " FROM ventas_datos"
             " WHERE user_id=? AND gan_pesos IS NULL"
-            " AND (pay_status IS NULL OR pay_status != 'rejected') AND COALESCE(order_date, fetched_at) >= ?"
+            " AND (pay_status IS NULL OR (pay_status NOT IN ('rejected', 'cancelled'))) AND COALESCE(order_date, fetched_at) >= ?"
             " ORDER BY COALESCE(order_date, fetched_at) DESC",
             (user_id, desde))
         return [dict(r) for r in cur.fetchall()]
