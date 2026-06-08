@@ -639,14 +639,13 @@ def build_tab_promos(container) -> None:
                         try:    return _dt.fromisoformat(d.replace("Z", "+00:00")).strftime("%d/%m")
                         except: return d[:5] if len(d) >= 5 else d
 
-                    table_rows = []
+                    _prelim = []
                     for row in rows:
                         rep_it = row["rep_it"] or {}
                         cand   = row["best"]
                         mlas   = sorted(row["mlas"])
                         sku    = (rep_it.get("seller_sku") or "").strip()
                         title  = (rep_it.get("title") or cand["item_id"])[:60]
-                        # Cambio 3: precio más barato (gold_special/x1), no cuotas
                         rep_id_str = str(rep_it.get("id") or "")
                         _all_vars  = grps_by_rep.get(rep_id_str, [rep_it])
                         _gs = next(
@@ -654,32 +653,68 @@ def build_tab_promos(container) -> None:
                             None,
                         )
                         if _gs:
-                            p_act = float(_gs.get("price") or 0)
+                            p_act      = float(_gs.get("price") or 0)
+                            gs_item_id = str(_gs.get("id") or "")
                         else:
-                            _prices = [float(v.get("price") or 0) for v in _all_vars if float(v.get("price") or 0) > 0]
-                            p_act = min(_prices) if _prices else float(rep_it.get("price") or 0)
+                            _pvs = [(float(v.get("price") or 0), v) for v in _all_vars if float(v.get("price") or 0) > 0]
+                            if _pvs:
+                                p_act, _cv = min(_pvs, key=lambda x: x[0])
+                                gs_item_id = str(_cv.get("id") or "")
+                            else:
+                                p_act      = float(rep_it.get("price") or 0)
+                                gs_item_id = rep_id_str
                         if not sku or p_act <= 0:
                             continue
-                        stock  = int(rep_it.get("available_quantity") or 0)
-                        p_sug  = float(cand.get("price") or 0)
-                        p_orig = float(cand.get("original_price") or p_act or 0)
-                        desc   = round((p_orig - p_sug) / p_orig * 100, 1) if p_orig > 0 and p_sug > 0 else 0
                         sd = _fdate(cand.get("start_date") or "")
                         fd = _fdate(cand.get("finish_date") or "")
+                        _prelim.append({
+                            "sku":         sku,
+                            "mlas":        mlas,
+                            "producto":    title,
+                            "precio_act":  p_act,
+                            "stock":       int(rep_it.get("available_quantity") or 0),
+                            "gs_item_id":  gs_item_id,
+                            "smart_price": float(cand.get("price") or 0),
+                            "promo":       cand.get("promo_name") or "",
+                            "vigencia":    f"{sd} — {fd}" if (sd or fd) else "",
+                            "meli_pct":    cand["meli_pct"],
+                            "seller_pct":  cand["seller_pct"],
+                        })
+
+                    _sp_data = await asyncio.gather(*[
+                        run.io_bound(ml_get_seller_promotions_item, access_token, pr["gs_item_id"])
+                        for pr in _prelim
+                    ])
+
+                    table_rows = []
+                    for pr, sp_list in zip(_prelim, _sp_data):
+                        smart_p = pr["smart_price"]
+                        disc_p  = 0.0
+                        for _p in (sp_list or []):
+                            _ptype = str(_p.get("type") or "").upper()
+                            if _ptype == "SMART":
+                                _v = float(_p.get("price") or 0)
+                                if _v > 0 and _v > smart_p:
+                                    smart_p = _v
+                            elif _ptype in ("PRICE_DISCOUNT", "DEAL"):
+                                _v = float(_p.get("suggested_discounted_price") or 0)
+                                if _v > 0:
+                                    disc_p = max(disc_p, _v)
+                        _vals     = [v for v in (smart_p, disc_p) if v > 0]
+                        precio_ml = max(_vals) if _vals else 0.0
                         table_rows.append({
                             "_idx":       len(table_rows),
-                            "sku":        sku,
-                            "mlas":       mlas,
-                            "producto":   title,
-                            "precio_act": p_act,
-                            "stock":      stock,
-                            "precio_rec": round(p_sug * 1.8) if p_sug > 0 else 0,
-                            "promo":      cand.get("promo_name") or "",
-                            "vigencia":   f"{sd} — {fd}" if (sd or fd) else "",
-                            "meli_pct":   cand["meli_pct"],
-                            "seller_pct": cand["seller_pct"],
-                            "precio_sug": p_sug,
-                            "desc_total": desc,
+                            "sku":        pr["sku"],
+                            "mlas":       pr["mlas"],
+                            "producto":   pr["producto"],
+                            "precio_act": pr["precio_act"],
+                            "stock":      pr["stock"],
+                            "precio_ml":  precio_ml,
+                            "precio_rec": round(precio_ml * 1.8) if precio_ml > 0 else 0,
+                            "promo":      pr["promo"],
+                            "vigencia":   pr["vigencia"],
+                            "meli_pct":   pr["meli_pct"],
+                            "seller_pct": pr["seller_pct"],
                         })
 
                     # ── MLA dialog ──────────────────────────────────────────
@@ -693,7 +728,7 @@ def build_tab_promos(container) -> None:
 
                     # ── Sort state ──────────────────────────────────────────
                     _sort_state = {"col": None, "asc": True}
-                    _NUMERIC    = {"precio_act", "precio_rec", "stock", "meli_pct", "seller_pct", "precio_sug", "desc_total"}
+                    _NUMERIC    = {"precio_act", "precio_ml", "precio_rec", "stock", "meli_pct", "seller_pct"}
 
                     _TH = (
                         "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
@@ -703,18 +738,17 @@ def build_tab_promos(container) -> None:
                     _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
 
                     _col_defs = [
-                        ("SKU",          "sku",        "7%",  "left"),
-                        ("MLA",          "mla",        "8%",  "left"),
-                        ("Producto",     "producto",   "19%", "left"),
-                        ("Stock",        "stock",      "4%",  "center"),
-                        ("Precio",       "precio_act", "7%",  "right"),
-                        ("Recomendada",  "precio_rec", "8%",  "right"),
-                        ("Dto%",         "desc_total", "6%",  "right"),
-                        ("P.Sug.",       "precio_sug", "7%",  "right"),
-                        ("ML%",          "meli_pct",   "5%",  "right"),
-                        ("Yo%",          "seller_pct", "5%",  "right"),
-                        ("Promo",        "promo",      "10%", "left"),
-                        ("Vigencia",     "vigencia",   "10%", "center"),
+                        ("SKU",         "sku",        "7%",  "left"),
+                        ("MLA",         "mla",        "8%",  "left"),
+                        ("Producto",    "producto",   "20%", "left"),
+                        ("Stock",       "stock",      "4%",  "center"),
+                        ("Precio",      "precio_act", "8%",  "right"),
+                        ("Precio ML",   "precio_ml",  "8%",  "right"),
+                        ("Recomendado", "precio_rec", "9%",  "right"),
+                        ("ML%",         "meli_pct",   "5%",  "right"),
+                        ("Yo%",         "seller_pct", "5%",  "right"),
+                        ("Promo",       "promo",      "10%", "left"),
+                        ("Vigencia",    "vigencia",   "10%", "center"),
                     ]
 
                     def _pesos(v: float) -> str:
@@ -765,12 +799,11 @@ def build_tab_promos(container) -> None:
                         _trows = []
                         for _i, _r in enumerate(_sorted_rows()):
                             _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
-                            _dto = f"{_r['desc_total']:.1f}%" if _r["desc_total"] > 0 else "—"
 
                             _mlas      = _r["mlas"]
                             _first_mla = _mlas[0] if _mlas else "—"
                             if len(_mlas) > 1:
-                                _oc2      = f"getElement({eid}).emit('show_mlas',{_r['_idx']})"
+                                _oc2      = f"getElement({eid}).emit('show_mlas','{_r['_idx']}')"
                                 _mla_cell = (
                                     f'<span style="color:#1565c0;text-decoration:underline;cursor:pointer" '
                                     f'onclick="{_html_esc.escape(_oc2)}">'
@@ -781,6 +814,7 @@ def build_tab_promos(container) -> None:
                             else:
                                 _mla_cell = _html_esc.escape(_first_mla)
 
+                            _pml     = _r.get("precio_ml", 0)
                             _rec     = _r.get("precio_rec", 0)
                             _rec_col = "#2e7d32" if (_rec > 0 and _r["precio_act"] >= _rec) else "#e65100"
                             _cells = "".join([
@@ -789,9 +823,8 @@ def build_tab_promos(container) -> None:
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
+                                f'<td style="{_TD};text-align:right;color:#1565c0;font-weight:600">{_pesos(_pml)}</td>',
                                 f'<td style="{_TD};text-align:right;color:{_rec_col};font-weight:600">{_pesos(_rec)}</td>',
-                                f'<td style="{_TD};text-align:right">{_dto}</td>',
-                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
                                 f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
                                 f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
@@ -817,16 +850,20 @@ def build_tab_promos(container) -> None:
                         html_el.set_content(_build_html())
 
                     def _on_show_mlas(e) -> None:
+                        raw = e.args
+                        if isinstance(raw, list) and raw:
+                            raw = raw[0]
                         try:
-                            idx = int(e.args)
+                            idx = int(str(raw).strip()) if raw is not None else -1
                         except (TypeError, ValueError):
                             return
-                        tr   = next((r for r in table_rows if r["_idx"] == idx), None)
-                        mlas = tr["mlas"] if tr else []
-                        mla_dlg_title.set_text(f"MLAs para SKU: {tr['sku'] if tr else '?'}")
+                        tr = next((r for r in table_rows if r["_idx"] == idx), None)
+                        if not tr:
+                            return
+                        mla_dlg_title.set_text(f"MLAs para SKU: {tr['sku']}")
                         mla_dlg_body.clear()
                         with mla_dlg_body:
-                            for m in mlas:
+                            for m in tr["mlas"]:
                                 ui.label(m).classes("font-mono text-sm text-primary")
                         mla_dlg.open()
 
