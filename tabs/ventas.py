@@ -1340,6 +1340,20 @@ def build_tab_ventas(container) -> None:
                 finally:
                     conn.close()
 
+            def _update_financiacion_cuotas(cuotas_dict: Dict[int, Dict]) -> None:
+                conn = get_connection()
+                try:
+                    cur = conn.cursor()
+                    for n_cuotas, data in cuotas_dict.items():
+                        cur.execute(
+                            "UPDATE financiacion_cuotas_ml SET costo_financiacion=?, fecha_modificacion=? WHERE cuotas=?",
+                            (data["pct"], data["fecha"], n_cuotas)
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+
+            cuotas_recientes: Dict[int, Dict] = {}
             BATCH = 20
             procesadas = 0
             for i in range(0, total, BATCH):
@@ -1412,6 +1426,16 @@ def build_tab_ventas(container) -> None:
                         **calc,
                     }
                     db_rows.append(db_row)
+                    _c_str = str(v.get("cuotas") or "x1").strip().lower()
+                    _cuotas_fee = calc.get("cuotas_fee") or 0.0
+                    _up = float(v.get("unit_price") or 0)
+                    if _c_str.startswith("x") and len(_c_str) > 1 and _c_str[1:].isdigit():
+                        _n = int(_c_str[1:])
+                        if _n > 1 and _cuotas_fee > 0 and _up > 0:
+                            _pct = _cuotas_fee / _up
+                            _fv = v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None
+                            if _fv and (_n not in cuotas_recientes or _fv > cuotas_recientes[_n]["fecha"]):
+                                cuotas_recientes[_n] = {"pct": _pct, "fecha": _fv}
                     v["gan_pesos"] = calc["gan_pesos"]
                     v["gan_vta_pct"] = calc["gan_vta_pct"]
                     v["gan_cos_pct"] = calc["gan_cos_pct"]
@@ -1514,6 +1538,14 @@ def build_tab_ventas(container) -> None:
                             _am_rows.append(_am_db)
             if _am_rows:
                 await run.io_bound(_save_batch, _am_rows)
+
+            if cuotas_recientes:
+                await run.io_bound(_update_financiacion_cuotas, cuotas_recientes)
+                _tasas_msg = ", ".join(
+                    f"{n}x={round(d['pct'] * 100, 1)}%"
+                    for n, d in sorted(cuotas_recientes.items())
+                )
+                ui.notify(f"Tasas de financiación actualizadas: {_tasas_msg}", type="positive")
 
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
             if dlg and lbl_progreso:
