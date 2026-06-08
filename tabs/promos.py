@@ -6,6 +6,7 @@ El filtro del primer select re-puebla el segundo en tiempo real.
 from __future__ import annotations
 
 import asyncio
+import html as _html_esc
 from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
@@ -478,7 +479,7 @@ def build_tab_promos(container) -> None:
                 # Filtros
                 with ui.row().classes("items-center gap-3 py-1 flex-wrap"):
                     sel_promo = ui.select(
-                        {"todas": "Todas", "con_promo": "Con promo", "sin_promo": "Sin promo", "candidatos": "Candidatos"},
+                        {"con_promo": "Con promo", "candidatos": "Candidatos"},
                         value="con_promo",
                         label="Promo",
                     ).classes("w-36").props("outlined dense")
@@ -642,19 +643,6 @@ def build_tab_promos(container) -> None:
                         try:    return _dt.fromisoformat(d.replace("Z", "+00:00")).strftime("%d/%m")
                         except: return d[:5] if len(d) >= 5 else d
 
-                    columns = [
-                        {"name": "sku",        "label": "SKU",             "field": "sku",        "align": "left",   "sortable": True},
-                        {"name": "mla",        "label": "MLA",             "field": "mla",        "align": "left"},
-                        {"name": "producto",   "label": "Producto",        "field": "producto",   "align": "left"},
-                        {"name": "precio_act", "label": "Precio actual",   "field": "precio_act", "align": "right",  "sortable": True},
-                        {"name": "stock",      "label": "Stock",           "field": "stock",      "align": "center", "sortable": True},
-                        {"name": "promo",      "label": "Promo",           "field": "promo",      "align": "left"},
-                        {"name": "vigencia",   "label": "Vigencia",        "field": "vigencia",   "align": "center"},
-                        {"name": "meli_pct",   "label": "ML aporta %",     "field": "meli_pct",   "align": "right",  "sortable": True},
-                        {"name": "seller_pct", "label": "Yo pongo %",      "field": "seller_pct", "align": "right",  "sortable": True},
-                        {"name": "precio_sug", "label": "Precio sugerido", "field": "precio_sug", "align": "right"},
-                        {"name": "desc_total", "label": "Dto total %",     "field": "desc_total", "align": "right",  "sortable": True},
-                    ]
                     table_rows = []
                     for row in rows:
                         rep_it = row["rep_it"] or {}
@@ -683,22 +671,60 @@ def build_tab_promos(container) -> None:
                             "desc_total": desc,
                         })
 
-                    tbl = ui.table(columns=columns, rows=table_rows, row_key="mla").classes("w-full text-xs")
-                    tbl.add_slot("body-cell-precio_act", """
-                        <q-td :props="props">{{ props.value > 0 ? '$' + Number(props.value).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—' }}</q-td>
-                    """)
-                    tbl.add_slot("body-cell-meli_pct", """
-                        <q-td :props="props"><span style="color:#2e7d32;font-weight:700">{{ props.value }}%</span></q-td>
-                    """)
-                    tbl.add_slot("body-cell-seller_pct", """
-                        <q-td :props="props"><span style="color:#e65100;font-weight:700">{{ props.value }}%</span></q-td>
-                    """)
-                    tbl.add_slot("body-cell-precio_sug", """
-                        <q-td :props="props">{{ props.value > 0 ? '$' + Number(props.value).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—' }}</q-td>
-                    """)
-                    tbl.add_slot("body-cell-desc_total", """
-                        <q-td :props="props">{{ props.value > 0 ? props.value + '%' : '—' }}</q-td>
-                    """)
+                    _TH = (
+                        "background:#185FA5;color:#fff;font-weight:600;font-size:12px;"
+                        "padding:5px 6px;white-space:nowrap;position:sticky;top:0;z-index:10"
+                    )
+                    _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    _col_defs = [
+                        ("SKU",      "70px",  "left"),
+                        ("MLA",      "90px",  "left"),
+                        ("Producto", "",      "left"),
+                        ("Precio",   "80px",  "right"),
+                        ("Stock",    "42px",  "center"),
+                        ("Promo",    "110px", "left"),
+                        ("Vigencia", "82px",  "center"),
+                        ("ML%",      "50px",  "right"),
+                        ("Yo%",      "50px",  "right"),
+                        ("P.Sug.",   "80px",  "right"),
+                        ("Dto%",     "50px",  "right"),
+                    ]
+                    _thead = "".join(
+                        f'<th style="width:{w};{_TH};text-align:{a}">{_html_esc.escape(l)}</th>'
+                        if w else
+                        f'<th style="{_TH};text-align:{a}">{_html_esc.escape(l)}</th>'
+                        for l, w, a in _col_defs
+                    )
+
+                    def _pesos(v: float) -> str:
+                        return "$" + f"{int(v):,}".replace(",", ".") if v > 0 else "—"
+
+                    _trows = []
+                    for _i, _r in enumerate(table_rows):
+                        _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                        _dto = f"{_r['desc_total']:.1f}%" if _r["desc_total"] > 0 else "—"
+                        _cells = "".join([
+                            f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
+                            f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_html_esc.escape(_r["mla"])}</td>',
+                            f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
+                            f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
+                            f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
+                            f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape((_r["promo"] or "")[:28])}</td>',
+                            f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
+                            f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
+                            f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
+                            f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
+                            f'<td style="{_TD};text-align:right">{_dto}</td>',
+                        ])
+                        _trows.append(f'<tr style="background:{_bg};border-bottom:1px solid #e8e8e8">{_cells}</tr>')
+
+                    ui.html(
+                        '<div style="width:100%;overflow-y:auto;max-height:calc(100vh - 200px)">'
+                        '<table style="width:100%;table-layout:fixed;border-collapse:collapse">'
+                        f'<thead><tr>{_thead}</tr></thead>'
+                        f'<tbody>{"".join(_trows)}</tbody>'
+                        '</table></div>'
+                    )
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
