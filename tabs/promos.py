@@ -646,7 +646,18 @@ def build_tab_promos(container) -> None:
                         mlas   = sorted(row["mlas"])
                         sku    = (rep_it.get("seller_sku") or "").strip()
                         title  = (rep_it.get("title") or cand["item_id"])[:60]
-                        p_act  = float(rep_it.get("price") or 0)
+                        # Cambio 3: precio más barato (gold_special/x1), no cuotas
+                        rep_id_str = str(rep_it.get("id") or "")
+                        _all_vars  = grps_by_rep.get(rep_id_str, [rep_it])
+                        _gs = next(
+                            (v for v in _all_vars if "special" in str(v.get("listing_type_id") or "").lower()),
+                            None,
+                        )
+                        if _gs:
+                            p_act = float(_gs.get("price") or 0)
+                        else:
+                            _prices = [float(v.get("price") or 0) for v in _all_vars if float(v.get("price") or 0) > 0]
+                            p_act = min(_prices) if _prices else float(rep_it.get("price") or 0)
                         if not sku or p_act <= 0:
                             continue
                         stock  = int(rep_it.get("available_quantity") or 0)
@@ -662,6 +673,7 @@ def build_tab_promos(container) -> None:
                             "producto":   title,
                             "precio_act": p_act,
                             "stock":      stock,
+                            "precio_rec": round(p_sug * 1.8) if p_sug > 0 else 0,
                             "promo":      cand.get("promo_name") or "",
                             "vigencia":   f"{sd} — {fd}" if (sd or fd) else "",
                             "meli_pct":   cand["meli_pct"],
@@ -681,7 +693,7 @@ def build_tab_promos(container) -> None:
 
                     # ── Sort state ──────────────────────────────────────────
                     _sort_state = {"col": None, "asc": True}
-                    _NUMERIC    = {"precio_act", "stock", "meli_pct", "seller_pct", "precio_sug", "desc_total"}
+                    _NUMERIC    = {"precio_act", "precio_rec", "stock", "meli_pct", "seller_pct", "precio_sug", "desc_total"}
 
                     _TH = (
                         "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
@@ -691,33 +703,49 @@ def build_tab_promos(container) -> None:
                     _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
 
                     _col_defs = [
-                        ("SKU",      "sku",        "7%",   "left"),
-                        ("MLA",      "mla",        "9%",   "left"),
-                        ("Producto", "producto",   "24%",  "left"),
-                        ("Stock",    "stock",      "5%",   "center"),
-                        ("Precio",   "precio_act", "8%",   "right"),
-                        ("Dto%",     "desc_total", "7%",   "right"),
-                        ("P.Sug.",   "precio_sug", "8%",   "right"),
-                        ("ML%",      "meli_pct",   "5%",   "right"),
-                        ("Yo%",      "seller_pct", "5%",   "right"),
-                        ("Promo",    "promo",      "11%",  "left"),
-                        ("Vigencia", "vigencia",   "11%",  "center"),
+                        ("SKU",          "sku",        "7%",  "left"),
+                        ("MLA",          "mla",        "8%",  "left"),
+                        ("Producto",     "producto",   "19%", "left"),
+                        ("Stock",        "stock",      "4%",  "center"),
+                        ("Precio",       "precio_act", "7%",  "right"),
+                        ("Recomendada",  "precio_rec", "8%",  "right"),
+                        ("Dto%",         "desc_total", "6%",  "right"),
+                        ("P.Sug.",       "precio_sug", "7%",  "right"),
+                        ("ML%",          "meli_pct",   "5%",  "right"),
+                        ("Yo%",          "seller_pct", "5%",  "right"),
+                        ("Promo",        "promo",      "10%", "left"),
+                        ("Vigencia",     "vigencia",   "10%", "center"),
                     ]
 
                     def _pesos(v: float) -> str:
                         return "$" + f"{int(v):,}".replace(",", ".") if v > 0 else "—"
 
+                    _filter_text = {"v": ""}
+
                     def _sorted_rows() -> list:
-                        col = _sort_state["col"]
+                        col  = _sort_state["col"]
+                        base = list(table_rows)
+                        ft   = _filter_text["v"].strip().lower()
+                        if ft:
+                            base = [r for r in base if ft in r["sku"].lower() or ft in r["producto"].lower()]
                         if col is None:
-                            return list(table_rows)
+                            return base
                         rev = not _sort_state["asc"]
                         if col == "mla":
-                            return sorted(table_rows, key=lambda r: (r["mlas"][0] if r["mlas"] else "").lower(), reverse=rev)
+                            return sorted(base, key=lambda r: (r["mlas"][0] if r["mlas"] else "").lower(), reverse=rev)
                         elif col in _NUMERIC:
-                            return sorted(table_rows, key=lambda r: float(r.get(col) or 0), reverse=rev)
+                            return sorted(base, key=lambda r: float(r.get(col) or 0), reverse=rev)
                         else:
-                            return sorted(table_rows, key=lambda r: str(r.get(col) or "").lower(), reverse=rev)
+                            return sorted(base, key=lambda r: str(r.get(col) or "").lower(), reverse=rev)
+
+                    def _on_filter_text(e) -> None:
+                        _filter_text["v"] = e.value or ""
+                        html_el.set_content(_build_html())
+
+                    ui.input(
+                        placeholder="Buscar producto o SKU...",
+                        on_change=_on_filter_text,
+                    ).props("outlined dense clearable").classes("w-80 mb-1")
 
                     html_el = ui.html("")
 
@@ -753,12 +781,15 @@ def build_tab_promos(container) -> None:
                             else:
                                 _mla_cell = _html_esc.escape(_first_mla)
 
+                            _rec     = _r.get("precio_rec", 0)
+                            _rec_col = "#2e7d32" if (_rec > 0 and _r["precio_act"] >= _rec) else "#e65100"
                             _cells = "".join([
                                 f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
                                 f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_mla_cell}</td>',
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
+                                f'<td style="{_TD};text-align:right;color:{_rec_col};font-weight:600">{_pesos(_rec)}</td>',
                                 f'<td style="{_TD};text-align:right">{_dto}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
                                 f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
