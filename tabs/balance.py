@@ -330,7 +330,7 @@ def build_tab_balance(container) -> None:
                                 with ui.element("td").classes("px-2 py-1 font-normal"):
                                     ui.label("Gan. neta %")
                                 with ui.element("td").classes("px-2 py-1 text-right font-normal"):
-                                    ui.label(f"{gan_val * 100:.1f} %")
+                                    ui.label(f"{gan_val * 100:.2f}%".replace(".", ","))
 
         def _pintar_resultados() -> None:
             sync_inputs_to_rows()
