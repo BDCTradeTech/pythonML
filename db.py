@@ -1674,12 +1674,15 @@ COTIZADOR_DEFAULTS = {
 }
 
 
-def get_financiacion_cuotas_ml() -> Dict[int, float]:
-    """Devuelve {3: 0.084, 6: 0.123, 9: 0.157, 12: 0.192}"""
+def get_financiacion_cuotas_ml() -> Dict[int, Dict]:
+    """Devuelve {3: {"pct": 0.084, "fecha": "2026-06-08"}, 6: {...}, ...}"""
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT cuotas, costo_financiacion FROM financiacion_cuotas_ml ORDER BY cuotas")
-        return {int(r["cuotas"]): float(r["costo_financiacion"]) for r in cur.fetchall()}
+        cur.execute("SELECT cuotas, costo_financiacion, fecha_modificacion FROM financiacion_cuotas_ml ORDER BY cuotas")
+        return {
+            int(r["cuotas"]): {"pct": float(r["costo_financiacion"]), "fecha": str(r["fecha_modificacion"] or "")}
+            for r in cur.fetchall()
+        }
     finally:
         conn.close()

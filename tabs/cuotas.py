@@ -11,7 +11,7 @@ import asyncio
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_connection, get_cotizador_param
+from db import get_connection, get_cotizador_param, get_financiacion_cuotas_ml
 from ml_api import (
     get_ml_access_token,
     _cuotas_desde_item,
@@ -271,6 +271,17 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     pct_x9  = n_x9  / _tot * 100 if _tot else 0
     pct_x12 = n_x12 / _tot * 100 if _tot else 0
 
+    fin_cuotas_full = get_financiacion_cuotas_ml()
+
+    def _fmt_fecha(s: str) -> str:
+        try:
+            parts = str(s)[:10].split("-")
+            if len(parts) == 3:
+                return f"{parts[2]}/{parts[1]}/{parts[0]}"
+        except Exception:
+            pass
+        return ""
+
     with result_area:
         with ui.card().classes("w-full mb-2 p-3 bg-grey-2"):
             with ui.row().classes("items-center gap-4 flex-wrap justify-between"):
@@ -289,15 +300,22 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                             ui.label(str(count)).classes("text-primary text-xl font-bold leading-tight")
                             ui.label(label).classes("text-xs text-gray-600 text-center")
                     ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    for _label, _rate in [
-                        ("3x_campaign",  cuotas_3x),
-                        ("6x_campaign",  cuotas_6x),
-                        ("9x_campaign",  cuotas_9x),
-                        ("12x_campaign", cuotas_12x),
-                    ]:
-                        with ui.element("div").style("display:flex;flex-direction:column;align-items:center;min-width:70px"):
-                            ui.label(f"{_rate*100:.1f}%").classes("text-secondary text-xl font-bold leading-tight")
-                            ui.label(_label).classes("text-xs text-gray-600 text-center")
+                    with ui.element("div").style("display:flex;flex-direction:row;align-items:center"):
+                        for _i, (_nc, _mkp) in enumerate([
+                            (3, cuotas_3x), (6, cuotas_6x), (9, cuotas_9x), (12, cuotas_12x)
+                        ]):
+                            if _i > 0:
+                                ui.element("div").style("width:1px;height:56px;background:#e0e0e0;align-self:center;margin:0 4px")
+                            _fi    = fin_cuotas_full.get(_nc, {})
+                            _mlpct = _fi.get("pct", 0.0)
+                            _fech  = _fmt_fecha(_fi.get("fecha", ""))
+                            with ui.element("div").style("display:flex;flex-direction:column;align-items:center;padding:2px 8px"):
+                                ui.label(f"{_mkp*100:.1f}%".replace(".", ",")).style("font-size:18px;font-weight:500;color:#1D9E75;line-height:1.2")
+                                with ui.element("div").style("display:flex;align-items:center;gap:3px"):
+                                    ui.label("ML").style("font-size:12px;color:#9e9e9e;line-height:1.3")
+                                    ui.label(f"{_mlpct*100:.1f}%".replace(".", ",")).style("font-size:12px;font-weight:500;color:#185FA5;line-height:1.3")
+                                ui.label(_fech or "—").style("font-size:10px;color:#bdbdbd;line-height:1.3")
+                                ui.label(f"{_nc} cuotas").style("font-size:11px;color:#9e9e9e;line-height:1.3")
                 if container is not None:
                     ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
                     ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense")
