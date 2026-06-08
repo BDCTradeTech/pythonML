@@ -648,21 +648,19 @@ def build_tab_promos(container) -> None:
                         title  = (rep_it.get("title") or cand["item_id"])[:60]
                         rep_id_str = str(rep_it.get("id") or "")
                         _all_vars  = grps_by_rep.get(rep_id_str, [rep_it])
-                        _gs = next(
-                            (v for v in _all_vars if "special" in str(v.get("listing_type_id") or "").lower()),
-                            None,
-                        )
-                        if _gs:
+                        _gs_items = [v for v in _all_vars if "special" in str(v.get("listing_type_id") or "").lower()]
+                        if _gs_items:
+                            _gs        = _gs_items[0]
                             p_act      = float(_gs.get("price") or 0)
-                            gs_item_id = str(_gs.get("id") or "")
+                            gs_all_ids = [str(v.get("id") or "") for v in _gs_items if v.get("id")]
                         else:
                             _pvs = [(float(v.get("price") or 0), v) for v in _all_vars if float(v.get("price") or 0) > 0]
                             if _pvs:
                                 p_act, _cv = min(_pvs, key=lambda x: x[0])
-                                gs_item_id = str(_cv.get("id") or "")
+                                gs_all_ids = [str(_cv.get("id") or "")]
                             else:
                                 p_act      = float(rep_it.get("price") or 0)
-                                gs_item_id = rep_id_str
+                                gs_all_ids = [rep_id_str]
                         if not sku or p_act <= 0:
                             continue
                         sd = _fdate(cand.get("start_date") or "")
@@ -673,7 +671,7 @@ def build_tab_promos(container) -> None:
                             "producto":    title,
                             "precio_act":  p_act,
                             "stock":       int(rep_it.get("available_quantity") or 0),
-                            "gs_item_id":  gs_item_id,
+                            "gs_all_ids":  gs_all_ids,
                             "smart_price": float(cand.get("price") or 0),
                             "promo":       cand.get("promo_name") or "",
                             "vigencia":    f"{sd} — {fd}" if (sd or fd) else "",
@@ -681,25 +679,30 @@ def build_tab_promos(container) -> None:
                             "seller_pct":  cand["seller_pct"],
                         })
 
-                    _sp_data = await asyncio.gather(*[
-                        run.io_bound(ml_get_seller_promotions_item, access_token, pr["gs_item_id"])
-                        for pr in _prelim
+                    _sp_tasks = [(i, iid) for i, pr in enumerate(_prelim) for iid in pr["gs_all_ids"]]
+                    _sp_flat  = await asyncio.gather(*[
+                        run.io_bound(ml_get_seller_promotions_item, access_token, iid)
+                        for _, iid in _sp_tasks
                     ])
+                    _sp_by_idx: dict = {}
+                    for (_idx2, _), _sp_list2 in zip(_sp_tasks, _sp_flat):
+                        _sp_by_idx.setdefault(_idx2, []).append(_sp_list2)
 
                     table_rows = []
-                    for pr, sp_list in zip(_prelim, _sp_data):
+                    for i, pr in enumerate(_prelim):
                         smart_p = 0.0
                         disc_p  = 0.0
-                        for _p in (sp_list or []):
-                            _ptype = str(_p.get("type") or "").upper()
-                            if _ptype == "SMART":
-                                _v = float(_p.get("price") or 0)
-                                if _v > 0:
-                                    smart_p = max(smart_p, _v)
-                            elif _ptype in ("PRICE_DISCOUNT", "DEAL"):
-                                _v = float(_p.get("suggested_discounted_price") or 0)
-                                if _v > 0:
-                                    disc_p = max(disc_p, _v)
+                        for sp_list in _sp_by_idx.get(i, []):
+                            for _p in (sp_list or []):
+                                _ptype = str(_p.get("type") or "").upper()
+                                if _ptype == "SMART":
+                                    _v = float(_p.get("price") or 0)
+                                    if _v > 0:
+                                        smart_p = max(smart_p, _v)
+                                elif _ptype in ("PRICE_DISCOUNT", "DEAL"):
+                                    _v = float(_p.get("suggested_discounted_price") or 0)
+                                    if _v > 0:
+                                        disc_p = max(disc_p, _v)
                         precio_ml = smart_p if smart_p > 0 else disc_p
                         table_rows.append({
                             "_idx":       len(table_rows),
