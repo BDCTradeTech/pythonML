@@ -613,6 +613,26 @@ def init_db() -> None:
                 (uid, tab_key, can),
             )
 
+    # Costos de financiación de cuotas de MercadoLibre (tabla de sistema)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS financiacion_cuotas_ml (
+            cuotas INTEGER PRIMARY KEY,
+            costo_financiacion REAL NOT NULL,
+            fecha_modificacion TEXT NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        INSERT OR IGNORE INTO financiacion_cuotas_ml (cuotas, costo_financiacion, fecha_modificacion) VALUES
+            (3, 0.084, '1976-12-23'),
+            (6, 0.123, '1976-12-23'),
+            (9, 0.157, '1976-12-23'),
+            (12, 0.192, '1976-12-23')
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -1652,3 +1672,14 @@ COTIZADOR_DEFAULTS = {
     "seguro_china": "29.35", "res_3244": "10", "gastos_operativos": "27", "gastos_origen": "0",
     "envio_domicilio": "10", "ajuste_valor_ana": "1.01",
 }
+
+
+def get_financiacion_cuotas_ml() -> Dict[int, float]:
+    """Devuelve {3: 0.084, 6: 0.123, 9: 0.157, 12: 0.192}"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT cuotas, costo_financiacion FROM financiacion_cuotas_ml ORDER BY cuotas")
+        return {int(r["cuotas"]): float(r["costo_financiacion"]) for r in cur.fetchall()}
+    finally:
+        conn.close()
