@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import html as _html_esc
+import json as _json
 from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
@@ -659,7 +660,7 @@ def build_tab_promos(container) -> None:
                         fd = _fdate(cand.get("finish_date") or "")
                         table_rows.append({
                             "sku":        sku or "—",
-                            "mla":        " / ".join(mlas),
+                            "mlas":       mlas,
                             "producto":   title,
                             "precio_act": p_act,
                             "stock":      stock,
@@ -671,60 +672,141 @@ def build_tab_promos(container) -> None:
                             "desc_total": desc,
                         })
 
+                    # ── MLA dialog ──────────────────────────────────────────
+                    with ui.dialog() as mla_dlg:
+                        with ui.card().style("min-width:300px;max-width:480px"):
+                            mla_dlg_title = ui.label("").classes("font-bold text-sm mb-1")
+                            mla_dlg_body  = ui.column().classes("gap-1")
+                            ui.button("Cerrar", on_click=mla_dlg.close).props(
+                                "flat dense no-caps"
+                            ).classes("mt-2 self-end text-xs")
+
+                    # ── Sort state ──────────────────────────────────────────
+                    _sort_state = {"col": None, "asc": True}
+                    _NUMERIC    = {"precio_act", "stock", "meli_pct", "seller_pct", "precio_sug", "desc_total"}
+
                     _TH = (
-                        "background:#185FA5;color:#fff;font-weight:600;font-size:12px;"
-                        "padding:5px 6px;white-space:nowrap;position:sticky;top:0;z-index:10"
+                        "background:#185FA5;color:#E6F1FB;font-weight:600;font-size:12px;"
+                        "padding:5px 6px;white-space:nowrap;position:sticky;top:0;z-index:10;"
+                        "cursor:pointer;user-select:none"
                     )
                     _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+
                     _col_defs = [
-                        ("SKU",      "70px",  "left"),
-                        ("MLA",      "90px",  "left"),
-                        ("Producto", "",      "left"),
-                        ("Precio",   "80px",  "right"),
-                        ("Stock",    "42px",  "center"),
-                        ("Promo",    "110px", "left"),
-                        ("Vigencia", "82px",  "center"),
-                        ("ML%",      "50px",  "right"),
-                        ("Yo%",      "50px",  "right"),
-                        ("P.Sug.",   "80px",  "right"),
-                        ("Dto%",     "50px",  "right"),
+                        ("SKU",      "sku",        "70px",  "left"),
+                        ("MLA",      "mla",        "85px",  "left"),
+                        ("Producto", "producto",   "160px", "left"),
+                        ("Precio",   "precio_act", "80px",  "right"),
+                        ("Stock",    "stock",      "42px",  "center"),
+                        ("Promo",    "promo",      "170px", "left"),
+                        ("Vigencia", "vigencia",   "105px", "center"),
+                        ("ML%",      "meli_pct",   "50px",  "right"),
+                        ("Yo%",      "seller_pct", "50px",  "right"),
+                        ("P.Sug.",   "precio_sug", "80px",  "right"),
+                        ("Dto%",     "desc_total", "50px",  "right"),
                     ]
-                    _thead = "".join(
-                        f'<th style="width:{w};{_TH};text-align:{a}">{_html_esc.escape(l)}</th>'
-                        if w else
-                        f'<th style="{_TH};text-align:{a}">{_html_esc.escape(l)}</th>'
-                        for l, w, a in _col_defs
-                    )
 
                     def _pesos(v: float) -> str:
                         return "$" + f"{int(v):,}".replace(",", ".") if v > 0 else "—"
 
-                    _trows = []
-                    for _i, _r in enumerate(table_rows):
-                        _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
-                        _dto = f"{_r['desc_total']:.1f}%" if _r["desc_total"] > 0 else "—"
-                        _cells = "".join([
-                            f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
-                            f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_html_esc.escape(_r["mla"])}</td>',
-                            f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
-                            f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
-                            f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
-                            f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape((_r["promo"] or "")[:28])}</td>',
-                            f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
-                            f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
-                            f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
-                            f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
-                            f'<td style="{_TD};text-align:right">{_dto}</td>',
-                        ])
-                        _trows.append(f'<tr style="background:{_bg};border-bottom:1px solid #e8e8e8">{_cells}</tr>')
+                    def _sorted_rows() -> list:
+                        col = _sort_state["col"]
+                        if col is None:
+                            return list(table_rows)
+                        rev = not _sort_state["asc"]
+                        if col == "mla":
+                            return sorted(table_rows, key=lambda r: (r["mlas"][0] if r["mlas"] else "").lower(), reverse=rev)
+                        elif col in _NUMERIC:
+                            return sorted(table_rows, key=lambda r: float(r.get(col) or 0), reverse=rev)
+                        else:
+                            return sorted(table_rows, key=lambda r: str(r.get(col) or "").lower(), reverse=rev)
 
-                    ui.html(
-                        '<div style="width:100%;overflow-y:auto;max-height:calc(100vh - 200px)">'
-                        '<table style="width:100%;table-layout:fixed;border-collapse:collapse">'
-                        f'<thead><tr>{_thead}</tr></thead>'
-                        f'<tbody>{"".join(_trows)}</tbody>'
-                        '</table></div>'
-                    )
+                    html_el = ui.html("")
+
+                    def _build_html() -> str:
+                        eid = html_el.id
+
+                        def _icon(ck: str) -> str:
+                            if _sort_state["col"] != ck:
+                                return '<span style="opacity:0.35;font-size:9px"> ⇅</span>'
+                            arrow = "▲" if _sort_state["asc"] else "▼"
+                            return f'<span style="font-size:9px"> {arrow}</span>'
+
+                        _thead_cells = []
+                        for _lbl, _ck, _w, _a in _col_defs:
+                            _oc  = f"getElement({eid}).emit('sort','{_ck}')"
+                            _sty = f"width:{_w};{_TH};text-align:{_a}"
+                            _thead_cells.append(
+                                f'<th style="{_sty}" onclick="{_html_esc.escape(_oc)}">'
+                                f'{_html_esc.escape(_lbl)}{_icon(_ck)}</th>'
+                            )
+                        _thead = "".join(_thead_cells)
+
+                        _trows = []
+                        for _i, _r in enumerate(_sorted_rows()):
+                            _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                            _dto = f"{_r['desc_total']:.1f}%" if _r["desc_total"] > 0 else "—"
+
+                            _mlas      = _r["mlas"]
+                            _first_mla = _mlas[0] if _mlas else "—"
+                            if len(_mlas) > 1:
+                                _oc2      = f"getElement({eid}).emit('show_mlas',{_json.dumps(_r['sku'])})"
+                                _mla_cell = (
+                                    f'<a href="javascript:void(0)" '
+                                    f'style="color:#1565c0;text-decoration:underline" '
+                                    f'onclick="{_html_esc.escape(_oc2)}">'
+                                    f'{_html_esc.escape(_first_mla)}</a>'
+                                    f'<span style="color:#999;font-size:10px;margin-left:2px">+{len(_mlas)-1}</span>'
+                                )
+                            else:
+                                _mla_cell = _html_esc.escape(_first_mla)
+
+                            _cells = "".join([
+                                f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
+                                f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_mla_cell}</td>',
+                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
+                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
+                                f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
+                                f'<td style="{_TD};text-align:left;white-space:normal;line-height:1.3" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
+                                f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
+                                f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
+                                f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
+                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
+                                f'<td style="{_TD};text-align:right">{_dto}</td>',
+                            ])
+                            _trows.append(f'<tr style="background:{_bg};border-bottom:1px solid #e8e8e8">{_cells}</tr>')
+
+                        return (
+                            '<div style="width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)">'
+                            '<table style="table-layout:fixed;width:942px;border-collapse:collapse">'
+                            f'<thead><tr>{_thead}</tr></thead>'
+                            f'<tbody>{"".join(_trows)}</tbody>'
+                            '</table></div>'
+                        )
+
+                    def _on_sort(e) -> None:
+                        col = e.args
+                        if _sort_state["col"] == col:
+                            _sort_state["asc"] = not _sort_state["asc"]
+                        else:
+                            _sort_state["col"] = col
+                            _sort_state["asc"] = True
+                        html_el.set_content(_build_html())
+
+                    def _on_show_mlas(e) -> None:
+                        sku  = e.args
+                        tr   = next((r for r in table_rows if r["sku"] == sku), None)
+                        mlas = tr["mlas"] if tr else []
+                        mla_dlg_title.set_text(f"MLAs para SKU: {sku}")
+                        mla_dlg_body.clear()
+                        with mla_dlg_body:
+                            for m in mlas:
+                                ui.label(m).classes("font-mono text-sm text-primary")
+                        mla_dlg.open()
+
+                    html_el.on("sort", _on_sort)
+                    html_el.on("show_mlas", _on_show_mlas)
+                    html_el.set_content(_build_html())
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
