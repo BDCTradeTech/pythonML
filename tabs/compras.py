@@ -96,6 +96,7 @@ def build_tab_compras(container) -> None:
         filtro_status_ref: Dict[str, str] = {"val": "Abierta+Vencida"}
         filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
         filtro_courier_ref: Dict[str, str] = {"val": "Todas"}
+        filtro_trimestre_ref: Dict[str, str] = {"val": "Todos"}
         invoice_bdc_qsel_css_done: Dict[str, bool] = {"done": False}
         _desp_hex_palette = [
             "#1d4ed8",
@@ -342,6 +343,19 @@ def build_tab_compras(container) -> None:
                     invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Pagada"]
                 elif fc_filt == "Impagas":
                     invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Impaga"]
+                filtro_tri = filtro_trimestre_ref.get("val", "Todos")
+                if filtro_tri != "Todos":
+                    _tri_map = {"Q1": {1, 2, 3}, "Q2": {4, 5, 6}, "Q3": {7, 8, 9}, "Q4": {10, 11, 12}}
+                    _tri_set = _tri_map.get(filtro_tri, set())
+                    _filtered: List[Dict[str, Any]] = []
+                    for _i in invs:
+                        _t = str(_i.get("txn_date", "") or "")
+                        try:
+                            if len(_t) >= 7 and int(_t[5:7]) in _tri_set:
+                                _filtered.append(_i)
+                        except (ValueError, TypeError):
+                            pass
+                    invs = _filtered
                 sc = sort_col_compras.get("val", "txn_date")
                 asc = sort_asc_compras.get("val", False)
 
@@ -467,6 +481,19 @@ def build_tab_compras(container) -> None:
                 invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Pagada"]
             elif fc_filt == "Impagas":
                 invs = [i for i in invs if _norm_factura_courier(i.get("factura_courier")) == "Impaga"]
+            filtro_tri = filtro_trimestre_ref.get("val", "Todos")
+            if filtro_tri != "Todos":
+                _tri_map = {"Q1": {1, 2, 3}, "Q2": {4, 5, 6}, "Q3": {7, 8, 9}, "Q4": {10, 11, 12}}
+                _tri_set = _tri_map.get(filtro_tri, set())
+                _filtered: List[Dict[str, Any]] = []
+                for _i in invs:
+                    _t = str(_i.get("txn_date", "") or "")
+                    try:
+                        if len(_t) >= 7 and int(_t[5:7]) in _tri_set:
+                            _filtered.append(_i)
+                    except (ValueError, TypeError):
+                        pass
+                invs = _filtered
             sc = sort_col_compras.get("val", "txn_date")
             asc = sort_asc_compras.get("val", False)
 
@@ -581,6 +608,17 @@ def build_tab_compras(container) -> None:
                     filtro_estado_ref["val"] = str(val) if val is not None else "Todos"
                     _pintar_compras()
                 filtro_estado.on_value_change(_on_filtro_estado_change)
+                ui.label("Trimestre:").classes("text-sm font-semibold text-gray-800 ml-4")
+                filtro_trimestre_sel = ui.select(
+                    {"Todos": "Todos", "Q1": "Q1 (Ene-Mar)", "Q2": "Q2 (Abr-Jun)", "Q3": "Q3 (Jul-Sep)", "Q4": "Q4 (Oct-Dic)"},
+                    value=filtro_trimestre_ref.get("val", "Todos"),
+                    label="",
+                ).classes("w-44").props("dense outlined")
+                def _on_filtro_trimestre_change(e):
+                    val = getattr(e, "args", None) or getattr(e, "value", None)
+                    filtro_trimestre_ref["val"] = str(val) if val is not None else "Todos"
+                    _pintar_compras()
+                filtro_trimestre_sel.on_value_change(_on_filtro_trimestre_change)
                 async def _imprimir_invoices_async() -> None:
                     path, nombre_archivo, err = await run.io_bound(_generar_excel_invoices)
                     if err:
