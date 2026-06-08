@@ -627,9 +627,9 @@ def build_tab_ventas(container) -> None:
                                     _lbl("Comisión ML", False)
                                     ui.label(fmt_moneda(_meli_fee_e)).classes("text-sm text-negative")
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    _lbl("Costo Cuotas", False)
                                     _cf_pct_e = f" ({_cuotas_fee_e / total_price * 100:.1f}%)".replace(".", ",") if _cuotas_fee_e and total_price else ""
-                                    ui.label(f"{fmt_moneda(_cuotas_fee_e)}{_cf_pct_e}").classes("text-sm text-negative")
+                                    _lbl(f"Costo Cuotas{_cf_pct_e}", False)
+                                    ui.label(fmt_moneda(_cuotas_fee_e)).classes("text-sm text-negative")
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _lbl("IVA neto", False)
                                     ui.label(fmt_moneda(_iva_total_e)).classes("text-sm text-negative")
@@ -692,9 +692,9 @@ def build_tab_ventas(container) -> None:
                                     ui.label(fmt_moneda(meli_fee)).classes("text-sm text-negative")
                                 # 3. Costo Cuotas (siempre)
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
-                                    _lbl("Costo Cuotas", True)
                                     _cf_pct = f" ({cuotas_fee / total_price * 100:.1f}%)".replace(".", ",") if cuotas_fee and total_price else ""
-                                    ui.label(f"{fmt_moneda(cuotas_fee)}{_cf_pct}").classes("text-sm text-negative")
+                                    _lbl(f"Costo Cuotas{_cf_pct}", True)
+                                    ui.label(fmt_moneda(cuotas_fee)).classes("text-sm text-negative")
                                 # 4. IVA neto + sub-block
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _lbl("IVA neto", False)
