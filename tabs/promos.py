@@ -634,11 +634,6 @@ def build_tab_promos(container) -> None:
                         )
                         return
 
-                    n = len(rows)
-                    ui.label(
-                        f"{n} SKU{'s' if n != 1 else ''} con oportunidades en promos co-financiadas"
-                    ).classes("text-sm font-bold text-primary mb-2")
-
                     def _fdate(d: str) -> str:
                         if not d: return ""
                         try:    return _dt.fromisoformat(d.replace("Z", "+00:00")).strftime("%d/%m")
@@ -686,7 +681,7 @@ def build_tab_promos(container) -> None:
                     _NUMERIC    = {"precio_act", "stock", "meli_pct", "seller_pct", "precio_sug", "desc_total"}
 
                     _TH = (
-                        "background:#185FA5;color:#E6F1FB;font-weight:600;font-size:12px;"
+                        "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
                         "padding:5px 6px;white-space:nowrap;position:sticky;top:0;z-index:10;"
                         "cursor:pointer;user-select:none"
                     )
@@ -695,10 +690,10 @@ def build_tab_promos(container) -> None:
                     _col_defs = [
                         ("SKU",      "sku",        "7%",   "left"),
                         ("MLA",      "mla",        "9%",   "left"),
-                        ("Producto", "producto",   "17%",  "left"),
+                        ("Producto", "producto",   "24%",  "left"),
                         ("Precio",   "precio_act", "8%",   "right"),
                         ("Stock",    "stock",      "5%",   "center"),
-                        ("Promo",    "promo",      "18%",  "left"),
+                        ("Promo",    "promo",      "11%",  "left"),
                         ("Vigencia", "vigencia",   "11%",  "center"),
                         ("ML%",      "meli_pct",   "5%",   "right"),
                         ("Yo%",      "seller_pct", "5%",   "right"),
@@ -746,10 +741,10 @@ def build_tab_promos(container) -> None:
                             if len(_mlas) > 1:
                                 _oc2      = f"getElement({eid}).emit('show_mlas',{_json.dumps(_r['sku'])})"
                                 _mla_cell = (
-                                    f'<a href="javascript:void(0)" '
-                                    f'style="color:#1565c0;text-decoration:underline" '
+                                    f'<span '
+                                    f'style="color:#1565c0;text-decoration:underline;cursor:pointer" '
                                     f'onclick="{_html_esc.escape(_oc2)}">'
-                                    f'{_html_esc.escape(_first_mla)}</a>'
+                                    f'{_html_esc.escape(_first_mla)}</span>'
                                     f'<span style="color:#999;font-size:10px;margin-left:2px">+{len(_mlas)-1}</span>'
                                 )
                             else:
@@ -761,7 +756,7 @@ def build_tab_promos(container) -> None:
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
-                                f'<td style="{_TD};text-align:left;white-space:normal;line-height:1.3" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
+                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
                                 f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
                                 f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
                                 f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
