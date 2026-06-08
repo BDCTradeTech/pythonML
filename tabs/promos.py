@@ -693,17 +693,17 @@ def build_tab_promos(container) -> None:
                     _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
 
                     _col_defs = [
-                        ("SKU",      "sku",        "70px",  "left"),
-                        ("MLA",      "mla",        "85px",  "left"),
-                        ("Producto", "producto",   "160px", "left"),
-                        ("Precio",   "precio_act", "80px",  "right"),
-                        ("Stock",    "stock",      "42px",  "center"),
-                        ("Promo",    "promo",      "170px", "left"),
-                        ("Vigencia", "vigencia",   "105px", "center"),
-                        ("ML%",      "meli_pct",   "50px",  "right"),
-                        ("Yo%",      "seller_pct", "50px",  "right"),
-                        ("P.Sug.",   "precio_sug", "80px",  "right"),
-                        ("Dto%",     "desc_total", "50px",  "right"),
+                        ("SKU",      "sku",        "7%",   "left"),
+                        ("MLA",      "mla",        "9%",   "left"),
+                        ("Producto", "producto",   "17%",  "left"),
+                        ("Precio",   "precio_act", "8%",   "right"),
+                        ("Stock",    "stock",      "5%",   "center"),
+                        ("Promo",    "promo",      "18%",  "left"),
+                        ("Vigencia", "vigencia",   "11%",  "center"),
+                        ("ML%",      "meli_pct",   "5%",   "right"),
+                        ("Yo%",      "seller_pct", "5%",   "right"),
+                        ("P.Sug.",   "precio_sug", "8%",   "right"),
+                        ("Dto%",     "desc_total", "7%",   "right"),
                     ]
 
                     def _pesos(v: float) -> str:
@@ -726,19 +726,13 @@ def build_tab_promos(container) -> None:
                     def _build_html() -> str:
                         eid = html_el.id
 
-                        def _icon(ck: str) -> str:
-                            if _sort_state["col"] != ck:
-                                return '<span style="opacity:0.35;font-size:9px"> ⇅</span>'
-                            arrow = "▲" if _sort_state["asc"] else "▼"
-                            return f'<span style="font-size:9px"> {arrow}</span>'
-
                         _thead_cells = []
                         for _lbl, _ck, _w, _a in _col_defs:
                             _oc  = f"getElement({eid}).emit('sort','{_ck}')"
                             _sty = f"width:{_w};{_TH};text-align:{_a}"
                             _thead_cells.append(
                                 f'<th style="{_sty}" onclick="{_html_esc.escape(_oc)}">'
-                                f'{_html_esc.escape(_lbl)}{_icon(_ck)}</th>'
+                                f'{_html_esc.escape(_lbl)}</th>'
                             )
                         _thead = "".join(_thead_cells)
 
@@ -778,7 +772,7 @@ def build_tab_promos(container) -> None:
 
                         return (
                             '<div style="width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)">'
-                            '<table style="table-layout:fixed;width:942px;border-collapse:collapse">'
+                            '<table style="table-layout:fixed;width:100%;border-collapse:collapse">'
                             f'<thead><tr>{_thead}</tr></thead>'
                             f'<tbody>{"".join(_trows)}</tbody>'
                             '</table></div>'
