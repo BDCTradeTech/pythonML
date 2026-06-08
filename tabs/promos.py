@@ -688,20 +688,19 @@ def build_tab_promos(container) -> None:
 
                     table_rows = []
                     for pr, sp_list in zip(_prelim, _sp_data):
-                        smart_p = pr["smart_price"]
+                        smart_p = 0.0
                         disc_p  = 0.0
                         for _p in (sp_list or []):
                             _ptype = str(_p.get("type") or "").upper()
                             if _ptype == "SMART":
                                 _v = float(_p.get("price") or 0)
-                                if _v > 0 and _v > smart_p:
-                                    smart_p = _v
+                                if _v > 0:
+                                    smart_p = max(smart_p, _v)
                             elif _ptype in ("PRICE_DISCOUNT", "DEAL"):
                                 _v = float(_p.get("suggested_discounted_price") or 0)
                                 if _v > 0:
                                     disc_p = max(disc_p, _v)
-                        _vals     = [v for v in (smart_p, disc_p) if v > 0]
-                        precio_ml = max(_vals) if _vals else 0.0
+                        precio_ml = smart_p if smart_p > 0 else disc_p
                         table_rows.append({
                             "_idx":       len(table_rows),
                             "sku":        pr["sku"],
@@ -823,7 +822,7 @@ def build_tab_promos(container) -> None:
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
-                                f'<td style="{_TD};text-align:right;color:#1565c0;font-weight:600">{_pesos(_pml)}</td>',
+                                f'<td style="{_TD};text-align:right">{_pesos(_pml)}</td>',
                                 f'<td style="{_TD};text-align:right;color:{_rec_col};font-weight:600">{_pesos(_rec)}</td>',
                                 f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
                                 f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
