@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
 
-from db import get_connection, get_cotizador_param, COTIZADOR_DEFAULTS
+from db import get_connection, get_cotizador_param, COTIZADOR_DEFAULTS, get_financiacion_cuotas_ml
 from ml_api import (
     get_ml_access_token,
     ml_get_my_items,
@@ -55,14 +55,11 @@ def build_tab_promos(container) -> None:
 
         dolar_oficial  = max(float(str(get_cotizador_param("dolar_oficial", uid) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")).replace(",", ".")), 0.01)
         ml_comision_p  = _pr(get_cotizador_param("ml_comision",         uid) or COTIZADOR_DEFAULTS.get("ml_comision",         "0.15"))
-        cuotas_3x_p    = _pr(get_cotizador_param("cuotas_3x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_3x",           "0.094"))
-        cuotas_6x_p    = _pr(get_cotizador_param("cuotas_6x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_6x",           "0.151"))
-        cuotas_9x_p    = _pr(get_cotizador_param("cuotas_9x",           uid) or COTIZADOR_DEFAULTS.get("cuotas_9x",           "0.207"))
-        cuotas_12x_p   = _pr(get_cotizador_param("cuotas_12x",          uid) or COTIZADOR_DEFAULTS.get("cuotas_12x",          "0.259"))
         ml_iibb_per_p  = _pr(get_cotizador_param("ml_iibb_per",         uid) or COTIZADOR_DEFAULTS.get("ml_iibb_per",         "0.055"))
         ml_debcre_p    = _pr(get_cotizador_param("ml_debcre",           uid) or COTIZADOR_DEFAULTS.get("ml_debcre",           "0.006"))
         ml_envios_p    = max(_pf(get_cotizador_param("ml_envios",        uid) or COTIZADOR_DEFAULTS.get("ml_envios",          "5823")), 100.0)
         ml_envios_grat = _pf(get_cotizador_param("ml_envios_gratuitos", uid) or COTIZADOR_DEFAULTS.get("ml_envios_gratuitos", "33000")) or 33000.0
+        fin_cuotas     = get_financiacion_cuotas_ml()  # {3: 0.084, 6: 0.123, 9: 0.157, 12: 0.192}
 
         def fmt_m(v: Any) -> str:
             if v is None: return "$0"
@@ -80,7 +77,9 @@ def build_tab_promos(container) -> None:
             except: return "0,00%"
 
         def _tasa_cuotas(cuotas_str: str) -> float:
-            return {"x3": cuotas_3x_p, "x6": cuotas_6x_p, "x9": cuotas_9x_p, "x12": cuotas_12x_p}.get(cuotas_str, 0.0)
+            if cuotas_str and cuotas_str.startswith("x") and cuotas_str[1:].isdigit():
+                return fin_cuotas.get(int(cuotas_str[1:]), 0.0)
+            return 0.0
 
         def _calc(pv: float, cuotas_str: str, costo_usd: float, tipo_iva: float) -> dict:
             tasa_q       = _tasa_cuotas(cuotas_str)
@@ -275,9 +274,12 @@ def build_tab_promos(container) -> None:
                             ui.html(ICO)
                             ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
                         ui.label(fmt_m(pv)).classes("text-xs font-medium")
+                    _n_q = int(cuotas_str[1:]) if cuotas_str and cuotas_str.startswith("x") and cuotas_str[1:].isdigit() else 0
+                    _tasa_pct = fin_cuotas.get(_n_q, 0.0) if _n_q > 1 else 0.0
+                    _cuotas_lbl = f"Costo Cuotas ({f'{_tasa_pct*100:.1f}'.replace('.', ',')}%)" if _tasa_pct > 0 else "Costo Cuotas"
                     for lbl_t, val in [
                         ("Comisión ML",  c["comision"]),
-                        ("Costo Cuotas", c["costo_cuotas"]),
+                        (_cuotas_lbl,    c["costo_cuotas"]),
                         ("IVA neto",     c["iva_total"]),
                     ]:
                         with ui.row().classes("w-full justify-between py-0"):
