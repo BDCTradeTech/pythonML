@@ -1540,12 +1540,16 @@ def build_tab_ventas(container) -> None:
                 await run.io_bound(_save_batch, _am_rows)
 
             if cuotas_recientes:
-                await run.io_bound(_update_financiacion_cuotas, cuotas_recientes)
-                _tasas_msg = ", ".join(
-                    f"{n}x={round(d['pct'] * 100, 1)}%"
-                    for n, d in sorted(cuotas_recientes.items())
-                )
-                ui.notify(f"Tasas de financiación actualizadas: {_tasas_msg}", type="positive")
+                try:
+                    await run.io_bound(_update_financiacion_cuotas, cuotas_recientes)
+                    _tasas_msg = ", ".join(
+                        f"{n}x={round(d['pct'] * 100, 1)}%"
+                        for n, d in sorted(cuotas_recientes.items())
+                    )
+                    with cl:
+                        ui.notify(f"Tasas de financiación actualizadas: {_tasas_msg}", type="positive")
+                except Exception:
+                    pass
 
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
             if dlg and lbl_progreso:
