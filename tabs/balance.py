@@ -163,8 +163,9 @@ def build_tab_balance(container) -> None:
                         cont = ui.column().classes("w-full gap-2")
                         edit_rows_ref: List[Dict[str, Any]] = []
                         gastos_buttons_row = ui.row().classes("gap-2 mt-2")
-                # Columna derecha: Ingresos y Resultados Netos (lado a lado)
+                # Columna derecha: Parámetros, Ingresos y Resultados Netos
                 with ui.row().classes("gap-4 flex-wrap"):
+                    parametros_card = ui.column().classes("gap-1")
                     ingresos_card = ui.column().classes("gap-1")
                     resultados_card = ui.column().classes("gap-1")
         def toggle_sort(col: str) -> None:
@@ -303,6 +304,34 @@ def build_tab_balance(container) -> None:
                                         with ui.element("td").classes("px-2 py-1 text-right " + ("font-semibold" if con_negrita_valor else "font-normal" if sin_negrita else "")):
                                             ui.label(f"$ {inc.get(key, 0):,.0f}".replace(",", "."))
 
+        def _pintar_parametros() -> None:
+            parametros_card.clear()
+            with parametros_card:
+                with ui.card().classes("w-full p-4 border-l-4 border-l-amber-500"):
+                    ui.label("Parámetros").classes("text-lg font-semibold text-amber-700 mb-2")
+                    dolar_str = get_cotizador_param("dolar_oficial", uid) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1000")
+                    gan_str   = get_cotizador_param("ml_ganancia_neta_venta", uid) or COTIZADOR_DEFAULTS.get("ml_ganancia_neta_venta", "0.1000")
+                    try:
+                        dolar_val = float(str(dolar_str).replace(",", ".").strip())
+                    except (ValueError, TypeError):
+                        dolar_val = 0.0
+                    try:
+                        gan_val = float(str(gan_str).replace(",", ".").strip())
+                    except (ValueError, TypeError):
+                        gan_val = 0.0
+                    with ui.element("table").classes("w-full border-collapse text-sm"):
+                        with ui.element("tbody"):
+                            with ui.element("tr").classes("border-t border-gray-200"):
+                                with ui.element("td").classes("px-2 py-1 font-normal"):
+                                    ui.label("Dólar Oficial")
+                                with ui.element("td").classes("px-2 py-1 text-right font-normal"):
+                                    ui.label(f"$ {dolar_val:,.0f}".replace(",", "."))
+                            with ui.element("tr").classes("border-t border-gray-200"):
+                                with ui.element("td").classes("px-2 py-1 font-normal"):
+                                    ui.label("Gan. neta %")
+                                with ui.element("td").classes("px-2 py-1 text-right font-normal"):
+                                    ui.label(f"{gan_val * 100:.1f} %")
+
         def _pintar_resultados() -> None:
             sync_inputs_to_rows()
             total_gastos = sum(_parse_importe(r.get("importe")) for r in gastos_data)
@@ -392,6 +421,7 @@ def build_tab_balance(container) -> None:
             _pintar_header()
 
         repintar()
+        _pintar_parametros()
         _pintar_ingresos()
         _pintar_resultados()
 
