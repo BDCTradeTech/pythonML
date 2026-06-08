@@ -16,6 +16,7 @@ from ml_api import (
     ml_get_my_items,
     _cuotas_desde_item,
     ml_get_seller_promotions_item,
+    ml_get_smart_candidates,
 )
 from tabs.cuotas import _cuotas_key, _cuotas_score, _get_promo_data
 
@@ -477,7 +478,7 @@ def build_tab_promos(container) -> None:
                 # Filtros
                 with ui.row().classes("items-center gap-3 py-1 flex-wrap"):
                     sel_promo = ui.select(
-                        {"todas": "Todas", "con_promo": "Con promo", "sin_promo": "Sin promo"},
+                        {"todas": "Todas", "con_promo": "Con promo", "sin_promo": "Sin promo", "candidatos": "Candidatos"},
                         value="con_promo",
                         label="Promo",
                     ).classes("w-36").props("outlined dense")
@@ -491,6 +492,8 @@ def build_tab_promos(container) -> None:
 
                 detail_col = ui.column().classes("w-full mt-2")
                 detail_col.style("display:none")
+                candidatos_col = ui.column().classes("w-full mt-2")
+                candidatos_col.style("display:none")
 
             # ── Render detalle async ─────────────────────────────────────────
             async def _render_detail_async(item_id: str) -> None:
@@ -587,14 +590,133 @@ def build_tab_promos(container) -> None:
                         for grp in groups:
                             _render_variant_cost(grp["items"], grp["pd"], grp["sp_list"])
 
+            # ── Candidatos async ─────────────────────────────────────────────
+            async def _cargar_candidatos_async() -> None:
+                from datetime import datetime as _dt
+
+                candidatos_col.clear()
+                candidatos_col.style("display:block")
+                with candidatos_col:
+                    with ui.card().classes("w-full p-8 items-center gap-4"):
+                        ui.spinner(size="xl")
+                        ui.label("Buscando oportunidades...").classes("text-xl text-gray-700")
+
+                all_items_by_id: Dict[str, tuple] = {}
+                for rid, grp in grps_by_rep.items():
+                    for it in grp:
+                        all_items_by_id[str(it.get("id") or "")] = (it, rid)
+                rep_by_id = {str(it.get("id") or ""): it for it in rep_items}
+
+                raw = await run.io_bound(ml_get_smart_candidates, access_token, _state["seller_id"])
+
+                by_rep: Dict[str, dict] = {}
+                for cand in raw:
+                    item_id = cand["item_id"]
+                    entry   = all_items_by_id.get(item_id)
+                    rep_id  = entry[1] if entry else item_id
+                    it_data = entry[0] if entry else {}
+                    if rep_id not in by_rep:
+                        by_rep[rep_id] = {"rep_it": rep_by_id.get(rep_id) or it_data, "mlas": set(), "best": cand}
+                    by_rep[rep_id]["mlas"].add(item_id)
+                    if cand["meli_pct"] > by_rep[rep_id]["best"]["meli_pct"]:
+                        by_rep[rep_id]["best"] = cand
+
+                rows = sorted(by_rep.values(), key=lambda x: x["best"]["meli_pct"], reverse=True)
+
+                candidatos_col.clear()
+                candidatos_col.style("display:block")
+                with candidatos_col:
+                    if not rows:
+                        ui.label("No hay candidatos en promos co-financiadas actualmente.").classes(
+                            "text-gray-500 p-4 italic"
+                        )
+                        return
+
+                    n = len(rows)
+                    ui.label(
+                        f"{n} SKU{'s' if n != 1 else ''} con oportunidades en promos co-financiadas"
+                    ).classes("text-sm font-bold text-primary mb-2")
+
+                    def _fdate(d: str) -> str:
+                        if not d: return ""
+                        try:    return _dt.fromisoformat(d.replace("Z", "+00:00")).strftime("%d/%m")
+                        except: return d[:5] if len(d) >= 5 else d
+
+                    columns = [
+                        {"name": "sku",        "label": "SKU",             "field": "sku",        "align": "left",   "sortable": True},
+                        {"name": "mla",        "label": "MLA",             "field": "mla",        "align": "left"},
+                        {"name": "producto",   "label": "Producto",        "field": "producto",   "align": "left"},
+                        {"name": "precio_act", "label": "Precio actual",   "field": "precio_act", "align": "right",  "sortable": True},
+                        {"name": "stock",      "label": "Stock",           "field": "stock",      "align": "center", "sortable": True},
+                        {"name": "promo",      "label": "Promo",           "field": "promo",      "align": "left"},
+                        {"name": "vigencia",   "label": "Vigencia",        "field": "vigencia",   "align": "center"},
+                        {"name": "meli_pct",   "label": "ML aporta %",     "field": "meli_pct",   "align": "right",  "sortable": True},
+                        {"name": "seller_pct", "label": "Yo pongo %",      "field": "seller_pct", "align": "right",  "sortable": True},
+                        {"name": "precio_sug", "label": "Precio sugerido", "field": "precio_sug", "align": "right"},
+                        {"name": "desc_total", "label": "Dto total %",     "field": "desc_total", "align": "right",  "sortable": True},
+                    ]
+                    table_rows = []
+                    for row in rows:
+                        rep_it = row["rep_it"] or {}
+                        cand   = row["best"]
+                        mlas   = sorted(row["mlas"])
+                        sku    = (rep_it.get("seller_sku") or "").strip()
+                        title  = (rep_it.get("title") or cand["item_id"])[:60]
+                        p_act  = float(rep_it.get("price") or 0)
+                        stock  = int(rep_it.get("available_quantity") or 0)
+                        p_sug  = float(cand.get("price") or 0)
+                        p_orig = float(cand.get("original_price") or p_act or 0)
+                        desc   = round((p_orig - p_sug) / p_orig * 100, 1) if p_orig > 0 and p_sug > 0 else 0
+                        sd = _fdate(cand.get("start_date") or "")
+                        fd = _fdate(cand.get("finish_date") or "")
+                        table_rows.append({
+                            "sku":        sku or "—",
+                            "mla":        " / ".join(mlas),
+                            "producto":   title,
+                            "precio_act": p_act,
+                            "stock":      stock,
+                            "promo":      cand.get("promo_name") or "",
+                            "vigencia":   f"{sd} — {fd}" if (sd or fd) else "",
+                            "meli_pct":   cand["meli_pct"],
+                            "seller_pct": cand["seller_pct"],
+                            "precio_sug": p_sug,
+                            "desc_total": desc,
+                        })
+
+                    tbl = ui.table(columns=columns, rows=table_rows, row_key="mla").classes("w-full text-xs")
+                    tbl.add_slot("body-cell-precio_act", """
+                        <q-td :props="props">{{ props.value > 0 ? '$' + Number(props.value).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—' }}</q-td>
+                    """)
+                    tbl.add_slot("body-cell-meli_pct", """
+                        <q-td :props="props"><span style="color:#2e7d32;font-weight:700">{{ props.value }}%</span></q-td>
+                    """)
+                    tbl.add_slot("body-cell-seller_pct", """
+                        <q-td :props="props"><span style="color:#e65100;font-weight:700">{{ props.value }}%</span></q-td>
+                    """)
+                    tbl.add_slot("body-cell-precio_sug", """
+                        <q-td :props="props">{{ props.value > 0 ? '$' + Number(props.value).toLocaleString('es-AR', {maximumFractionDigits:0}) : '—' }}</q-td>
+                    """)
+                    tbl.add_slot("body-cell-desc_total", """
+                        <q-td :props="props">{{ props.value > 0 ? props.value + '%' : '—' }}</q-td>
+                    """)
+
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
+                if sel_promo.value == "candidatos":
+                    sel_prod.style("display:none")
+                    detail_col.clear()
+                    detail_col.style("display:none")
+                    background_tasks.create(_cargar_candidatos_async(), name="cargar_candidatos")
+                    return
+                sel_prod.style("display:block")
                 opts = _build_opts(sel_promo.value or "todas")
                 sel_prod.options = opts
                 sel_prod.value = None
                 sel_prod.update()
                 detail_col.clear()
                 detail_col.style("display:none")
+                candidatos_col.clear()
+                candidatos_col.style("display:none")
 
             def _on_product_change(_=None) -> None:
                 iid = sel_prod.value
