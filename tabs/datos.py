@@ -47,8 +47,6 @@ USD_KEYS = {
 TOOLTIPS: Dict[str, str] = {
     "ml_cobrado":             "Factor de lo que cobra el vendedor. Ej: 0.836 = 83.6% del precio de venta",
     "ml_comision_fija_menor": "Cargo fijo en $ para ventas con precio menor al mínimo",
-    "ml_3cuotas":             "Multiplicador de precio para absorber el costo de cuotas. Ej: 1.15 = precio × 1.15",
-    "ml_6cuotas":             "Multiplicador de precio para absorber el costo de cuotas. Ej: 1.15 = precio × 1.15",
     "cuotas_3x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_6x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_9x":  "Tasa de costo de cuotas que ML cobra al vendedor",
@@ -332,12 +330,6 @@ def build_tab_datos() -> None:
                 _card_header("ti-credit-card", "Cuotas")
                 for nc, key in [(3, "cuotas_3x"), (6, "cuotas_6x"), (9, "cuotas_9x"), (12, "cuotas_12x")]:
                     _add_field(inp_cuotas, key, _cuota_lbl(nc), "%")
-                _divider()
-                for lbl, key in [
-                    ("ML ×3", "ml_3cuotas"),
-                    ("ML ×6", "ml_6cuotas"),
-                ]:
-                    _add_field(inp_cuotas, key, lbl)
 
             # 3. MIAMI + Traída × kilo
             with ui.card().classes("p-3 datos-card").style(_CS):

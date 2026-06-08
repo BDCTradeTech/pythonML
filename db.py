@@ -1663,7 +1663,6 @@ COTIZADOR_DEFAULTS = {
     "kilo": "60", "iva_105": "0.105", "iva_21": "0.21", "iibb_lhs": "0.03",
     "ml_comision": "0.15", "ml_debcre": "0.006", "ml_sirtac": "0.008", "ml_envios": "5823",
     "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_comision_fija_menor": "2800", "ml_cobrado": "0.836",
-    "ml_3cuotas": "1.12149", "ml_6cuotas": "1.21067",
     "ml_ganancia_neta_venta": "0.1000",
     "cuotas_3x": "0.094", "cuotas_6x": "0.151", "cuotas_9x": "0.207", "cuotas_12x": "0.259",
     "valor_kg_miami": "13.5", "almacenaje_miami_x2": "1.8", "dias_almacenaje_miami": "2", "almacenaje_dias_kg_miami": "0.9",

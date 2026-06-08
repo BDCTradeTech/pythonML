@@ -157,16 +157,16 @@ def _calc_courier_row(
     AD = AC / dolar_oficial if dolar_oficial > 0 else 0
 
     venta_ml = _f(row.get("venta_ml"))
-    ml_3cuotas = params.get("ml_3cuotas", 1.12149)
-    ml_6cuotas = params.get("ml_6cuotas", 1.21067)
+    cuotas_3x = float(params.get("cuotas_3x", 0.094))
+    cuotas_6x = float(params.get("cuotas_6x", 0.151))
     ml_comision = params.get("ml_comision", 0.15)
     ml_debcre = params.get("ml_debcre", 0.006)
     iva_21 = params.get("iva_21", 0.21)
     ml_envios = params.get("ml_envios", 5823)  # ML - Envíos desde Datos
     ml_iibb_per = params.get("ml_iibb_per", 0.055)
 
-    cuotas3 = venta_ml * ml_3cuotas if venta_ml > 0 else 0
-    cuotas6 = venta_ml * ml_6cuotas if venta_ml > 0 else 0
+    cuotas3 = venta_ml * (1 + cuotas_3x) if venta_ml > 0 else 0
+    cuotas6 = venta_ml * (1 + cuotas_6x) if venta_ml > 0 else 0
     markup = ((venta_ml / AC) - 1) if venta_ml > 0 and AC > 0 else 0
     comi_ml = venta_ml * ml_comision if venta_ml > 0 else 0
     cobrado_ml = venta_ml - comi_ml if venta_ml > 0 else 0
