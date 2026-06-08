@@ -426,6 +426,84 @@ def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> 
     return []
 
 
+_CO_FUNDED_TYPES = frozenset({"SMART", "MARKETPLACE_CAMPAIGN", "PRICE_MATCHING", "PRICE_MATCHING_MELI_ALL"})
+
+
+def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str, Any]]:
+    """
+    Retorna todos los items candidate en promos co-financiadas del vendedor.
+    Por item_id, conserva solo la promo con mayor meli_percentage.
+    """
+    if not access_token or not seller_id:
+        return []
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    base = "https://api.mercadolibre.com"
+    try:
+        resp = requests.get(
+            f"{base}/seller-promotions/users/{seller_id}",
+            params={"app_version": "v2"}, headers=headers, timeout=15,
+        )
+        if resp.status_code != 200:
+            return []
+        promos = resp.json().get("results", [])
+    except Exception:
+        return []
+
+    co_funded = [
+        p for p in promos
+        if (p.get("type") or "").upper() in _CO_FUNDED_TYPES
+        and (p.get("status") or "").lower() == "started"
+    ]
+
+    candidates: Dict[str, Any] = {}
+    for promo in co_funded:
+        pid   = promo.get("id")
+        ptype = (promo.get("type") or "").upper()
+        if not pid or not ptype:
+            continue
+        total_items = 9999
+        for offset in range(0, total_items, 50):
+            try:
+                r = requests.get(
+                    f"{base}/seller-promotions/promotions/{pid}/items",
+                    params={"promotion_type": ptype, "app_version": "v2", "limit": 50, "offset": offset},
+                    headers=headers, timeout=15,
+                )
+                if r.status_code != 200:
+                    break
+                idata      = r.json()
+                items      = idata.get("results", [])
+                total_items = idata.get("paging", {}).get("total", len(items))
+                for item in items:
+                    if (item.get("status") or "").lower() != "candidate":
+                        continue
+                    iid = str(item.get("id") or "")
+                    if not iid:
+                        continue
+                    meli_pct   = float(item.get("meli_percentage") or item.get("meli_percent") or 0)
+                    seller_pct = float(item.get("seller_percentage") or item.get("seller_percent") or 0)
+                    existing   = candidates.get(iid)
+                    if existing is None or meli_pct > existing.get("meli_pct", 0):
+                        candidates[iid] = {
+                            "item_id":       iid,
+                            "meli_pct":      meli_pct,
+                            "seller_pct":    seller_pct,
+                            "price":         item.get("price"),
+                            "original_price": item.get("original_price"),
+                            "promo_id":      pid,
+                            "promo_type":    ptype,
+                            "promo_name":    promo.get("name") or "",
+                            "start_date":    promo.get("start_date") or "",
+                            "finish_date":   promo.get("finish_date") or "",
+                        }
+                if offset + len(items) >= total_items or not items:
+                    break
+            except Exception:
+                break
+
+    return list(candidates.values())
+
+
 def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
     """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason, competitors."""
     if not access_token or not str(item_id).strip():
