@@ -17,6 +17,7 @@ from db import (
     get_cotizador_tabla,
     set_cotizador_tabla,
     COTIZADOR_DEFAULTS,
+    get_financiacion_cuotas_ml,
 )
 from tabs.admin import (
     TABLA_POSICION_DEFAULT,
@@ -301,6 +302,15 @@ def build_tab_datos() -> None:
                 ui.label("Guardar parámetros").style("font-size:12px; font-weight:500; color:white; vertical-align:middle")
 
         # ── Masonry CSS columns: 4 columnas ──────────────────────────────────
+        _fin_cuotas_d = get_financiacion_cuotas_ml()
+        def _cuota_lbl(nc: int) -> str:
+            fi = _fin_cuotas_d.get(nc, {})
+            pct_str = f"{fi.get('pct', 0.0) * 100:.1f}".replace(".", ",")
+            fecha = str(fi.get("fecha", ""))[:10]
+            parts = fecha.split("-")
+            fecha_fmt = f"{parts[2]}/{parts[1]}/{parts[0]}" if len(parts) == 3 else "—"
+            return f"{nc} cuotas ({pct_str}% - {fecha_fmt})"
+
         with ui.element("div").style(
             "display:block; column-count:4; column-gap:10px; width:100%"
         ):
@@ -320,13 +330,8 @@ def build_tab_datos() -> None:
             # 2. CUOTAS
             with ui.card().classes("p-3 datos-card").style(_CS):
                 _card_header("ti-credit-card", "Cuotas")
-                for lbl, key, unit in [
-                    ("3x",  "cuotas_3x",  "%"),
-                    ("6x",  "cuotas_6x",  "%"),
-                    ("9x",  "cuotas_9x",  "%"),
-                    ("12x", "cuotas_12x", "%"),
-                ]:
-                    _add_field(inp_cuotas, key, lbl, unit)
+                for nc, key in [(3, "cuotas_3x"), (6, "cuotas_6x"), (9, "cuotas_9x"), (12, "cuotas_12x")]:
+                    _add_field(inp_cuotas, key, _cuota_lbl(nc), "%")
                 _divider()
                 for lbl, key in [
                     ("ML ×3", "ml_3cuotas"),
