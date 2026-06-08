@@ -78,7 +78,7 @@ def build_tab_promos(container) -> None:
 
         def _tasa_cuotas(cuotas_str: str) -> float:
             if cuotas_str and cuotas_str.startswith("x") and cuotas_str[1:].isdigit():
-                return fin_cuotas.get(int(cuotas_str[1:]), 0.0)
+                return fin_cuotas.get(int(cuotas_str[1:]), {}).get("pct", 0.0)
             return 0.0
 
         def _calc(pv: float, cuotas_str: str, costo_usd: float, tipo_iva: float) -> dict:
@@ -275,7 +275,7 @@ def build_tab_promos(container) -> None:
                             ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
                         ui.label(fmt_m(pv)).classes("text-xs font-medium")
                     _n_q = int(cuotas_str[1:]) if cuotas_str and cuotas_str.startswith("x") and cuotas_str[1:].isdigit() else 0
-                    _tasa_pct = fin_cuotas.get(_n_q, 0.0) if _n_q > 1 else 0.0
+                    _tasa_pct = fin_cuotas.get(_n_q, {}).get("pct", 0.0) if _n_q > 1 else 0.0
                     _cuotas_lbl = f"Costo Cuotas ({f'{_tasa_pct*100:.1f}'.replace('.', ',')}%)" if _tasa_pct > 0 else "Costo Cuotas"
                     for lbl_t, val in [
                         ("Comisión ML",  c["comision"]),
