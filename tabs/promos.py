@@ -647,6 +647,8 @@ def build_tab_promos(container) -> None:
                         sku    = (rep_it.get("seller_sku") or "").strip()
                         title  = (rep_it.get("title") or cand["item_id"])[:60]
                         p_act  = float(rep_it.get("price") or 0)
+                        if not sku or p_act <= 0:
+                            continue
                         stock  = int(rep_it.get("available_quantity") or 0)
                         p_sug  = float(cand.get("price") or 0)
                         p_orig = float(cand.get("original_price") or p_act or 0)
@@ -654,7 +656,8 @@ def build_tab_promos(container) -> None:
                         sd = _fdate(cand.get("start_date") or "")
                         fd = _fdate(cand.get("finish_date") or "")
                         table_rows.append({
-                            "sku":        sku or "—",
+                            "_idx":       len(table_rows),
+                            "sku":        sku,
                             "mlas":       mlas,
                             "producto":   title,
                             "precio_act": p_act,
@@ -691,14 +694,14 @@ def build_tab_promos(container) -> None:
                         ("SKU",      "sku",        "7%",   "left"),
                         ("MLA",      "mla",        "9%",   "left"),
                         ("Producto", "producto",   "24%",  "left"),
-                        ("Precio",   "precio_act", "8%",   "right"),
                         ("Stock",    "stock",      "5%",   "center"),
-                        ("Promo",    "promo",      "11%",  "left"),
-                        ("Vigencia", "vigencia",   "11%",  "center"),
+                        ("Precio",   "precio_act", "8%",   "right"),
+                        ("Dto%",     "desc_total", "7%",   "right"),
+                        ("P.Sug.",   "precio_sug", "8%",   "right"),
                         ("ML%",      "meli_pct",   "5%",   "right"),
                         ("Yo%",      "seller_pct", "5%",   "right"),
-                        ("P.Sug.",   "precio_sug", "8%",   "right"),
-                        ("Dto%",     "desc_total", "7%",   "right"),
+                        ("Promo",    "promo",      "11%",  "left"),
+                        ("Vigencia", "vigencia",   "11%",  "center"),
                     ]
 
                     def _pesos(v: float) -> str:
@@ -739,13 +742,13 @@ def build_tab_promos(container) -> None:
                             _mlas      = _r["mlas"]
                             _first_mla = _mlas[0] if _mlas else "—"
                             if len(_mlas) > 1:
-                                _oc2      = f"getElement({eid}).emit('show_mlas',{_json.dumps(_r['sku'])})"
+                                _oc2      = f"getElement({eid}).emit('show_mlas',{_r['_idx']})"
                                 _mla_cell = (
-                                    f'<span '
-                                    f'style="color:#1565c0;text-decoration:underline;cursor:pointer" '
+                                    f'<span style="color:#1565c0;text-decoration:underline;cursor:pointer" '
                                     f'onclick="{_html_esc.escape(_oc2)}">'
-                                    f'{_html_esc.escape(_first_mla)}</span>'
+                                    f'{_html_esc.escape(_first_mla)}'
                                     f'<span style="color:#999;font-size:10px;margin-left:2px">+{len(_mlas)-1}</span>'
+                                    f'</span>'
                                 )
                             else:
                                 _mla_cell = _html_esc.escape(_first_mla)
@@ -754,14 +757,14 @@ def build_tab_promos(container) -> None:
                                 f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
                                 f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_mla_cell}</td>',
                                 f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
-                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
-                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
-                                f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
+                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
+                                f'<td style="{_TD};text-align:right">{_dto}</td>',
+                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
                                 f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
                                 f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
-                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_sug"])}</td>',
-                                f'<td style="{_TD};text-align:right">{_dto}</td>',
+                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
+                                f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
                             ])
                             _trows.append(f'<tr style="background:{_bg};border-bottom:1px solid #e8e8e8">{_cells}</tr>')
 
@@ -783,10 +786,13 @@ def build_tab_promos(container) -> None:
                         html_el.set_content(_build_html())
 
                     def _on_show_mlas(e) -> None:
-                        sku  = e.args
-                        tr   = next((r for r in table_rows if r["sku"] == sku), None)
+                        try:
+                            idx = int(e.args)
+                        except (TypeError, ValueError):
+                            return
+                        tr   = next((r for r in table_rows if r["_idx"] == idx), None)
                         mlas = tr["mlas"] if tr else []
-                        mla_dlg_title.set_text(f"MLAs para SKU: {sku}")
+                        mla_dlg_title.set_text(f"MLAs para SKU: {tr['sku'] if tr else '?'}")
                         mla_dlg_body.clear()
                         with mla_dlg_body:
                             for m in mlas:
