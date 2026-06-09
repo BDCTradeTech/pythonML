@@ -19,6 +19,7 @@ from ml_api import (
     _cuotas_desde_item,
     ml_get_seller_promotions_item,
     ml_get_smart_candidates,
+    ml_get_items_multiget_with_attributes,
 )
 from tabs.cuotas import _cuotas_key, _cuotas_score, _get_promo_data
 
@@ -792,79 +793,228 @@ def build_tab_promos(container) -> None:
                                 ui.label(lbl).classes("text-xs text-gray-500").style("min-width:215px")
                                 ui.label(val).classes("text-xs font-semibold")
 
-                        all_ids = r.get("all_ids", [])
-                        sp_flat = await asyncio.gather(*[
-                            run.io_bound(ml_get_seller_promotions_item, access_token, iid)
-                            for iid in all_ids
-                        ])
+                        all_ids   = r.get("all_ids", [])
+                        mlas_orig = r.get("mlas_detail", [])
 
-                        all_sp_promos = []
+                        # Fetch fresh prices + seller-promotions en paralelo
+                        fresh_raw, sp_flat = await asyncio.gather(
+                            run.io_bound(
+                                ml_get_items_multiget_with_attributes,
+                                access_token, all_ids, "id,price,listing_type_id,status",
+                            ),
+                            asyncio.gather(*[
+                                run.io_bound(ml_get_seller_promotions_item, access_token, iid)
+                                for iid in all_ids
+                            ]),
+                        )
+
+                        fresh_map: Dict[str, dict] = {
+                            str(it["id"]): it for it in (fresh_raw or []) if it and it.get("id")
+                        }
+
+                        all_sp_promos: List[dict] = []
                         for iid, sp_list in zip(all_ids, sp_flat):
                             for p in (sp_list or []):
                                 p_copy = dict(p)
                                 p_copy["_item_id"] = iid
                                 all_sp_promos.append(p_copy)
 
-                        smart_promos = [p for p in all_sp_promos if str(p.get("type") or "").upper() == "SMART"]
+                        smart_promos = [
+                            p for p in all_sp_promos
+                            if str(p.get("type") or "").upper() == "SMART"
+                        ]
+                        _mla_map = {md["id"]: md for md in mlas_orig}
 
                         promo_section.clear()
                         with promo_section:
-                            # ── MEJOR PROMO CO-FINANCIADA ────────────────────────────
+                            # ── PUBLICACIONES ─────────────────────────────────────────
+                            ui.label("Publicaciones").classes(
+                                "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
+                            )
+                            for md in mlas_orig:
+                                mla_id = md["id"]
+                                fresh  = fresh_map.get(mla_id, {})
+                                precio = float(fresh.get("price") or md.get("precio") or 0)
+                                st_raw = str(
+                                    fresh.get("status") or md.get("status") or ""
+                                ).lower()
+                                lt   = str(
+                                    fresh.get("listing_type_id") or md.get("lt") or ""
+                                ).lower()
+                                tipo = md.get("tipo") or "—"
+                                with ui.row().classes(
+                                    "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
+                                ):
+                                    ui.label(mla_id).classes(
+                                        "text-xs font-mono text-primary w-28 shrink-0"
+                                    )
+                                    _t_sty = (
+                                        "background:#e3f2fd;color:#1565c0"
+                                        if "pro" in lt
+                                        else "background:#f3e5f5;color:#6a1b9a"
+                                    )
+                                    ui.label(tipo).style(
+                                        f"{_t_sty};border-radius:4px;padding:1px 6px;"
+                                        "font-size:11px;font-weight:600;white-space:nowrap"
+                                    )
+                                    ui.label(fmt_m(precio)).classes(
+                                        "text-xs font-semibold w-20 text-right"
+                                    )
+                                    if st_raw == "active":
+                                        ui.label("Publicación activa").style(
+                                            "color:#1B7A3E;font-size:10px;font-weight:600;"
+                                            "background:#e8f5e9;border-radius:3px;padding:1px 6px"
+                                        )
+                                    elif st_raw:
+                                        _lbl_st = {
+                                            "paused": "Pausada", "closed": "Cerrada"
+                                        }.get(st_raw, st_raw)
+                                        ui.label(_lbl_st).style(
+                                            "color:#888;font-size:10px;font-weight:600;"
+                                            "background:#f5f5f5;border-radius:3px;padding:1px 5px"
+                                        )
+
+                            ui.separator().classes("my-2")
+
+                            # ── TODAS LAS PROMOS SMART ─────────────────────────────────
                             if smart_promos:
-                                ui.label("Mejor promo co-financiada").classes(
-                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-2"
+                                ui.label("Promos co-financiadas (SMART)").classes(
+                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
                                 )
-                                _mla_tipo_map = {md["id"]: md["tipo"] for md in r.get("mlas_detail", [])}
+                                with ui.element("div").style("overflow-x:auto;width:100%"):
+                                    with ui.element("table").style(
+                                        "width:100%;border-collapse:collapse;font-size:11px"
+                                    ):
+                                        with ui.element("thead"):
+                                            with ui.element("tr").style(
+                                                "background:#5898D4;color:#fff"
+                                            ):
+                                                for _ch, _ca in [
+                                                    ("MLA", "left"), ("Tipo", "left"),
+                                                    ("Promo", "left"), ("Status", "center"),
+                                                    ("Precio ML", "right"), ("ML%", "right"),
+                                                    ("Yo%", "right"), ("ML$", "right"),
+                                                ]:
+                                                    with ui.element("th").style(
+                                                        f"padding:4px 6px;text-align:{_ca};"
+                                                        "white-space:nowrap;font-weight:600"
+                                                    ):
+                                                        ui.label(_ch)
+                                        with ui.element("tbody"):
+                                            for _pi, _p in enumerate(smart_promos):
+                                                _bg2  = "#f5f8fd" if _pi % 2 == 0 else "#ffffff"
+                                                _iid  = str(_p.get("_item_id") or "")
+                                                _md2  = _mla_map.get(_iid, {})
+                                                _tp2  = _md2.get("tipo", "—")
+                                                _lt2  = str(_md2.get("lt") or "").lower()
+                                                _pnm  = str(_p.get("name") or "—")
+                                                _pst  = str(_p.get("status") or "").lower()
+                                                _slbl = STATUS_LABELS.get(_pst, _pst or "—")
+                                                _ssty = STATUS_STYLES.get(
+                                                    _pst, "background:#888;color:#fff"
+                                                )
+                                                _prml = float(_p.get("price") or 0)
+                                                _mlp  = float(_p.get("meli_percentage") or 0)
+                                                _yop  = float(_p.get("seller_percentage") or 0)
+                                                _orig = float(_p.get("original_price") or 0)
+                                                _mlc  = (
+                                                    round(_mlp / 100 * _orig, 2)
+                                                    if _orig > 0 else 0.0
+                                                )
+                                                _t3 = (
+                                                    "background:#e3f2fd;color:#1565c0"
+                                                    if "pro" in _lt2
+                                                    else "background:#f3e5f5;color:#6a1b9a"
+                                                )
+                                                with ui.element("tr").style(
+                                                    f"background:{_bg2};"
+                                                    "border-bottom:1px solid #e8e8e8"
+                                                ):
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;"
+                                                        "font-family:monospace;font-size:11px"
+                                                    ):
+                                                        ui.label(_iid)
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px"
+                                                    ):
+                                                        ui.label(_tp2).style(
+                                                            f"{_t3};border-radius:3px;"
+                                                            "padding:1px 5px;font-size:10px;"
+                                                            "font-weight:600;white-space:nowrap"
+                                                        )
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px"
+                                                    ):
+                                                        ui.label(_pnm)
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:center"
+                                                    ):
+                                                        ui.label(_slbl).style(
+                                                            f"{_ssty};border-radius:3px;"
+                                                            "padding:1px 6px;font-size:10px;"
+                                                            "font-weight:600"
+                                                        )
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:right"
+                                                    ):
+                                                        ui.label(
+                                                            fmt_m(_prml) if _prml else "—"
+                                                        )
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:right;"
+                                                        "color:#2e7d32;font-weight:700"
+                                                    ):
+                                                        ui.label(f"{_mlp:.1f}%")
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:right;"
+                                                        "color:#e65100;font-weight:700"
+                                                    ):
+                                                        ui.label(f"{_yop:.1f}%")
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:right;"
+                                                        "font-weight:700"
+                                                    ):
+                                                        ui.label(fmt_m(_mlc) if _mlc else "—")
+
+                                ui.separator().classes("my-2")
+
+                                # ── MEJOR PROMO ──────────────────────────────────────────
+                                ui.label("Mejor promo").classes(
+                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
+                                )
                                 sp = max(
                                     smart_promos,
-                                    key=lambda p: float(p.get("meli_percentage") or 0) * float(p.get("original_price") or 0),
+                                    key=lambda _q: (
+                                        float(_q.get("meli_percentage") or 0)
+                                        * float(_q.get("original_price") or 0)
+                                    ),
                                 )
-                                orig_p        = float(sp.get("original_price") or 0)
-                                prom_p        = float(sp.get("price") or 0)
-                                ml_pct        = float(sp.get("meli_percentage") or 0)
-                                sel_pct       = float(sp.get("seller_percentage") or 0)
-                                status        = str(sp.get("status") or "").lower()
-                                start_d       = (sp.get("start_date") or "")[:10]
-                                end_d         = (sp.get("finish_date") or "")[:10]
-                                vig           = f"{start_d} — {end_d}" if (start_d or end_d) else "—"
-                                best_mla_id   = sp.get("_item_id", "—")
-                                best_mla_tipo = _mla_tipo_map.get(best_mla_id, "—")
+                                orig_p  = float(sp.get("original_price") or 0)
+                                prom_p  = float(sp.get("price") or 0)
+                                ml_pct  = float(sp.get("meli_percentage") or 0)
+                                sel_pct = float(sp.get("seller_percentage") or 0)
+                                best_iid  = str(sp.get("_item_id") or "—")
+                                best_tipo = _mla_map.get(best_iid, {}).get("tipo", "—")
 
                                 if orig_p > 0 and prom_p > 0:
                                     desc_abs  = orig_p - prom_p
                                     ml_aporte = ml_pct / 100 * orig_p
                                     yo_aporte = desc_abs - ml_aporte
                                     desc_pct  = desc_abs / orig_p * 100
-                                    precio_rec   = round(prom_p * 1.8)
-                                    desc_abs_rec = precio_rec - prom_p
-                                    ml_max       = round(ml_pct / 100 * precio_rec, 2) if desc_abs_rec > 0 else 0.0
                                 else:
-                                    ml_aporte = yo_aporte = desc_pct = precio_rec = ml_max = 0.0
+                                    ml_aporte = yo_aporte = desc_pct = 0.0
 
-                                sty_s = STATUS_STYLES.get(status, "background:#888;color:#fff")
-                                lbl_s = STATUS_LABELS.get(status, status or "—")
-
-                                with ui.card().classes("w-full p-2 border border-blue-200 mb-2"):
+                                with ui.card().classes("w-full p-2 border border-blue-200"):
                                     _row(ICO_API, "Promo:",
                                          f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
-                                    _row(ICO_API, "MLA:",
-                                         f"{best_mla_id} ({best_mla_tipo})")
-                                    with ui.row().classes("items-center gap-2 py-0.5 w-full"):
-                                        ui.html(ICO_API)
-                                        ui.label("Status:").classes("text-xs text-gray-500").style(
-                                            "min-width:215px"
-                                        )
-                                        ui.label(lbl_s).style(
-                                            f"{sty_s};border-radius:4px;padding:1px 8px;"
-                                            "font-size:11px;font-weight:600"
-                                        )
+                                    _row(ICO_API, "MLA:", f"{best_iid} ({best_tipo})")
                                     _row(ICO_API, "Precio listado (original_price):",
                                          fmt_m(orig_p) if orig_p else "—")
                                     _row(ICO_API, "Precio ML (price):",
                                          fmt_m(prom_p) if prom_p else "—")
-                                    _row(ICO_API, "ML %:",  fmt_p1(ml_pct))
-                                    _row(ICO_API, "Yo %:",  fmt_p1(sel_pct))
-                                    _row(ICO_API, "Vigencia:", vig)
+                                    _row(ICO_API, "ML%:", fmt_p1(ml_pct))
+                                    _row(ICO_API, "Yo%:", fmt_p1(sel_pct))
                                     ui.separator().classes("my-1")
                                     _row(ICO_CALC, "ML aporta $:",
                                          fmt_m(ml_aporte) if ml_aporte else "—")
@@ -872,69 +1022,59 @@ def build_tab_promos(container) -> None:
                                          fmt_m(yo_aporte) if yo_aporte else "—")
                                     _row(ICO_CALC, "Descuento total %:",
                                          fmt_p1(desc_pct) if desc_pct else "—")
-                                    _row(ICO_CALC, "Precio recomendado (×1.8):",
-                                         fmt_m(precio_rec) if precio_rec else "—")
-                                    _row(ICO_CALC, "ML máximo posible (precio rec.):",
-                                         fmt_m(ml_max) if ml_max else "—")
-
-                            ui.separator().classes("my-2")
-
-                            # ── TODAS LAS PROMOS DISPONIBLES ─────────────────────────
-                            ui.label("Todas las promos disponibles").classes(
-                                "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
-                            )
-                            if all_sp_promos:
-                                _render_promos_table(all_sp_promos)
+                                    with ui.row().classes("items-center gap-2 py-0.5 w-full"):
+                                        ui.html(ICO_CALC)
+                                        ui.label("¿Descuento ≥ 10%?:").classes(
+                                            "text-xs text-gray-500"
+                                        ).style("min-width:215px")
+                                        if desc_pct >= 10:
+                                            ui.label("Sí").classes(
+                                                "text-xs font-semibold"
+                                            ).style("color:#1B7A3E")
+                                        elif desc_pct > 0:
+                                            ui.label(
+                                                "No — Descuento menor al 10% — ML podría"
+                                                " no aportar el monto completo"
+                                            ).style(
+                                                "font-size:11px;color:#C0392B;font-weight:600"
+                                            )
+                                        else:
+                                            ui.label("—").classes("text-xs text-gray-400")
                             else:
-                                ui.label("Sin datos de promos.").classes("text-xs text-gray-400 italic")
+                                ui.label("Sin promos SMART disponibles.").classes(
+                                    "text-xs text-gray-400 italic"
+                                )
 
                     def _on_prod_click(r) -> None:
                         dlg = ui.dialog()
                         with dlg:
                             with ui.card().style(
-                                "min-width:560px;max-width:720px;padding:16px;overflow-y:auto;max-height:88vh"
+                                "min-width:580px;max-width:780px;padding:16px;"
+                                "overflow-y:auto;max-height:88vh"
                             ):
-                                ui.label(r["producto"]).classes("font-bold text-sm mb-1 leading-tight")
-                                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
-                                    ui.label(f"SKU: {r['sku']}").classes("text-xs font-mono text-gray-600")
-                                    ui.label(f"Stock: {r['stock']}").classes("text-xs font-bold text-gray-700")
-
-                                ui.label("Publicaciones").classes(
-                                    "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
+                                ui.label(r["producto"]).classes(
+                                    "font-bold text-sm mb-1 leading-tight"
                                 )
-                                for md in r.get("mlas_detail", []):
-                                    with ui.row().classes(
-                                        "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
-                                    ):
-                                        ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
-                                        _lt_md = str(md.get("lt") or "").lower()
-                                        _t_sty = (
-                                            "background:#e3f2fd;color:#1565c0"
-                                            if "pro" in _lt_md
-                                            else "background:#f3e5f5;color:#6a1b9a"
-                                        )
-                                        ui.label(md["tipo"]).style(
-                                            f"{_t_sty};border-radius:4px;padding:1px 6px;"
-                                            "font-size:11px;font-weight:600;white-space:nowrap"
-                                        )
-                                        ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
-                                        _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
-                                        ui.label(md["status"]).style(
-                                            f"color:{_sc};font-size:10px;font-weight:600;"
-                                            "background:#f5f5f5;border-radius:3px;padding:1px 5px"
-                                        )
-
+                                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
+                                    ui.label(f"SKU: {r['sku']}").classes(
+                                        "text-xs font-mono text-gray-600"
+                                    )
+                                    ui.label(f"Stock: {r['stock']}").classes(
+                                        "text-xs font-bold text-gray-700"
+                                    )
                                 ui.separator().classes("my-2")
-
                                 promo_section = ui.element("div").classes("w-full")
                                 with promo_section:
                                     with ui.row().classes("items-center gap-2 py-3"):
                                         ui.spinner(size="sm")
-                                        ui.label("Cargando datos de promos...").classes("text-xs text-gray-500")
-
+                                        ui.label("Cargando datos de promos...").classes(
+                                            "text-xs text-gray-500"
+                                        )
                                 ui.button("Cerrar", on_click=dlg.close).props(
                                     "unelevated dense no-caps"
-                                ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
+                                ).style("background:#185FA5;color:#fff").classes(
+                                    "mt-3 self-end text-sm"
+                                )
                         dlg.open()
                         background_tasks.create(_fetch_promos_async(r, promo_section))
 
