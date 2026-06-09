@@ -704,29 +704,53 @@ def build_tab_promos(container) -> None:
                                     if _v > 0:
                                         disc_p = max(disc_p, _v)
                         precio_ml = smart_p if smart_p > 0 else disc_p
+
+                        mlas_detail = []
+                        for mla_id in pr["mlas"]:
+                            _entry = all_items_by_id.get(mla_id)
+                            if _entry:
+                                _it_d      = _entry[0]
+                                _lt        = str(_it_d.get("listing_type_id") or "").lower()
+                                _cuotas_s  = _cuotas_desde_item(_it_d)
+                                _tipo_base = "Premium" if "pro" in _lt else "Clásica"
+                                _tipo_lbl  = (
+                                    f"{_tipo_base} ({_cuotas_s.lstrip('x')} cuotas)"
+                                    if (_cuotas_s and _cuotas_s != "x1")
+                                    else f"{_tipo_base} (sin cuotas)"
+                                )
+                                mlas_detail.append({
+                                    "id":     mla_id,
+                                    "tipo":   _tipo_lbl,
+                                    "precio": float(_it_d.get("price") or 0),
+                                    "status": str(_it_d.get("status") or "").lower(),
+                                })
+                            else:
+                                mlas_detail.append({"id": mla_id, "tipo": "—", "precio": 0.0, "status": "—"})
+
                         table_rows.append({
-                            "_idx":       len(table_rows),
-                            "sku":        pr["sku"],
-                            "mlas":       pr["mlas"],
-                            "producto":   pr["producto"],
-                            "precio_act": pr["precio_act"],
-                            "stock":      pr["stock"],
-                            "precio_ml":  precio_ml,
-                            "precio_rec": round(precio_ml * 1.8) if precio_ml > 0 else 0,
-                            "promo":      pr["promo"],
-                            "vigencia":   pr["vigencia"],
-                            "meli_pct":   pr["meli_pct"],
-                            "seller_pct": pr["seller_pct"],
+                            "_idx":        len(table_rows),
+                            "sku":         pr["sku"],
+                            "mlas":        pr["mlas"],
+                            "mlas_detail": mlas_detail,
+                            "producto":    pr["producto"],
+                            "precio_act":  pr["precio_act"],
+                            "stock":       pr["stock"],
+                            "precio_ml":   precio_ml,
+                            "precio_rec":  round(precio_ml * 1.8) if precio_ml > 0 else 0,
+                            "promo":       pr["promo"],
+                            "vigencia":    pr["vigencia"],
+                            "meli_pct":    pr["meli_pct"],
+                            "seller_pct":  pr["seller_pct"],
                         })
 
-                    # ── MLA dialog ──────────────────────────────────────────
-                    with ui.dialog() as mla_dlg:
-                        with ui.card().style("min-width:300px;max-width:480px"):
-                            mla_dlg_title = ui.label("").classes("font-bold text-sm mb-1")
-                            mla_dlg_body  = ui.column().classes("gap-1")
-                            ui.button("Cerrar", on_click=mla_dlg.close).props(
-                                "flat dense no-caps"
-                            ).classes("mt-2 self-end text-xs")
+                    # ── Producto dialog ─────────────────────────────────────
+                    with ui.dialog() as prod_dlg:
+                        with ui.card().style("min-width:420px;max-width:560px;padding:16px"):
+                            prod_dlg_title = ui.label("").classes("font-bold text-sm mb-2 leading-tight")
+                            prod_dlg_body  = ui.column().classes("gap-1 w-full")
+                            ui.button("Cerrar", on_click=prod_dlg.close).props(
+                                "unelevated dense no-caps"
+                            ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
 
                     # ── Sort state ──────────────────────────────────────────
                     _sort_state = {"col": None, "asc": True}
@@ -740,16 +764,15 @@ def build_tab_promos(container) -> None:
                     _TD = "padding:3px 6px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
 
                     _col_defs = [
-                        ("SKU",         "sku",        "7%",  "left"),
-                        ("MLA",         "mla",        "8%",  "left"),
-                        ("Producto",    "producto",   "20%", "left"),
+                        ("SKU",         "sku",        "8%",  "left"),
+                        ("Producto",    "producto",   "24%", "left"),
                         ("Stock",       "stock",      "4%",  "center"),
                         ("Precio",      "precio_act", "8%",  "right"),
                         ("Precio ML",   "precio_ml",  "8%",  "right"),
                         ("Recomendado", "precio_rec", "9%",  "right"),
                         ("ML%",         "meli_pct",   "5%",  "right"),
                         ("Yo%",         "seller_pct", "5%",  "right"),
-                        ("Promo",       "promo",      "10%", "left"),
+                        ("Promo",       "promo",      "12%", "left"),
                         ("Vigencia",    "vigencia",   "10%", "center"),
                     ]
 
@@ -767,9 +790,7 @@ def build_tab_promos(container) -> None:
                         if col is None:
                             return base
                         rev = not _sort_state["asc"]
-                        if col == "mla":
-                            return sorted(base, key=lambda r: (r["mlas"][0] if r["mlas"] else "").lower(), reverse=rev)
-                        elif col in _NUMERIC:
+                        if col in _NUMERIC:
                             return sorted(base, key=lambda r: float(r.get(col) or 0), reverse=rev)
                         else:
                             return sorted(base, key=lambda r: str(r.get(col) or "").lower(), reverse=rev)
@@ -802,27 +823,20 @@ def build_tab_promos(container) -> None:
                         for _i, _r in enumerate(_sorted_rows()):
                             _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
 
-                            _mlas      = _r["mlas"]
-                            _first_mla = _mlas[0] if _mlas else "—"
-                            if len(_mlas) > 1:
-                                _oc2      = f"getElement({eid}).emit('show_mlas','{_r['_idx']}')"
-                                _mla_cell = (
-                                    f'<span style="color:#1565c0;text-decoration:underline;cursor:pointer" '
-                                    f'onclick="{_html_esc.escape(_oc2)}">'
-                                    f'{_html_esc.escape(_first_mla)}'
-                                    f'<span style="color:#999;font-size:10px;margin-left:2px">+{len(_mlas)-1}</span>'
-                                    f'</span>'
-                                )
-                            else:
-                                _mla_cell = _html_esc.escape(_first_mla)
+                            _oc_prod   = f"getElement({eid}).emit('show_prod','{_r['_idx']}')"
+                            _prod_cell = (
+                                f'<span style="color:#1565c0;text-decoration:underline;cursor:pointer" '
+                                f'onclick="{_html_esc.escape(_oc_prod)}">'
+                                f'{_html_esc.escape(_r["producto"])}'
+                                f'</span>'
+                            )
 
                             _pml     = _r.get("precio_ml", 0)
                             _rec     = _r.get("precio_rec", 0)
                             _rec_col = "#2e7d32" if (_rec > 0 and _r["precio_act"] >= _rec) else "#e65100"
                             _cells = "".join([
                                 f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
-                                f'<td style="{_TD};font-size:11px;color:#555;text-align:left">{_mla_cell}</td>',
-                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["producto"])}">{_html_esc.escape(_r["producto"])}</td>',
+                                f'<td style="{_TD};text-align:left">{_prod_cell}</td>',
                                 f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
                                 f'<td style="{_TD};text-align:right">{_pesos(_pml)}</td>',
@@ -851,7 +865,7 @@ def build_tab_promos(container) -> None:
                             _sort_state["asc"] = True
                         html_el.set_content(_build_html())
 
-                    def _on_show_mlas(e) -> None:
+                    def _on_show_prod(e) -> None:
                         raw = e.args
                         if isinstance(raw, list) and raw:
                             raw = raw[0]
@@ -862,15 +876,40 @@ def build_tab_promos(container) -> None:
                         tr = next((r for r in table_rows if r["_idx"] == idx), None)
                         if not tr:
                             return
-                        mla_dlg_title.set_text(f"MLAs para SKU: {tr['sku']}")
-                        mla_dlg_body.clear()
-                        with mla_dlg_body:
-                            for m in tr["mlas"]:
-                                ui.label(m).classes("font-mono text-sm text-primary")
-                        mla_dlg.open()
+                        sku       = tr["sku"]
+                        costs     = _state["prod_costs"].get(sku, {})
+                        costo_usd = float(costs.get("costo_usd") or 0)
+                        prod_dlg_title.set_text(tr["producto"])
+                        prod_dlg_body.clear()
+                        with prod_dlg_body:
+                            with ui.row().classes("items-center gap-3 flex-wrap mb-1"):
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.label("SKU:").classes("text-xs text-gray-500 font-semibold")
+                                    ui.label(sku).classes("text-xs font-mono")
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.label("Stock:").classes("text-xs text-gray-500 font-semibold")
+                                    ui.label(str(tr["stock"])).classes("text-xs font-bold")
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.label("Costo u$:").classes("text-xs text-gray-500 font-semibold")
+                                    ui.label(f"u$ {costo_usd:.2f}" if costo_usd > 0 else "—").classes("text-xs font-bold")
+                            ui.separator().classes("my-1")
+                            ui.label("Publicaciones").classes(
+                                "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
+                            )
+                            for md in tr.get("mlas_detail", []):
+                                with ui.row().classes("items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"):
+                                    ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
+                                    ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
+                                    ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
+                                    _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
+                                    ui.label(md["status"]).style(
+                                        f"color:{_sc};font-size:10px;font-weight:600;"
+                                        "background:#f5f5f5;border-radius:3px;padding:1px 5px"
+                                    )
+                        prod_dlg.open()
 
                     html_el.on("sort", _on_sort)
-                    html_el.on("show_mlas", _on_show_mlas)
+                    html_el.on("show_prod", _on_show_prod)
                     html_el.set_content(_build_html())
 
             # ── Event handlers ────────────────────────────────────────────────
