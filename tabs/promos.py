@@ -788,113 +788,56 @@ def build_tab_promos(container) -> None:
 
                     def _on_filter_text(e) -> None:
                         _filter_text["v"] = e.value or ""
-                        html_el.set_content(_build_html())
+                        _render_table()
 
                     ui.input(
                         placeholder="Buscar producto o SKU...",
                         on_change=_on_filter_text,
                     ).props("outlined dense clearable").classes("w-80 mb-1")
 
-                    html_el = ui.html("")
+                    table_wrapper = ui.element("div").style(
+                        "width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)"
+                    )
 
-                    def _build_html() -> str:
-                        eid = html_el.id
-
-                        _thead_cells = []
-                        for _lbl, _ck, _w, _a in _col_defs:
-                            _oc  = f"getElement({eid}).emit('sort','{_ck}')"
-                            _sty = f"width:{_w};{_TH};text-align:{_a}"
-                            _thead_cells.append(
-                                f'<th style="{_sty}" onclick="{_html_esc.escape(_oc)}">'
-                                f'{_html_esc.escape(_lbl)}</th>'
-                            )
-                        _thead = "".join(_thead_cells)
-
-                        _trows = []
-                        for _i, _r in enumerate(_sorted_rows()):
-                            _bg  = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
-
-                            _oc_prod   = f"getElement({eid}).emit('show_prod','{_r['_idx']}')"
-                            _prod_cell = (
-                                f'<span style="color:#1565c0;text-decoration:underline;cursor:pointer" '
-                                f'onclick="{_html_esc.escape(_oc_prod)}">'
-                                f'{_html_esc.escape(_r["producto"])}'
-                                f'</span>'
-                            )
-
-                            _pml     = _r.get("precio_ml", 0)
-                            _rec     = _r.get("precio_rec", 0)
-                            _rec_col = "#2e7d32" if (_rec > 0 and _r["precio_act"] >= _rec) else "#e65100"
-                            _cells = "".join([
-                                f'<td style="{_TD};text-align:left">{_html_esc.escape(_r["sku"])}</td>',
-                                f'<td style="{_TD};text-align:left">{_prod_cell}</td>',
-                                f'<td style="{_TD};text-align:center">{_r["stock"]}</td>',
-                                f'<td style="{_TD};text-align:right">{_pesos(_r["precio_act"])}</td>',
-                                f'<td style="{_TD};text-align:right">{_pesos(_pml)}</td>',
-                                f'<td style="{_TD};text-align:right;color:{_rec_col};font-weight:600">{_pesos(_rec)}</td>',
-                                f'<td style="{_TD};text-align:right;color:#2e7d32;font-weight:700">{_r["meli_pct"]:.1f}%</td>',
-                                f'<td style="{_TD};text-align:right;color:#e65100;font-weight:700">{_r["seller_pct"]:.1f}%</td>',
-                                f'<td style="{_TD};text-align:left" title="{_html_esc.escape(_r["promo"])}">{_html_esc.escape(_r["promo"] or "")}</td>',
-                                f'<td style="{_TD};text-align:center">{_html_esc.escape(_r["vigencia"])}</td>',
-                            ])
-                            _trows.append(f'<tr style="background:{_bg};border-bottom:1px solid #e8e8e8">{_cells}</tr>')
-
-                        return (
-                            '<div style="width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)">'
-                            '<table style="table-layout:fixed;width:100%;border-collapse:collapse">'
-                            f'<thead><tr>{_thead}</tr></thead>'
-                            f'<tbody>{"".join(_trows)}</tbody>'
-                            '</table></div>'
-                        )
-
-                    def _on_sort(e) -> None:
-                        col = e.args
-                        if _sort_state["col"] == col:
-                            _sort_state["asc"] = not _sort_state["asc"]
-                        else:
-                            _sort_state["col"] = col
-                            _sort_state["asc"] = True
-                        html_el.set_content(_build_html())
-
-                    def _on_show_prod(e) -> None:
-                        raw = e.args
-                        if isinstance(raw, list) and raw:
-                            raw = raw[0]
-                        try:
-                            idx = int(str(raw).strip()) if raw is not None else -1
-                        except (TypeError, ValueError):
-                            return
-                        tr = next((r for r in table_rows if r["_idx"] == idx), None)
-                        if not tr:
-                            return
-                        sku       = tr["sku"]
-                        costs     = _state["prod_costs"].get(sku, {})
-                        costo_usd = float(costs.get("costo_usd") or 0)
+                    def _show_prod_dlg(r) -> None:
+                        sku_d       = r["sku"]
+                        costs_d     = _state["prod_costs"].get(sku_d, {})
+                        costo_usd_d = float(costs_d.get("costo_usd") or 0)
                         dlg = ui.dialog()
                         with dlg:
                             with ui.card().style("min-width:420px;max-width:560px;padding:16px"):
-                                ui.label(tr["producto"]).classes("font-bold text-sm mb-2 leading-tight")
+                                ui.label(r["producto"]).classes("font-bold text-sm mb-2 leading-tight")
                                 with ui.column().classes("gap-1 w-full"):
                                     with ui.row().classes("items-center gap-3 flex-wrap mb-1"):
                                         with ui.row().classes("items-center gap-1"):
                                             ui.label("SKU:").classes("text-xs text-gray-500 font-semibold")
-                                            ui.label(sku).classes("text-xs font-mono")
+                                            ui.label(sku_d).classes("text-xs font-mono")
                                         with ui.row().classes("items-center gap-1"):
                                             ui.label("Stock:").classes("text-xs text-gray-500 font-semibold")
-                                            ui.label(str(tr["stock"])).classes("text-xs font-bold")
+                                            ui.label(str(r["stock"])).classes("text-xs font-bold")
                                         with ui.row().classes("items-center gap-1"):
                                             ui.label("Costo u$:").classes("text-xs text-gray-500 font-semibold")
-                                            ui.label(f"u$ {costo_usd:.2f}" if costo_usd > 0 else "—").classes("text-xs font-bold")
+                                            ui.label(
+                                                f"u$ {costo_usd_d:.2f}" if costo_usd_d > 0 else "—"
+                                            ).classes("text-xs font-bold")
                                     ui.separator().classes("my-1")
                                     ui.label("Publicaciones").classes(
                                         "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
                                     )
-                                    for md in tr.get("mlas_detail", []):
-                                        with ui.row().classes("items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"):
-                                            ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
+                                    for md in r.get("mlas_detail", []):
+                                        with ui.row().classes(
+                                            "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
+                                        ):
+                                            ui.label(md["id"]).classes(
+                                                "text-xs font-mono text-primary w-28 shrink-0"
+                                            )
                                             ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
-                                            ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
-                                            _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
+                                            ui.label(fmt_m(md["precio"])).classes(
+                                                "text-xs font-semibold w-20 text-right"
+                                            )
+                                            _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(
+                                                md["status"], "#888"
+                                            )
                                             ui.label(md["status"]).style(
                                                 f"color:{_sc};font-size:10px;font-weight:600;"
                                                 "background:#f5f5f5;border-radius:3px;padding:1px 5px"
@@ -904,9 +847,74 @@ def build_tab_promos(container) -> None:
                                 ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
                         dlg.open()
 
-                    html_el.on("sort", _on_sort)
-                    html_el.on("show_prod", _on_show_prod)
-                    html_el.set_content(_build_html())
+                    def _render_table() -> None:
+                        table_wrapper.clear()
+                        with table_wrapper:
+                            with ui.element("table").style(
+                                "table-layout:fixed;width:100%;border-collapse:collapse"
+                            ):
+                                with ui.element("thead"):
+                                    with ui.element("tr"):
+                                        for _lbl, _ck, _w, _a in _col_defs:
+                                            with ui.element("th").style(
+                                                f"width:{_w};{_TH};text-align:{_a}"
+                                            ).on("click", lambda ck=_ck: _on_sort(ck)):
+                                                ui.label(_lbl)
+                                with ui.element("tbody"):
+                                    for _i, _r in enumerate(_sorted_rows()):
+                                        _bg      = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                                        _pml     = _r.get("precio_ml", 0)
+                                        _rec     = _r.get("precio_rec", 0)
+                                        _rec_col = (
+                                            "#2e7d32"
+                                            if (_rec > 0 and _r["precio_act"] >= _rec)
+                                            else "#e65100"
+                                        )
+                                        with ui.element("tr").style(
+                                            f"background:{_bg};border-bottom:1px solid #e8e8e8"
+                                        ):
+                                            with ui.element("td").style(f"{_TD};text-align:left"):
+                                                ui.label(_r["sku"])
+                                            with ui.element("td").style(f"{_TD};text-align:left"):
+                                                ui.label(_r["producto"]).style(
+                                                    "color:#1565c0;text-decoration:underline;"
+                                                    "cursor:pointer"
+                                                ).on("click", lambda r=_r: _show_prod_dlg(r))
+                                            with ui.element("td").style(f"{_TD};text-align:center"):
+                                                ui.label(str(_r["stock"]))
+                                            with ui.element("td").style(f"{_TD};text-align:right"):
+                                                ui.label(_pesos(_r["precio_act"]))
+                                            with ui.element("td").style(f"{_TD};text-align:right"):
+                                                ui.label(_pesos(_pml))
+                                            with ui.element("td").style(
+                                                f"{_TD};text-align:right;"
+                                                f"color:{_rec_col};font-weight:600"
+                                            ):
+                                                ui.label(_pesos(_rec))
+                                            with ui.element("td").style(
+                                                f"{_TD};text-align:right;"
+                                                "color:#2e7d32;font-weight:700"
+                                            ):
+                                                ui.label(f"{_r['meli_pct']:.1f}%")
+                                            with ui.element("td").style(
+                                                f"{_TD};text-align:right;"
+                                                "color:#e65100;font-weight:700"
+                                            ):
+                                                ui.label(f"{_r['seller_pct']:.1f}%")
+                                            with ui.element("td").style(f"{_TD};text-align:left"):
+                                                ui.label(_r["promo"] or "")
+                                            with ui.element("td").style(f"{_TD};text-align:center"):
+                                                ui.label(_r["vigencia"])
+
+                    def _on_sort(col) -> None:
+                        if _sort_state["col"] == col:
+                            _sort_state["asc"] = not _sort_state["asc"]
+                        else:
+                            _sort_state["col"] = col
+                            _sort_state["asc"] = True
+                        _render_table()
+
+                    _render_table()
 
             # ── Event handlers ────────────────────────────────────────────────
             def _on_filter_change(_=None) -> None:
