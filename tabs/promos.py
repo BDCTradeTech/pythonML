@@ -787,7 +787,7 @@ def build_tab_promos(container) -> None:
                         ICO_CALC = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517;flex-shrink:0"></i>'
 
                         def _row(ico, lbl, val):
-                            with ui.row().classes("items-center gap-2 py-0.5 w-full"):
+                            with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
                                 ui.html(ico)
                                 ui.label(lbl).classes("text-xs text-gray-500").style("min-width:215px")
                                 ui.label(val).classes("text-xs font-semibold")
@@ -845,50 +845,80 @@ def build_tab_promos(container) -> None:
                                 "12 cuotas":  "background:#FAEEDA;color:#854F0B",
                             }
                             _mla_price_rank = {md["id"]: i for i, md in enumerate(_sorted_mlas)}
-                            for md in _sorted_mlas:
-                                mla_id = md["id"]
-                                fresh  = fresh_map.get(mla_id, {})
-                                precio = float(fresh.get("price") or md.get("precio") or 0)
-                                st_raw = str(
-                                    fresh.get("status") or md.get("status") or ""
-                                ).lower()
-                                lt   = str(
-                                    fresh.get("listing_type_id") or md.get("lt") or ""
-                                ).lower()
-                                tipo    = md.get("tipo") or "—"
-                                stock_v = int(fresh.get("available_quantity") or md.get("stock") or 0)
-                                cat_raw = fresh.get("catalog_listing")
-                                if cat_raw is True:
-                                    origen_lbl = "Catálogo"
-                                    origen_sty = "background:#fff3e0;color:#e65100"
-                                else:
-                                    origen_lbl = "Propia"
-                                    origen_sty = "background:#e8f5e9;color:#1B7A3E"
-                                with ui.row().classes(
-                                    "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
+                            with ui.element("div").style("overflow-x:auto;width:100%"):
+                                with ui.element("table").style(
+                                    "width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed"
                                 ):
-                                    ui.label(mla_id).classes(
-                                        "text-xs font-mono text-primary w-28 shrink-0"
-                                    )
-                                    _t_sty = _TIPO_CLRS.get(tipo, "background:#f5f5f5;color:#555")
-                                    ui.label(tipo).style(
-                                        f"{_t_sty};border-radius:4px;padding:1px 6px;"
-                                        "font-size:11px;font-weight:600;white-space:nowrap"
-                                    )
-                                    ui.label(fmt_m(precio)).classes(
-                                        "text-xs font-semibold w-20 text-right"
-                                    )
-                                    ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500 w-16")
-                                    ui.label(origen_lbl).style(
-                                        f"{origen_sty};border-radius:4px;padding:1px 5px;"
-                                        "font-size:10px;font-weight:600"
-                                    )
-                                    if st_raw == "active":
-                                        ui.html('<i class="ti ti-circle-check" style="font-size:15px;color:#22C55E"></i>').tooltip("Publicación activa")
-                                    elif st_raw == "paused":
-                                        ui.html('<i class="ti ti-player-pause" style="font-size:15px;color:#BA7517"></i>').tooltip("Pausada")
-                                    elif st_raw:
-                                        ui.html('<i class="ti ti-alert-triangle" style="font-size:15px;color:#E24B4A"></i>').tooltip(st_raw.capitalize())
+                                    with ui.element("thead"):
+                                        with ui.element("tr").style(
+                                            "background:#f0f4f8;border-bottom:2px solid #d0d8e4"
+                                        ):
+                                            for _ch, _cw, _ca in [
+                                                ("MLA",    "120px", "left"),
+                                                ("Tipo",   "90px",  "left"),
+                                                ("Precio", "80px",  "right"),
+                                                ("Stock",  "55px",  "center"),
+                                                ("Origen", "70px",  "center"),
+                                                ("Estado", "48px",  "center"),
+                                            ]:
+                                                with ui.element("th").style(
+                                                    f"padding:3px 6px;text-align:{_ca};width:{_cw};"
+                                                    "font-weight:600;color:#555;white-space:nowrap;font-size:11px"
+                                                ):
+                                                    ui.label(_ch)
+                                    with ui.element("tbody"):
+                                        for _mi, md in enumerate(_sorted_mlas):
+                                            mla_id  = md["id"]
+                                            fresh   = fresh_map.get(mla_id, {})
+                                            precio  = float(fresh.get("price") or md.get("precio") or 0)
+                                            st_raw  = str(fresh.get("status") or md.get("status") or "").lower()
+                                            tipo    = md.get("tipo") or "—"
+                                            stock_v = int(fresh.get("available_quantity") or md.get("stock") or 0)
+                                            cat_raw = fresh.get("catalog_listing")
+                                            if cat_raw is True:
+                                                origen_lbl = "Catálogo"
+                                                origen_sty = "background:#fff3e0;color:#e65100"
+                                            else:
+                                                origen_lbl = "Propia"
+                                                origen_sty = "background:#e8f5e9;color:#1B7A3E"
+                                            _bg3 = "#f5f8fd" if _mi % 2 == 0 else "#ffffff"
+                                            with ui.element("tr").style(
+                                                f"background:{_bg3};border-bottom:1px solid #ececec"
+                                            ):
+                                                with ui.element("td").style(
+                                                    "padding:3px 6px;font-family:monospace;font-size:11px"
+                                                ):
+                                                    ui.label(mla_id)
+                                                with ui.element("td").style("padding:3px 6px"):
+                                                    _t_sty = _TIPO_CLRS.get(tipo, "background:#f5f5f5;color:#555")
+                                                    ui.label(tipo).style(
+                                                        f"{_t_sty};border-radius:4px;padding:1px 5px;"
+                                                        "font-size:10px;font-weight:600;white-space:nowrap"
+                                                    )
+                                                with ui.element("td").style(
+                                                    "padding:3px 6px;text-align:right;font-weight:600"
+                                                ):
+                                                    ui.label(fmt_m(precio))
+                                                with ui.element("td").style(
+                                                    "padding:3px 6px;text-align:center;color:#555"
+                                                ):
+                                                    ui.label(str(stock_v))
+                                                with ui.element("td").style(
+                                                    "padding:3px 6px;text-align:center"
+                                                ):
+                                                    ui.label(origen_lbl).style(
+                                                        f"{origen_sty};border-radius:4px;padding:1px 5px;"
+                                                        "font-size:10px;font-weight:600"
+                                                    )
+                                                with ui.element("td").style(
+                                                    "padding:3px 6px;text-align:center"
+                                                ):
+                                                    if st_raw == "active":
+                                                        ui.html('<i class="ti ti-circle-check" style="font-size:15px;color:#22C55E"></i>').tooltip("Publicación activa")
+                                                    elif st_raw == "paused":
+                                                        ui.html('<i class="ti ti-player-pause" style="font-size:15px;color:#BA7517"></i>').tooltip("Pausada")
+                                                    elif st_raw:
+                                                        ui.html('<i class="ti ti-alert-triangle" style="font-size:15px;color:#E24B4A"></i>').tooltip(st_raw.capitalize())
 
                             ui.separator().classes("my-2")
 
@@ -1034,7 +1064,7 @@ def build_tab_promos(container) -> None:
                                          fmt_m(yo_aporte) if yo_aporte else "—")
                                     _row(ICO_CALC, "Descuento total %:",
                                          fmt_p1(desc_pct) if desc_pct else "—")
-                                    with ui.row().classes("items-center gap-2 py-0.5 w-full"):
+                                    with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
                                         ui.html(ICO_CALC)
                                         ui.label("¿Descuento ≥ 10%?:").classes(
                                             "text-xs text-gray-500"
@@ -1050,6 +1080,21 @@ def build_tab_promos(container) -> None:
                                             ).style(
                                                 "font-size:11px;color:#C0392B;font-weight:600"
                                             )
+                                        else:
+                                            ui.label("—").classes("text-xs text-gray-400")
+                                    ui.separator().classes("my-1")
+                                    _current_mla_price = float(
+                                        fresh_map.get(best_iid, {}).get("price")
+                                        or _mla_map.get(best_iid, {}).get("precio")
+                                        or 0
+                                    )
+                                    with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
+                                        ui.html(ICO_CALC)
+                                        ui.label("🔧 Precio sugerido:").classes("text-xs text-gray-500").style("min-width:215px")
+                                        if orig_p > 0 and _current_mla_price > 0 and abs(_current_mla_price - orig_p) < 1:
+                                            ui.label("Precio actual es óptimo ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
+                                        elif orig_p > 0:
+                                            ui.label(f"{fmt_m(orig_p)} (para {best_iid})").classes("text-xs font-semibold").style("color:#e65100")
                                         else:
                                             ui.label("—").classes("text-xs text-gray-400")
                             else:
