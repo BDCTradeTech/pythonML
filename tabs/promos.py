@@ -855,10 +855,9 @@ def build_tab_promos(container) -> None:
                                         ):
                                             for _ch, _cw, _ca in [
                                                 ("MLA",    "120px", "left"),
-                                                ("Tipo",   "90px",  "left"),
+                                                ("Tipo",   "130px", "left"),
                                                 ("Precio", "80px",  "right"),
                                                 ("Stock",  "55px",  "center"),
-                                                ("Origen", "70px",  "center"),
                                                 ("Estado", "48px",  "center"),
                                             ]:
                                                 with ui.element("th").style(
@@ -891,7 +890,7 @@ def build_tab_promos(container) -> None:
                                                     ui.label(mla_id)
                                                 with ui.element("td").style("padding:3px 6px"):
                                                     _t_sty = _TIPO_CLRS.get(tipo, "background:#f5f5f5;color:#555")
-                                                    ui.label(tipo).style(
+                                                    ui.label(f"{tipo} · {origen_lbl}").style(
                                                         f"{_t_sty};border-radius:4px;padding:1px 5px;"
                                                         "font-size:10px;font-weight:600;white-space:nowrap"
                                                     )
@@ -906,13 +905,6 @@ def build_tab_promos(container) -> None:
                                                 with ui.element("td").style(
                                                     "padding:3px 6px;text-align:center"
                                                 ):
-                                                    ui.label(origen_lbl).style(
-                                                        f"{origen_sty};border-radius:4px;padding:1px 5px;"
-                                                        "font-size:10px;font-weight:600"
-                                                    )
-                                                with ui.element("td").style(
-                                                    "padding:3px 6px;text-align:center"
-                                                ):
                                                     if st_raw == "active":
                                                         ui.html('<i class="ti ti-circle-check" style="font-size:15px;color:#22C55E"></i>').tooltip("Publicación activa")
                                                     elif st_raw == "paused":
@@ -920,7 +912,7 @@ def build_tab_promos(container) -> None:
                                                     elif st_raw:
                                                         ui.html('<i class="ti ti-alert-triangle" style="font-size:15px;color:#E24B4A"></i>').tooltip(st_raw.capitalize())
 
-                            ui.separator().classes("my-2")
+                            ui.separator().classes("my-1")
 
                             # ── TODAS LAS PROMOS SMART ─────────────────────────────────
                             if smart_promos:
@@ -937,8 +929,8 @@ def build_tab_promos(container) -> None:
                                             ):
                                                 for _ch, _ca in [
                                                     ("MLA", "left"), ("Tipo", "left"),
-                                                    ("Promo", "left"), ("Status", "center"),
-                                                    ("Precio ML", "right"), ("Precio Sug.", "right"),
+                                                    ("Promo", "left"), ("Precio ML", "right"),
+                                                    ("ML$", "right"), ("Precio Sug.", "right"),
                                                     ("ML$ máx", "right"),
                                                 ]:
                                                     with ui.element("th").style(
@@ -958,6 +950,8 @@ def build_tab_promos(container) -> None:
                                                 _md2  = _mla_map.get(_iid, {})
                                                 _tp2  = _md2.get("tipo", "—")
                                                 _lt2  = str(_md2.get("lt") or "").lower()
+                                                _cat2 = fresh_map.get(_iid, {}).get("catalog_listing")
+                                                _tp2_full = f"{_tp2} · {'Catálogo' if _cat2 is True else 'Propia'}"
                                                 _pnm  = str(_p.get("name") or "—")
                                                 _pst  = str(_p.get("status") or "").lower()
                                                 _slbl = STATUS_LABELS.get(_pst, _pst or "—")
@@ -985,7 +979,7 @@ def build_tab_promos(container) -> None:
                                                     with ui.element("td").style(
                                                         "padding:3px 6px"
                                                     ):
-                                                        ui.label(_tp2).style(
+                                                        ui.label(_tp2_full).style(
                                                             f"{_t3};border-radius:3px;"
                                                             "padding:1px 5px;font-size:10px;"
                                                             "font-weight:600;white-space:nowrap"
@@ -995,19 +989,16 @@ def build_tab_promos(container) -> None:
                                                     ):
                                                         ui.label(_pnm)
                                                     with ui.element("td").style(
-                                                        "padding:3px 6px;text-align:center"
-                                                    ):
-                                                        ui.label(_slbl).style(
-                                                            f"{_ssty};border-radius:3px;"
-                                                            "padding:1px 6px;font-size:10px;"
-                                                            "font-weight:600"
-                                                        )
-                                                    with ui.element("td").style(
                                                         "padding:3px 6px;text-align:right"
                                                     ):
                                                         ui.label(
                                                             fmt_m(_prml) if _prml else "—"
                                                         )
+                                                    with ui.element("td").style(
+                                                        "padding:3px 6px;text-align:right"
+                                                    ):
+                                                        _mlc_int = round(_mlc) if _mlc else 0
+                                                        ui.label(fmt_m(_mlc_int) if _mlc_int else "—")
                                                     with ui.element("td").style(
                                                         "padding:3px 6px;text-align:right;"
                                                         "font-weight:700"
@@ -1021,7 +1012,7 @@ def build_tab_promos(container) -> None:
                                                         _mlmax = round(_prml * 0.08) if _prml else 0
                                                         ui.label(fmt_m(_mlmax) if _mlmax else "—")
 
-                                ui.separator().classes("my-2")
+                                ui.separator().classes("my-1")
 
                                 # ── MEJOR PROMO ──────────────────────────────────────────
                                 ui.label("Mejor promo").classes(
@@ -1081,14 +1072,14 @@ def build_tab_promos(container) -> None:
                                 ui.label(r["producto"]).classes(
                                     "font-bold text-sm mb-1 leading-tight"
                                 )
-                                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
+                                with ui.row().classes("items-center gap-3 flex-wrap mb-1"):
                                     ui.label(f"SKU: {r['sku']}").classes(
                                         "text-xs font-mono text-gray-600"
                                     )
                                     ui.label(f"Stock: {r['stock']}").classes(
                                         "text-xs font-bold text-gray-700"
                                     )
-                                ui.separator().classes("my-2")
+                                ui.separator().classes("my-1")
                                 promo_section = ui.element("div").classes("w-full")
                                 with promo_section:
                                     with ui.row().classes("items-center gap-2 py-3"):
