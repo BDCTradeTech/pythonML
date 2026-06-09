@@ -681,40 +681,9 @@ def build_tab_promos(container) -> None:
                             "seller_pct":  cand["seller_pct"],
                         })
 
-                    _sp_tasks = [(i, iid) for i, pr in enumerate(_prelim) for iid in pr["all_ids"]]
-                    _sp_flat  = await asyncio.gather(*[
-                        run.io_bound(ml_get_seller_promotions_item, access_token, iid)
-                        for _, iid in _sp_tasks
-                    ])
-                    _sp_by_idx: dict = {}
-                    _sp_by_item: dict = {}
-                    for (_idx2, _iid), _sp_list2 in zip(_sp_tasks, _sp_flat):
-                        _sp_by_idx.setdefault(_idx2, []).append(_sp_list2)
-                        _sp_by_item[(_idx2, _iid)] = _sp_list2 or []
-
                     table_rows = []
-                    for i, pr in enumerate(_prelim):
-                        smart_p = 0.0
-                        disc_p  = 0.0
-                        for sp_list in _sp_by_idx.get(i, []):
-                            for _p in (sp_list or []):
-                                _ptype = str(_p.get("type") or "").upper()
-                                if _ptype == "SMART":
-                                    _v = float(_p.get("price") or 0)
-                                    if _v > 0:
-                                        smart_p = max(smart_p, _v)
-                                elif _ptype in ("PRICE_DISCOUNT", "DEAL"):
-                                    _v = float(_p.get("suggested_discounted_price") or 0)
-                                    if _v > 0:
-                                        disc_p = max(disc_p, _v)
-                        precio_ml = smart_p if smart_p > 0 else disc_p
-
-                        all_sp_promos = []
-                        for iid in pr["all_ids"]:
-                            for p in (_sp_by_item.get((i, iid)) or []):
-                                p_copy = dict(p)
-                                p_copy["_item_id"] = iid
-                                all_sp_promos.append(p_copy)
+                    for pr in _prelim:
+                        p_ml = pr["smart_price"]
 
                         mlas_detail = []
                         for _it_d in pr.get("all_items", []):
@@ -740,17 +709,17 @@ def build_tab_promos(container) -> None:
                             "_idx":        len(table_rows),
                             "sku":         pr["sku"],
                             "mlas":        pr["mlas"],
+                            "all_ids":     pr["all_ids"],
                             "mlas_detail": mlas_detail,
                             "producto":    pr["producto"],
                             "precio_act":  pr["precio_act"],
                             "stock":       pr["stock"],
-                            "precio_ml":   precio_ml,
-                            "precio_rec":  round(precio_ml * 1.8) if precio_ml > 0 else 0,
+                            "precio_ml":   p_ml,
+                            "precio_rec":  round(p_ml * 1.8) if p_ml > 0 else 0,
                             "promo":       pr["promo"],
                             "vigencia":    pr["vigencia"],
                             "meli_pct":    pr["meli_pct"],
                             "seller_pct":  pr["seller_pct"],
-                            "_sp_promos":  all_sp_promos,
                         })
 
                     # ── Sort state ──────────────────────────────────────────
@@ -809,10 +778,8 @@ def build_tab_promos(container) -> None:
                         "width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)"
                     )
 
-                    def _show_prod_dlg(r) -> None:
-                        sku_d        = r["sku"]
-                        sp_promos    = r.get("_sp_promos", [])
-                        smart_promos = [p for p in sp_promos if str(p.get("type") or "").upper() == "SMART"]
+                    async def _show_prod_dlg_async(r) -> None:
+                        sku_d = r["sku"]
 
                         ICO_API  = '<i class="ti ti-checks"     style="font-size:13px;color:#22C55E;flex-shrink:0"></i>'
                         ICO_CALC = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517;flex-shrink:0"></i>'
@@ -824,6 +791,7 @@ def build_tab_promos(container) -> None:
                                 ui.label(val).classes("text-xs font-semibold")
 
                         dlg = ui.dialog()
+                        promo_section = None
                         with dlg:
                             with ui.card().style(
                                 "min-width:560px;max-width:720px;padding:16px;overflow-y:auto;max-height:88vh"
@@ -852,89 +820,114 @@ def build_tab_promos(container) -> None:
 
                                 ui.separator().classes("my-2")
 
-                                # ── MEJOR PROMO CO-FINANCIADA ────────────────────────────
-                                if smart_promos:
-                                    ui.label("Mejor promo co-financiada").classes(
-                                        "text-xs font-bold text-gray-700 uppercase tracking-wide mb-2"
-                                    )
-                                    _mla_tipo_map = {md["id"]: md["tipo"] for md in r.get("mlas_detail", [])}
-                                    sp = max(
-                                        smart_promos,
-                                        key=lambda p: float(p.get("meli_percentage") or 0) * float(p.get("original_price") or 0),
-                                    )
-                                    orig_p        = float(sp.get("original_price") or 0)
-                                    prom_p        = float(sp.get("price") or 0)
-                                    ml_pct        = float(sp.get("meli_percentage") or 0)
-                                    sel_pct       = float(sp.get("seller_percentage") or 0)
-                                    status        = str(sp.get("status") or "").lower()
-                                    start_d       = (sp.get("start_date") or "")[:10]
-                                    end_d         = (sp.get("finish_date") or "")[:10]
-                                    vig           = f"{start_d} — {end_d}" if (start_d or end_d) else "—"
-                                    best_mla_id   = sp.get("_item_id", "—")
-                                    best_mla_tipo = _mla_tipo_map.get(best_mla_id, "—")
-
-                                    if orig_p > 0 and prom_p > 0:
-                                        desc_abs     = orig_p - prom_p
-                                        ml_aporte    = min(ml_pct / 100 * orig_p, 0.10 * desc_abs)
-                                        yo_aporte    = desc_abs - ml_aporte
-                                        desc_pct     = desc_abs / orig_p * 100
-                                        precio_rec   = round(prom_p * 1.8)
-                                        desc_abs_rec = precio_rec - prom_p
-                                        ml_max       = round(min(ml_pct / 100 * precio_rec, 0.10 * desc_abs_rec), 2) if desc_abs_rec > 0 else 0.0
-                                    else:
-                                        ml_aporte = yo_aporte = desc_pct = precio_rec = ml_max = 0.0
-
-                                    sty_s = STATUS_STYLES.get(status, "background:#888;color:#fff")
-                                    lbl_s = STATUS_LABELS.get(status, status or "—")
-
-                                    with ui.card().classes("w-full p-2 border border-blue-200 mb-2"):
-                                        _row(ICO_API, "Promo:",
-                                             f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
-                                        _row(ICO_API, "MLA:",
-                                             f"{best_mla_id} ({best_mla_tipo})")
-                                        with ui.row().classes("items-center gap-2 py-0.5 w-full"):
-                                            ui.html(ICO_API)
-                                            ui.label("Status:").classes("text-xs text-gray-500").style(
-                                                "min-width:215px"
-                                            )
-                                            ui.label(lbl_s).style(
-                                                f"{sty_s};border-radius:4px;padding:1px 8px;"
-                                                "font-size:11px;font-weight:600"
-                                            )
-                                        _row(ICO_API, "Precio listado (original_price):",
-                                             fmt_m(orig_p) if orig_p else "—")
-                                        _row(ICO_API, "Precio ML (price):",
-                                             fmt_m(prom_p) if prom_p else "—")
-                                        _row(ICO_API, "ML %:",  fmt_p1(ml_pct))
-                                        _row(ICO_API, "Yo %:",  fmt_p1(sel_pct))
-                                        _row(ICO_API, "Vigencia:", vig)
-                                        ui.separator().classes("my-1")
-                                        _row(ICO_CALC, "ML aporta $:",
-                                             fmt_m(ml_aporte) if ml_aporte else "—")
-                                        _row(ICO_CALC, "Yo aporto $:",
-                                             fmt_m(yo_aporte) if yo_aporte else "—")
-                                        _row(ICO_CALC, "Descuento total %:",
-                                             fmt_p1(desc_pct) if desc_pct else "—")
-                                        _row(ICO_CALC, "Precio recomendado (×1.8):",
-                                             fmt_m(precio_rec) if precio_rec else "—")
-                                        _row(ICO_CALC, "ML máximo posible (precio rec.):",
-                                             fmt_m(ml_max) if ml_max else "—")
-
-                                ui.separator().classes("my-2")
-
-                                # ── TODAS LAS PROMOS DISPONIBLES ─────────────────────────
-                                ui.label("Todas las promos disponibles").classes(
-                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
-                                )
-                                if sp_promos:
-                                    _render_promos_table(sp_promos)
-                                else:
-                                    ui.label("Sin datos de promos.").classes("text-xs text-gray-400 italic")
+                                # Placeholder — se reemplaza tras fetch on-demand
+                                promo_section = ui.element("div").classes("w-full")
+                                with promo_section:
+                                    with ui.row().classes("items-center gap-2 py-3"):
+                                        ui.spinner(size="sm")
+                                        ui.label("Cargando datos de promos...").classes("text-xs text-gray-500")
 
                                 ui.button("Cerrar", on_click=dlg.close).props(
                                     "unelevated dense no-caps"
                                 ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
                         dlg.open()
+
+                        # ── Fetch promos on-demand ───────────────────────────────────────
+                        all_ids = r.get("all_ids", [])
+                        sp_flat = await asyncio.gather(*[
+                            run.io_bound(ml_get_seller_promotions_item, access_token, iid)
+                            for iid in all_ids
+                        ])
+
+                        all_sp_promos = []
+                        for iid, sp_list in zip(all_ids, sp_flat):
+                            for p in (sp_list or []):
+                                p_copy = dict(p)
+                                p_copy["_item_id"] = iid
+                                all_sp_promos.append(p_copy)
+
+                        smart_promos = [p for p in all_sp_promos if str(p.get("type") or "").upper() == "SMART"]
+
+                        promo_section.clear()
+                        with promo_section:
+                            # ── MEJOR PROMO CO-FINANCIADA ────────────────────────────
+                            if smart_promos:
+                                ui.label("Mejor promo co-financiada").classes(
+                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-2"
+                                )
+                                _mla_tipo_map = {md["id"]: md["tipo"] for md in r.get("mlas_detail", [])}
+                                sp = max(
+                                    smart_promos,
+                                    key=lambda p: float(p.get("meli_percentage") or 0) * float(p.get("original_price") or 0),
+                                )
+                                orig_p        = float(sp.get("original_price") or 0)
+                                prom_p        = float(sp.get("price") or 0)
+                                ml_pct        = float(sp.get("meli_percentage") or 0)
+                                sel_pct       = float(sp.get("seller_percentage") or 0)
+                                status        = str(sp.get("status") or "").lower()
+                                start_d       = (sp.get("start_date") or "")[:10]
+                                end_d         = (sp.get("finish_date") or "")[:10]
+                                vig           = f"{start_d} — {end_d}" if (start_d or end_d) else "—"
+                                best_mla_id   = sp.get("_item_id", "—")
+                                best_mla_tipo = _mla_tipo_map.get(best_mla_id, "—")
+
+                                if orig_p > 0 and prom_p > 0:
+                                    desc_abs     = orig_p - prom_p
+                                    ml_aporte    = min(ml_pct / 100 * orig_p, 0.10 * desc_abs)
+                                    yo_aporte    = desc_abs - ml_aporte
+                                    desc_pct     = desc_abs / orig_p * 100
+                                    precio_rec   = round(prom_p * 1.8)
+                                    desc_abs_rec = precio_rec - prom_p
+                                    ml_max       = round(min(ml_pct / 100 * precio_rec, 0.10 * desc_abs_rec), 2) if desc_abs_rec > 0 else 0.0
+                                else:
+                                    ml_aporte = yo_aporte = desc_pct = precio_rec = ml_max = 0.0
+
+                                sty_s = STATUS_STYLES.get(status, "background:#888;color:#fff")
+                                lbl_s = STATUS_LABELS.get(status, status or "—")
+
+                                with ui.card().classes("w-full p-2 border border-blue-200 mb-2"):
+                                    _row(ICO_API, "Promo:",
+                                         f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
+                                    _row(ICO_API, "MLA:",
+                                         f"{best_mla_id} ({best_mla_tipo})")
+                                    with ui.row().classes("items-center gap-2 py-0.5 w-full"):
+                                        ui.html(ICO_API)
+                                        ui.label("Status:").classes("text-xs text-gray-500").style(
+                                            "min-width:215px"
+                                        )
+                                        ui.label(lbl_s).style(
+                                            f"{sty_s};border-radius:4px;padding:1px 8px;"
+                                            "font-size:11px;font-weight:600"
+                                        )
+                                    _row(ICO_API, "Precio listado (original_price):",
+                                         fmt_m(orig_p) if orig_p else "—")
+                                    _row(ICO_API, "Precio ML (price):",
+                                         fmt_m(prom_p) if prom_p else "—")
+                                    _row(ICO_API, "ML %:",  fmt_p1(ml_pct))
+                                    _row(ICO_API, "Yo %:",  fmt_p1(sel_pct))
+                                    _row(ICO_API, "Vigencia:", vig)
+                                    ui.separator().classes("my-1")
+                                    _row(ICO_CALC, "ML aporta $:",
+                                         fmt_m(ml_aporte) if ml_aporte else "—")
+                                    _row(ICO_CALC, "Yo aporto $:",
+                                         fmt_m(yo_aporte) if yo_aporte else "—")
+                                    _row(ICO_CALC, "Descuento total %:",
+                                         fmt_p1(desc_pct) if desc_pct else "—")
+                                    _row(ICO_CALC, "Precio recomendado (×1.8):",
+                                         fmt_m(precio_rec) if precio_rec else "—")
+                                    _row(ICO_CALC, "ML máximo posible (precio rec.):",
+                                         fmt_m(ml_max) if ml_max else "—")
+
+                            ui.separator().classes("my-2")
+
+                            # ── TODAS LAS PROMOS DISPONIBLES ─────────────────────────
+                            ui.label("Todas las promos disponibles").classes(
+                                "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
+                            )
+                            if all_sp_promos:
+                                _render_promos_table(all_sp_promos)
+                            else:
+                                ui.label("Sin datos de promos.").classes("text-xs text-gray-400 italic")
 
                     def _render_table() -> None:
                         table_wrapper.clear()
@@ -968,7 +961,7 @@ def build_tab_promos(container) -> None:
                                                 ui.label(_r["producto"]).style(
                                                     "color:#1565c0;text-decoration:underline;"
                                                     "cursor:pointer"
-                                                ).on("click", lambda r=_r: _show_prod_dlg(r))
+                                                ).on("click", lambda r=_r: background_tasks.create(_show_prod_dlg_async(r)))
                                             with ui.element("td").style(f"{_TD};text-align:center"):
                                                 ui.label(str(_r["stock"]))
                                             with ui.element("td").style(f"{_TD};text-align:right"):
