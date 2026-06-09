@@ -800,7 +800,7 @@ def build_tab_promos(container) -> None:
                         fresh_raw, sp_flat = await asyncio.gather(
                             run.io_bound(
                                 ml_get_items_multiget_with_attributes,
-                                access_token, all_ids, "id,price,listing_type_id,status",
+                                access_token, all_ids, "id,price,listing_type_id,status,available_quantity,catalog_listing",
                             ),
                             asyncio.gather(*[
                                 run.io_bound(ml_get_seller_promotions_item, access_token, iid)
@@ -831,7 +831,14 @@ def build_tab_promos(container) -> None:
                             ui.label("Publicaciones").classes(
                                 "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
                             )
-                            for md in mlas_orig:
+                            _sorted_mlas = sorted(
+                                mlas_orig,
+                                key=lambda _m: float(
+                                    fresh_map.get(_m["id"], {}).get("price")
+                                    or _m.get("precio") or 0
+                                ),
+                            )
+                            for md in _sorted_mlas:
                                 mla_id = md["id"]
                                 fresh  = fresh_map.get(mla_id, {})
                                 precio = float(fresh.get("price") or md.get("precio") or 0)
@@ -841,7 +848,15 @@ def build_tab_promos(container) -> None:
                                 lt   = str(
                                     fresh.get("listing_type_id") or md.get("lt") or ""
                                 ).lower()
-                                tipo = md.get("tipo") or "—"
+                                tipo    = md.get("tipo") or "—"
+                                stock_v = int(fresh.get("available_quantity") or md.get("stock") or 0)
+                                cat_raw = fresh.get("catalog_listing")
+                                if cat_raw is True:
+                                    origen_lbl = "Catálogo"
+                                    origen_sty = "background:#fff3e0;color:#e65100"
+                                else:
+                                    origen_lbl = "Propia"
+                                    origen_sty = "background:#e8f5e9;color:#1B7A3E"
                                 with ui.row().classes(
                                     "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
                                 ):
@@ -859,6 +874,11 @@ def build_tab_promos(container) -> None:
                                     )
                                     ui.label(fmt_m(precio)).classes(
                                         "text-xs font-semibold w-20 text-right"
+                                    )
+                                    ui.label(f"Stock: {stock_v}").classes("text-xs text-gray-500 w-16")
+                                    ui.label(origen_lbl).style(
+                                        f"{origen_sty};border-radius:4px;padding:1px 5px;"
+                                        "font-size:10px;font-weight:600"
                                     )
                                     if st_raw == "active":
                                         ui.label("Publicación activa").style(
@@ -901,7 +921,14 @@ def build_tab_promos(container) -> None:
                                                     ):
                                                         ui.label(_ch)
                                         with ui.element("tbody"):
-                                            for _pi, _p in enumerate(smart_promos):
+                                            for _pi, _p in enumerate(sorted(
+                                            smart_promos,
+                                            key=lambda _q: (
+                                                float(_q.get("meli_percentage") or 0)
+                                                * float(_q.get("original_price") or 0)
+                                            ),
+                                            reverse=True,
+                                        )):
                                                 _bg2  = "#f5f8fd" if _pi % 2 == 0 else "#ffffff"
                                                 _iid  = str(_p.get("_item_id") or "")
                                                 _md2  = _mla_map.get(_iid, {})
