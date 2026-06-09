@@ -491,6 +491,7 @@ def build_tab_promos(container) -> None:
                         clearable=True,
                         label="Buscar producto",
                     ).classes("w-80").props("outlined dense")
+                    search_slot = ui.element("div").style("display:none")
 
                 detail_col = ui.column().classes("w-full mt-2")
                 detail_col.style("display:none")
@@ -701,6 +702,7 @@ def build_tab_promos(container) -> None:
                             mlas_detail.append({
                                 "id":     mla_id,
                                 "tipo":   _tipo_lbl,
+                                "lt":     _lt,
                                 "precio": float(_it_d.get("price") or 0),
                                 "status": str(_it_d.get("status") or "").lower(),
                             })
@@ -769,10 +771,12 @@ def build_tab_promos(container) -> None:
                         _filter_text["v"] = e.value or ""
                         _render_table()
 
-                    ui.input(
-                        placeholder="Buscar producto o SKU...",
-                        on_change=_on_filter_text,
-                    ).props("outlined dense clearable").classes("w-80 mb-1")
+                    search_slot.clear()
+                    with search_slot:
+                        ui.input(
+                            placeholder="Buscar producto o SKU...",
+                            on_change=_on_filter_text,
+                        ).props("outlined dense clearable").classes("w-80")
 
                     table_wrapper = ui.element("div").style(
                         "width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)"
@@ -827,13 +831,13 @@ def build_tab_promos(container) -> None:
                                 best_mla_tipo = _mla_tipo_map.get(best_mla_id, "—")
 
                                 if orig_p > 0 and prom_p > 0:
-                                    desc_abs     = orig_p - prom_p
-                                    ml_aporte    = min(ml_pct / 100 * orig_p, 0.10 * desc_abs)
-                                    yo_aporte    = desc_abs - ml_aporte
-                                    desc_pct     = desc_abs / orig_p * 100
+                                    desc_abs  = orig_p - prom_p
+                                    ml_aporte = ml_pct / 100 * orig_p
+                                    yo_aporte = desc_abs - ml_aporte
+                                    desc_pct  = desc_abs / orig_p * 100
                                     precio_rec   = round(prom_p * 1.8)
                                     desc_abs_rec = precio_rec - prom_p
-                                    ml_max       = round(min(ml_pct / 100 * precio_rec, 0.10 * desc_abs_rec), 2) if desc_abs_rec > 0 else 0.0
+                                    ml_max       = round(ml_pct / 100 * precio_rec, 2) if desc_abs_rec > 0 else 0.0
                                 else:
                                     ml_aporte = yo_aporte = desc_pct = precio_rec = ml_max = 0.0
 
@@ -903,7 +907,16 @@ def build_tab_promos(container) -> None:
                                         "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
                                     ):
                                         ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
-                                        ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
+                                        _lt_md = str(md.get("lt") or "").lower()
+                                        _t_sty = (
+                                            "background:#e3f2fd;color:#1565c0"
+                                            if "pro" in _lt_md
+                                            else "background:#f3e5f5;color:#6a1b9a"
+                                        )
+                                        ui.label(md["tipo"]).style(
+                                            f"{_t_sty};border-radius:4px;padding:1px 6px;"
+                                            "font-size:11px;font-weight:600;white-space:nowrap"
+                                        )
                                         ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
                                         _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
                                         ui.label(md["status"]).style(
@@ -998,11 +1011,14 @@ def build_tab_promos(container) -> None:
             def _on_filter_change(_=None) -> None:
                 if sel_promo.value == "candidatos":
                     sel_prod.style("display:none")
+                    search_slot.style("display:block")
                     detail_col.clear()
                     detail_col.style("display:none")
                     background_tasks.create(_cargar_candidatos_async(), name="cargar_candidatos")
                     return
                 sel_prod.style("display:block")
+                search_slot.style("display:none")
+                search_slot.clear()
                 opts = _build_opts(sel_promo.value or "todas")
                 sel_prod.options = opts
                 sel_prod.value = None
