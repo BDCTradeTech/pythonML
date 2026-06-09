@@ -778,9 +778,7 @@ def build_tab_promos(container) -> None:
                         "width:100%;overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 200px)"
                     )
 
-                    async def _show_prod_dlg_async(r) -> None:
-                        sku_d = r["sku"]
-
+                    async def _fetch_promos_async(r, promo_section) -> None:
                         ICO_API  = '<i class="ti ti-checks"     style="font-size:13px;color:#22C55E;flex-shrink:0"></i>'
                         ICO_CALC = '<i class="ti ti-calculator" style="font-size:13px;color:#BA7517;flex-shrink:0"></i>'
 
@@ -790,49 +788,6 @@ def build_tab_promos(container) -> None:
                                 ui.label(lbl).classes("text-xs text-gray-500").style("min-width:215px")
                                 ui.label(val).classes("text-xs font-semibold")
 
-                        dlg = ui.dialog()
-                        promo_section = None
-                        with dlg:
-                            with ui.card().style(
-                                "min-width:560px;max-width:720px;padding:16px;overflow-y:auto;max-height:88vh"
-                            ):
-                                # ── HEADER ──────────────────────────────────────────────────
-                                ui.label(r["producto"]).classes("font-bold text-sm mb-1 leading-tight")
-                                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
-                                    ui.label(f"SKU: {sku_d}").classes("text-xs font-mono text-gray-600")
-                                    ui.label(f"Stock: {r['stock']}").classes("text-xs font-bold text-gray-700")
-
-                                ui.label("Publicaciones").classes(
-                                    "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
-                                )
-                                for md in r.get("mlas_detail", []):
-                                    with ui.row().classes(
-                                        "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
-                                    ):
-                                        ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
-                                        ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
-                                        ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
-                                        _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
-                                        ui.label(md["status"]).style(
-                                            f"color:{_sc};font-size:10px;font-weight:600;"
-                                            "background:#f5f5f5;border-radius:3px;padding:1px 5px"
-                                        )
-
-                                ui.separator().classes("my-2")
-
-                                # Placeholder — se reemplaza tras fetch on-demand
-                                promo_section = ui.element("div").classes("w-full")
-                                with promo_section:
-                                    with ui.row().classes("items-center gap-2 py-3"):
-                                        ui.spinner(size="sm")
-                                        ui.label("Cargando datos de promos...").classes("text-xs text-gray-500")
-
-                                ui.button("Cerrar", on_click=dlg.close).props(
-                                    "unelevated dense no-caps"
-                                ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
-                        dlg.open()
-
-                        # ── Fetch promos on-demand ───────────────────────────────────────
                         all_ids = r.get("all_ids", [])
                         sp_flat = await asyncio.gather(*[
                             run.io_bound(ml_get_seller_promotions_item, access_token, iid)
@@ -929,6 +884,47 @@ def build_tab_promos(container) -> None:
                             else:
                                 ui.label("Sin datos de promos.").classes("text-xs text-gray-400 italic")
 
+                    def _on_prod_click(r) -> None:
+                        dlg = ui.dialog()
+                        with dlg:
+                            with ui.card().style(
+                                "min-width:560px;max-width:720px;padding:16px;overflow-y:auto;max-height:88vh"
+                            ):
+                                ui.label(r["producto"]).classes("font-bold text-sm mb-1 leading-tight")
+                                with ui.row().classes("items-center gap-3 flex-wrap mb-2"):
+                                    ui.label(f"SKU: {r['sku']}").classes("text-xs font-mono text-gray-600")
+                                    ui.label(f"Stock: {r['stock']}").classes("text-xs font-bold text-gray-700")
+
+                                ui.label("Publicaciones").classes(
+                                    "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
+                                )
+                                for md in r.get("mlas_detail", []):
+                                    with ui.row().classes(
+                                        "items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"
+                                    ):
+                                        ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
+                                        ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
+                                        ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
+                                        _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
+                                        ui.label(md["status"]).style(
+                                            f"color:{_sc};font-size:10px;font-weight:600;"
+                                            "background:#f5f5f5;border-radius:3px;padding:1px 5px"
+                                        )
+
+                                ui.separator().classes("my-2")
+
+                                promo_section = ui.element("div").classes("w-full")
+                                with promo_section:
+                                    with ui.row().classes("items-center gap-2 py-3"):
+                                        ui.spinner(size="sm")
+                                        ui.label("Cargando datos de promos...").classes("text-xs text-gray-500")
+
+                                ui.button("Cerrar", on_click=dlg.close).props(
+                                    "unelevated dense no-caps"
+                                ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
+                        dlg.open()
+                        background_tasks.create(_fetch_promos_async(r, promo_section))
+
                     def _render_table() -> None:
                         table_wrapper.clear()
                         with table_wrapper:
@@ -961,7 +957,7 @@ def build_tab_promos(container) -> None:
                                                 ui.label(_r["producto"]).style(
                                                     "color:#1565c0;text-decoration:underline;"
                                                     "cursor:pointer"
-                                                ).on("click", lambda r=_r: background_tasks.create(_show_prod_dlg_async(r)))
+                                                ).on("click", lambda r=_r: _on_prod_click(r))
                                             with ui.element("td").style(f"{_TD};text-align:center"):
                                                 ui.label(str(_r["stock"]))
                                             with ui.element("td").style(f"{_TD};text-align:right"):
