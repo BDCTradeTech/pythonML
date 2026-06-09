@@ -938,8 +938,8 @@ def build_tab_promos(container) -> None:
                                                 for _ch, _ca in [
                                                     ("MLA", "left"), ("Tipo", "left"),
                                                     ("Promo", "left"), ("Status", "center"),
-                                                    ("Precio ML", "right"), ("ML%", "right"),
-                                                    ("ML$", "right"),
+                                                    ("Precio ML", "right"), ("Precio Sug.", "right"),
+                                                    ("ML$ máx", "right"),
                                                 ]:
                                                     with ui.element("th").style(
                                                         f"padding:4px 6px;text-align:{_ca};"
@@ -1010,14 +1010,16 @@ def build_tab_promos(container) -> None:
                                                         )
                                                     with ui.element("td").style(
                                                         "padding:3px 6px;text-align:right;"
-                                                        "color:#2e7d32;font-weight:700"
+                                                        "font-weight:700"
                                                     ):
-                                                        ui.label(f"{_mlp:.1f}%")
+                                                        _psug = round(_prml * 1.8) if _prml else 0
+                                                        ui.label(fmt_m(_psug) if _psug else "—")
                                                     with ui.element("td").style(
                                                         "padding:3px 6px;text-align:right;"
                                                         "font-weight:700"
                                                     ):
-                                                        ui.label(fmt_m(_mlc) if _mlc else "—")
+                                                        _mlmax = round(_prml * 0.08) if _prml else 0
+                                                        ui.label(fmt_m(_mlmax) if _mlmax else "—")
 
                                 ui.separator().classes("my-2")
 
@@ -1039,7 +1041,7 @@ def build_tab_promos(container) -> None:
                                 best_iid  = str(sp.get("_item_id") or "—")
                                 best_tipo = _mla_map.get(best_iid, {}).get("tipo", "—")
 
-                                with ui.card().classes("w-full p-2 border border-blue-200"):
+                                with ui.card().classes("w-full p-2 border border-blue-200").style("gap:0"):
                                     _row(ICO_API, "Promo:",
                                          f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
                                     _row(ICO_API, "MLA:", f"{best_iid} ({best_tipo})")
@@ -1056,7 +1058,6 @@ def build_tab_promos(container) -> None:
                                             or _mla_map.get(best_iid, {}).get("precio")
                                             or 0
                                         )
-                                        ui.separator().classes("my-1")
                                         with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
                                             ui.html(ICO_CALC)
                                             ui.label("🔧 Precio sug.:").classes("text-xs text-gray-500").style("min-width:215px")
