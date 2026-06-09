@@ -694,11 +694,10 @@ def build_tab_promos(container) -> None:
                                 continue
                             _lt        = str(_it_d.get("listing_type_id") or "").lower()
                             _cuotas_s  = _cuotas_desde_item(_it_d)
-                            _tipo_base = "Premium" if "pro" in _lt else "Clásica"
                             _tipo_lbl  = (
-                                f"{_tipo_base} ({_cuotas_s.lstrip('x')} cuotas)"
+                                f"{_cuotas_s.lstrip('x')} cuotas"
                                 if (_cuotas_s and _cuotas_s != "x1")
-                                else f"{_tipo_base} (sin cuotas)"
+                                else "Sin cuotas"
                             )
                             mlas_detail.append({
                                 "id":     mla_id,
@@ -838,6 +837,14 @@ def build_tab_promos(container) -> None:
                                     or _m.get("precio") or 0
                                 ),
                             )
+                            _TIPO_CLRS = {
+                                "Sin cuotas": "background:#EAF3DE;color:#3B6D11",
+                                "3 cuotas":   "background:#E6F1FB;color:#185FA5",
+                                "6 cuotas":   "background:#EEEDFE;color:#534AB7",
+                                "9 cuotas":   "background:#FAECE7;color:#993C1D",
+                                "12 cuotas":  "background:#FAEEDA;color:#854F0B",
+                            }
+                            _mla_price_rank = {md["id"]: i for i, md in enumerate(_sorted_mlas)}
                             for md in _sorted_mlas:
                                 mla_id = md["id"]
                                 fresh  = fresh_map.get(mla_id, {})
@@ -863,11 +870,7 @@ def build_tab_promos(container) -> None:
                                     ui.label(mla_id).classes(
                                         "text-xs font-mono text-primary w-28 shrink-0"
                                     )
-                                    _t_sty = (
-                                        "background:#e3f2fd;color:#1565c0"
-                                        if "pro" in lt
-                                        else "background:#f3e5f5;color:#6a1b9a"
-                                    )
+                                    _t_sty = _TIPO_CLRS.get(tipo, "background:#f5f5f5;color:#555")
                                     ui.label(tipo).style(
                                         f"{_t_sty};border-radius:4px;padding:1px 6px;"
                                         "font-size:11px;font-weight:600;white-space:nowrap"
@@ -881,18 +884,11 @@ def build_tab_promos(container) -> None:
                                         "font-size:10px;font-weight:600"
                                     )
                                     if st_raw == "active":
-                                        ui.label("Publicación activa").style(
-                                            "color:#1B7A3E;font-size:10px;font-weight:600;"
-                                            "background:#e8f5e9;border-radius:3px;padding:1px 6px"
-                                        )
+                                        ui.html('<i class="ti ti-circle-check" style="font-size:15px;color:#22C55E"></i>').tooltip("Publicación activa")
+                                    elif st_raw == "paused":
+                                        ui.html('<i class="ti ti-player-pause" style="font-size:15px;color:#BA7517"></i>').tooltip("Pausada")
                                     elif st_raw:
-                                        _lbl_st = {
-                                            "paused": "Pausada", "closed": "Cerrada"
-                                        }.get(st_raw, st_raw)
-                                        ui.label(_lbl_st).style(
-                                            "color:#888;font-size:10px;font-weight:600;"
-                                            "background:#f5f5f5;border-radius:3px;padding:1px 5px"
-                                        )
+                                        ui.html('<i class="ti ti-alert-triangle" style="font-size:15px;color:#E24B4A"></i>').tooltip(st_raw.capitalize())
 
                             ui.separator().classes("my-2")
 
@@ -913,7 +909,7 @@ def build_tab_promos(container) -> None:
                                                     ("MLA", "left"), ("Tipo", "left"),
                                                     ("Promo", "left"), ("Status", "center"),
                                                     ("Precio ML", "right"), ("ML%", "right"),
-                                                    ("Yo%", "right"), ("ML$", "right"),
+                                                    ("ML$", "right"),
                                                 ]:
                                                     with ui.element("th").style(
                                                         f"padding:4px 6px;text-align:{_ca};"
@@ -923,11 +919,9 @@ def build_tab_promos(container) -> None:
                                         with ui.element("tbody"):
                                             for _pi, _p in enumerate(sorted(
                                             smart_promos,
-                                            key=lambda _q: (
-                                                float(_q.get("meli_percentage") or 0)
-                                                * float(_q.get("original_price") or 0)
+                                            key=lambda _q: _mla_price_rank.get(
+                                                str(_q.get("_item_id") or ""), 999
                                             ),
-                                            reverse=True,
                                         )):
                                                 _bg2  = "#f5f8fd" if _pi % 2 == 0 else "#ffffff"
                                                 _iid  = str(_p.get("_item_id") or "")
@@ -948,11 +942,7 @@ def build_tab_promos(container) -> None:
                                                     round(_mlp / 100 * _orig, 2)
                                                     if _orig > 0 else 0.0
                                                 )
-                                                _t3 = (
-                                                    "background:#e3f2fd;color:#1565c0"
-                                                    if "pro" in _lt2
-                                                    else "background:#f3e5f5;color:#6a1b9a"
-                                                )
+                                                _t3 = _TIPO_CLRS.get(_tp2, "background:#f5f5f5;color:#555")
                                                 with ui.element("tr").style(
                                                     f"background:{_bg2};"
                                                     "border-bottom:1px solid #e8e8e8"
@@ -993,11 +983,6 @@ def build_tab_promos(container) -> None:
                                                         "color:#2e7d32;font-weight:700"
                                                     ):
                                                         ui.label(f"{_mlp:.1f}%")
-                                                    with ui.element("td").style(
-                                                        "padding:3px 6px;text-align:right;"
-                                                        "color:#e65100;font-weight:700"
-                                                    ):
-                                                        ui.label(f"{_yop:.1f}%")
                                                     with ui.element("td").style(
                                                         "padding:3px 6px;text-align:right;"
                                                         "font-weight:700"
