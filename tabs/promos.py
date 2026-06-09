@@ -1039,77 +1039,32 @@ def build_tab_promos(container) -> None:
                                 best_iid  = str(sp.get("_item_id") or "—")
                                 best_tipo = _mla_map.get(best_iid, {}).get("tipo", "—")
 
-                                if orig_p > 0 and prom_p > 0:
-                                    desc_abs  = orig_p - prom_p
-                                    ml_aporte = ml_pct / 100 * orig_p
-                                    yo_aporte = desc_abs - ml_aporte
-                                    desc_pct  = desc_abs / orig_p * 100
-                                else:
-                                    ml_aporte = yo_aporte = desc_pct = 0.0
-
                                 with ui.card().classes("w-full p-2 border border-blue-200"):
                                     _row(ICO_API, "Promo:",
                                          f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
                                     _row(ICO_API, "MLA:", f"{best_iid} ({best_tipo})")
+                                    _row(ICO_API, "Status:", str(sp.get("status") or "—"))
                                     _row(ICO_API, "Precio listado (original_price):",
                                          fmt_m(orig_p) if orig_p else "—")
                                     _row(ICO_API, "Precio ML (price):",
                                          fmt_m(prom_p) if prom_p else "—")
-                                    _row(ICO_API, "ML%:", fmt_p1(ml_pct))
-                                    _row(ICO_API, "Yo%:", fmt_p1(sel_pct))
-                                    ui.separator().classes("my-1")
-                                    _row(ICO_CALC, "ML aporta $:",
-                                         fmt_m(ml_aporte) if ml_aporte else "—")
-                                    _row(ICO_CALC, "Yo aporto $:",
-                                         fmt_m(yo_aporte) if yo_aporte else "—")
-                                    _row(ICO_CALC, "Descuento total %:",
-                                         fmt_p1(desc_pct) if desc_pct else "—")
-                                    with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
-                                        ui.html(ICO_CALC)
-                                        ui.label("¿Descuento ≥ 10%?:").classes(
-                                            "text-xs text-gray-500"
-                                        ).style("min-width:215px")
-                                        if desc_pct >= 10:
-                                            ui.label("Sí").classes(
-                                                "text-xs font-semibold"
-                                            ).style("color:#1B7A3E")
-                                        elif desc_pct > 0:
-                                            ui.label(
-                                                "No — Descuento menor al 10% — ML podría"
-                                                " no aportar el monto completo"
-                                            ).style(
-                                                "font-size:11px;color:#C0392B;font-weight:600"
-                                            )
-                                        else:
-                                            ui.label("—").classes("text-xs text-gray-400")
-                                    ui.separator().classes("my-1")
-                                    _current_mla_price = float(
-                                        fresh_map.get(best_iid, {}).get("price")
-                                        or _mla_map.get(best_iid, {}).get("precio")
-                                        or 0
-                                    )
-                                    with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
-                                        ui.html(ICO_CALC)
-                                        ui.label("🔧 Precio sugerido:").classes("text-xs text-gray-500").style("min-width:215px")
-                                        if orig_p > 0 and _current_mla_price > 0 and abs(_current_mla_price - orig_p) < 1:
-                                            ui.label("Precio actual es óptimo ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
-                                        elif orig_p > 0:
-                                            ui.label(f"{fmt_m(orig_p)} (para {best_iid})").classes("text-xs font-semibold").style("color:#e65100")
-                                        else:
-                                            ui.label("—").classes("text-xs text-gray-400")
                                     if prom_p > 0:
-                                        _precio_opt = round(prom_p * 1.8)
-                                        _ml_max_est = round(prom_p * 0.08)
+                                        _precio_sug = round(prom_p * 1.8)
+                                        _ml_max     = round(prom_p * 0.08)
+                                        _current_mla_price = float(
+                                            fresh_map.get(best_iid, {}).get("price")
+                                            or _mla_map.get(best_iid, {}).get("precio")
+                                            or 0
+                                        )
                                         ui.separator().classes("my-1")
-                                        _row(ICO_CALC, "🔧 Precio óptimo (×1.8):", fmt_m(_precio_opt))
-                                        _row(ICO_CALC, "🔧 ML$ máximo estimado:", fmt_m(_ml_max_est))
                                         with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
                                             ui.html(ICO_CALC)
-                                            ui.label("Estado precio:").classes("text-xs text-gray-500").style("min-width:215px")
-                                            if _current_mla_price >= _precio_opt:
-                                                ui.label("✓ Precio actual maximiza ML$").classes("text-xs font-semibold").style("color:#1B7A3E")
+                                            ui.label("🔧 Precio sug.:").classes("text-xs text-gray-500").style("min-width:215px")
+                                            if _current_mla_price >= _precio_sug:
+                                                ui.label(f"{fmt_m(_precio_sug)} ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
                                             else:
-                                                ui.label(f"Subir a {fmt_m(_precio_opt)} para maximizar ML$").style("font-size:11px;color:#e65100;font-weight:600")
+                                                ui.label(fmt_m(_precio_sug)).classes("text-xs font-semibold").style("color:#e65100")
+                                        _row(ICO_CALC, "🔧 ML$ máx:", fmt_m(_ml_max))
                             else:
                                 ui.label("Sin promos SMART disponibles.").classes(
                                     "text-xs text-gray-400 italic"
