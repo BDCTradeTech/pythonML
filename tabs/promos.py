@@ -919,6 +919,61 @@ def build_tab_promos(container) -> None:
                                 ui.label("Promos co-financiadas (SMART)").classes(
                                     "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
                                 )
+                                ui.html('<style>.smart-promo-row:hover{background:#e8f0fa!important;}</style>')
+                                _det: Dict[str, Any] = {}
+
+                                def _show_smart_detail(_p: dict) -> None:
+                                    _el = _det.get("el")
+                                    if _el is None:
+                                        return
+                                    _el.clear()
+                                    _el.style("display:block")
+                                    _iid2  = str(_p.get("_item_id") or "—")
+                                    _md3   = _mla_map.get(_iid2, {})
+                                    _tp3   = _md3.get("tipo", "—")
+                                    _cat3  = fresh_map.get(_iid2, {}).get("catalog_listing")
+                                    _orig3 = float(_p.get("original_price") or 0)
+                                    _prml3 = float(_p.get("price") or 0)
+                                    _mlp3  = float(_p.get("meli_percentage") or 0)
+                                    _yop3  = float(_p.get("seller_percentage") or 0)
+                                    _olbl  = "Catálogo" if _cat3 is True else "Propia"
+                                    _tf3   = f"{_tp3} · {_olbl}"
+                                    _mlc3  = round(_mlp3 / 100 * _orig3, 2) if _orig3 > 0 else 0.0
+                                    _yoc3  = round(_yop3 / 100 * _orig3, 2) if _orig3 > 0 else 0.0
+                                    _tot3  = _mlp3 + _yop3
+                                    _sug3  = round(_prml3 * 1.8) if _prml3 > 0 else 0
+                                    _mx3   = round(_prml3 * 0.08) if _prml3 > 0 else 0
+                                    _cur3  = float(
+                                        fresh_map.get(_iid2, {}).get("price")
+                                        or _mla_map.get(_iid2, {}).get("precio") or 0
+                                    )
+                                    with _el:
+                                        ui.separator().classes("my-1")
+                                        ui.label("Detalle promo").classes(
+                                            "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
+                                        )
+                                        with ui.card().classes("w-full p-2 border border-blue-200").style("gap:0"):
+                                            _row(ICO_API,  "Promo:",                             f"{_p.get('name') or '—'} (SMART)")
+                                            _row(ICO_API,  "MLA:",                               f"{_iid2} ({_tf3})")
+                                            _row(ICO_API,  "Precio listado (original_price):",   fmt_m(_orig3) if _orig3 else "—")
+                                            _row(ICO_API,  "Precio ML (price):",                 fmt_m(_prml3) if _prml3 else "—")
+                                            _row(ICO_API,  "ML% (meli_percentage):",             f"{_mlp3:.1f}%")
+                                            _row(ICO_API,  "Yo% (seller_percentage):",           f"{_yop3:.1f}%")
+                                            _row(ICO_CALC, "ML$ actual (meli% × orig_p):",       fmt_m(_mlc3) if _mlc3 else "—")
+                                            _row(ICO_CALC, "Yo$ actual (seller% × orig_p):",     fmt_m(_yoc3) if _yoc3 else "—")
+                                            _row(ICO_CALC, "Descuento total (ML% + Yo%):",       f"{_tot3:.1f}%")
+                                            _row(ICO_CALC, "Precio sug. (price × 1.8):",         fmt_m(_sug3) if _sug3 else "—")
+                                            _row(ICO_CALC, "ML$ máx (price × 0.08):",            fmt_m(_mx3) if _mx3 else "—")
+                                            with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
+                                                ui.html(ICO_CALC)
+                                                ui.label("¿Precio actual ≥ sug.?").classes("text-xs text-gray-500").style("min-width:215px")
+                                                if _sug3 > 0 and _cur3 >= _sug3:
+                                                    ui.label("Sí ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
+                                                elif _sug3 > 0:
+                                                    ui.label(f"No (falta {fmt_m(_sug3 - _cur3)})").classes("text-xs font-semibold").style("color:#e65100")
+                                                else:
+                                                    ui.label("—").classes("text-xs font-semibold")
+
                                 with ui.element("div").style("overflow-x:auto;width:100%"):
                                     with ui.element("table").style(
                                         "width:100%;border-collapse:collapse;font-size:11px"
@@ -969,8 +1024,9 @@ def build_tab_promos(container) -> None:
                                                 _t3 = _TIPO_CLRS.get(_tp2, "background:#f5f5f5;color:#555")
                                                 with ui.element("tr").style(
                                                     f"background:{_bg2};"
-                                                    "border-bottom:1px solid #e8e8e8"
-                                                ):
+                                                    "border-bottom:1px solid #e8e8e8;"
+                                                    "cursor:pointer"
+                                                ).classes("smart-promo-row").on("click", lambda p=_p: _show_smart_detail(p)):
                                                     with ui.element("td").style(
                                                         "padding:3px 6px;"
                                                         "font-family:monospace;font-size:11px"
@@ -1012,51 +1068,8 @@ def build_tab_promos(container) -> None:
                                                         _mlmax = round(_prml * 0.08) if _prml else 0
                                                         ui.label(fmt_m(_mlmax) if _mlmax else "—")
 
-                                ui.separator().classes("my-1")
-
-                                # ── MEJOR PROMO ──────────────────────────────────────────
-                                ui.label("Mejor promo").classes(
-                                    "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
-                                )
-                                sp = max(
-                                    smart_promos,
-                                    key=lambda _q: (
-                                        float(_q.get("meli_percentage") or 0)
-                                        * float(_q.get("original_price") or 0)
-                                    ),
-                                )
-                                orig_p  = float(sp.get("original_price") or 0)
-                                prom_p  = float(sp.get("price") or 0)
-                                ml_pct  = float(sp.get("meli_percentage") or 0)
-                                sel_pct = float(sp.get("seller_percentage") or 0)
-                                best_iid  = str(sp.get("_item_id") or "—")
-                                best_tipo = _mla_map.get(best_iid, {}).get("tipo", "—")
-
-                                with ui.card().classes("w-full p-2 border border-blue-200").style("gap:0"):
-                                    _row(ICO_API, "Promo:",
-                                         f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
-                                    _row(ICO_API, "MLA:", f"{best_iid} ({best_tipo})")
-                                    _row(ICO_API, "Status:", str(sp.get("status") or "—"))
-                                    _row(ICO_API, "Precio listado (original_price):",
-                                         fmt_m(orig_p) if orig_p else "—")
-                                    _row(ICO_API, "Precio ML (price):",
-                                         fmt_m(prom_p) if prom_p else "—")
-                                    if prom_p > 0:
-                                        _precio_sug = round(prom_p * 1.8)
-                                        _ml_max     = round(prom_p * 0.08)
-                                        _current_mla_price = float(
-                                            fresh_map.get(best_iid, {}).get("price")
-                                            or _mla_map.get(best_iid, {}).get("precio")
-                                            or 0
-                                        )
-                                        with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
-                                            ui.html(ICO_CALC)
-                                            ui.label("🔧 Precio sug.:").classes("text-xs text-gray-500").style("min-width:215px")
-                                            if _current_mla_price >= _precio_sug:
-                                                ui.label(f"{fmt_m(_precio_sug)} ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
-                                            else:
-                                                ui.label(fmt_m(_precio_sug)).classes("text-xs font-semibold").style("color:#e65100")
-                                        _row(ICO_CALC, "🔧 ML$ máx:", fmt_m(_ml_max))
+                                _detail_div = ui.element("div").classes("w-full").style("display:none")
+                                _det["el"] = _detail_div
                             else:
                                 ui.label("Sin promos SMART disponibles.").classes(
                                     "text-xs text-gray-400 italic"
