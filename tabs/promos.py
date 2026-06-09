@@ -743,15 +743,6 @@ def build_tab_promos(container) -> None:
                             "seller_pct":  pr["seller_pct"],
                         })
 
-                    # ── Producto dialog ─────────────────────────────────────
-                    with ui.dialog() as prod_dlg:
-                        with ui.card().style("min-width:420px;max-width:560px;padding:16px"):
-                            prod_dlg_title = ui.label("").classes("font-bold text-sm mb-2 leading-tight")
-                            prod_dlg_body  = ui.column().classes("gap-1 w-full")
-                            ui.button("Cerrar", on_click=prod_dlg.close).props(
-                                "unelevated dense no-caps"
-                            ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
-
                     # ── Sort state ──────────────────────────────────────────
                     _sort_state = {"col": None, "asc": True}
                     _NUMERIC    = {"precio_act", "precio_ml", "precio_rec", "stock", "meli_pct", "seller_pct"}
@@ -879,34 +870,39 @@ def build_tab_promos(container) -> None:
                         sku       = tr["sku"]
                         costs     = _state["prod_costs"].get(sku, {})
                         costo_usd = float(costs.get("costo_usd") or 0)
-                        prod_dlg_title.set_text(tr["producto"])
-                        prod_dlg_body.clear()
-                        with prod_dlg_body:
-                            with ui.row().classes("items-center gap-3 flex-wrap mb-1"):
-                                with ui.row().classes("items-center gap-1"):
-                                    ui.label("SKU:").classes("text-xs text-gray-500 font-semibold")
-                                    ui.label(sku).classes("text-xs font-mono")
-                                with ui.row().classes("items-center gap-1"):
-                                    ui.label("Stock:").classes("text-xs text-gray-500 font-semibold")
-                                    ui.label(str(tr["stock"])).classes("text-xs font-bold")
-                                with ui.row().classes("items-center gap-1"):
-                                    ui.label("Costo u$:").classes("text-xs text-gray-500 font-semibold")
-                                    ui.label(f"u$ {costo_usd:.2f}" if costo_usd > 0 else "—").classes("text-xs font-bold")
-                            ui.separator().classes("my-1")
-                            ui.label("Publicaciones").classes(
-                                "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
-                            )
-                            for md in tr.get("mlas_detail", []):
-                                with ui.row().classes("items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"):
-                                    ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
-                                    ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
-                                    ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
-                                    _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
-                                    ui.label(md["status"]).style(
-                                        f"color:{_sc};font-size:10px;font-weight:600;"
-                                        "background:#f5f5f5;border-radius:3px;padding:1px 5px"
+                        dlg = ui.dialog()
+                        with dlg:
+                            with ui.card().style("min-width:420px;max-width:560px;padding:16px"):
+                                ui.label(tr["producto"]).classes("font-bold text-sm mb-2 leading-tight")
+                                with ui.column().classes("gap-1 w-full"):
+                                    with ui.row().classes("items-center gap-3 flex-wrap mb-1"):
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.label("SKU:").classes("text-xs text-gray-500 font-semibold")
+                                            ui.label(sku).classes("text-xs font-mono")
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.label("Stock:").classes("text-xs text-gray-500 font-semibold")
+                                            ui.label(str(tr["stock"])).classes("text-xs font-bold")
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.label("Costo u$:").classes("text-xs text-gray-500 font-semibold")
+                                            ui.label(f"u$ {costo_usd:.2f}" if costo_usd > 0 else "—").classes("text-xs font-bold")
+                                    ui.separator().classes("my-1")
+                                    ui.label("Publicaciones").classes(
+                                        "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
                                     )
-                        prod_dlg.open()
+                                    for md in tr.get("mlas_detail", []):
+                                        with ui.row().classes("items-center gap-2 py-0.5 border-b border-gray-100 flex-wrap"):
+                                            ui.label(md["id"]).classes("text-xs font-mono text-primary w-28 shrink-0")
+                                            ui.label(md["tipo"]).classes("text-xs text-gray-600 flex-1")
+                                            ui.label(fmt_m(md["precio"])).classes("text-xs font-semibold w-20 text-right")
+                                            _sc = {"active": "#1B7A3E", "paused": "#E6A817"}.get(md["status"], "#888")
+                                            ui.label(md["status"]).style(
+                                                f"color:{_sc};font-size:10px;font-weight:600;"
+                                                "background:#f5f5f5;border-radius:3px;padding:1px 5px"
+                                            )
+                                ui.button("Cerrar", on_click=dlg.close).props(
+                                    "unelevated dense no-caps"
+                                ).style("background:#185FA5;color:#fff").classes("mt-3 self-end text-sm")
+                        dlg.open()
 
                     html_el.on("sort", _on_sort)
                     html_el.on("show_prod", _on_show_prod)
