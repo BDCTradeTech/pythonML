@@ -1097,6 +1097,19 @@ def build_tab_promos(container) -> None:
                                             ui.label(f"{fmt_m(orig_p)} (para {best_iid})").classes("text-xs font-semibold").style("color:#e65100")
                                         else:
                                             ui.label("—").classes("text-xs text-gray-400")
+                                    if prom_p > 0:
+                                        _precio_opt = round(prom_p * 1.8)
+                                        _ml_max_est = round(prom_p * 0.08)
+                                        ui.separator().classes("my-1")
+                                        _row(ICO_CALC, "🔧 Precio óptimo (×1.8):", fmt_m(_precio_opt))
+                                        _row(ICO_CALC, "🔧 ML$ máximo estimado:", fmt_m(_ml_max_est))
+                                        with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
+                                            ui.html(ICO_CALC)
+                                            ui.label("Estado precio:").classes("text-xs text-gray-500").style("min-width:215px")
+                                            if _current_mla_price >= _precio_opt:
+                                                ui.label("✓ Precio actual maximiza ML$").classes("text-xs font-semibold").style("color:#1B7A3E")
+                                            else:
+                                                ui.label(f"Subir a {fmt_m(_precio_opt)} para maximizar ML$").style("font-size:11px;color:#e65100;font-weight:600")
                             else:
                                 ui.label("Sin promos SMART disponibles.").classes(
                                     "text-xs text-gray-400 italic"
