@@ -672,6 +672,8 @@ def build_tab_promos(container) -> None:
                             "precio_act":  p_act,
                             "stock":       int(rep_it.get("available_quantity") or 0),
                             "gs_all_ids":  gs_all_ids,
+                            "all_ids":     [str(v.get("id") or "") for v in _all_vars if v.get("id")],
+                            "all_items":   list(_all_vars),
                             "smart_price": float(cand.get("price") or 0),
                             "promo":       cand.get("promo_name") or "",
                             "vigencia":    f"{sd} — {fd}" if (sd or fd) else "",
@@ -679,14 +681,16 @@ def build_tab_promos(container) -> None:
                             "seller_pct":  cand["seller_pct"],
                         })
 
-                    _sp_tasks = [(i, iid) for i, pr in enumerate(_prelim) for iid in pr["gs_all_ids"]]
+                    _sp_tasks = [(i, iid) for i, pr in enumerate(_prelim) for iid in pr["all_ids"]]
                     _sp_flat  = await asyncio.gather(*[
                         run.io_bound(ml_get_seller_promotions_item, access_token, iid)
                         for _, iid in _sp_tasks
                     ])
                     _sp_by_idx: dict = {}
-                    for (_idx2, _), _sp_list2 in zip(_sp_tasks, _sp_flat):
+                    _sp_by_item: dict = {}
+                    for (_idx2, _iid), _sp_list2 in zip(_sp_tasks, _sp_flat):
                         _sp_by_idx.setdefault(_idx2, []).append(_sp_list2)
+                        _sp_by_item[(_idx2, _iid)] = _sp_list2 or []
 
                     table_rows = []
                     for i, pr in enumerate(_prelim):
@@ -706,30 +710,31 @@ def build_tab_promos(container) -> None:
                         precio_ml = smart_p if smart_p > 0 else disc_p
 
                         all_sp_promos = []
-                        for sp_list in _sp_by_idx.get(i, []):
-                            all_sp_promos.extend(sp_list or [])
+                        for iid in pr["all_ids"]:
+                            for p in (_sp_by_item.get((i, iid)) or []):
+                                p_copy = dict(p)
+                                p_copy["_item_id"] = iid
+                                all_sp_promos.append(p_copy)
 
                         mlas_detail = []
-                        for mla_id in pr["mlas"]:
-                            _entry = all_items_by_id.get(mla_id)
-                            if _entry:
-                                _it_d      = _entry[0]
-                                _lt        = str(_it_d.get("listing_type_id") or "").lower()
-                                _cuotas_s  = _cuotas_desde_item(_it_d)
-                                _tipo_base = "Premium" if "pro" in _lt else "Clásica"
-                                _tipo_lbl  = (
-                                    f"{_tipo_base} ({_cuotas_s.lstrip('x')} cuotas)"
-                                    if (_cuotas_s and _cuotas_s != "x1")
-                                    else f"{_tipo_base} (sin cuotas)"
-                                )
-                                mlas_detail.append({
-                                    "id":     mla_id,
-                                    "tipo":   _tipo_lbl,
-                                    "precio": float(_it_d.get("price") or 0),
-                                    "status": str(_it_d.get("status") or "").lower(),
-                                })
-                            else:
-                                mlas_detail.append({"id": mla_id, "tipo": "—", "precio": 0.0, "status": "—"})
+                        for _it_d in pr.get("all_items", []):
+                            mla_id = str(_it_d.get("id") or "")
+                            if not mla_id:
+                                continue
+                            _lt        = str(_it_d.get("listing_type_id") or "").lower()
+                            _cuotas_s  = _cuotas_desde_item(_it_d)
+                            _tipo_base = "Premium" if "pro" in _lt else "Clásica"
+                            _tipo_lbl  = (
+                                f"{_tipo_base} ({_cuotas_s.lstrip('x')} cuotas)"
+                                if (_cuotas_s and _cuotas_s != "x1")
+                                else f"{_tipo_base} (sin cuotas)"
+                            )
+                            mlas_detail.append({
+                                "id":     mla_id,
+                                "tipo":   _tipo_lbl,
+                                "precio": float(_it_d.get("price") or 0),
+                                "status": str(_it_d.get("status") or "").lower(),
+                            })
 
                         table_rows.append({
                             "_idx":        len(table_rows),
@@ -852,56 +857,68 @@ def build_tab_promos(container) -> None:
                                     ui.label("Mejor promo co-financiada").classes(
                                         "text-xs font-bold text-gray-700 uppercase tracking-wide mb-2"
                                     )
-                                    for sp in smart_promos:
-                                        orig_p  = float(sp.get("original_price") or 0)
-                                        prom_p  = float(sp.get("price") or 0)
-                                        ml_pct  = float(sp.get("meli_percentage") or 0)
-                                        sel_pct = float(sp.get("seller_percentage") or 0)
-                                        status  = str(sp.get("status") or "").lower()
-                                        start_d = (sp.get("start_date") or "")[:10]
-                                        end_d   = (sp.get("finish_date") or "")[:10]
-                                        vig     = f"{start_d} — {end_d}" if (start_d or end_d) else "—"
+                                    _mla_tipo_map = {md["id"]: md["tipo"] for md in r.get("mlas_detail", [])}
+                                    sp = max(
+                                        smart_promos,
+                                        key=lambda p: float(p.get("meli_percentage") or 0) * float(p.get("original_price") or 0),
+                                    )
+                                    orig_p        = float(sp.get("original_price") or 0)
+                                    prom_p        = float(sp.get("price") or 0)
+                                    ml_pct        = float(sp.get("meli_percentage") or 0)
+                                    sel_pct       = float(sp.get("seller_percentage") or 0)
+                                    status        = str(sp.get("status") or "").lower()
+                                    start_d       = (sp.get("start_date") or "")[:10]
+                                    end_d         = (sp.get("finish_date") or "")[:10]
+                                    vig           = f"{start_d} — {end_d}" if (start_d or end_d) else "—"
+                                    best_mla_id   = sp.get("_item_id", "—")
+                                    best_mla_tipo = _mla_tipo_map.get(best_mla_id, "—")
 
-                                        if orig_p > 0 and prom_p > 0:
-                                            desc_abs   = orig_p - prom_p
-                                            ml_aporte  = min(ml_pct / 100 * orig_p, 0.10 * desc_abs)
-                                            yo_aporte  = desc_abs - ml_aporte
-                                            desc_pct   = desc_abs / orig_p * 100
-                                            precio_rec = round(prom_p * 1.8)
-                                        else:
-                                            ml_aporte = yo_aporte = desc_pct = precio_rec = 0.0
+                                    if orig_p > 0 and prom_p > 0:
+                                        desc_abs     = orig_p - prom_p
+                                        ml_aporte    = min(ml_pct / 100 * orig_p, 0.10 * desc_abs)
+                                        yo_aporte    = desc_abs - ml_aporte
+                                        desc_pct     = desc_abs / orig_p * 100
+                                        precio_rec   = round(prom_p * 1.8)
+                                        desc_abs_rec = precio_rec - prom_p
+                                        ml_max       = round(min(ml_pct / 100 * precio_rec, 0.10 * desc_abs_rec), 2) if desc_abs_rec > 0 else 0.0
+                                    else:
+                                        ml_aporte = yo_aporte = desc_pct = precio_rec = ml_max = 0.0
 
-                                        sty_s = STATUS_STYLES.get(status, "background:#888;color:#fff")
-                                        lbl_s = STATUS_LABELS.get(status, status or "—")
+                                    sty_s = STATUS_STYLES.get(status, "background:#888;color:#fff")
+                                    lbl_s = STATUS_LABELS.get(status, status or "—")
 
-                                        with ui.card().classes("w-full p-2 border border-blue-200 mb-2"):
-                                            _row(ICO_API, "Promo:",
-                                                 f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
-                                            with ui.row().classes("items-center gap-2 py-0.5 w-full"):
-                                                ui.html(ICO_API)
-                                                ui.label("Status:").classes("text-xs text-gray-500").style(
-                                                    "min-width:215px"
-                                                )
-                                                ui.label(lbl_s).style(
-                                                    f"{sty_s};border-radius:4px;padding:1px 8px;"
-                                                    "font-size:11px;font-weight:600"
-                                                )
-                                            _row(ICO_API, "Precio listado (original_price):",
-                                                 fmt_m(orig_p) if orig_p else "—")
-                                            _row(ICO_API, "Precio ML (price):",
-                                                 fmt_m(prom_p) if prom_p else "—")
-                                            _row(ICO_API, "ML %:",  fmt_p1(ml_pct))
-                                            _row(ICO_API, "Yo %:",  fmt_p1(sel_pct))
-                                            _row(ICO_API, "Vigencia:", vig)
-                                            ui.separator().classes("my-1")
-                                            _row(ICO_CALC, "ML aporta $:",
-                                                 fmt_m(ml_aporte) if ml_aporte else "—")
-                                            _row(ICO_CALC, "Yo aporto $:",
-                                                 fmt_m(yo_aporte) if yo_aporte else "—")
-                                            _row(ICO_CALC, "Descuento total %:",
-                                                 fmt_p1(desc_pct) if desc_pct else "—")
-                                            _row(ICO_CALC, "Precio recomendado (×1.8):",
-                                                 fmt_m(precio_rec) if precio_rec else "—")
+                                    with ui.card().classes("w-full p-2 border border-blue-200 mb-2"):
+                                        _row(ICO_API, "Promo:",
+                                             f"{sp.get('name') or '—'} ({sp.get('type') or '—'})")
+                                        _row(ICO_API, "MLA:",
+                                             f"{best_mla_id} ({best_mla_tipo})")
+                                        with ui.row().classes("items-center gap-2 py-0.5 w-full"):
+                                            ui.html(ICO_API)
+                                            ui.label("Status:").classes("text-xs text-gray-500").style(
+                                                "min-width:215px"
+                                            )
+                                            ui.label(lbl_s).style(
+                                                f"{sty_s};border-radius:4px;padding:1px 8px;"
+                                                "font-size:11px;font-weight:600"
+                                            )
+                                        _row(ICO_API, "Precio listado (original_price):",
+                                             fmt_m(orig_p) if orig_p else "—")
+                                        _row(ICO_API, "Precio ML (price):",
+                                             fmt_m(prom_p) if prom_p else "—")
+                                        _row(ICO_API, "ML %:",  fmt_p1(ml_pct))
+                                        _row(ICO_API, "Yo %:",  fmt_p1(sel_pct))
+                                        _row(ICO_API, "Vigencia:", vig)
+                                        ui.separator().classes("my-1")
+                                        _row(ICO_CALC, "ML aporta $:",
+                                             fmt_m(ml_aporte) if ml_aporte else "—")
+                                        _row(ICO_CALC, "Yo aporto $:",
+                                             fmt_m(yo_aporte) if yo_aporte else "—")
+                                        _row(ICO_CALC, "Descuento total %:",
+                                             fmt_p1(desc_pct) if desc_pct else "—")
+                                        _row(ICO_CALC, "Precio recomendado (×1.8):",
+                                             fmt_m(precio_rec) if precio_rec else "—")
+                                        _row(ICO_CALC, "ML máximo posible (precio rec.):",
+                                             fmt_m(ml_max) if ml_max else "—")
 
                                 ui.separator().classes("my-2")
 
