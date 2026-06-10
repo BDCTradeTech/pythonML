@@ -948,31 +948,6 @@ def build_tab_promos(container) -> None:
                                         or _mla_map.get(_iid2, {}).get("precio") or 0
                                     )
                                     with _el:
-                                        ui.separator().classes("my-1")
-                                        ui.label("Detalle promo").classes(
-                                            "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
-                                        )
-                                        with ui.card().classes("w-full p-2 border border-blue-200").style("gap:0"):
-                                            _row(ICO_API,  "Promo:",                             f"{_p.get('name') or '—'} (SMART)")
-                                            _row(ICO_API,  "MLA:",                               f"{_iid2} ({_tf3})")
-                                            _row(ICO_API,  "Precio listado (original_price):",   fmt_m(_orig3) if _orig3 else "—")
-                                            _row(ICO_API,  "Precio ML (price):",                 fmt_m(_prml3) if _prml3 else "—")
-                                            _row(ICO_API,  "ML% (meli_percentage):",             f"{_mlp3:.1f}%")
-                                            _row(ICO_API,  "Yo% (seller_percentage):",           f"{_yop3:.1f}%")
-                                            _row(ICO_CALC, "ML$ actual (meli% × orig_p):",       fmt_m(_mlc3) if _mlc3 else "—")
-                                            _row(ICO_CALC, "Yo$ actual (seller% × orig_p):",     fmt_m(_yoc3) if _yoc3 else "—")
-                                            _row(ICO_CALC, "Descuento total (ML% + Yo%):",       f"{_tot3:.1f}%")
-                                            _row(ICO_CALC, "Precio sug. (price × 1.8):",         fmt_m(_sug3) if _sug3 else "—")
-                                            _row(ICO_CALC, "ML$ máx (price × 0.08):",            fmt_m(_mx3) if _mx3 else "—")
-                                            with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
-                                                ui.html(ICO_CALC)
-                                                ui.label("¿Precio actual ≥ sug.?").classes("text-xs text-gray-500").style("min-width:215px")
-                                                if _sug3 > 0 and _cur3 >= _sug3:
-                                                    ui.label("Sí ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
-                                                elif _sug3 > 0:
-                                                    ui.label(f"No (falta {fmt_m(_sug3 - _cur3)})").classes("text-xs font-semibold").style("color:#e65100")
-                                                else:
-                                                    ui.label("—").classes("text-xs font-semibold")
                                         # ── ANÁLISIS DE GANANCIA (3 columnas) ───────────────────────────
                                         ui.separator().classes("my-1")
                                         ui.label("Análisis de ganancia").classes(
@@ -1073,16 +1048,32 @@ def build_tab_promos(container) -> None:
                                                             for _gx3, _gcss3 in [(_gP3, _gcs3(_gP3)), (_gA3, _gcs3(_gA3)), (_gS3, _gcs3(_gS3))]:
                                                                 with ui.element("td").style(_TDVAL3 + ";" + _gcss3):
                                                                     ui.label(fmt_p2(_gx3) if _isp3 else fmt_m(_gx3))
-                                        # ── DETALLE PROMO (compacto) ─────────────────────────────────────
+                                        # ── DETALLE PROMO ────────────────────────────────────────────────
                                         ui.separator().classes("my-1")
-                                        with ui.card().classes("w-full p-2 border border-blue-100").style("gap:0"):
-                                            _row(ICO_API,  "Promo:",              f"{_p.get('name') or '—'} (SMART)")
-                                            _row(ICO_API,  "MLA:",                f"{_iid2} ({_tf3})")
-                                            _row(ICO_API,  "Precio listado:",     fmt_m(_orig3) if _orig3 else "—")
-                                            _row(ICO_API,  "Precio ML:",          fmt_m(_prml3) if _prml3 else "—")
-                                            _row(ICO_API,  "ML%:",                f"{_mlp3:.1f}%")
-                                            _row(ICO_CALC, "Precio sug. (×1.8):", fmt_m(_sug3) if _sug3 else "—")
-                                            _row(ICO_CALC, "ML$ máx:",            fmt_m(_mx3) if _mx3 else "—")
+                                        ui.label("Detalle promo").classes(
+                                            "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
+                                        )
+                                        with ui.card().classes("w-full p-2 border border-blue-200").style("gap:0"):
+                                            _row(ICO_API,  "Promo:",                             f"{_p.get('name') or '—'} (SMART)")
+                                            _row(ICO_API,  "MLA:",                               f"{_iid2} ({_tf3})")
+                                            _row(ICO_API,  "Precio listado (original_price):",   fmt_m(_orig3) if _orig3 else "—")
+                                            _row(ICO_API,  "Precio ML (price):",                 fmt_m(_prml3) if _prml3 else "—")
+                                            _row(ICO_API,  "ML% (meli_percentage):",             f"{_mlp3:.1f}%")
+                                            _row(ICO_API,  "Yo% (seller_percentage):",           f"{_yop3:.1f}%")
+                                            _row(ICO_CALC, "ML$ actual (meli% × orig_p):",       fmt_m(_mlc3) if _mlc3 else "—")
+                                            _row(ICO_CALC, "Yo$ actual (seller% × orig_p):",     fmt_m(_yoc3) if _yoc3 else "—")
+                                            _row(ICO_CALC, "Descuento total (ML% + Yo%):",       f"{_tot3:.1f}%")
+                                            _row(ICO_CALC, "Precio sug. (price × 1.8):",         fmt_m(_sug3) if _sug3 else "—")
+                                            _row(ICO_CALC, "ML$ máx (price × 0.08):",            fmt_m(_mx3) if _mx3 else "—")
+                                            with ui.row().classes("items-center gap-1.5 w-full").style("padding:2px 0;line-height:1.2"):
+                                                ui.html(ICO_CALC)
+                                                ui.label("¿Precio actual ≥ sug.?").classes("text-xs text-gray-500").style("min-width:215px")
+                                                if _sug3 > 0 and _cur3 >= _sug3:
+                                                    ui.label("Sí ✓").classes("text-xs font-semibold").style("color:#1B7A3E")
+                                                elif _sug3 > 0:
+                                                    ui.label(f"No (falta {fmt_m(_sug3 - _cur3)})").classes("text-xs font-semibold").style("color:#e65100")
+                                                else:
+                                                    ui.label("—").classes("text-xs font-semibold")
 
                                 with ui.element("div").style("overflow-x:auto;width:100%"):
                                     with ui.element("table").style(
