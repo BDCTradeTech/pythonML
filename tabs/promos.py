@@ -973,9 +973,9 @@ def build_tab_promos(container) -> None:
                                                     ui.label(f"No (falta {fmt_m(_sug3 - _cur3)})").classes("text-xs font-semibold").style("color:#e65100")
                                                 else:
                                                     ui.label("—").classes("text-xs font-semibold")
-                                        # ── ANÁLISIS DE GANANCIA ─────────────────────────────────────────
+                                        # ── ANÁLISIS DE GANANCIA (3 columnas) ───────────────────────────
                                         ui.separator().classes("my-1")
-                                        ui.label("Análisis de ganancia con esta promo").classes(
+                                        ui.label("Análisis de ganancia").classes(
                                             "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
                                         )
                                         _sku3   = r.get("sku", "")
@@ -989,79 +989,90 @@ def build_tab_promos(container) -> None:
                                             _cq3 = "x3"
                                         else:
                                             _cq3 = "x1"
-                                        _c3    = _calc(_prml3, _cq3, _cu3, _tiva3)
-                                        _gan3  = _c3["margen"] + _mlc3
-                                        _gvta3 = _gan3 / _prml3 * 100 if _prml3 > 0 else 0.0
-                                        _gcos3 = _gan3 / _c3["costo_pesos"] * 100 if _c3["costo_pesos"] > 0 else 0.0
-                                        _mcls3 = "font-bold text-black" if _cu3 <= 0 else (
-                                            "font-bold text-positive" if _gan3 > 0 else "font-bold text-negative"
-                                        )
-                                        _I3S = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517;flex-shrink:0"></i>'
                                         _nq3   = int(_cq3[1:]) if _cq3.startswith("x") and _cq3[1:].isdigit() else 0
                                         _tqp3  = fin_cuotas.get(_nq3, {}).get("pct", 0.0) if _nq3 > 1 else 0.0
                                         _qlbl3 = f"Costo Cuotas ({f'{_tqp3*100:.1f}'.replace('.', ',')}%)" if _tqp3 > 0 else "Costo Cuotas"
-                                        with ui.card().classes("w-full p-2 border border-green-200").style("gap:0"):
-                                            with ui.column().classes("gap-0.5 w-full"):
-                                                with ui.row().classes("w-full justify-between py-0"):
-                                                    with ui.row().classes("items-center gap-1"):
-                                                        ui.html(ICO_API)
-                                                        ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
-                                                    ui.label(fmt_m(_prml3)).classes("text-xs font-medium")
-                                                for _lbl3, _val3 in [
-                                                    ("Comisión ML",  _c3["comision"]),
-                                                    (_qlbl3,         _c3["costo_cuotas"]),
-                                                    ("IVA neto",     _c3["iva_total"]),
-                                                ]:
-                                                    with ui.row().classes("w-full justify-between py-0"):
-                                                        with ui.row().classes("items-center gap-1"):
-                                                            ui.html(ICO_CALC)
-                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
-                                                        ui.label(fmt_m(_val3)).classes("text-xs text-negative")
-                                                with ui.column().classes("w-full bg-gray-50 rounded px-2 py-0.5 mb-0.5 gap-0"):
-                                                    for _sl3, _sv3 in [
-                                                        ("IVA venta",              _c3["iva_venta"]),
-                                                        ("IVA Meli (créd)",        _c3["iva_meli"]),
-                                                        ("IVA importación (créd)", _c3["iva_impor"]),
-                                                    ]:
-                                                        with ui.row().classes("w-full justify-between"):
-                                                            with ui.row().classes("items-center gap-1"):
-                                                                ui.html(_I3S)
-                                                                ui.label(_sl3).classes("text-xs font-medium text-gray-500")
-                                                            ui.label(fmt_m(_sv3)).classes("text-xs text-gray-500")
-                                                for _lbl3, _val3 in [
-                                                    ("Deb/Cred",          _c3["deb_cred"]),
-                                                    ("IIBB ret.",         _c3["iibb"]),
-                                                    ("Envío Flex/Correo", _c3["envio"]),
-                                                ]:
-                                                    with ui.row().classes("w-full justify-between py-0"):
-                                                        with ui.row().classes("items-center gap-1"):
-                                                            ui.html(ICO_CALC)
-                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
-                                                        ui.label(fmt_m(_val3)).classes("text-xs text-negative")
-                                                if _mlc3 > 0:
-                                                    with ui.row().classes("w-full justify-between py-0 border-b-2 border-gray-300"):
-                                                        with ui.row().classes("items-center gap-1"):
-                                                            ui.html(ICO_CALC)
-                                                            ui.label("ML aporta").classes("text-xs font-medium text-gray-600")
-                                                        ui.label("+" + fmt_m(_mlc3)).classes("text-xs text-positive font-medium")
-                                                else:
-                                                    ui.separator().classes("border-b-2 border-gray-300 my-0")
-                                                with ui.row().classes("w-full justify-between py-0"):
-                                                    with ui.row().classes("items-center gap-1"):
-                                                        ui.html(ICO_CALC)
-                                                        ui.label("Costo producto").classes("text-xs font-medium text-gray-600")
-                                                    ui.label(fmt_m(_c3["costo_pesos"])).classes("text-xs text-negative")
-                                                ui.separator().classes("my-0")
-                                                for _lbl3, _val3, _isp3 in [
-                                                    ("Gan $",     _gan3,  False),
-                                                    ("Gan Vta %", _gvta3, True),
-                                                    ("Gan % Cos", _gcos3, True),
-                                                ]:
-                                                    with ui.row().classes("w-full justify-between py-0"):
-                                                        with ui.row().classes("items-center gap-1"):
-                                                            ui.html(ICO_CALC)
-                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
-                                                        ui.label(fmt_p2(_val3) if _isp3 else fmt_m(_val3)).classes(f"text-xs {_mcls3}")
+                                        _pvP   = _prml3 + _mlc3
+                                        _pvA   = _orig3
+                                        _pvS   = _prml3
+                                        _cP3   = _calc(_pvP, _cq3, _cu3, _tiva3)
+                                        _cA3   = _calc(_pvA, _cq3, _cu3, _tiva3)
+                                        _cS3   = _calc(_pvS, _cq3, _cu3, _tiva3)
+                                        _ganP  = _cP3["margen"]
+                                        _ganA  = _cA3["margen"]
+                                        _ganS  = _cS3["margen"]
+                                        _gvtaP = _ganP / _pvP * 100 if _pvP > 0 else 0.0
+                                        _gvtaA = _ganA / _pvA * 100 if _pvA > 0 else 0.0
+                                        _gvtaS = _ganS / _pvS * 100 if _pvS > 0 else 0.0
+
+                                        def _gcs3(v):
+                                            if _cu3 <= 0:
+                                                return "color:#555"
+                                            return "color:#1B7A3E;font-weight:700" if v > 0 else "color:#C0392B;font-weight:700"
+
+                                        _TDLBL3  = "padding:3px 8px;text-align:left;white-space:nowrap;font-size:11px;color:#555"
+                                        _TDVAL3  = "padding:3px 8px;text-align:right;white-space:nowrap;font-size:11px"
+                                        _pvP_txt = f"{fmt_m(_pvP)} ({fmt_m(_prml3)}+{fmt_m(_mlc3)})" if _mlc3 > 0 else fmt_m(_pvP)
+                                        with ui.element("div").style("overflow-x:auto;width:100%;margin-top:4px"):
+                                            with ui.element("table").style("border-collapse:collapse;width:100%;font-size:11px"):
+                                                with ui.element("thead"):
+                                                    with ui.element("tr").style("background:#f3f4f6;border-bottom:2px solid #e5e7eb"):
+                                                        with ui.element("th").style("padding:5px 8px;text-align:left;font-size:11px;color:#555;font-weight:600"):
+                                                            ui.label("Concepto")
+                                                        with ui.element("th").style("padding:5px 8px;text-align:right;font-size:11px;color:#1a56db;font-weight:700;white-space:nowrap"):
+                                                            ui.label("Promo")
+                                                        with ui.element("th").style("padding:5px 8px;text-align:right;font-size:11px;color:#6b7280;font-weight:600;white-space:nowrap"):
+                                                            ui.label("Venta actual")
+                                                        with ui.element("th").style("padding:5px 8px;text-align:right;font-size:11px;color:#6b7280;font-weight:600;white-space:nowrap"):
+                                                            ui.label("Sin Promo")
+                                                with ui.element("tbody"):
+                                                    with ui.element("tr").style("background:#eff6ff"):
+                                                        with ui.element("td").style(_TDLBL3 + ";font-weight:600"):
+                                                            ui.label("Precio Venta")
+                                                        with ui.element("td").style(_TDVAL3 + ";font-weight:600;color:#1a56db;white-space:nowrap"):
+                                                            ui.label(_pvP_txt)
+                                                        with ui.element("td").style(_TDVAL3):
+                                                            ui.label(fmt_m(_pvA))
+                                                        with ui.element("td").style(_TDVAL3):
+                                                            ui.label(fmt_m(_pvS))
+                                                    with ui.element("tr").style("background:#f0fdf4"):
+                                                        with ui.element("td").style(_TDLBL3):
+                                                            ui.label("ML aporta")
+                                                        with ui.element("td").style(_TDVAL3 + ";color:#1B7A3E;font-weight:600"):
+                                                            ui.label("+" + fmt_m(_mlc3) if _mlc3 > 0 else "—")
+                                                        with ui.element("td").style(_TDVAL3 + ";color:#9ca3af"):
+                                                            ui.label("—")
+                                                        with ui.element("td").style(_TDVAL3 + ";color:#9ca3af"):
+                                                            ui.label("—")
+                                                    _cost_rows3 = [
+                                                        ("Comisión ML",  _cP3["comision"],     _cA3["comision"],     _cS3["comision"]),
+                                                        (_qlbl3,         _cP3["costo_cuotas"], _cA3["costo_cuotas"], _cS3["costo_cuotas"]),
+                                                        ("IVA neto",     _cP3["iva_total"],    _cA3["iva_total"],    _cS3["iva_total"]),
+                                                        ("Deb/Cred",     _cP3["deb_cred"],     _cA3["deb_cred"],     _cS3["deb_cred"]),
+                                                        ("IIBB ret.",    _cP3["iibb"],         _cA3["iibb"],         _cS3["iibb"]),
+                                                        ("Envío",        _cP3["envio"],        _cA3["envio"],        _cS3["envio"]),
+                                                        ("Costo prod.",  _cP3["costo_pesos"],  _cA3["costo_pesos"],  _cS3["costo_pesos"]),
+                                                    ]
+                                                    for _ri3, (_rl3, _rP3, _rA3, _rS3) in enumerate(_cost_rows3):
+                                                        _rbg3 = "#f9fafb" if _ri3 % 2 == 0 else "#ffffff"
+                                                        with ui.element("tr").style(f"background:{_rbg3}"):
+                                                            with ui.element("td").style(_TDLBL3):
+                                                                ui.label(_rl3)
+                                                            for _rx3 in (_rP3, _rA3, _rS3):
+                                                                _rs3 = _TDVAL3 + (";color:#C0392B" if abs(_rx3) > 0.5 else ";color:#9ca3af")
+                                                                with ui.element("td").style(_rs3):
+                                                                    ui.label(("-" + fmt_m(_rx3)) if abs(_rx3) > 0.5 else "—")
+                                                    for _gi3, (_gl3, _gP3, _gA3, _gS3, _isp3) in enumerate([
+                                                        ("Gan $",     _ganP,  _ganA,  _ganS,  False),
+                                                        ("Gan Vta %", _gvtaP, _gvtaA, _gvtaS, True),
+                                                    ]):
+                                                        _gbg3 = "background:#f0fdf4;" + ("border-top:2px solid #bbf7d0" if _gi3 == 0 else "")
+                                                        with ui.element("tr").style(_gbg3):
+                                                            with ui.element("td").style(_TDLBL3 + ";font-weight:700"):
+                                                                ui.label(_gl3)
+                                                            for _gx3, _gcss3 in [(_gP3, _gcs3(_gP3)), (_gA3, _gcs3(_gA3)), (_gS3, _gcs3(_gS3))]:
+                                                                with ui.element("td").style(_TDVAL3 + ";" + _gcss3):
+                                                                    ui.label(fmt_p2(_gx3) if _isp3 else fmt_m(_gx3))
 
                                 with ui.element("div").style("overflow-x:auto;width:100%"):
                                     with ui.element("table").style(
