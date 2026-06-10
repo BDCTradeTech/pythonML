@@ -973,6 +973,95 @@ def build_tab_promos(container) -> None:
                                                     ui.label(f"No (falta {fmt_m(_sug3 - _cur3)})").classes("text-xs font-semibold").style("color:#e65100")
                                                 else:
                                                     ui.label("—").classes("text-xs font-semibold")
+                                        # ── ANÁLISIS DE GANANCIA ─────────────────────────────────────────
+                                        ui.separator().classes("my-1")
+                                        ui.label("Análisis de ganancia con esta promo").classes(
+                                            "text-xs font-bold text-gray-700 uppercase tracking-wide mb-1"
+                                        )
+                                        _sku3   = r.get("sku", "")
+                                        _costs3 = _state["prod_costs"].get(_sku3, {})
+                                        _cu3    = float(_costs3.get("costo_usd") or 0)
+                                        _tiva3  = float(_costs3.get("tipo_iva") or 0.105)
+                                        _lt3    = str(_md3.get("lt") or "").lower()
+                                        if "premium" in _lt3:
+                                            _cq3 = "x6"
+                                        elif "pro" in _lt3:
+                                            _cq3 = "x3"
+                                        else:
+                                            _cq3 = "x1"
+                                        _c3    = _calc(_prml3, _cq3, _cu3, _tiva3)
+                                        _gan3  = _c3["margen"] + _mlc3
+                                        _gvta3 = _gan3 / _prml3 * 100 if _prml3 > 0 else 0.0
+                                        _gcos3 = _gan3 / _c3["costo_pesos"] * 100 if _c3["costo_pesos"] > 0 else 0.0
+                                        _mcls3 = "font-bold text-black" if _cu3 <= 0 else (
+                                            "font-bold text-positive" if _gan3 > 0 else "font-bold text-negative"
+                                        )
+                                        _I3S = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517;flex-shrink:0"></i>'
+                                        _nq3   = int(_cq3[1:]) if _cq3.startswith("x") and _cq3[1:].isdigit() else 0
+                                        _tqp3  = fin_cuotas.get(_nq3, {}).get("pct", 0.0) if _nq3 > 1 else 0.0
+                                        _qlbl3 = f"Costo Cuotas ({f'{_tqp3*100:.1f}'.replace('.', ',')}%)" if _tqp3 > 0 else "Costo Cuotas"
+                                        with ui.card().classes("w-full p-2 border border-green-200").style("gap:0"):
+                                            with ui.column().classes("gap-0.5 w-full"):
+                                                with ui.row().classes("w-full justify-between py-0"):
+                                                    with ui.row().classes("items-center gap-1"):
+                                                        ui.html(ICO_API)
+                                                        ui.label("Precio Venta").classes("text-xs font-medium text-gray-600")
+                                                    ui.label(fmt_m(_prml3)).classes("text-xs font-medium")
+                                                for _lbl3, _val3 in [
+                                                    ("Comisión ML",  _c3["comision"]),
+                                                    (_qlbl3,         _c3["costo_cuotas"]),
+                                                    ("IVA neto",     _c3["iva_total"]),
+                                                ]:
+                                                    with ui.row().classes("w-full justify-between py-0"):
+                                                        with ui.row().classes("items-center gap-1"):
+                                                            ui.html(ICO_CALC)
+                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
+                                                        ui.label(fmt_m(_val3)).classes("text-xs text-negative")
+                                                with ui.column().classes("w-full bg-gray-50 rounded px-2 py-0.5 mb-0.5 gap-0"):
+                                                    for _sl3, _sv3 in [
+                                                        ("IVA venta",              _c3["iva_venta"]),
+                                                        ("IVA Meli (créd)",        _c3["iva_meli"]),
+                                                        ("IVA importación (créd)", _c3["iva_impor"]),
+                                                    ]:
+                                                        with ui.row().classes("w-full justify-between"):
+                                                            with ui.row().classes("items-center gap-1"):
+                                                                ui.html(_I3S)
+                                                                ui.label(_sl3).classes("text-xs font-medium text-gray-500")
+                                                            ui.label(fmt_m(_sv3)).classes("text-xs text-gray-500")
+                                                for _lbl3, _val3 in [
+                                                    ("Deb/Cred",          _c3["deb_cred"]),
+                                                    ("IIBB ret.",         _c3["iibb"]),
+                                                    ("Envío Flex/Correo", _c3["envio"]),
+                                                ]:
+                                                    with ui.row().classes("w-full justify-between py-0"):
+                                                        with ui.row().classes("items-center gap-1"):
+                                                            ui.html(ICO_CALC)
+                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
+                                                        ui.label(fmt_m(_val3)).classes("text-xs text-negative")
+                                                if _mlc3 > 0:
+                                                    with ui.row().classes("w-full justify-between py-0 border-b-2 border-gray-300"):
+                                                        with ui.row().classes("items-center gap-1"):
+                                                            ui.html(ICO_CALC)
+                                                            ui.label("ML aporta").classes("text-xs font-medium text-gray-600")
+                                                        ui.label("+" + fmt_m(_mlc3)).classes("text-xs text-positive font-medium")
+                                                else:
+                                                    ui.separator().classes("border-b-2 border-gray-300 my-0")
+                                                with ui.row().classes("w-full justify-between py-0"):
+                                                    with ui.row().classes("items-center gap-1"):
+                                                        ui.html(ICO_CALC)
+                                                        ui.label("Costo producto").classes("text-xs font-medium text-gray-600")
+                                                    ui.label(fmt_m(_c3["costo_pesos"])).classes("text-xs text-negative")
+                                                ui.separator().classes("my-0")
+                                                for _lbl3, _val3, _isp3 in [
+                                                    ("Gan $",     _gan3,  False),
+                                                    ("Gan Vta %", _gvta3, True),
+                                                    ("Gan % Cos", _gcos3, True),
+                                                ]:
+                                                    with ui.row().classes("w-full justify-between py-0"):
+                                                        with ui.row().classes("items-center gap-1"):
+                                                            ui.html(ICO_CALC)
+                                                            ui.label(_lbl3).classes("text-xs font-medium text-gray-600")
+                                                        ui.label(fmt_p2(_val3) if _isp3 else fmt_m(_val3)).classes(f"text-xs {_mcls3}")
 
                                 with ui.element("div").style("overflow-x:auto;width:100%"):
                                     with ui.element("table").style(
