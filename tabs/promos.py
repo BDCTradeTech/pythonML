@@ -994,7 +994,7 @@ def build_tab_promos(container) -> None:
                                         _qlbl3 = f"Costo Cuotas ({f'{_tqp3*100:.1f}'.replace('.', ',')}%)" if _tqp3 > 0 else "Costo Cuotas"
                                         _pvP   = _prml3 + _mlc3
                                         _pvA   = _orig3
-                                        _pvS   = _prml3
+                                        _pvS   = _prml3 + _mlc3
                                         _cP3   = _calc(_pvP, _cq3, _cu3, _tiva3)
                                         _cA3   = _calc(_pvA, _cq3, _cu3, _tiva3)
                                         _cS3   = _calc(_pvS, _cq3, _cu3, _tiva3)
@@ -1073,6 +1073,16 @@ def build_tab_promos(container) -> None:
                                                             for _gx3, _gcss3 in [(_gP3, _gcs3(_gP3)), (_gA3, _gcs3(_gA3)), (_gS3, _gcs3(_gS3))]:
                                                                 with ui.element("td").style(_TDVAL3 + ";" + _gcss3):
                                                                     ui.label(fmt_p2(_gx3) if _isp3 else fmt_m(_gx3))
+                                        # ── DETALLE PROMO (compacto) ─────────────────────────────────────
+                                        ui.separator().classes("my-1")
+                                        with ui.card().classes("w-full p-2 border border-blue-100").style("gap:0"):
+                                            _row(ICO_API,  "Promo:",              f"{_p.get('name') or '—'} (SMART)")
+                                            _row(ICO_API,  "MLA:",                f"{_iid2} ({_tf3})")
+                                            _row(ICO_API,  "Precio listado:",     fmt_m(_orig3) if _orig3 else "—")
+                                            _row(ICO_API,  "Precio ML:",          fmt_m(_prml3) if _prml3 else "—")
+                                            _row(ICO_API,  "ML%:",                f"{_mlp3:.1f}%")
+                                            _row(ICO_CALC, "Precio sug. (×1.8):", fmt_m(_sug3) if _sug3 else "—")
+                                            _row(ICO_CALC, "ML$ máx:",            fmt_m(_mx3) if _mx3 else "—")
 
                                 with ui.element("div").style("overflow-x:auto;width:100%"):
                                     with ui.element("table").style(
