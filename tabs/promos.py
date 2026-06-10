@@ -987,7 +987,7 @@ def build_tab_promos(container) -> None:
 
                                         _TDLBL3  = "padding:3px 8px;text-align:left;white-space:nowrap;font-size:11px;color:#555"
                                         _TDVAL3  = "padding:3px 8px;text-align:right;white-space:nowrap;font-size:11px"
-                                        _pvP_txt = f"{fmt_m(_pvP)} ({fmt_m(_prml3)}+{fmt_m(_mlc3)})" if _mlc3 > 0 else fmt_m(_pvP)
+                                        _pvP_txt = fmt_m(_prml3) if _prml3 > 0 else fmt_m(_pvP)
                                         with ui.element("div").style("overflow-x:auto;width:100%;margin-top:4px"):
                                             with ui.element("table").style("border-collapse:collapse;width:100%;font-size:11px"):
                                                 with ui.element("thead"):
