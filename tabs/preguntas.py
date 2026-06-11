@@ -16,7 +16,6 @@ from nicegui import app, background_tasks, run, ui
 from db import get_app_config, set_app_config
 from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
 
-_DEFAULT_SALUDOS = ["Buenos días", "Buenas tardes", "Buenas noches"]
 _DEFAULT_FRASES = [
     "Esperamos tu compra.",
     "Estamos para lo que necesites.",
@@ -93,20 +92,6 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
     return {"status_code": resp.status_code, "body": body}
 
 
-def _ml_get_buyer_nickname(access_token: str, buyer_id: Any) -> str:
-    try:
-        resp = _requests.get(
-            f"https://api.mercadolibre.com/users/{buyer_id}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-        )
-        if resp.ok:
-            return (resp.json().get("nickname") or "").strip()
-    except Exception:
-        pass
-    return ""
-
-
 def _groq_generate(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
@@ -134,17 +119,19 @@ def _time_ago(date_str: str) -> str:
         return "—"
 
 
-def _build_list_card(
-    icon: str,
-    title: str,
-    config_key: str,
-    default_items: list,
-    add_label: str,
-    resp_area_ref: list,   # [textarea_element] — leer al momento del click
-    line_mode: str,        # "first" | "penultimate"
-) -> None:
-    """Tarjeta de lista interactiva. Click en ítem aplica texto al textarea."""
-    items: list = _load_json_config(config_key, default_items)
+def _saludo_por_hora() -> str:
+    tz_arg = timezone(timedelta(hours=-3))
+    hora = datetime.now(tz_arg).hour
+    if 5 <= hora < 12:
+        return "buenos días"
+    if 12 <= hora < 19:
+        return "buenas tardes"
+    return "buenas noches"
+
+
+def _build_frases_card(resp_area_ref: list) -> None:
+    """Tarjeta Frases de cierre: ítems clickeables → reemplazan penúltima línea del textarea."""
+    items: list = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
     state: dict = {"editing_idx": None, "adding": False}
 
     def _apply_to_textarea(texto: str) -> None:
@@ -153,22 +140,16 @@ def _build_list_card(
             ui.notify("Seleccioná una pregunta primero", type="warning")
             return
         lines = (ta.value or "").split("\n")
-        if line_mode == "first":
-            if lines and lines != [""]:
-                lines[0] = texto
-            else:
-                lines = [texto]
-        else:  # penultimate
-            if len(lines) >= 2:
-                lines[-2] = texto
-            elif len(lines) == 1 and lines[0]:
-                lines.append(texto)
-            else:
-                lines = [texto]
+        if len(lines) >= 2:
+            lines[-2] = texto
+        elif len(lines) == 1 and lines[0]:
+            lines.append(texto)
+        else:
+            lines = [texto]
         ta.set_value("\n".join(lines))
 
-    with ui.card().classes("w-full p-3 shadow-sm"):
-        ui.label(f"{icon} {title}").classes(
+    with ui.card().classes("w-full h-full p-3 shadow-sm"):
+        ui.label("💬 Frases de cierre").classes(
             "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
         )
         list_col = ui.column().classes("w-full gap-0")
@@ -224,8 +205,10 @@ def _build_list_card(
 
                 if state["adding"]:
                     with ui.row().classes("w-full items-center gap-0 flex-nowrap"):
-                        add_inp = ui.input(placeholder="Nuevo...").classes("flex-1").props(
-                            "dense outlined"
+                        add_inp = (
+                            ui.input(placeholder="Nueva frase...")
+                            .classes("flex-1")
+                            .props("dense outlined")
                         )
 
                         def _confirm_add() -> None:
@@ -247,16 +230,16 @@ def _build_list_card(
                 state["editing_idx"] = None
                 _refresh()
 
-            ui.button(f"+ {add_label}", on_click=_add).props(
+            ui.button("+ Agregar frase", on_click=_add).props(
                 "flat dense no-caps"
             ).classes("text-xs text-blue-600")
 
             def _save() -> None:
                 cleaned = [s.strip() for s in items if s.strip()]
-                set_app_config(config_key, json.dumps(cleaned))
+                set_app_config("preguntas_frases_cierre", json.dumps(cleaned))
                 ui.notify("Guardado ✓", color="positive", timeout=1500)
 
-            ui.button("💾 Guardar cambios", on_click=_save).props(
+            ui.button("💾 Guardar", on_click=_save).props(
                 "unelevated dense no-caps"
             ).style("background:#185FA5;color:#E6F1FB").classes("text-xs")
 
@@ -277,7 +260,7 @@ def build_tab_preguntas(container) -> None:
             return
 
         ml_nickname_holder: list = [""]
-        resp_area_ref: list = [None]  # se actualiza en cada _open_detail
+        resp_area_ref: list = [None]
 
         main_area = ui.column().classes("w-full gap-2")
         with main_area:
@@ -337,7 +320,7 @@ def build_tab_preguntas(container) -> None:
                 return
 
             with main_area:
-                # ── Stats bar ────────────────────────────────────────────────
+                # ── SECCIÓN 1: Barra gris superior ──────────────────────────────
                 with ui.row().classes(
                     "w-full items-center gap-4 px-3 py-1 bg-grey-2 rounded mb-1 flex-wrap"
                 ):
@@ -354,7 +337,7 @@ def build_tab_preguntas(container) -> None:
                         "background:#185FA5;color:#E6F1FB"
                     ).classes("text-xs")
 
-                # ── Table (siempre arriba, fija) ──────────────────────────────
+                # ── SECCIÓN 2: Tabla (siempre visible, no se mueve) ─────────────
                 _TH = (
                     "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
                     "padding:5px 8px;white-space:nowrap;position:sticky;top:0;z-index:10"
@@ -381,10 +364,10 @@ def build_tab_preguntas(container) -> None:
 
                         with ui.element("tbody"):
                             for _i, q in enumerate(questions):
-                                item_id      = str(q.get("item_id") or "")
-                                title        = item_titles.get(item_id, item_id)
-                                text         = q.get("text") or ""
-                                from_obj     = q.get("from") or {}
+                                item_id       = str(q.get("item_id") or "")
+                                title         = item_titles.get(item_id, item_id)
+                                text          = q.get("text") or ""
+                                from_obj      = q.get("from") or {}
                                 buyer_display = (
                                     from_obj.get("nickname")
                                     or f"#{from_obj.get('id', '—')}"
@@ -422,43 +405,34 @@ def build_tab_preguntas(container) -> None:
                                             ' style="font-size:14px;color:#9ca3af"></i>'
                                         )
 
-                # ── Panel de detalle (debajo de la tabla, oculto al inicio) ───
-                detail_col = ui.column().classes("w-full mt-2")
-                detail_col.style("display:none")
+                # ── SECCIÓN 3: Panel de detalle (oculto al inicio) ──────────────
+                detail_panel = ui.column().classes("w-full mt-2")
+                detail_panel.set_visibility(False)
 
                 def _open_detail(q: dict, title: str) -> None:
-                    detail_col.clear()
-                    detail_col.style("display:block")
-                    qid  = q.get("id")
-                    text = q.get("text") or ""
+                    detail_panel.clear()
+                    detail_panel.set_visibility(True)
 
-                    with detail_col:
-                        # Contenedor unificado con borde visible
-                        with ui.card().classes("w-full q-pa-md").style(
-                            "border:1px solid #d1d5db;border-radius:8px"
-                        ):
-                            # Header: título + cerrar
-                            with ui.row().classes(
-                                "w-full items-center justify-between mb-2"
-                            ):
-                                with ui.column().classes("flex-1 gap-0"):
-                                    ui.label(title).classes("font-bold text-sm leading-tight")
-                                    ui.label(f"Pregunta #{qid}").classes(
-                                        "text-xs font-mono text-gray-400"
-                                    )
+                    qid          = q.get("id")
+                    text         = q.get("text") or ""
+                    from_obj     = q.get("from") or {}
+                    buyer_nick   = (from_obj.get("nickname") or "").strip()
+                    saludo       = _saludo_por_hora()
+                    primera_linea = (
+                        f"Hola {buyer_nick}, {saludo}."
+                        if buyer_nick else
+                        f"Hola, {saludo}."
+                    )
+                    ml_nickname  = ml_nickname_holder[0]
 
-                                def _cerrar() -> None:
-                                    detail_col.clear()
-                                    detail_col.style("display:none")
-                                    resp_area_ref[0] = None
+                    with detail_panel:
+                        with ui.row().classes("w-full gap-3 items-stretch"):
 
-                                ui.button("↩ Cerrar", on_click=_cerrar).props(
-                                    "flat dense no-caps"
-                                ).classes("text-xs text-gray-500")
+                            # ── Columna izquierda (50%) ────────────────────────
+                            with ui.column().classes("gap-2").style("width:50%"):
 
-                            # Fila superior: Pregunta | Respuesta
-                            with ui.row().classes("w-full gap-3"):
-                                with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                # Tarjeta 1: Pregunta
+                                with ui.card().classes("w-full p-4 shadow-sm"):
                                     ui.label("📋 Pregunta del comprador").classes(
                                         "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
                                     )
@@ -469,45 +443,40 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:13px;color:#1e3a5f;line-height:1.5"
                                         )
 
-                                with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                # Tarjeta 2: Respuesta
+                                with ui.card().classes("w-full p-4 shadow-sm"):
                                     ui.label("✍️ Tu respuesta").classes(
                                         "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
                                     )
                                     resp_area = ui.textarea(
-                                        placeholder="Escribí tu respuesta aquí..."
-                                    ).classes("w-full").props("outlined dense rows=6")
+                                        value=primera_linea,
+                                        placeholder="Escribí tu respuesta aquí...",
+                                    ).classes("w-full").props("outlined dense rows=8")
                                     resp_area_ref[0] = resp_area
 
-                                    with ui.row().classes("w-full items-center gap-2 mt-2"):
-                                        gemini_btn = ui.button("💡 Sugerir con Groq").props(
+                                    def _cerrar() -> None:
+                                        detail_panel.clear()
+                                        detail_panel.set_visibility(False)
+                                        resp_area_ref[0] = None
+
+                                    with ui.row().classes(
+                                        "w-full items-center gap-2 mt-2 flex-wrap"
+                                    ):
+                                        groq_btn = ui.button("💡 Sugerir con Groq").props(
                                             "unelevated dense no-caps"
                                         ).style("background:#4285F4;color:#fff").classes("text-xs")
-                                        enviar_btn = ui.button("📨 Enviar").props(
+                                        enviar_btn = ui.button("📨 Enviar respuesta").props(
                                             "unelevated dense no-caps"
                                         ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+                                        ui.button("↩ Cerrar", on_click=_cerrar).props(
+                                            "flat dense no-caps"
+                                        ).classes("text-xs text-gray-500")
 
-                            # Fila inferior: Saludos | Frases de cierre
-                            with ui.row().classes("w-full gap-3 mt-2"):
-                                with ui.element("div").classes("flex-1"):
-                                    _build_list_card(
-                                        "👋", "Saludos",
-                                        "preguntas_saludos",
-                                        _DEFAULT_SALUDOS,
-                                        "Agregar saludo",
-                                        resp_area_ref,
-                                        "first",
-                                    )
-                                with ui.element("div").classes("flex-1"):
-                                    _build_list_card(
-                                        "💬", "Frases de cierre",
-                                        "preguntas_frases_cierre",
-                                        _DEFAULT_FRASES,
-                                        "Agregar frase",
-                                        resp_area_ref,
-                                        "penultimate",
-                                    )
+                            # ── Columna derecha (50%) ──────────────────────────
+                            with ui.column().style("width:50%"):
+                                _build_frases_card(resp_area_ref)
 
-                    async def _on_gemini_click() -> None:
+                    async def _on_groq_click() -> None:
                         groq_key = get_app_config("groq_api_key")
                         if not groq_key:
                             ui.notify(
@@ -516,56 +485,35 @@ def build_tab_preguntas(container) -> None:
                             )
                             return
 
-                        saludos = _load_json_config("preguntas_saludos", _DEFAULT_SALUDOS)
-                        frases  = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
-
-                        tz_arg   = timezone(timedelta(hours=-3))
-                        hora_str = datetime.now(tz_arg).strftime("%H:%M")
-
-                        _user = app.storage.user.get("user") or {}
-                        nombre_usuario = (
-                            (_user.get("name") or _user.get("username") or "").strip()
-                            or "vendedor"
-                        )
-                        ml_nickname = ml_nickname_holder[0] or nombre_usuario
-
-                        from_id = (q.get("from") or {}).get("id")
-                        buyer_nick = ""
-                        if from_id:
-                            buyer_nick = await run.io_bound(
-                                _ml_get_buyer_nickname, access_token, from_id
-                            )
-
-                        saludo_prefix = f"Hola {buyer_nick}," if buyer_nick else "Hola,"
-                        saludos_str   = ", ".join(f'"{s}"' for s in saludos)
-                        frases_str    = ", ".join(f'"{f}"' for f in frases)
+                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
+                        frase_aleatoria = random.choice(frases) if frases else ""
 
                         prompt = (
-                            f"Sos vendedor en MercadoLibre Argentina. "
-                            f"El producto es: {title}. "
-                            f"La pregunta del comprador es: {text}. "
-                            f"La hora actual en Argentina es {hora_str}. "
-                            f"Respondé EXACTAMENTE con este formato "
-                            f"(reemplazá los corchetes con texto real, sin corchetes en el resultado):\n\n"
-                            f"{saludo_prefix} [elegí el saludo apropiado para la hora de: {saludos_str}].\n"
-                            f"[respuesta clara y breve en español rioplatense]\n"
-                            f"[elegí UNA frase de cierre de: {frases_str}]\n"
-                            f"Muchas gracias, {ml_nickname}.\n\n"
-                            f"IMPORTANTE: sin corchetes ni explicaciones en el resultado final."
+                            f"Sos vendedor en MercadoLibre Argentina.\n"
+                            f"Producto: {title}\n"
+                            f"Pregunta: {text}\n\n"
+                            f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
+                            f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
                         )
 
-                        gemini_btn.props("loading")
+                        groq_btn.props("loading")
                         try:
-                            resultado = await run.io_bound(_groq_generate, groq_key, prompt)
-                            if resultado and resultado.strip():
-                                resp_area.set_value(resultado.strip())
+                            texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
+                            texto_groq = (texto_groq or "").strip()
+                            if texto_groq:
+                                partes = [primera_linea, texto_groq]
+                                if frase_aleatoria:
+                                    partes.append(frase_aleatoria)
+                                if ml_nickname:
+                                    partes.append(f"Muchas gracias, {ml_nickname}.")
+                                resp_area.set_value("\n".join(partes))
                                 ui.notify("Sugerencia lista ✓", color="positive")
                             else:
                                 ui.notify("Groq no devolvió texto", type="warning")
                         except Exception as exc:
                             ui.notify(f"Error Groq: {exc}", type="negative")
                         finally:
-                            gemini_btn.props(remove="loading")
+                            groq_btn.props(remove="loading")
 
                     async def _on_enviar_click() -> None:
                         text_resp = (resp_area.value or "").strip()
@@ -578,8 +526,8 @@ def build_tab_preguntas(container) -> None:
                             )
                             if result["status_code"] in (200, 201):
                                 ui.notify("Respuesta enviada exitosamente", type="positive")
-                                detail_col.clear()
-                                detail_col.style("display:none")
+                                detail_panel.clear()
+                                detail_panel.set_visibility(False)
                                 resp_area_ref[0] = None
                                 build_tab_preguntas(container)
                             else:
@@ -591,7 +539,7 @@ def build_tab_preguntas(container) -> None:
                         except Exception as exc:
                             ui.notify(f"Error al enviar: {exc}", type="negative")
 
-                    gemini_btn.on_click(_on_gemini_click)
+                    groq_btn.on_click(_on_groq_click)
                     enviar_btn.on_click(_on_enviar_click)
 
         background_tasks.create(_cargar_async(), name="cargar_preguntas")
