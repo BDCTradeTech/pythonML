@@ -302,10 +302,10 @@ def build_tab_preguntas(container) -> None:
                                     "unelevated dense no-caps"
                                 ).style("background:#1B7A3E;color:#fff").classes("text-xs")
 
-                    def _on_gemini_click() -> None:
+                    async def _on_gemini_click() -> None:
                         gemini_key = get_app_config("gemini_api_key")
                         if not gemini_key:
-                            ui.notify("Configurá tu API key de Gemini en Datos → IA", type="warning")
+                            ui.notify("Configurá tu API key de Gemini en Configuración → IA/Gemini", type="warning")
                             return
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
@@ -315,52 +315,40 @@ def build_tab_preguntas(container) -> None:
                             f"Solo la respuesta, sin saludos ni firmas."
                         )
                         gemini_btn.props("loading")
-                        async def _llamar() -> None:
-                            error_msg = None
-                            resultado = None
-                            try:
-                                resultado = await run.io_bound(_gemini_generate, gemini_key, prompt)
-                            except Exception as exc:
-                                error_msg = str(exc)
-                            finally:
-                                gemini_btn.props(remove="loading")
-                            if error_msg:
-                                ui.notify(f"Error Gemini: {error_msg}", type="negative")
-                            elif resultado and resultado.strip():
+                        try:
+                            resultado = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                            if resultado and resultado.strip():
                                 resp_area.set_value(resultado.strip())
                                 ui.notify("Sugerencia lista ✓", color="positive")
                             else:
                                 ui.notify("Gemini no devolvió texto", type="warning")
-                        background_tasks.create(_llamar())
+                        except Exception as exc:
+                            ui.notify(f"Error Gemini: {exc}", type="negative")
+                        finally:
+                            gemini_btn.props(remove="loading")
 
-                    def _on_enviar_click() -> None:
+                    async def _on_enviar_click() -> None:
                         text_resp = (resp_area.value or "").strip()
                         if not text_resp:
                             ui.notify("Escribí una respuesta antes de enviar", type="warning")
                             return
-                        async def _enviar() -> None:
-                            error_msg = None
-                            result = None
-                            try:
-                                result = await run.io_bound(
-                                    _ml_post_answer, access_token, qid, text_resp
-                                )
-                            except Exception as exc:
-                                error_msg = str(exc)
-                            if error_msg:
-                                ui.notify(f"Error al enviar: {error_msg}", type="negative")
-                            elif result and result["status_code"] in (200, 201):
+                        try:
+                            result = await run.io_bound(
+                                _ml_post_answer, access_token, qid, text_resp
+                            )
+                            if result["status_code"] in (200, 201):
                                 ui.notify("Respuesta enviada exitosamente", type="positive")
                                 detail_col.clear()
                                 detail_col.style("display:none")
                                 build_tab_preguntas(container)
                             else:
                                 err_msg = (
-                                    ((result or {}).get("body") or {}).get("message")
-                                    or str((result or {}).get("body", ""))[:200]
+                                    (result["body"] or {}).get("message")
+                                    or str(result["body"])[:200]
                                 )
                                 ui.notify(f"Error ML: {err_msg}", type="negative")
-                        background_tasks.create(_enviar())
+                        except Exception as exc:
+                            ui.notify(f"Error al enviar: {exc}", type="negative")
 
                     gemini_btn.on_click(_on_gemini_click)
                     enviar_btn.on_click(_on_enviar_click)
