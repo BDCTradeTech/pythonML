@@ -109,10 +109,7 @@ def _ml_get_buyer_nickname(access_token: str, buyer_id: Any) -> str:
 
 def _groq_generate(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
@@ -138,48 +135,116 @@ def _time_ago(date_str: str) -> str:
 
 
 def _build_list_card(
-    icon: str, title: str, config_key: str, default_items: list, add_label: str
+    icon: str,
+    title: str,
+    config_key: str,
+    default_items: list,
+    add_label: str,
+    resp_area_ref: list,   # [textarea_element] — leer al momento del click
+    line_mode: str,        # "first" | "penultimate"
 ) -> None:
-    """Tarjeta con lista editable persistida en app_config."""
+    """Tarjeta de lista interactiva. Click en ítem aplica texto al textarea."""
     items: list = _load_json_config(config_key, default_items)
-    state: dict = {"inputs": []}
+    state: dict = {"editing_idx": None, "adding": False}
 
-    with ui.card().classes("w-full p-4 shadow-sm"):
+    def _apply_to_textarea(texto: str) -> None:
+        ta = resp_area_ref[0]
+        if ta is None:
+            ui.notify("Seleccioná una pregunta primero", type="warning")
+            return
+        lines = (ta.value or "").split("\n")
+        if line_mode == "first":
+            if lines and lines != [""]:
+                lines[0] = texto
+            else:
+                lines = [texto]
+        else:  # penultimate
+            if len(lines) >= 2:
+                lines[-2] = texto
+            elif len(lines) == 1 and lines[0]:
+                lines.append(texto)
+            else:
+                lines = [texto]
+        ta.set_value("\n".join(lines))
+
+    with ui.card().classes("w-full p-3 shadow-sm"):
         ui.label(f"{icon} {title}").classes(
-            "text-xs font-bold text-gray-600 uppercase tracking-wide mb-2"
+            "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
         )
-
-        list_col = ui.column().classes("w-full gap-1")
-
-        def _sync_to_items() -> None:
-            for j, ref in enumerate(state["inputs"]):
-                if j < len(items):
-                    items[j] = ref.value
+        list_col = ui.column().classes("w-full gap-0")
 
         def _refresh() -> None:
-            state["inputs"] = []
             list_col.clear()
             with list_col:
                 for idx in range(len(items)):
-                    with ui.row().classes("w-full items-center gap-1 flex-nowrap"):
-                        inp = ui.input(value=items[idx]).classes("flex-1").props("dense outlined")
-                        state["inputs"].append(inp)
+                    texto = items[idx]
+                    with ui.row().classes("w-full items-center gap-0 flex-nowrap"):
+                        if state["editing_idx"] == idx:
+                            edit_inp = (
+                                ui.input(value=texto)
+                                .classes("flex-1")
+                                .props("dense outlined")
+                            )
 
-                        def _del(i=idx) -> None:
-                            _sync_to_items()
-                            items.pop(i)
+                            def _confirm_edit(i=idx, inp=edit_inp) -> None:
+                                items[i] = inp.value
+                                state["editing_idx"] = None
+                                _refresh()
+
+                            ui.button(icon="check", on_click=_confirm_edit).props(
+                                "flat dense round color=positive"
+                            )
+                        else:
+                            ui.label(texto).classes(
+                                "flex-1 text-blue-600 cursor-pointer text-xs py-1 hover:underline"
+                            ).on("click", lambda t=texto: _apply_to_textarea(t))
+
+                            def _edit(i=idx) -> None:
+                                state["editing_idx"] = i
+                                state["adding"] = False
+                                _refresh()
+
+                            def _del(i=idx) -> None:
+                                items.pop(i)
+                                if state["editing_idx"] == i:
+                                    state["editing_idx"] = None
+                                elif (
+                                    state["editing_idx"] is not None
+                                    and state["editing_idx"] > i
+                                ):
+                                    state["editing_idx"] -= 1
+                                _refresh()
+
+                            ui.button(icon="edit", on_click=_edit).props(
+                                "flat dense round"
+                            ).style("color:#6b7280;font-size:11px")
+                            ui.button(icon="delete", on_click=_del).props(
+                                "flat dense round color=negative"
+                            ).style("font-size:11px")
+
+                if state["adding"]:
+                    with ui.row().classes("w-full items-center gap-0 flex-nowrap"):
+                        add_inp = ui.input(placeholder="Nuevo...").classes("flex-1").props(
+                            "dense outlined"
+                        )
+
+                        def _confirm_add() -> None:
+                            val = add_inp.value.strip()
+                            if val:
+                                items.append(val)
+                            state["adding"] = False
                             _refresh()
 
-                        ui.button(icon="delete", on_click=_del).props(
-                            "flat dense round color=negative"
+                        ui.button(icon="check", on_click=_confirm_add).props(
+                            "flat dense round color=positive"
                         )
 
         _refresh()
 
-        with ui.row().classes("w-full items-center justify-between mt-2"):
+        with ui.row().classes("w-full items-center justify-between mt-1"):
             def _add() -> None:
-                _sync_to_items()
-                items.append("")
+                state["adding"] = True
+                state["editing_idx"] = None
                 _refresh()
 
             ui.button(f"+ {add_label}", on_click=_add).props(
@@ -187,12 +252,11 @@ def _build_list_card(
             ).classes("text-xs text-blue-600")
 
             def _save() -> None:
-                _sync_to_items()
                 cleaned = [s.strip() for s in items if s.strip()]
                 set_app_config(config_key, json.dumps(cleaned))
                 ui.notify("Guardado ✓", color="positive", timeout=1500)
 
-            ui.button("💾 Guardar", on_click=_save).props(
+            ui.button("💾 Guardar cambios", on_click=_save).props(
                 "unelevated dense no-caps"
             ).style("background:#185FA5;color:#E6F1FB").classes("text-xs")
 
@@ -213,6 +277,7 @@ def build_tab_preguntas(container) -> None:
             return
 
         ml_nickname_holder: list = [""]
+        resp_area_ref: list = [None]  # se actualiza en cada _open_detail
 
         main_area = ui.column().classes("w-full gap-2")
         with main_area:
@@ -289,10 +354,7 @@ def build_tab_preguntas(container) -> None:
                         "background:#185FA5;color:#E6F1FB"
                     ).classes("text-xs")
 
-                detail_col = ui.column().classes("w-full mt-2")
-                detail_col.style("display:none")
-
-                # ── Table ─────────────────────────────────────────────────────
+                # ── Table (siempre arriba, fija) ──────────────────────────────
                 _TH = (
                     "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
                     "padding:5px 8px;white-space:nowrap;position:sticky;top:0;z-index:10"
@@ -319,10 +381,10 @@ def build_tab_preguntas(container) -> None:
 
                         with ui.element("tbody"):
                             for _i, q in enumerate(questions):
-                                item_id   = str(q.get("item_id") or "")
-                                title     = item_titles.get(item_id, item_id)
-                                text      = q.get("text") or ""
-                                from_obj  = q.get("from") or {}
+                                item_id      = str(q.get("item_id") or "")
+                                title        = item_titles.get(item_id, item_id)
+                                text         = q.get("text") or ""
+                                from_obj     = q.get("from") or {}
                                 buyer_display = (
                                     from_obj.get("nickname")
                                     or f"#{from_obj.get('id', '—')}"
@@ -360,7 +422,10 @@ def build_tab_preguntas(container) -> None:
                                             ' style="font-size:14px;color:#9ca3af"></i>'
                                         )
 
-                # ── Detail panel ──────────────────────────────────────────────
+                # ── Panel de detalle (debajo de la tabla, oculto al inicio) ───
+                detail_col = ui.column().classes("w-full mt-2")
+                detail_col.style("display:none")
+
                 def _open_detail(q: dict, title: str) -> None:
                     detail_col.clear()
                     detail_col.style("display:block")
@@ -368,69 +433,79 @@ def build_tab_preguntas(container) -> None:
                     text = q.get("text") or ""
 
                     with detail_col:
-                        # Header
-                        with ui.row().classes(
-                            "w-full items-center justify-between mt-3 mb-1"
+                        # Contenedor unificado con borde visible
+                        with ui.card().classes("w-full q-pa-md").style(
+                            "border:1px solid #d1d5db;border-radius:8px"
                         ):
-                            with ui.column().classes("flex-1 gap-0"):
-                                ui.label(title).classes("font-bold text-sm leading-tight")
-                                ui.label(f"Pregunta #{qid}").classes(
-                                    "text-xs font-mono text-gray-400"
-                                )
-
-                            def _cerrar() -> None:
-                                detail_col.clear()
-                                detail_col.style("display:none")
-
-                            ui.button("↩ Cerrar", on_click=_cerrar).props(
-                                "flat dense no-caps"
-                            ).classes("text-xs text-gray-500")
-
-                        # ── Fila superior: Pregunta | Respuesta ────────────
-                        with ui.row().classes("w-full gap-3"):
-                            with ui.card().classes("flex-1 p-4 shadow-sm"):
-                                ui.label("📋 Pregunta del comprador").classes(
-                                    "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
-                                )
-                                with ui.card().classes(
-                                    "w-full p-3 bg-blue-50 border border-blue-100"
-                                ):
-                                    ui.label(text).style(
-                                        "font-size:13px;color:#1e3a5f;line-height:1.5"
+                            # Header: título + cerrar
+                            with ui.row().classes(
+                                "w-full items-center justify-between mb-2"
+                            ):
+                                with ui.column().classes("flex-1 gap-0"):
+                                    ui.label(title).classes("font-bold text-sm leading-tight")
+                                    ui.label(f"Pregunta #{qid}").classes(
+                                        "text-xs font-mono text-gray-400"
                                     )
 
-                            with ui.card().classes("flex-1 p-4 shadow-sm"):
-                                ui.label("✍️ Tu respuesta").classes(
-                                    "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
-                                )
-                                resp_area = ui.textarea(
-                                    placeholder="Escribí tu respuesta aquí..."
-                                ).classes("w-full").props("outlined dense rows=4")
+                                def _cerrar() -> None:
+                                    detail_col.clear()
+                                    detail_col.style("display:none")
+                                    resp_area_ref[0] = None
 
-                                with ui.row().classes("w-full items-center gap-2 mt-2"):
-                                    gemini_btn = ui.button("💡 Sugerir con Groq").props(
-                                        "unelevated dense no-caps"
-                                    ).style("background:#4285F4;color:#fff").classes("text-xs")
-                                    enviar_btn = ui.button("📨 Enviar").props(
-                                        "unelevated dense no-caps"
-                                    ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+                                ui.button("↩ Cerrar", on_click=_cerrar).props(
+                                    "flat dense no-caps"
+                                ).classes("text-xs text-gray-500")
 
-                        # ── Fila inferior: Saludos | Frases de cierre ──────
-                        with ui.row().classes("w-full gap-3 mt-1"):
-                            with ui.element("div").classes("flex-1"):
-                                _build_list_card(
-                                    "👋", "Saludos",
-                                    "preguntas_saludos",
-                                    _DEFAULT_SALUDOS,
-                                    "Agregar saludo",
-                                )
-                            with ui.element("div").classes("flex-1"):
-                                _build_list_card(
-                                    "💬", "Frases de cierre",
-                                    "preguntas_frases_cierre",
-                                    _DEFAULT_FRASES,
-                                    "Agregar frase",
-                                )
+                            # Fila superior: Pregunta | Respuesta
+                            with ui.row().classes("w-full gap-3"):
+                                with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                    ui.label("📋 Pregunta del comprador").classes(
+                                        "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                    )
+                                    with ui.card().classes(
+                                        "w-full p-3 bg-blue-50 border border-blue-100"
+                                    ):
+                                        ui.label(text).style(
+                                            "font-size:13px;color:#1e3a5f;line-height:1.5"
+                                        )
+
+                                with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                    ui.label("✍️ Tu respuesta").classes(
+                                        "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                    )
+                                    resp_area = ui.textarea(
+                                        placeholder="Escribí tu respuesta aquí..."
+                                    ).classes("w-full").props("outlined dense rows=6")
+                                    resp_area_ref[0] = resp_area
+
+                                    with ui.row().classes("w-full items-center gap-2 mt-2"):
+                                        gemini_btn = ui.button("💡 Sugerir con Groq").props(
+                                            "unelevated dense no-caps"
+                                        ).style("background:#4285F4;color:#fff").classes("text-xs")
+                                        enviar_btn = ui.button("📨 Enviar").props(
+                                            "unelevated dense no-caps"
+                                        ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+
+                            # Fila inferior: Saludos | Frases de cierre
+                            with ui.row().classes("w-full gap-3 mt-2"):
+                                with ui.element("div").classes("flex-1"):
+                                    _build_list_card(
+                                        "👋", "Saludos",
+                                        "preguntas_saludos",
+                                        _DEFAULT_SALUDOS,
+                                        "Agregar saludo",
+                                        resp_area_ref,
+                                        "first",
+                                    )
+                                with ui.element("div").classes("flex-1"):
+                                    _build_list_card(
+                                        "💬", "Frases de cierre",
+                                        "preguntas_frases_cierre",
+                                        _DEFAULT_FRASES,
+                                        "Agregar frase",
+                                        resp_area_ref,
+                                        "penultimate",
+                                    )
 
                     async def _on_gemini_click() -> None:
                         groq_key = get_app_config("groq_api_key")
@@ -505,6 +580,7 @@ def build_tab_preguntas(container) -> None:
                                 ui.notify("Respuesta enviada exitosamente", type="positive")
                                 detail_col.clear()
                                 detail_col.style("display:none")
+                                resp_area_ref[0] = None
                                 build_tab_preguntas(container)
                             else:
                                 err_msg = (
