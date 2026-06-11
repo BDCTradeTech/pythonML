@@ -633,6 +633,16 @@ def init_db() -> None:
         """
     )
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS app_config (
+            key        TEXT PRIMARY KEY,
+            value      TEXT,
+            updated_at TEXT
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -1683,5 +1693,32 @@ def get_financiacion_cuotas_ml() -> Dict[int, Dict]:
             int(r["cuotas"]): {"pct": float(r["costo_financiacion"]), "fecha": str(r["fecha_modificacion"] or "")}
             for r in cur.fetchall()
         }
+    finally:
+        conn.close()
+
+
+def get_app_config(key: str) -> Optional[str]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value FROM app_config WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row["value"] if row else None
+    finally:
+        conn.close()
+
+
+def set_app_config(key: str, value: str) -> None:
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            INSERT INTO app_config (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, value, _dt.utcnow().isoformat()),
+        )
+        conn.commit()
     finally:
         conn.close()

@@ -1,0 +1,346 @@
+"""
+tabs/preguntas.py
+Pestaña Preguntas: preguntas sin responder recibidas en MercadoLibre.
+"""
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
+
+import requests as _requests
+
+from nicegui import app, background_tasks, run, ui
+
+from db import get_app_config
+from ml_api import get_ml_access_token
+
+
+def _require_login() -> Optional[Dict[str, Any]]:
+    user = app.storage.user.get("user")
+    if not user:
+        ui.notify("Debes iniciar sesión", color="negative")
+    return user
+
+
+# ── ML / Gemini helpers (sync → run.io_bound) ───────────────────────────────
+
+def _ml_get_received_questions(access_token: str) -> Dict[str, Any]:
+    resp = _requests.get(
+        "https://api.mercadolibre.com/my/received_questions",
+        params={"status": "UNANSWERED", "limit": 50},
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def _ml_get_items_titles(access_token: str, item_ids: List[str]) -> Dict[str, str]:
+    titles: Dict[str, str] = {}
+    for i in range(0, len(item_ids), 20):
+        batch = item_ids[i : i + 20]
+        resp = _requests.get(
+            "https://api.mercadolibre.com/items",
+            params={"ids": ",".join(batch), "attributes": "id,title"},
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        if resp.ok:
+            for entry in resp.json():
+                body = entry.get("body") or {}
+                if body.get("id"):
+                    titles[str(body["id"])] = body.get("title") or str(body["id"])
+    return titles
+
+
+def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str, Any]:
+    resp = _requests.post(
+        "https://api.mercadolibre.com/answers",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        },
+        json={"question_id": question_id, "text": text},
+        timeout=15,
+    )
+    body: Any = {}
+    try:
+        body = resp.json()
+    except Exception:
+        pass
+    return {"status_code": resp.status_code, "body": body}
+
+
+def _gemini_generate(gemini_key: str, prompt: str) -> str:
+    resp = _requests.post(
+        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
+        params={"key": gemini_key},
+        json={"contents": [{"parts": [{"text": prompt}]}]},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    return (
+        resp.json()
+        .get("candidates", [{}])[0]
+        .get("content", {})
+        .get("parts", [{}])[0]
+        .get("text", "")
+    )
+
+
+def _time_ago(date_str: str) -> str:
+    try:
+        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
+        diff = int((datetime.now(timezone.utc) - dt).total_seconds())
+        if diff < 3600:
+            return f"{max(diff // 60, 1)}m"
+        if diff < 86400:
+            return f"{diff // 3600}h"
+        return f"{diff // 86400}d"
+    except Exception:
+        return "—"
+
+
+# ── build ────────────────────────────────────────────────────────────────────
+
+def build_tab_preguntas(container) -> None:
+    container.clear()
+    user = _require_login()
+    if not user:
+        return
+    uid = user["id"]
+
+    with container:
+        access_token = get_ml_access_token(uid)
+        if not access_token:
+            ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración.").classes(
+                "text-warning"
+            )
+            return
+
+        main_area = ui.column().classes("w-full gap-2")
+        with main_area:
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando preguntas...").classes("text-xl text-gray-700")
+
+        async def _cargar_async() -> None:
+            try:
+                data = await run.io_bound(_ml_get_received_questions, access_token)
+            except Exception as e:
+                main_area.clear()
+                with main_area:
+                    ui.label(f"❌ Error al conectar con ML: {e}").classes("text-negative p-4")
+                return
+
+            questions: List[dict] = data.get("questions", [])
+
+            item_ids = list({str(q.get("item_id") or "") for q in questions if q.get("item_id")})
+            item_titles: Dict[str, str] = {}
+            if item_ids:
+                try:
+                    item_titles = await run.io_bound(_ml_get_items_titles, access_token, item_ids)
+                except Exception:
+                    pass
+
+            main_area.clear()
+
+            if not questions:
+                with main_area:
+                    with ui.card().classes("w-full p-8 items-center gap-4"):
+                        ui.html(
+                            '<i class="ti ti-message-check" style="font-size:48px;color:#9ca3af"></i>'
+                        )
+                        ui.label("No tenés preguntas sin responder").classes(
+                            "text-xl text-gray-500"
+                        )
+                return
+
+            with main_area:
+                # ── Stats bar ───────────────────────────────────────────────
+                with ui.row().classes(
+                    "w-full items-center gap-4 px-3 py-1 bg-grey-2 rounded mb-1 flex-wrap"
+                ):
+                    with ui.row().classes("items-baseline gap-1"):
+                        ui.label("Sin responder:").classes("text-xs text-gray-500")
+                        ui.label(str(len(questions))).classes("text-sm font-bold").style(
+                            "color:#E24B4A"
+                        )
+                    ui.space()
+                    ui.button(
+                        "Actualizar",
+                        on_click=lambda: build_tab_preguntas(container),
+                    ).props("unelevated dense no-caps icon=refresh").style(
+                        "background:#185FA5;color:#E6F1FB"
+                    ).classes("text-xs")
+
+                detail_col = ui.column().classes("w-full mt-2")
+                detail_col.style("display:none")
+
+                # ── Table ────────────────────────────────────────────────────
+                _TH = (
+                    "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
+                    "padding:5px 8px;white-space:nowrap;position:sticky;top:0;z-index:10"
+                )
+                _TD = "padding:4px 8px;font-size:12px;border-bottom:1px solid #f0f0f0"
+
+                with ui.element("div").style("width:100%;overflow-x:auto"):
+                    with ui.element("table").style(
+                        "width:100%;border-collapse:collapse;table-layout:fixed"
+                    ):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for _h, _w in [
+                                    ("Producto",  "30%"),
+                                    ("Pregunta",  "40%"),
+                                    ("Comprador", "15%"),
+                                    ("Hace",       "8%"),
+                                    ("",           "7%"),
+                                ]:
+                                    with ui.element("th").style(
+                                        f"{_TH};width:{_w};text-align:left"
+                                    ):
+                                        ui.label(_h)
+                        with ui.element("tbody"):
+                            for _i, q in enumerate(questions):
+                                item_id  = str(q.get("item_id") or "")
+                                title    = item_titles.get(item_id, item_id)
+                                text     = q.get("text") or ""
+                                buyer_id = str((q.get("from") or {}).get("id") or "—")
+                                age      = _time_ago(q.get("date_created") or "")
+                                _bg      = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                                with ui.element("tr").style(
+                                    f"background:{_bg};cursor:pointer;"
+                                    "border-bottom:1px solid #e8e8e8"
+                                ).on("click", lambda q=q, t=title: _open_detail(q, t)):
+                                    with ui.element("td").style(
+                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                    ):
+                                        ui.label(title[:60]).style(
+                                            "font-size:12px;font-weight:500"
+                                        )
+                                    with ui.element("td").style(
+                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                    ):
+                                        ui.label(
+                                            text[:80] + ("…" if len(text) > 80 else "")
+                                        ).style("font-size:12px;color:#374151")
+                                    with ui.element("td").style(
+                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                    ):
+                                        ui.label(f"#{buyer_id}").style(
+                                            "font-size:11px;color:#6b7280;font-family:monospace"
+                                        )
+                                    with ui.element("td").style(f"{_TD};text-align:center"):
+                                        ui.label(age).style("font-size:11px;color:#9ca3af")
+                                    with ui.element("td").style(f"{_TD};text-align:center"):
+                                        ui.html(
+                                            '<i class="ti ti-chevron-right"'
+                                            ' style="font-size:14px;color:#9ca3af"></i>'
+                                        )
+
+                # ── Detail panel ─────────────────────────────────────────────
+                def _open_detail(q: dict, title: str) -> None:
+                    detail_col.clear()
+                    detail_col.style("display:block")
+                    qid  = q.get("id")
+                    text = q.get("text") or ""
+
+                    with detail_col:
+                        with ui.card().classes("w-full p-4 mt-2 border border-blue-200"):
+                            with ui.row().classes("w-full items-start justify-between mb-2"):
+                                with ui.column().classes("flex-1 gap-1"):
+                                    ui.label(title).classes("font-bold text-sm leading-tight")
+                                    ui.label(f"Pregunta #{qid}").classes(
+                                        "text-xs font-mono text-gray-400"
+                                    )
+
+                                def _cerrar() -> None:
+                                    detail_col.clear()
+                                    detail_col.style("display:none")
+
+                                ui.button("↩ Cerrar", on_click=_cerrar).props(
+                                    "flat dense no-caps"
+                                ).classes("text-xs text-gray-500")
+
+                            ui.separator().classes("my-2")
+
+                            ui.label("Pregunta del comprador").classes(
+                                "text-xs font-bold uppercase text-gray-500 tracking-wide mb-1"
+                            )
+                            with ui.card().classes("w-full p-3 bg-blue-50 border border-blue-100"):
+                                ui.label(text).style(
+                                    "font-size:13px;color:#1e3a5f;line-height:1.5"
+                                )
+
+                            ui.separator().classes("my-2")
+
+                            ui.label("Tu respuesta").classes(
+                                "text-xs font-bold uppercase text-gray-500 tracking-wide mb-1"
+                            )
+                            resp_area = ui.textarea(
+                                placeholder="Escribí tu respuesta aquí..."
+                            ).classes("w-full").props("outlined dense rows=3")
+
+                            with ui.row().classes("w-full items-center gap-2 mt-2 flex-wrap"):
+                                gemini_btn = ui.button("💡 Sugerir con Gemini").props(
+                                    "unelevated dense no-caps"
+                                ).style("background:#4285F4;color:#fff").classes("text-xs")
+                                enviar_btn = ui.button("📨 Enviar respuesta").props(
+                                    "unelevated dense no-caps"
+                                ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+
+                    async def _on_gemini() -> None:
+                        gemini_btn.props("loading")
+                        try:
+                            gemini_key = get_app_config("gemini_api_key")
+                            if not gemini_key:
+                                ui.notify(
+                                    "Configurá tu API key de Gemini en Datos → IA",
+                                    type="warning",
+                                )
+                                return
+                            prompt = (
+                                f"Sos vendedor en MercadoLibre Argentina. "
+                                f"El producto es: {title}. "
+                                f"La pregunta del comprador es: {text}. "
+                                f"Respondé de forma amable, clara y breve en español rioplatense. "
+                                f"Solo la respuesta, sin saludos ni firmas."
+                            )
+                            suggestion = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                            if suggestion.strip():
+                                resp_area.value = suggestion.strip()
+                            else:
+                                ui.notify("Gemini no devolvió texto", type="warning")
+                        except Exception as exc:
+                            ui.notify(f"Error Gemini: {exc}", type="negative")
+                        finally:
+                            gemini_btn.props(remove="loading")
+
+                    async def _on_enviar() -> None:
+                        text_resp = (resp_area.value or "").strip()
+                        if not text_resp:
+                            ui.notify("Escribí una respuesta antes de enviar", type="warning")
+                            return
+                        try:
+                            result = await run.io_bound(
+                                _ml_post_answer, access_token, qid, text_resp
+                            )
+                            if result["status_code"] in (200, 201):
+                                ui.notify("Respuesta enviada exitosamente", type="positive")
+                                detail_col.clear()
+                                detail_col.style("display:none")
+                                build_tab_preguntas(container)
+                            else:
+                                err_msg = (
+                                    (result["body"] or {}).get("message")
+                                    or str(result["body"])[:200]
+                                )
+                                ui.notify(f"Error ML: {err_msg}", type="negative")
+                        except Exception as exc:
+                            ui.notify(f"Error al enviar: {exc}", type="negative")
+
+                    gemini_btn.on_click(lambda: background_tasks.create(_on_gemini()))
+                    enviar_btn.on_click(lambda: background_tasks.create(_on_enviar()))
+
+        background_tasks.create(_cargar_async(), name="cargar_preguntas")
