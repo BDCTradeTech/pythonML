@@ -25,6 +25,7 @@ from db import (
     get_user_qb_customer,
     export_user_db_data,
     import_user_db_data,
+    set_app_config,
 )
 from qb_api import fetch_qb_customer_detail
 
@@ -56,7 +57,7 @@ def build_tab_config() -> None:
         ui.label("Configuración").classes("text-xl font-bold text-gray-800 mb-2")
         with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
             # 1. MercadoLibre — mismo ancho que QB (ancho fijo para igualar)
-            with ui.column().classes("w-[400px] flex-shrink-0"):
+            with ui.column().classes("w-[400px] flex-shrink-0 gap-3"):
                 with ui.card().classes(_card_class):
                     def _desvincular_ml_impl() -> None:
                         conn = get_connection()
@@ -120,6 +121,42 @@ def build_tab_config() -> None:
                                 pass
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
+
+            # 1b. IA / Gemini
+            with ui.card().classes(_card_class):
+                ui.label("IA / Gemini").classes("text-sm font-semibold mb-1")
+                _gkey_row = None
+                try:
+                    _gc = get_connection()
+                    _gkey_row = _gc.execute(
+                        "SELECT value, updated_at FROM app_config WHERE key = ?",
+                        ("gemini_api_key",),
+                    ).fetchone()
+                    _gc.close()
+                except Exception:
+                    pass
+                if _gkey_row and _gkey_row["value"]:
+                    ui.label("Clave configurada").classes("text-xs text-green-700 font-semibold mb-1")
+                    ui.label("●" * 8).classes("text-xs tracking-widest text-gray-500")
+                    _ua = str(_gkey_row["updated_at"] or "")[:10]
+                    if _ua:
+                        ui.label(f"Actualizada: {_ua}").classes("text-xs text-gray-400 mb-1")
+                else:
+                    ui.label("Sin clave configurada").classes("text-xs text-gray-400 mb-1")
+                gemini_inp = (
+                    ui.input(placeholder="Pegá tu API Key...")
+                    .props("dense outlined hide-bottom-space type=password password-toggle")
+                    .classes("w-full mt-1")
+                )
+                def _guardar_gemini() -> None:
+                    val = str(gemini_inp.value or "").strip()
+                    if not val:
+                        ui.notify("Ingresá una API Key válida", type="warning")
+                        return
+                    set_app_config("gemini_api_key", val)
+                    gemini_inp.value = ""
+                    ui.notify("API Key de Gemini guardada", type="positive")
+                ui.button("Guardar", on_click=_guardar_gemini, color="primary").classes("mt-2 w-full").props("dense no-caps")
 
             # 2. QuickBooks — un poco más largo que ML para igualar tamaño
             with ui.column().classes("w-[420px] flex-shrink-0"):

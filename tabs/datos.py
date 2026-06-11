@@ -18,8 +18,6 @@ from db import (
     set_cotizador_tabla,
     COTIZADOR_DEFAULTS,
     get_financiacion_cuotas_ml,
-    get_app_config,
-    set_app_config,
 )
 from tabs.admin import (
     TABLA_POSICION_DEFAULT,
@@ -393,63 +391,6 @@ def build_tab_datos() -> None:
                     ("Envíos gratis", "ml_envios_gratuitos",    "$"),
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
-
-            # 7. IA / GEMINI
-            with ui.card().classes("p-3 datos-card").style(_CS):
-                _card_header("ti-sparkles", "IA / Gemini")
-
-                _gkey_row = None
-                try:
-                    _gc = get_connection()
-                    _gkey_row = _gc.execute(
-                        "SELECT value, updated_at FROM app_config WHERE key = ?",
-                        ("gemini_api_key",),
-                    ).fetchone()
-                    _gc.close()
-                except Exception:
-                    pass
-
-                if _gkey_row and _gkey_row["value"]:
-                    ui.label("Clave configurada").style(
-                        "font-size:11px;color:#1B7A3E;font-weight:600;margin-bottom:2px"
-                    )
-                    ui.label("●" * 8).style(
-                        "font-size:12px;letter-spacing:3px;color:#374151"
-                    )
-                    _ua = str(_gkey_row["updated_at"] or "")[:10]
-                    if _ua:
-                        ui.label(f"Actualizada: {_ua}").style(
-                            "font-size:10px;color:#9ca3af;margin-bottom:2px"
-                        )
-                else:
-                    ui.label("Sin clave configurada").style(
-                        "font-size:11px;color:#9ca3af;margin-bottom:2px"
-                    )
-
-                gemini_inp = (
-                    ui.input(placeholder="Pegá tu API Key...")
-                    .props("dense outlined hide-bottom-space type=password")
-                    .style("width:100%;font-size:11px;margin-top:4px")
-                )
-
-                def _guardar_gemini() -> None:
-                    val = str(gemini_inp.value or "").strip()
-                    if not val:
-                        ui.notify("Ingresá una API Key válida", type="warning")
-                        return
-                    set_app_config("gemini_api_key", val)
-                    gemini_inp.value = ""
-                    ui.notify("API Key de Gemini guardada", type="positive")
-
-                with ui.button(on_click=_guardar_gemini).props("flat dense no-caps").style(
-                    "color:#3B6D11;border:1px solid #639922;border-radius:4px;"
-                    "font-size:12px;padding:4px 12px;margin-top:6px;width:100%"
-                ):
-                    ui.html(
-                        '<i class="ti ti-device-floppy"'
-                        ' style="font-size:13px;margin-right:5px;vertical-align:middle"></i>'
-                    )
-                    ui.label("Guardar").style("font-size:12px;vertical-align:middle")
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
