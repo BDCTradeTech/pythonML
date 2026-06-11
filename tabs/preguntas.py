@@ -72,26 +72,20 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
 
 
 def _gemini_generate(gemini_key: str, prompt: str) -> str:
-    print(f"[GEMINI] key presente: {bool(gemini_key)}, key[:8]: {gemini_key[:8] if gemini_key else 'N/A'}")
-    print(f"[GEMINI] prompt (primeros 120 chars): {prompt[:120]}")
     resp = _requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
         params={"key": gemini_key},
         json={"contents": [{"parts": [{"text": prompt}]}]},
         timeout=20,
     )
-    print(f"[GEMINI] status_code: {resp.status_code}")
-    print(f"[GEMINI] response body: {resp.text[:500]}")
     resp.raise_for_status()
-    result = (
+    return (
         resp.json()
         .get("candidates", [{}])[0]
         .get("content", {})
         .get("parts", [{}])[0]
         .get("text", "")
     )
-    print(f"[GEMINI] texto extraído (primeros 200): {repr(result[:200])}")
-    return result
 
 
 def _time_ago(date_str: str) -> str:
@@ -307,63 +301,61 @@ def build_tab_preguntas(container) -> None:
                                     "unelevated dense no-caps"
                                 ).style("background:#1B7A3E;color:#fff").classes("text-xs")
 
-                    async def _on_gemini() -> None:
-                        print("[ON_GEMINI] función ejecutada")
+                    def _on_gemini_click() -> None:
                         gemini_btn.props("loading")
-                        try:
-                            gemini_key = get_app_config("gemini_api_key")
-                            print(f"[ON_GEMINI] gemini_key encontrada: {bool(gemini_key)}")
-                            if not gemini_key:
-                                ui.notify(
-                                    "Configurá tu API key de Gemini en Datos → IA",
-                                    type="warning",
+                        async def _llamar() -> None:
+                            try:
+                                gemini_key = get_app_config("gemini_api_key")
+                                if not gemini_key:
+                                    ui.notify(
+                                        "Configurá tu API key de Gemini en Datos → IA",
+                                        type="warning",
+                                    )
+                                    return
+                                prompt = (
+                                    f"Sos vendedor en MercadoLibre Argentina. "
+                                    f"El producto es: {title}. "
+                                    f"La pregunta del comprador es: {text}. "
+                                    f"Respondé de forma amable, clara y breve en español rioplatense. "
+                                    f"Solo la respuesta, sin saludos ni firmas."
                                 )
-                                return
-                            prompt = (
-                                f"Sos vendedor en MercadoLibre Argentina. "
-                                f"El producto es: {title}. "
-                                f"La pregunta del comprador es: {text}. "
-                                f"Respondé de forma amable, clara y breve en español rioplatense. "
-                                f"Solo la respuesta, sin saludos ni firmas."
-                            )
-                            suggestion = await run.io_bound(_gemini_generate, gemini_key, prompt)
-                            print(f"[ON_GEMINI] suggestion recibida: {repr(suggestion[:100]) if suggestion else 'VACÍA'}")
-                            if suggestion.strip():
-                                print(f"[ON_GEMINI] asignando a resp_area.value, id(resp_area)={id(resp_area)}")
-                                resp_area.value = suggestion.strip()
-                                print(f"[ON_GEMINI] resp_area.value ahora: {repr(resp_area.value[:50])}")
-                            else:
-                                ui.notify("Gemini no devolvió texto", type="warning")
-                        except Exception as exc:
-                            print(f"[ON_GEMINI] EXCEPCIÓN: {exc}")
-                            ui.notify(f"Error Gemini: {exc}", type="negative")
-                        finally:
-                            gemini_btn.props(remove="loading")
+                                suggestion = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                                if suggestion.strip():
+                                    resp_area.set_value(suggestion.strip())
+                                else:
+                                    ui.notify("Gemini no devolvió texto", type="warning")
+                            except Exception as exc:
+                                ui.notify(f"Error Gemini: {exc}", type="negative")
+                            finally:
+                                gemini_btn.props(remove="loading")
+                        background_tasks.create(_llamar())
 
-                    async def _on_enviar() -> None:
+                    def _on_enviar_click() -> None:
                         text_resp = (resp_area.value or "").strip()
                         if not text_resp:
                             ui.notify("Escribí una respuesta antes de enviar", type="warning")
                             return
-                        try:
-                            result = await run.io_bound(
-                                _ml_post_answer, access_token, qid, text_resp
-                            )
-                            if result["status_code"] in (200, 201):
-                                ui.notify("Respuesta enviada exitosamente", type="positive")
-                                detail_col.clear()
-                                detail_col.style("display:none")
-                                build_tab_preguntas(container)
-                            else:
-                                err_msg = (
-                                    (result["body"] or {}).get("message")
-                                    or str(result["body"])[:200]
+                        async def _enviar() -> None:
+                            try:
+                                result = await run.io_bound(
+                                    _ml_post_answer, access_token, qid, text_resp
                                 )
-                                ui.notify(f"Error ML: {err_msg}", type="negative")
-                        except Exception as exc:
-                            ui.notify(f"Error al enviar: {exc}", type="negative")
+                                if result["status_code"] in (200, 201):
+                                    ui.notify("Respuesta enviada exitosamente", type="positive")
+                                    detail_col.clear()
+                                    detail_col.style("display:none")
+                                    build_tab_preguntas(container)
+                                else:
+                                    err_msg = (
+                                        (result["body"] or {}).get("message")
+                                        or str(result["body"])[:200]
+                                    )
+                                    ui.notify(f"Error ML: {err_msg}", type="negative")
+                            except Exception as exc:
+                                ui.notify(f"Error al enviar: {exc}", type="negative")
+                        background_tasks.create(_enviar())
 
-                    gemini_btn.on_click(lambda: background_tasks.create(_on_gemini()))
-                    enviar_btn.on_click(lambda: background_tasks.create(_on_enviar()))
+                    gemini_btn.on_click(_on_gemini_click)
+                    enviar_btn.on_click(_on_enviar_click)
 
         background_tasks.create(_cargar_async(), name="cargar_preguntas")
