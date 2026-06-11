@@ -144,7 +144,6 @@ def _saludo_por_hora() -> str:
 
 
 def _build_frases_card(resp_area_ref: list) -> None:
-    """Tarjeta Frases de cierre: ítems clickeables → reemplazan penúltima línea del textarea."""
     items: list = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
     state: dict = {"editing_idx": None, "adding": False}
 
@@ -162,23 +161,37 @@ def _build_frases_card(resp_area_ref: list) -> None:
             lines = [texto]
         ta.set_value("\n".join(lines))
 
-    with ui.card().classes("w-full q-pa-md").style("flex:1"):
-        ui.label("💬 Frases de cierre").classes(
-            "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
-        )
-        list_col = ui.column().classes("w-full gap-0")
+    with ui.element("div").style(
+        "display:flex;flex-direction:column;flex:1;"
+        "border:0.5px solid var(--color-border-tertiary);"
+        "border-radius:var(--border-radius-md);padding:10px;box-sizing:border-box;"
+        "background:var(--color-background-secondary)"
+    ):
+        with ui.element("div").style(
+            "display:flex;align-items:center;gap:4px;margin-bottom:6px"
+        ):
+            ui.html('<i class="ti ti-quote" style="font-size:13px;color:#888"></i>')
+            ui.label("FRASES DE CIERRE").style(
+                "font-size:10px;color:#888;letter-spacing:0.05em;font-weight:600"
+            )
+
+        list_col = ui.column().classes("w-full gap-0").style("flex:1")
 
         def _refresh() -> None:
             list_col.clear()
             with list_col:
                 for idx in range(len(items)):
                     texto = items[idx]
-                    with ui.row().classes("w-full items-center gap-0 flex-nowrap"):
+                    with ui.element("div").style(
+                        "display:flex;align-items:center;gap:2px;"
+                        "border-bottom:0.5px solid #eeeeee;padding:3px 0"
+                    ):
                         if state["editing_idx"] == idx:
                             edit_inp = (
                                 ui.input(value=texto)
                                 .classes("flex-1")
                                 .props("dense outlined")
+                                .style("font-size:11px")
                             )
 
                             def _confirm_edit(i=idx, inp=edit_inp) -> None:
@@ -188,10 +201,10 @@ def _build_frases_card(resp_area_ref: list) -> None:
 
                             ui.button(icon="check", on_click=_confirm_edit).props(
                                 "flat dense round color=positive"
-                            )
+                            ).style("font-size:11px")
                         else:
-                            ui.label(texto).classes(
-                                "flex-1 text-blue-600 cursor-pointer text-xs py-1 hover:underline"
+                            ui.label(texto).style(
+                                "flex:1;font-size:11px;color:#1976d2;cursor:pointer;line-height:1.4"
                             ).on("click", lambda t=texto: _apply_to_textarea(t))
 
                             def _edit(i=idx) -> None:
@@ -210,19 +223,24 @@ def _build_frases_card(resp_area_ref: list) -> None:
                                     state["editing_idx"] -= 1
                                 _refresh()
 
-                            ui.button(icon="edit", on_click=_edit).props(
-                                "flat dense round"
-                            ).style("color:#6b7280;font-size:11px")
-                            ui.button(icon="delete", on_click=_del).props(
-                                "flat dense round color=negative"
-                            ).style("font-size:11px")
+                            ui.html(
+                                '<i class="ti ti-pencil"'
+                                ' style="font-size:11px;color:#9ca3af;cursor:pointer;padding:2px"></i>'
+                            ).on("click", _edit)
+                            ui.html(
+                                '<i class="ti ti-trash"'
+                                ' style="font-size:11px;color:#ef4444;cursor:pointer;padding:2px"></i>'
+                            ).on("click", _del)
 
                 if state["adding"]:
-                    with ui.row().classes("w-full items-center gap-0 flex-nowrap"):
+                    with ui.element("div").style(
+                        "display:flex;align-items:center;gap:4px;padding:3px 0"
+                    ):
                         add_inp = (
                             ui.input(placeholder="Nueva frase...")
                             .classes("flex-1")
                             .props("dense outlined")
+                            .style("font-size:11px")
                         )
 
                         def _confirm_add() -> None:
@@ -238,7 +256,9 @@ def _build_frases_card(resp_area_ref: list) -> None:
 
         _refresh()
 
-        with ui.row().classes("w-full items-center justify-between mt-1"):
+        with ui.element("div").style(
+            "display:flex;align-items:center;justify-content:space-between;margin-top:8px"
+        ):
             def _add() -> None:
                 state["adding"] = True
                 state["editing_idx"] = None
@@ -246,16 +266,16 @@ def _build_frases_card(resp_area_ref: list) -> None:
 
             ui.button("+ Agregar frase", on_click=_add).props(
                 "flat dense no-caps"
-            ).classes("text-xs text-blue-600")
+            ).style("font-size:11px;color:#1976d2")
 
             def _save() -> None:
                 cleaned = [s.strip() for s in items if s.strip()]
                 set_app_config("preguntas_frases_cierre", json.dumps(cleaned))
                 ui.notify("Guardado ✓", color="positive", timeout=1500)
 
-            ui.button("💾 Guardar", on_click=_save).props(
+            ui.button("Guardar", on_click=_save).props(
                 "unelevated dense no-caps"
-            ).style("background:#185FA5;color:#E6F1FB").classes("text-xs")
+            ).style("background:#1976d2;color:#fff;font-size:11px")
 
 
 def build_tab_preguntas(container) -> None:
@@ -273,10 +293,19 @@ def build_tab_preguntas(container) -> None:
             )
             return
 
+        # CSS inyectado una vez; persiste a través de _cargar_async
+        ui.html("""
+<style>
+.pq-row { cursor: pointer; }
+.pq-row:hover > td { background: #f5f5f5 !important; }
+.pq-row.pq-selected > td { background: #e3f2fd !important; }
+</style>
+""")
+
         ml_nickname_holder: list = [""]
         resp_area_ref: list = [None]
 
-        main_area = ui.column().classes("w-full gap-2")
+        main_area = ui.column().classes("w-full gap-0")
         with main_area:
             with ui.card().classes("w-full p-8 items-center gap-4"):
                 ui.spinner(size="xl")
@@ -321,6 +350,7 @@ def build_tab_preguntas(container) -> None:
                 pass
 
             main_area.clear()
+            resp_area_ref[0] = None
 
             if not questions:
                 with main_area:
@@ -334,29 +364,35 @@ def build_tab_preguntas(container) -> None:
                 return
 
             with main_area:
-                # ── SECCIÓN 1: Barra gris superior ──────────────────────────────
-                with ui.row().classes(
-                    "w-full items-center gap-4 px-3 py-1 bg-grey-2 rounded mb-1 flex-wrap"
+                # ── BARRA SUPERIOR ──────────────────────────────────────────────
+                with ui.element("div").style(
+                    "width:100%;display:flex;align-items:center;justify-content:space-between;"
+                    "background:#f5f5f5;border-bottom:1px solid #e0e0e0;"
+                    "padding:6px 12px;box-sizing:border-box"
                 ):
-                    with ui.row().classes("items-baseline gap-1"):
-                        ui.label("Sin responder:").classes("text-xs text-gray-500")
-                        ui.label(str(len(questions))).classes("text-sm font-bold").style(
-                            "color:#E24B4A"
-                        )
-                    ui.space()
+                    ui.html(
+                        f'<span style="font-size:13px;color:#555">Sin responder:&nbsp;</span>'
+                        f'<span style="font-size:13px;font-weight:700;color:#d32f2f">{len(questions)}</span>'
+                    )
                     ui.button(
                         "Actualizar",
-                        on_click=lambda: build_tab_preguntas(container),
-                    ).props("unelevated dense no-caps icon=refresh").style(
-                        "background:#185FA5;color:#E6F1FB"
-                    ).classes("text-xs")
+                        on_click=lambda: background_tasks.create(
+                            _cargar_async(), name="cargar_preguntas"
+                        ),
+                    ).props("flat dense no-caps icon=refresh").style(
+                        "font-size:13px;color:#555"
+                    )
 
-                # ── SECCIÓN 2: Tabla (siempre visible, no se mueve) ─────────────
+                # ── TABLA ───────────────────────────────────────────────────────
                 _TH = (
-                    "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
-                    "padding:5px 8px;white-space:nowrap;position:sticky;top:0;z-index:10"
+                    "background:#fafafa;color:#888;font-size:10px;font-weight:600;"
+                    "text-transform:uppercase;letter-spacing:0.05em;"
+                    "padding:6px 8px;white-space:nowrap;border-bottom:0.5px solid #eeeeee;"
+                    "position:sticky;top:0;z-index:10"
                 )
-                _TD = "padding:4px 8px;font-size:12px;border-bottom:1px solid #f0f0f0"
+                _TD = "padding:5px 8px;font-size:12px;border-bottom:0.5px solid #eeeeee"
+
+                row_elements: List = []
 
                 with ui.element("div").style("width:100%;overflow-x:auto"):
                     with ui.element("table").style(
@@ -364,67 +400,80 @@ def build_tab_preguntas(container) -> None:
                     ):
                         with ui.element("thead"):
                             with ui.element("tr"):
-                                for _h, _w in [
-                                    ("Producto",  "30%"),
-                                    ("Pregunta",  "38%"),
-                                    ("Comprador", "17%"),
-                                    ("Hace",       "8%"),
-                                    ("",           "7%"),
+                                for _h, _w, _align in [
+                                    ("Producto",  "28%", "left"),
+                                    ("Pregunta",  "37%", "left"),
+                                    ("Comprador", "17%", "right"),
+                                    ("Hace",       "8%", "right"),
+                                    ("",          "10%", "center"),
                                 ]:
                                     with ui.element("th").style(
-                                        f"{_TH};width:{_w};text-align:left"
+                                        f"{_TH};width:{_w};text-align:{_align}"
                                     ):
                                         ui.label(_h)
 
                         with ui.element("tbody"):
                             for _i, q in enumerate(questions):
                                 item_id       = str(q.get("item_id") or "")
-                                title         = item_titles.get(item_id, item_id)
-                                text          = q.get("text") or ""
+                                item_title    = item_titles.get(item_id, item_id)
+                                text_q        = q.get("text") or ""
                                 from_obj      = q.get("from") or {}
                                 buyer_display = f"#{from_obj.get('id', '—')}"
-                                age = _time_ago(q.get("date_created") or "")
-                                _bg = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                                age           = _time_ago(q.get("date_created") or "")
 
-                                with ui.element("tr").style(
-                                    f"background:{_bg};cursor:pointer;"
-                                    "border-bottom:1px solid #e8e8e8"
-                                ).on("click", lambda q=q, t=title: _open_detail(q, t)):
+                                tr = ui.element("tr").classes("pq-row")
+                                row_elements.append(tr)
+                                with tr:
                                     with ui.element("td").style(
                                         f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                                     ):
-                                        ui.label(title[:60]).style(
-                                            "font-size:12px;font-weight:500"
-                                        )
+                                        ui.label(item_title[:60]).style("font-weight:500")
                                     with ui.element("td").style(
-                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;"
+                                        "white-space:nowrap;color:#374151"
                                     ):
                                         ui.label(
-                                            text[:80] + ("…" if len(text) > 80 else "")
-                                        ).style("font-size:12px;color:#374151")
-                                    with ui.element("td").style(
-                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                                    ):
-                                        ui.label(buyer_display).style(
-                                            "font-size:11px;color:#6b7280;font-family:monospace"
+                                            text_q[:80] + ("…" if len(text_q) > 80 else "")
                                         )
-                                    with ui.element("td").style(f"{_TD};text-align:center"):
-                                        ui.label(age).style("font-size:11px;color:#9ca3af")
-                                    with ui.element("td").style(f"{_TD};text-align:center"):
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:right;overflow:hidden;"
+                                        "text-overflow:ellipsis;white-space:nowrap;"
+                                        "color:#6b7280;font-family:monospace;font-size:11px"
+                                    ):
+                                        ui.label(buyer_display)
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:right;color:#9ca3af;font-size:11px"
+                                    ):
+                                        ui.label(age)
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:center"
+                                    ):
                                         ui.html(
                                             '<i class="ti ti-chevron-right"'
                                             ' style="font-size:14px;color:#9ca3af"></i>'
                                         )
+                                tr.on(
+                                    "click",
+                                    lambda q=q, t=item_title, _tr=tr: _open_detail(q, t, _tr),
+                                )
 
-                # ── SECCIÓN 3: Panel de detalle (oculto al inicio) ──────────────
-                detail_panel = ui.column().classes("w-full mt-2")
+                # ── PANEL DE DETALLE ────────────────────────────────────────────
+                detail_panel = ui.element("div").style(
+                    "display:grid;grid-template-columns:1fr 1fr;gap:8px;"
+                    "width:100%;background:var(--color-background-secondary);"
+                    "border-top:0.5px solid var(--color-border-tertiary);"
+                    "padding:10px;box-sizing:border-box"
+                )
                 detail_panel.set_visibility(False)
 
-                def _open_detail(q: dict, title: str) -> None:
+                def _open_detail(q: dict, title: str, active_tr) -> None:
+                    for r in row_elements:
+                        r.classes(remove="pq-selected")
+                    active_tr.classes(add="pq-selected")
+
                     detail_panel.clear()
                     detail_panel.set_visibility(True)
 
-                    # FIX 3: from solo trae id; nickname se busca en _on_groq_click
                     qid         = q.get("id")
                     text        = q.get("text") or ""
                     from_obj    = q.get("from") or {}
@@ -432,56 +481,89 @@ def build_tab_preguntas(container) -> None:
                     ml_nickname = ml_nickname_holder[0]
 
                     with detail_panel:
-                        with ui.row().classes("w-full gap-4 items-stretch flex-nowrap"):
-
-                            # ── Columna izquierda (w-1/2) ──────────────────────
-                            with ui.column().classes("w-1/2 gap-4"):
-
-                                # Tarjeta 1: Pregunta
-                                with ui.card().classes("w-full q-pa-md"):
-                                    ui.label("📋 Pregunta del comprador").classes(
-                                        "text-xs font-bold text-gray-500 uppercase tracking-wide q-mb-sm"
+                        # ── Columna izquierda ───────────────────────────────────
+                        with ui.element("div").style(
+                            "display:flex;flex-direction:column;gap:8px"
+                        ):
+                            # Tarjeta PREGUNTA DEL COMPRADOR
+                            with ui.element("div").style(
+                                "border:0.5px solid var(--color-border-tertiary);"
+                                "border-radius:var(--border-radius-md);padding:10px;"
+                                "background:var(--color-background-secondary)"
+                            ):
+                                with ui.element("div").style(
+                                    "display:flex;align-items:center;gap:4px;margin-bottom:6px"
+                                ):
+                                    ui.html(
+                                        '<i class="ti ti-message-circle"'
+                                        ' style="font-size:13px;color:#888"></i>'
                                     )
-                                    with ui.card().classes(
-                                        "w-full q-pa-sm bg-blue-50 border border-blue-100"
-                                    ):
-                                        ui.label(text).style(
-                                            "font-size:13px;color:#1e3a5f;line-height:1.5"
-                                        )
-
-                                # Tarjeta 2: Respuesta
-                                with ui.card().classes("w-full q-pa-md"):
-                                    ui.label("✍️ Tu respuesta").classes(
-                                        "text-xs font-bold text-gray-500 uppercase tracking-wide q-mb-sm"
+                                    ui.label("PREGUNTA DEL COMPRADOR").style(
+                                        "font-size:10px;color:#888;"
+                                        "letter-spacing:0.05em;font-weight:600"
                                     )
-                                    # FIX 2: textarea inicia vacío
-                                    resp_area = ui.textarea(
-                                        value="",
-                                        placeholder="Escribí tu respuesta aquí...",
-                                    ).classes("w-full").props("outlined dense rows=8")
-                                    resp_area_ref[0] = resp_area
+                                ui.label(text).style(
+                                    "font-size:12px;line-height:1.5;color:#374151"
+                                )
 
-                                    def _cerrar() -> None:
-                                        detail_panel.clear()
-                                        detail_panel.set_visibility(False)
-                                        resp_area_ref[0] = None
+                            # Tarjeta TU RESPUESTA
+                            with ui.element("div").style(
+                                "border:0.5px solid var(--color-border-tertiary);"
+                                "border-radius:var(--border-radius-md);padding:10px;"
+                                "background:var(--color-background-secondary)"
+                            ):
+                                with ui.element("div").style(
+                                    "display:flex;align-items:center;gap:4px;margin-bottom:6px"
+                                ):
+                                    ui.html(
+                                        '<i class="ti ti-pencil"'
+                                        ' style="font-size:13px;color:#888"></i>'
+                                    )
+                                    ui.label("TU RESPUESTA").style(
+                                        "font-size:10px;color:#888;"
+                                        "letter-spacing:0.05em;font-weight:600"
+                                    )
+                                resp_area = ui.textarea(
+                                    value="",
+                                    placeholder="Escribí tu respuesta aquí...",
+                                ).classes("w-full").props("outlined rows=8").style(
+                                    "font-size:12px"
+                                )
+                                resp_area_ref[0] = resp_area
 
-                                    with ui.row().classes(
-                                        "w-full items-center gap-2 q-mt-sm flex-wrap"
-                                    ):
-                                        groq_btn = ui.button("💡 Sugerir con Groq").props(
-                                            "unelevated dense no-caps"
-                                        ).style("background:#4285F4;color:#fff").classes("text-xs")
-                                        enviar_btn = ui.button("📨 Enviar respuesta").props(
-                                            "unelevated dense no-caps"
-                                        ).style("background:#1B7A3E;color:#fff").classes("text-xs")
-                                        ui.button("↩ Cerrar", on_click=_cerrar).props(
-                                            "flat dense no-caps"
-                                        ).classes("text-xs text-gray-500")
+                                def _cerrar() -> None:
+                                    for r in row_elements:
+                                        r.classes(remove="pq-selected")
+                                    detail_panel.clear()
+                                    detail_panel.set_visibility(False)
+                                    resp_area_ref[0] = None
 
-                            # ── Columna derecha (w-1/2) ────────────────────────
-                            with ui.column().classes("w-1/2").style("display:flex;flex-direction:column"):
-                                _build_frases_card(resp_area_ref)
+                                with ui.element("div").style(
+                                    "display:flex;align-items:center;gap:8px;"
+                                    "margin-top:8px;flex-wrap:wrap"
+                                ):
+                                    groq_btn = ui.button("Sugerir con Groq").props(
+                                        "unelevated dense no-caps"
+                                    ).style(
+                                        "background:#f57c00;color:#fff;font-size:12px"
+                                    )
+                                    enviar_btn = ui.button("Enviar respuesta").props(
+                                        "unelevated dense no-caps"
+                                    ).style(
+                                        "background:#2e7d32;color:#fff;font-size:12px"
+                                    )
+                                    ui.button("Cerrar", on_click=_cerrar).props(
+                                        "flat dense no-caps"
+                                    ).style(
+                                        "border:1px solid #ccc;color:#555;"
+                                        "font-size:12px;background:transparent"
+                                    )
+
+                        # ── Columna derecha ─────────────────────────────────────
+                        with ui.element("div").style(
+                            "display:flex;flex-direction:column;height:100%"
+                        ):
+                            _build_frases_card(resp_area_ref)
 
                     async def _on_groq_click() -> None:
                         groq_key = get_app_config("groq_api_key")
@@ -491,13 +573,10 @@ def build_tab_preguntas(container) -> None:
                                 type="warning",
                             )
                             return
-
                         frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
                         frase_aleatoria = random.choice(frases) if frases else ""
-
                         groq_btn.props("loading")
                         try:
-                            # FIX 3: obtener nickname vía GET /users/{from_id}
                             buyer_nick = ""
                             if from_id:
                                 buyer_nick = await run.io_bound(
@@ -507,7 +586,6 @@ def build_tab_preguntas(container) -> None:
                                 buyer_nick = "estimado cliente"
                             saludo = _saludo_por_hora()
                             saludo_completo = f"Hola {buyer_nick}, {saludo}."
-
                             prompt = (
                                 f"Sos vendedor en MercadoLibre Argentina.\n"
                                 f"Producto: {title}\n"
@@ -515,7 +593,6 @@ def build_tab_preguntas(container) -> None:
                                 f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
                                 f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
                             )
-
                             texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
                             texto_groq = (texto_groq or "").strip()
                             if texto_groq:
@@ -543,8 +620,9 @@ def build_tab_preguntas(container) -> None:
                                 _ml_post_answer, access_token, qid, text_resp
                             )
                             if result["status_code"] in (200, 201):
-                                # FIX 1: recarga tabla sin rebuild completo del container
                                 ui.notify("Respuesta enviada ✓", color="positive")
+                                for r in row_elements:
+                                    r.classes(remove="pq-selected")
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 resp_area_ref[0] = None
