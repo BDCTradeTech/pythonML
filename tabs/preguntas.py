@@ -12,7 +12,7 @@ import requests as _requests
 from nicegui import app, background_tasks, run, ui
 
 from db import get_app_config
-from ml_api import get_ml_access_token
+from ml_api import get_ml_access_token, ml_get_user_id
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -24,15 +24,15 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 # ── ML / Gemini helpers (sync → run.io_bound) ───────────────────────────────
 
-def _ml_get_received_questions(access_token: str) -> Dict[str, Any]:
+def _ml_get_questions(access_token: str, seller_id: str) -> List[dict]:
     resp = _requests.get(
-        "https://api.mercadolibre.com/my/received_questions",
-        params={"status": "UNANSWERED", "limit": 50},
+        "https://api.mercadolibre.com/questions/search",
+        params={"seller_id": seller_id, "status": "UNANSWERED", "api_version": 4, "limit": 50},
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
     )
     resp.raise_for_status()
-    return resp.json()
+    return resp.json().get("questions", [])
 
 
 def _ml_get_items_titles(access_token: str, item_ids: List[str]) -> Dict[str, str]:
@@ -126,14 +126,25 @@ def build_tab_preguntas(container) -> None:
 
         async def _cargar_async() -> None:
             try:
-                data = await run.io_bound(_ml_get_received_questions, access_token)
+                seller_id = await run.io_bound(ml_get_user_id, access_token)
+            except Exception as e:
+                main_area.clear()
+                with main_area:
+                    ui.label(f"❌ Error al obtener seller_id: {e}").classes("text-negative p-4")
+                return
+            if not seller_id:
+                main_area.clear()
+                with main_area:
+                    ui.label("❌ No se pudo obtener el seller_id de MercadoLibre").classes("text-negative p-4")
+                return
+
+            try:
+                questions = await run.io_bound(_ml_get_questions, access_token, seller_id)
             except Exception as e:
                 main_area.clear()
                 with main_area:
                     ui.label(f"❌ Error al conectar con ML: {e}").classes("text-negative p-4")
                 return
-
-            questions: List[dict] = data.get("questions", [])
 
             item_ids = list({str(q.get("item_id") or "") for q in questions if q.get("item_id")})
             item_titles: Dict[str, str] = {}
