@@ -148,7 +148,7 @@ def _build_frases_card(resp_area_ref: list) -> None:
             lines = [texto]
         ta.set_value("\n".join(lines))
 
-    with ui.card().classes("w-full h-full p-3 shadow-sm"):
+    with ui.card().classes("w-full q-pa-md").style("flex:1"):
         ui.label("💬 Frases de cierre").classes(
             "text-xs font-bold text-gray-600 uppercase tracking-wide mb-1"
         )
@@ -426,27 +426,27 @@ def build_tab_preguntas(container) -> None:
                     ml_nickname  = ml_nickname_holder[0]
 
                     with detail_panel:
-                        with ui.row().classes("w-full gap-3 items-stretch"):
+                        with ui.row().classes("w-full gap-4 items-stretch flex-nowrap"):
 
-                            # ── Columna izquierda (50%) ────────────────────────
-                            with ui.column().classes("gap-2").style("width:50%"):
+                            # ── Columna izquierda (w-1/2) ──────────────────────
+                            with ui.column().classes("w-1/2 gap-4"):
 
                                 # Tarjeta 1: Pregunta
-                                with ui.card().classes("w-full p-4 shadow-sm"):
+                                with ui.card().classes("w-full q-pa-md"):
                                     ui.label("📋 Pregunta del comprador").classes(
-                                        "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                        "text-xs font-bold text-gray-500 uppercase tracking-wide q-mb-sm"
                                     )
                                     with ui.card().classes(
-                                        "w-full p-3 bg-blue-50 border border-blue-100"
+                                        "w-full q-pa-sm bg-blue-50 border border-blue-100"
                                     ):
                                         ui.label(text).style(
                                             "font-size:13px;color:#1e3a5f;line-height:1.5"
                                         )
 
                                 # Tarjeta 2: Respuesta
-                                with ui.card().classes("w-full p-4 shadow-sm"):
+                                with ui.card().classes("w-full q-pa-md"):
                                     ui.label("✍️ Tu respuesta").classes(
-                                        "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                        "text-xs font-bold text-gray-500 uppercase tracking-wide q-mb-sm"
                                     )
                                     resp_area = ui.textarea(
                                         value=primera_linea,
@@ -460,7 +460,7 @@ def build_tab_preguntas(container) -> None:
                                         resp_area_ref[0] = None
 
                                     with ui.row().classes(
-                                        "w-full items-center gap-2 mt-2 flex-wrap"
+                                        "w-full items-center gap-2 q-mt-sm flex-wrap"
                                     ):
                                         groq_btn = ui.button("💡 Sugerir con Groq").props(
                                             "unelevated dense no-caps"
@@ -472,8 +472,8 @@ def build_tab_preguntas(container) -> None:
                                             "flat dense no-caps"
                                         ).classes("text-xs text-gray-500")
 
-                            # ── Columna derecha (50%) ──────────────────────────
-                            with ui.column().style("width:50%"):
+                            # ── Columna derecha (w-1/2) ────────────────────────
+                            with ui.column().classes("w-1/2").style("display:flex;flex-direction:column"):
                                 _build_frases_card(resp_area_ref)
 
                     async def _on_groq_click() -> None:
