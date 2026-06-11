@@ -71,22 +71,23 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
     return {"status_code": resp.status_code, "body": body}
 
 
-def _gemini_generate(gemini_key: str, prompt: str) -> str:
-    resp = _requests.post(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
-        params={"key": gemini_key},
-        json={"contents": [{"parts": [{"text": prompt}]}]},
-        timeout=20,
-    )
-    print(f"[GEMINI] status={resp.status_code} body={resp.text[:500]}")
+def _groq_generate(api_key: str, prompt: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": "llama-3.3-70b-versatile",
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.7,
+    }
+    print(f"[GROQ] llamando API con key={api_key[:8]}...")
+    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    print(f"[GROQ] status={resp.status_code} body={resp.text[:300]}")
     resp.raise_for_status()
-    return (
-        resp.json()
-        .get("candidates", [{}])[0]
-        .get("content", {})
-        .get("parts", [{}])[0]
-        .get("text", "")
-    )
+    return resp.json()["choices"][0]["message"]["content"]
 
 
 def _time_ago(date_str: str) -> str:
@@ -295,7 +296,7 @@ def build_tab_preguntas(container) -> None:
                             ).classes("w-full").props("outlined dense rows=3")
 
                             with ui.row().classes("w-full items-center gap-2 mt-2 flex-wrap"):
-                                gemini_btn = ui.button("💡 Sugerir con Gemini").props(
+                                gemini_btn = ui.button("💡 Sugerir con Groq").props(
                                     "unelevated dense no-caps"
                                 ).style("background:#4285F4;color:#fff").classes("text-xs")
                                 enviar_btn = ui.button("📨 Enviar respuesta").props(
@@ -303,9 +304,9 @@ def build_tab_preguntas(container) -> None:
                                 ).style("background:#1B7A3E;color:#fff").classes("text-xs")
 
                     async def _on_gemini_click() -> None:
-                        gemini_key = get_app_config("gemini_api_key")
-                        if not gemini_key:
-                            ui.notify("Configurá tu API key de Gemini en Configuración → IA/Gemini", type="warning")
+                        groq_key = get_app_config("groq_api_key")
+                        if not groq_key:
+                            ui.notify("Configurá tu API key de Groq en Configuración → IA/Groq", type="warning")
                             return
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
@@ -316,14 +317,14 @@ def build_tab_preguntas(container) -> None:
                         )
                         gemini_btn.props("loading")
                         try:
-                            resultado = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                            resultado = await run.io_bound(_groq_generate, groq_key, prompt)
                             if resultado and resultado.strip():
                                 resp_area.set_value(resultado.strip())
                                 ui.notify("Sugerencia lista ✓", color="positive")
                             else:
-                                ui.notify("Gemini no devolvió texto", type="warning")
+                                ui.notify("Groq no devolvió texto", type="warning")
                         except Exception as exc:
-                            ui.notify(f"Error Gemini: {exc}", type="negative")
+                            ui.notify(f"Error Groq: {exc}", type="negative")
                         finally:
                             gemini_btn.props(remove="loading")
 

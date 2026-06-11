@@ -122,51 +122,51 @@ def build_tab_config() -> None:
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
 
-            # 1b. IA / Gemini
+            # 1b. IA / Groq
             _gkey_row = None
             try:
                 _gc = get_connection()
                 _gkey_row = _gc.execute(
                     "SELECT value, updated_at FROM app_config WHERE key = ?",
-                    ("gemini_api_key",),
+                    ("groq_api_key",),
                 ).fetchone()
                 _gc.close()
             except Exception:
                 pass
             with ui.column().classes("w-[400px] flex-shrink-0"):
                 with ui.card().classes(_card_class):
-                    def _desvincular_gemini() -> None:
+                    def _desvincular_groq() -> None:
                         _conn = get_connection()
                         try:
-                            _conn.execute("DELETE FROM app_config WHERE key = 'gemini_api_key'")
+                            _conn.execute("DELETE FROM app_config WHERE key = 'groq_api_key'")
                             _conn.commit()
                         finally:
                             _conn.close()
                         ui.notify("API Key desvinculada", color="positive")
                         ui.navigate.reload()
 
-                    ui.label("IA / Gemini").classes("text-base font-semibold mb-2")
-                    ui.label("Google AI Studio API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
-                    gemini_inp = (
-                        ui.input(placeholder="AIzaSy...")
+                    ui.label("IA / Groq").classes("text-base font-semibold mb-2")
+                    ui.label("Groq API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
+                    groq_inp = (
+                        ui.input(placeholder="gsk_...")
                         .props("dense outlined hide-bottom-space type=password password-toggle")
                         .classes("w-full mt-1")
                     )
 
-                    def _vincular_gemini() -> None:
-                        val = str(gemini_inp.value or "").strip()
+                    def _vincular_groq() -> None:
+                        val = str(groq_inp.value or "").strip()
                         if not val:
                             ui.notify("Ingresá una API Key válida", type="warning")
                             return
-                        set_app_config("gemini_api_key", val)
-                        gemini_inp.value = ""
+                        set_app_config("groq_api_key", val)
+                        groq_inp.value = ""
                         ui.notify("API Key guardada", type="positive")
                         ui.navigate.reload()
 
                     with ui.row().classes("gap-2 mt-2"):
-                        ui.button("Vincular", on_click=_vincular_gemini, color="primary").props("dense no-caps")
+                        ui.button("Vincular", on_click=_vincular_groq, color="primary").props("dense no-caps")
                         if _gkey_row and _gkey_row["value"]:
-                            ui.button("Desvincular", on_click=_desvincular_gemini, color="secondary").props("dense no-caps")
+                            ui.button("Desvincular", on_click=_desvincular_groq, color="secondary").props("dense no-caps")
 
                     ui.separator().classes("my-2")
                     ui.label("Estado").classes("text-xs font-semibold mb-1")
