@@ -72,20 +72,26 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
 
 
 def _gemini_generate(gemini_key: str, prompt: str) -> str:
+    print(f"[GEMINI] key presente: {bool(gemini_key)}, key[:8]: {gemini_key[:8] if gemini_key else 'N/A'}")
+    print(f"[GEMINI] prompt (primeros 120 chars): {prompt[:120]}")
     resp = _requests.post(
         "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent",
         params={"key": gemini_key},
         json={"contents": [{"parts": [{"text": prompt}]}]},
         timeout=20,
     )
+    print(f"[GEMINI] status_code: {resp.status_code}")
+    print(f"[GEMINI] response body: {resp.text[:500]}")
     resp.raise_for_status()
-    return (
+    result = (
         resp.json()
         .get("candidates", [{}])[0]
         .get("content", {})
         .get("parts", [{}])[0]
         .get("text", "")
     )
+    print(f"[GEMINI] texto extraído (primeros 200): {repr(result[:200])}")
+    return result
 
 
 def _time_ago(date_str: str) -> str:
@@ -302,9 +308,11 @@ def build_tab_preguntas(container) -> None:
                                 ).style("background:#1B7A3E;color:#fff").classes("text-xs")
 
                     async def _on_gemini() -> None:
+                        print("[ON_GEMINI] función ejecutada")
                         gemini_btn.props("loading")
                         try:
                             gemini_key = get_app_config("gemini_api_key")
+                            print(f"[ON_GEMINI] gemini_key encontrada: {bool(gemini_key)}")
                             if not gemini_key:
                                 ui.notify(
                                     "Configurá tu API key de Gemini en Datos → IA",
@@ -319,11 +327,15 @@ def build_tab_preguntas(container) -> None:
                                 f"Solo la respuesta, sin saludos ni firmas."
                             )
                             suggestion = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                            print(f"[ON_GEMINI] suggestion recibida: {repr(suggestion[:100]) if suggestion else 'VACÍA'}")
                             if suggestion.strip():
+                                print(f"[ON_GEMINI] asignando a resp_area.value, id(resp_area)={id(resp_area)}")
                                 resp_area.value = suggestion.strip()
+                                print(f"[ON_GEMINI] resp_area.value ahora: {repr(resp_area.value[:50])}")
                             else:
                                 ui.notify("Gemini no devolvió texto", type="warning")
                         except Exception as exc:
+                            print(f"[ON_GEMINI] EXCEPCIÓN: {exc}")
                             ui.notify(f"Error Gemini: {exc}", type="negative")
                         finally:
                             gemini_btn.props(remove="loading")
