@@ -4,7 +4,8 @@ Pestaña Preguntas: preguntas sin responder recibidas en MercadoLibre.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import random
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
 import requests as _requests
@@ -308,13 +309,50 @@ def build_tab_preguntas(container) -> None:
                         if not groq_key:
                             ui.notify("Configurá tu API key de Groq en Configuración → IA/Groq", type="warning")
                             return
+
+                        # Hora Argentina (UTC-3)
+                        tz_arg = timezone(timedelta(hours=-3))
+                        hora = datetime.now(tz_arg).hour
+                        if 5 <= hora < 12:
+                            saludo_hora = "buenos días"
+                        elif 12 <= hora < 19:
+                            saludo_hora = "buenas tardes"
+                        else:
+                            saludo_hora = "buenas noches"
+
+                        # Nombre del usuario de la app
+                        _user = app.storage.user.get("user") or {}
+                        nombre_usuario = (_user.get("name") or _user.get("username") or "").strip() or "vendedor"
+
+                        # Nickname de MercadoLibre
+                        try:
+                            from ml_api import ml_get_user_profile
+                            _profile = await run.io_bound(ml_get_user_profile, access_token)
+                            ml_nickname = ((_profile or {}).get("nickname") or "").strip() or nombre_usuario
+                        except Exception:
+                            ml_nickname = nombre_usuario
+
+                        # Frase aleatoria
+                        frase = random.choice([
+                            "Esperamos tu compra.",
+                            "Estamos para lo que necesites.",
+                            "Tenemos el producto en stock.",
+                            "No dudes en consultarnos.",
+                            "Con gusto te ayudamos.",
+                        ])
+
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
                             f"El producto es: {title}. "
                             f"La pregunta del comprador es: {text}. "
-                            f"Respondé de forma amable, clara y breve en español rioplatense. "
-                            f"Solo la respuesta, sin saludos ni firmas."
+                            f"Respondé EXACTAMENTE con este formato, sin agregar nada más:\n\n"
+                            f"Hola, {saludo_hora} estimado cliente.\n"
+                            f"[respuesta clara y breve en español rioplatense]\n"
+                            f"{frase}\n"
+                            f"Muchas gracias, {ml_nickname}.\n\n"
+                            f"No agregues saludos extra, aclaraciones ni texto fuera del formato."
                         )
+
                         gemini_btn.props("loading")
                         try:
                             resultado = await run.io_bound(_groq_generate, groq_key, prompt)
