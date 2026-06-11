@@ -72,8 +72,8 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
     return {"status_code": resp.status_code, "body": body}
 
 
-def _ml_get_buyer_first_name(access_token: str, buyer_id: Any) -> str:
-    """GET /users/{buyer_id} → first_name. Devuelve '' si falla."""
+def _ml_get_buyer_nickname(access_token: str, buyer_id: Any) -> str:
+    """GET /users/{buyer_id} → nickname. Devuelve '' si falla o no disponible."""
     try:
         resp = _requests.get(
             f"https://api.mercadolibre.com/users/{buyer_id}",
@@ -81,7 +81,7 @@ def _ml_get_buyer_first_name(access_token: str, buyer_id: Any) -> str:
             timeout=10,
         )
         if resp.ok:
-            return (resp.json().get("first_name") or "").strip()
+            return (resp.json().get("nickname") or "").strip()
     except Exception:
         pass
     return ""
@@ -360,20 +360,24 @@ def build_tab_preguntas(container) -> None:
                             "Con gusto te ayudamos.",
                         ])
 
-                        # Nombre del comprador desde ML API
+                        # Nickname del comprador desde ML API
                         from_id = (q.get("from") or {}).get("id")
+                        buyer_nick = ""
                         if from_id:
-                            buyer_first = await run.io_bound(_ml_get_buyer_first_name, access_token, from_id)
+                            buyer_nick = await run.io_bound(_ml_get_buyer_nickname, access_token, from_id)
+
+                        # Saludo con o sin nombre
+                        if buyer_nick:
+                            saludo = f"Hola {buyer_nick}, {saludo_hora}."
                         else:
-                            buyer_first = ""
-                        nombre_comprador = buyer_first or "estimado cliente"
+                            saludo = f"Hola, {saludo_hora}."
 
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
                             f"El producto es: {title}. "
                             f"La pregunta del comprador es: {text}. "
                             f"Respondé EXACTAMENTE con este formato, sin agregar nada más:\n\n"
-                            f"Hola, {saludo_hora} {nombre_comprador}.\n"
+                            f"{saludo}\n"
                             f"[respuesta clara y breve en español rioplatense]\n"
                             f"{frase}\n"
                             f"Muchas gracias, {ml_nickname}.\n\n"
