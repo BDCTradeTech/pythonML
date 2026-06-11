@@ -72,6 +72,21 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
     return {"status_code": resp.status_code, "body": body}
 
 
+def _ml_get_buyer_first_name(access_token: str, buyer_id: Any) -> str:
+    """GET /users/{buyer_id} → first_name. Devuelve '' si falla."""
+    try:
+        resp = _requests.get(
+            f"https://api.mercadolibre.com/users/{buyer_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if resp.ok:
+            return (resp.json().get("first_name") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _groq_generate(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -345,12 +360,20 @@ def build_tab_preguntas(container) -> None:
                             "Con gusto te ayudamos.",
                         ])
 
+                        # Nombre del comprador desde ML API
+                        from_id = (q.get("from") or {}).get("id")
+                        if from_id:
+                            buyer_first = await run.io_bound(_ml_get_buyer_first_name, access_token, from_id)
+                        else:
+                            buyer_first = ""
+                        nombre_comprador = buyer_first or "estimado cliente"
+
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
                             f"El producto es: {title}. "
                             f"La pregunta del comprador es: {text}. "
                             f"Respondé EXACTAMENTE con este formato, sin agregar nada más:\n\n"
-                            f"Hola, {saludo_hora} estimado cliente.\n"
+                            f"Hola, {saludo_hora} {nombre_comprador}.\n"
                             f"[respuesta clara y breve en español rioplatense]\n"
                             f"{frase}\n"
                             f"Muchas gracias, {ml_nickname}.\n\n"
