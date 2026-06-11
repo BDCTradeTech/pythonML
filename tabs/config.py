@@ -123,40 +123,62 @@ def build_tab_config() -> None:
                         ui.label("Sin vincular").classes("text-warning text-sm")
 
             # 1b. IA / Gemini
-            with ui.card().classes(_card_class):
-                ui.label("IA / Gemini").classes("text-sm font-semibold mb-1")
-                _gkey_row = None
-                try:
-                    _gc = get_connection()
-                    _gkey_row = _gc.execute(
-                        "SELECT value, updated_at FROM app_config WHERE key = ?",
-                        ("gemini_api_key",),
-                    ).fetchone()
-                    _gc.close()
-                except Exception:
-                    pass
-                if _gkey_row and _gkey_row["value"]:
-                    ui.label("Clave configurada").classes("text-xs text-green-700 font-semibold mb-1")
-                    ui.label("●" * 8).classes("text-xs tracking-widest text-gray-500")
-                    _ua = str(_gkey_row["updated_at"] or "")[:10]
-                    if _ua:
-                        ui.label(f"Actualizada: {_ua}").classes("text-xs text-gray-400 mb-1")
-                else:
-                    ui.label("Sin clave configurada").classes("text-xs text-gray-400 mb-1")
-                gemini_inp = (
-                    ui.input(placeholder="Pegá tu API Key...")
-                    .props("dense outlined hide-bottom-space type=password password-toggle")
-                    .classes("w-full mt-1")
-                )
-                def _guardar_gemini() -> None:
-                    val = str(gemini_inp.value or "").strip()
-                    if not val:
-                        ui.notify("Ingresá una API Key válida", type="warning")
-                        return
-                    set_app_config("gemini_api_key", val)
-                    gemini_inp.value = ""
-                    ui.notify("API Key de Gemini guardada", type="positive")
-                ui.button("Guardar", on_click=_guardar_gemini, color="primary").classes("mt-2 w-full").props("dense no-caps")
+            _gkey_row = None
+            try:
+                _gc = get_connection()
+                _gkey_row = _gc.execute(
+                    "SELECT value, updated_at FROM app_config WHERE key = ?",
+                    ("gemini_api_key",),
+                ).fetchone()
+                _gc.close()
+            except Exception:
+                pass
+            with ui.column().classes("w-[400px] flex-shrink-0"):
+                with ui.card().classes(_card_class):
+                    def _desvincular_gemini() -> None:
+                        _conn = get_connection()
+                        try:
+                            _conn.execute("DELETE FROM app_config WHERE key = 'gemini_api_key'")
+                            _conn.commit()
+                        finally:
+                            _conn.close()
+                        ui.notify("API Key desvinculada", color="positive")
+                        ui.navigate.reload()
+
+                    ui.label("IA / Gemini").classes("text-base font-semibold mb-2")
+                    ui.label("Google AI Studio API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
+                    gemini_inp = (
+                        ui.input(placeholder="AIzaSy...")
+                        .props("dense outlined hide-bottom-space type=password password-toggle")
+                        .classes("w-full mt-1")
+                    )
+
+                    def _vincular_gemini() -> None:
+                        val = str(gemini_inp.value or "").strip()
+                        if not val:
+                            ui.notify("Ingresá una API Key válida", type="warning")
+                            return
+                        set_app_config("gemini_api_key", val)
+                        gemini_inp.value = ""
+                        ui.notify("API Key guardada", type="positive")
+                        ui.navigate.reload()
+
+                    with ui.row().classes("gap-2 mt-2"):
+                        ui.button("Vincular", on_click=_vincular_gemini, color="primary").props("dense no-caps")
+                        if _gkey_row and _gkey_row["value"]:
+                            ui.button("Desvincular", on_click=_desvincular_gemini, color="secondary").props("dense no-caps")
+
+                    ui.separator().classes("my-2")
+                    ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    if _gkey_row and _gkey_row["value"]:
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon("check_circle", color="positive", size="sm")
+                            ui.label("Vinculada").classes("text-positive text-sm")
+                        _ua = str(_gkey_row["updated_at"] or "")[:10]
+                        if _ua:
+                            ui.label(f"Actualizada: {_ua}").classes("text-xs text-gray-600")
+                    else:
+                        ui.label("Sin vincular").classes("text-warning text-sm")
 
             # 2. QuickBooks — un poco más largo que ML para igualar tamaño
             with ui.column().classes("w-[420px] flex-shrink-0"):

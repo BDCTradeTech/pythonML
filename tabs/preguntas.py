@@ -78,6 +78,7 @@ def _gemini_generate(gemini_key: str, prompt: str) -> str:
         json={"contents": [{"parts": [{"text": prompt}]}]},
         timeout=20,
     )
+    print(f"[GEMINI] status={resp.status_code} body={resp.text[:500]}")
     resp.raise_for_status()
     return (
         resp.json()
