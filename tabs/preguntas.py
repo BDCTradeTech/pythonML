@@ -13,7 +13,7 @@ import requests as _requests
 from nicegui import app, background_tasks, run, ui
 
 from db import get_app_config
-from ml_api import get_ml_access_token, ml_get_user_id
+from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -121,6 +121,8 @@ def build_tab_preguntas(container) -> None:
             )
             return
 
+        ml_nickname_holder: list = [""]
+
         main_area = ui.column().classes("w-full gap-2")
         with main_area:
             with ui.card().classes("w-full p-8 items-center gap-4"):
@@ -156,6 +158,13 @@ def build_tab_preguntas(container) -> None:
                     item_titles = await run.io_bound(_ml_get_items_titles, access_token, item_ids)
                 except Exception:
                     pass
+
+            # Nickname de MercadoLibre (una sola vez al cargar la tab)
+            try:
+                _profile = await run.io_bound(ml_get_user_profile, access_token)
+                ml_nickname_holder[0] = ((_profile or {}).get("nickname") or "").strip()
+            except Exception:
+                pass
 
             main_area.clear()
 
@@ -324,13 +333,8 @@ def build_tab_preguntas(container) -> None:
                         _user = app.storage.user.get("user") or {}
                         nombre_usuario = (_user.get("name") or _user.get("username") or "").strip() or "vendedor"
 
-                        # Nickname de MercadoLibre
-                        try:
-                            from ml_api import ml_get_user_profile
-                            _profile = await run.io_bound(ml_get_user_profile, access_token)
-                            ml_nickname = ((_profile or {}).get("nickname") or "").strip() or nombre_usuario
-                        except Exception:
-                            ml_nickname = nombre_usuario
+                        # Nickname de ML (obtenido al cargar la tab)
+                        ml_nickname = ml_nickname_holder[0] or nombre_usuario
 
                         # Frase aleatoria
                         frase = random.choice([
