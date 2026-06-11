@@ -106,6 +106,20 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def _get_user_nickname(access_token: str, user_id: Any) -> str:
+    try:
+        resp = _requests.get(
+            f"https://api.mercadolibre.com/users/{user_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if resp.ok:
+            return (resp.json().get("nickname") or "").strip()
+    except Exception:
+        pass
+    return ""
+
+
 def _time_ago(date_str: str) -> str:
     try:
         dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
@@ -368,10 +382,7 @@ def build_tab_preguntas(container) -> None:
                                 title         = item_titles.get(item_id, item_id)
                                 text          = q.get("text") or ""
                                 from_obj      = q.get("from") or {}
-                                buyer_display = (
-                                    from_obj.get("nickname")
-                                    or f"#{from_obj.get('id', '—')}"
-                                )
+                                buyer_display = f"#{from_obj.get('id', '—')}"
                                 age = _time_ago(q.get("date_created") or "")
                                 _bg = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
 
@@ -413,17 +424,12 @@ def build_tab_preguntas(container) -> None:
                     detail_panel.clear()
                     detail_panel.set_visibility(True)
 
-                    qid          = q.get("id")
-                    text         = q.get("text") or ""
-                    from_obj     = q.get("from") or {}
-                    buyer_nick   = (from_obj.get("nickname") or "").strip()
-                    saludo       = _saludo_por_hora()
-                    primera_linea = (
-                        f"Hola {buyer_nick}, {saludo}."
-                        if buyer_nick else
-                        f"Hola, {saludo}."
-                    )
-                    ml_nickname  = ml_nickname_holder[0]
+                    # FIX 3: from solo trae id; nickname se busca en _on_groq_click
+                    qid         = q.get("id")
+                    text        = q.get("text") or ""
+                    from_obj    = q.get("from") or {}
+                    from_id     = from_obj.get("id")
+                    ml_nickname = ml_nickname_holder[0]
 
                     with detail_panel:
                         with ui.row().classes("w-full gap-4 items-stretch flex-nowrap"):
@@ -448,8 +454,9 @@ def build_tab_preguntas(container) -> None:
                                     ui.label("✍️ Tu respuesta").classes(
                                         "text-xs font-bold text-gray-500 uppercase tracking-wide q-mb-sm"
                                     )
+                                    # FIX 2: textarea inicia vacío
                                     resp_area = ui.textarea(
-                                        value=primera_linea,
+                                        value="",
                                         placeholder="Escribí tu respuesta aquí...",
                                     ).classes("w-full").props("outlined dense rows=8")
                                     resp_area_ref[0] = resp_area
@@ -488,20 +495,31 @@ def build_tab_preguntas(container) -> None:
                         frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
                         frase_aleatoria = random.choice(frases) if frases else ""
 
-                        prompt = (
-                            f"Sos vendedor en MercadoLibre Argentina.\n"
-                            f"Producto: {title}\n"
-                            f"Pregunta: {text}\n\n"
-                            f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
-                            f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
-                        )
-
                         groq_btn.props("loading")
                         try:
+                            # FIX 3: obtener nickname vía GET /users/{from_id}
+                            buyer_nick = ""
+                            if from_id:
+                                buyer_nick = await run.io_bound(
+                                    _get_user_nickname, access_token, from_id
+                                )
+                            if not buyer_nick:
+                                buyer_nick = "estimado cliente"
+                            saludo = _saludo_por_hora()
+                            saludo_completo = f"Hola {buyer_nick}, {saludo}."
+
+                            prompt = (
+                                f"Sos vendedor en MercadoLibre Argentina.\n"
+                                f"Producto: {title}\n"
+                                f"Pregunta: {text}\n\n"
+                                f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
+                                f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
+                            )
+
                             texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
                             texto_groq = (texto_groq or "").strip()
                             if texto_groq:
-                                partes = [primera_linea, texto_groq]
+                                partes = [saludo_completo, texto_groq]
                                 if frase_aleatoria:
                                     partes.append(frase_aleatoria)
                                 if ml_nickname:
@@ -525,11 +543,14 @@ def build_tab_preguntas(container) -> None:
                                 _ml_post_answer, access_token, qid, text_resp
                             )
                             if result["status_code"] in (200, 201):
-                                ui.notify("Respuesta enviada exitosamente", type="positive")
+                                # FIX 1: recarga tabla sin rebuild completo del container
+                                ui.notify("Respuesta enviada ✓", color="positive")
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 resp_area_ref[0] = None
-                                build_tab_preguntas(container)
+                                background_tasks.create(
+                                    _cargar_async(), name="cargar_preguntas"
+                                )
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
