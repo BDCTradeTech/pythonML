@@ -4,6 +4,7 @@ Pestaña Preguntas: preguntas sin responder recibidas en MercadoLibre.
 """
 from __future__ import annotations
 
+import json
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -12,8 +13,17 @@ import requests as _requests
 
 from nicegui import app, background_tasks, run, ui
 
-from db import get_app_config
+from db import get_app_config, set_app_config
 from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
+
+_DEFAULT_SALUDOS = ["Buenos días", "Buenas tardes", "Buenas noches"]
+_DEFAULT_FRASES = [
+    "Esperamos tu compra.",
+    "Estamos para lo que necesites.",
+    "Tenemos el producto en stock.",
+    "No dudes en consultarnos.",
+    "Con gusto te ayudamos.",
+]
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -23,7 +33,18 @@ def _require_login() -> Optional[Dict[str, Any]]:
     return user
 
 
-# ── ML / Gemini helpers (sync → run.io_bound) ───────────────────────────────
+def _load_json_config(key: str, default: list) -> list:
+    raw = get_app_config(key)
+    if not raw:
+        return list(default)
+    try:
+        val = json.loads(raw)
+        if isinstance(val, list):
+            return val
+    except Exception:
+        pass
+    return list(default)
+
 
 def _ml_get_questions(access_token: str, seller_id: str) -> List[dict]:
     resp = _requests.get(
@@ -73,7 +94,6 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
 
 
 def _ml_get_buyer_nickname(access_token: str, buyer_id: Any) -> str:
-    """GET /users/{buyer_id} → nickname. Devuelve '' si falla o no disponible."""
     try:
         resp = _requests.get(
             f"https://api.mercadolibre.com/users/{buyer_id}",
@@ -99,9 +119,7 @@ def _groq_generate(api_key: str, prompt: str) -> str:
         "max_tokens": 300,
         "temperature": 0.7,
     }
-    print(f"[GROQ] llamando API con key={api_key[:8]}...")
     resp = _requests.post(url, headers=headers, json=payload, timeout=15)
-    print(f"[GROQ] status={resp.status_code} body={resp.text[:300]}")
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -119,7 +137,65 @@ def _time_ago(date_str: str) -> str:
         return "—"
 
 
-# ── build ────────────────────────────────────────────────────────────────────
+def _build_list_card(
+    icon: str, title: str, config_key: str, default_items: list, add_label: str
+) -> None:
+    """Tarjeta con lista editable persistida en app_config."""
+    items: list = _load_json_config(config_key, default_items)
+    state: dict = {"inputs": []}
+
+    with ui.card().classes("w-full p-4 shadow-sm"):
+        ui.label(f"{icon} {title}").classes(
+            "text-xs font-bold text-gray-600 uppercase tracking-wide mb-2"
+        )
+
+        list_col = ui.column().classes("w-full gap-1")
+
+        def _sync_to_items() -> None:
+            for j, ref in enumerate(state["inputs"]):
+                if j < len(items):
+                    items[j] = ref.value
+
+        def _refresh() -> None:
+            state["inputs"] = []
+            list_col.clear()
+            with list_col:
+                for idx in range(len(items)):
+                    with ui.row().classes("w-full items-center gap-1 flex-nowrap"):
+                        inp = ui.input(value=items[idx]).classes("flex-1").props("dense outlined")
+                        state["inputs"].append(inp)
+
+                        def _del(i=idx) -> None:
+                            _sync_to_items()
+                            items.pop(i)
+                            _refresh()
+
+                        ui.button(icon="delete", on_click=_del).props(
+                            "flat dense round color=negative"
+                        )
+
+        _refresh()
+
+        with ui.row().classes("w-full items-center justify-between mt-2"):
+            def _add() -> None:
+                _sync_to_items()
+                items.append("")
+                _refresh()
+
+            ui.button(f"+ {add_label}", on_click=_add).props(
+                "flat dense no-caps"
+            ).classes("text-xs text-blue-600")
+
+            def _save() -> None:
+                _sync_to_items()
+                cleaned = [s.strip() for s in items if s.strip()]
+                set_app_config(config_key, json.dumps(cleaned))
+                ui.notify("Guardado ✓", color="positive", timeout=1500)
+
+            ui.button("💾 Guardar", on_click=_save).props(
+                "unelevated dense no-caps"
+            ).style("background:#185FA5;color:#E6F1FB").classes("text-xs")
+
 
 def build_tab_preguntas(container) -> None:
     container.clear()
@@ -155,7 +231,9 @@ def build_tab_preguntas(container) -> None:
             if not seller_id:
                 main_area.clear()
                 with main_area:
-                    ui.label("❌ No se pudo obtener el seller_id de MercadoLibre").classes("text-negative p-4")
+                    ui.label("❌ No se pudo obtener el seller_id de MercadoLibre").classes(
+                        "text-negative p-4"
+                    )
                 return
 
             try:
@@ -174,7 +252,6 @@ def build_tab_preguntas(container) -> None:
                 except Exception:
                     pass
 
-            # Nickname de MercadoLibre (una sola vez al cargar la tab)
             try:
                 _profile = await run.io_bound(ml_get_user_profile, access_token)
                 ml_nickname_holder[0] = ((_profile or {}).get("nickname") or "").strip()
@@ -195,7 +272,7 @@ def build_tab_preguntas(container) -> None:
                 return
 
             with main_area:
-                # ── Stats bar ───────────────────────────────────────────────
+                # ── Stats bar ────────────────────────────────────────────────
                 with ui.row().classes(
                     "w-full items-center gap-4 px-3 py-1 bg-grey-2 rounded mb-1 flex-wrap"
                 ):
@@ -215,7 +292,7 @@ def build_tab_preguntas(container) -> None:
                 detail_col = ui.column().classes("w-full mt-2")
                 detail_col.style("display:none")
 
-                # ── Table ────────────────────────────────────────────────────
+                # ── Table ─────────────────────────────────────────────────────
                 _TH = (
                     "background:#5898D4;color:#ffffff;font-weight:600;font-size:12px;"
                     "padding:5px 8px;white-space:nowrap;position:sticky;top:0;z-index:10"
@@ -230,8 +307,8 @@ def build_tab_preguntas(container) -> None:
                             with ui.element("tr"):
                                 for _h, _w in [
                                     ("Producto",  "30%"),
-                                    ("Pregunta",  "40%"),
-                                    ("Comprador", "15%"),
+                                    ("Pregunta",  "38%"),
+                                    ("Comprador", "17%"),
                                     ("Hace",       "8%"),
                                     ("",           "7%"),
                                 ]:
@@ -239,14 +316,20 @@ def build_tab_preguntas(container) -> None:
                                         f"{_TH};width:{_w};text-align:left"
                                     ):
                                         ui.label(_h)
+
                         with ui.element("tbody"):
                             for _i, q in enumerate(questions):
-                                item_id  = str(q.get("item_id") or "")
-                                title    = item_titles.get(item_id, item_id)
-                                text     = q.get("text") or ""
-                                buyer_id = str((q.get("from") or {}).get("id") or "—")
-                                age      = _time_ago(q.get("date_created") or "")
-                                _bg      = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+                                item_id   = str(q.get("item_id") or "")
+                                title     = item_titles.get(item_id, item_id)
+                                text      = q.get("text") or ""
+                                from_obj  = q.get("from") or {}
+                                buyer_display = (
+                                    from_obj.get("nickname")
+                                    or f"#{from_obj.get('id', '—')}"
+                                )
+                                age = _time_ago(q.get("date_created") or "")
+                                _bg = "#f5f8fd" if _i % 2 == 0 else "#ffffff"
+
                                 with ui.element("tr").style(
                                     f"background:{_bg};cursor:pointer;"
                                     "border-bottom:1px solid #e8e8e8"
@@ -266,7 +349,7 @@ def build_tab_preguntas(container) -> None:
                                     with ui.element("td").style(
                                         f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                                     ):
-                                        ui.label(f"#{buyer_id}").style(
+                                        ui.label(buyer_display).style(
                                             "font-size:11px;color:#6b7280;font-family:monospace"
                                         )
                                     with ui.element("td").style(f"{_TD};text-align:center"):
@@ -277,7 +360,7 @@ def build_tab_preguntas(container) -> None:
                                             ' style="font-size:14px;color:#9ca3af"></i>'
                                         )
 
-                # ── Detail panel ─────────────────────────────────────────────
+                # ── Detail panel ──────────────────────────────────────────────
                 def _open_detail(q: dict, title: str) -> None:
                     detail_col.clear()
                     detail_col.style("display:block")
@@ -285,103 +368,115 @@ def build_tab_preguntas(container) -> None:
                     text = q.get("text") or ""
 
                     with detail_col:
-                        with ui.card().classes("w-full p-4 mt-2 border border-blue-200"):
-                            with ui.row().classes("w-full items-start justify-between mb-2"):
-                                with ui.column().classes("flex-1 gap-1"):
-                                    ui.label(title).classes("font-bold text-sm leading-tight")
-                                    ui.label(f"Pregunta #{qid}").classes(
-                                        "text-xs font-mono text-gray-400"
-                                    )
-
-                                def _cerrar() -> None:
-                                    detail_col.clear()
-                                    detail_col.style("display:none")
-
-                                ui.button("↩ Cerrar", on_click=_cerrar).props(
-                                    "flat dense no-caps"
-                                ).classes("text-xs text-gray-500")
-
-                            ui.separator().classes("my-2")
-
-                            ui.label("Pregunta del comprador").classes(
-                                "text-xs font-bold uppercase text-gray-500 tracking-wide mb-1"
-                            )
-                            with ui.card().classes("w-full p-3 bg-blue-50 border border-blue-100"):
-                                ui.label(text).style(
-                                    "font-size:13px;color:#1e3a5f;line-height:1.5"
+                        # Header
+                        with ui.row().classes(
+                            "w-full items-center justify-between mt-3 mb-1"
+                        ):
+                            with ui.column().classes("flex-1 gap-0"):
+                                ui.label(title).classes("font-bold text-sm leading-tight")
+                                ui.label(f"Pregunta #{qid}").classes(
+                                    "text-xs font-mono text-gray-400"
                                 )
 
-                            ui.separator().classes("my-2")
+                            def _cerrar() -> None:
+                                detail_col.clear()
+                                detail_col.style("display:none")
 
-                            ui.label("Tu respuesta").classes(
-                                "text-xs font-bold uppercase text-gray-500 tracking-wide mb-1"
-                            )
-                            resp_area = ui.textarea(
-                                placeholder="Escribí tu respuesta aquí..."
-                            ).classes("w-full").props("outlined dense rows=3")
+                            ui.button("↩ Cerrar", on_click=_cerrar).props(
+                                "flat dense no-caps"
+                            ).classes("text-xs text-gray-500")
 
-                            with ui.row().classes("w-full items-center gap-2 mt-2 flex-wrap"):
-                                gemini_btn = ui.button("💡 Sugerir con Groq").props(
-                                    "unelevated dense no-caps"
-                                ).style("background:#4285F4;color:#fff").classes("text-xs")
-                                enviar_btn = ui.button("📨 Enviar respuesta").props(
-                                    "unelevated dense no-caps"
-                                ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+                        # ── Fila superior: Pregunta | Respuesta ────────────
+                        with ui.row().classes("w-full gap-3"):
+                            with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                ui.label("📋 Pregunta del comprador").classes(
+                                    "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                )
+                                with ui.card().classes(
+                                    "w-full p-3 bg-blue-50 border border-blue-100"
+                                ):
+                                    ui.label(text).style(
+                                        "font-size:13px;color:#1e3a5f;line-height:1.5"
+                                    )
+
+                            with ui.card().classes("flex-1 p-4 shadow-sm"):
+                                ui.label("✍️ Tu respuesta").classes(
+                                    "text-xs font-bold text-gray-500 uppercase tracking-wide mb-2"
+                                )
+                                resp_area = ui.textarea(
+                                    placeholder="Escribí tu respuesta aquí..."
+                                ).classes("w-full").props("outlined dense rows=4")
+
+                                with ui.row().classes("w-full items-center gap-2 mt-2"):
+                                    gemini_btn = ui.button("💡 Sugerir con Groq").props(
+                                        "unelevated dense no-caps"
+                                    ).style("background:#4285F4;color:#fff").classes("text-xs")
+                                    enviar_btn = ui.button("📨 Enviar").props(
+                                        "unelevated dense no-caps"
+                                    ).style("background:#1B7A3E;color:#fff").classes("text-xs")
+
+                        # ── Fila inferior: Saludos | Frases de cierre ──────
+                        with ui.row().classes("w-full gap-3 mt-1"):
+                            with ui.element("div").classes("flex-1"):
+                                _build_list_card(
+                                    "👋", "Saludos",
+                                    "preguntas_saludos",
+                                    _DEFAULT_SALUDOS,
+                                    "Agregar saludo",
+                                )
+                            with ui.element("div").classes("flex-1"):
+                                _build_list_card(
+                                    "💬", "Frases de cierre",
+                                    "preguntas_frases_cierre",
+                                    _DEFAULT_FRASES,
+                                    "Agregar frase",
+                                )
 
                     async def _on_gemini_click() -> None:
                         groq_key = get_app_config("groq_api_key")
                         if not groq_key:
-                            ui.notify("Configurá tu API key de Groq en Configuración → IA/Groq", type="warning")
+                            ui.notify(
+                                "Configurá tu API key de Groq en Configuración → IA/Groq",
+                                type="warning",
+                            )
                             return
 
-                        # Hora Argentina (UTC-3)
-                        tz_arg = timezone(timedelta(hours=-3))
-                        hora = datetime.now(tz_arg).hour
-                        if 5 <= hora < 12:
-                            saludo_hora = "buenos días"
-                        elif 12 <= hora < 19:
-                            saludo_hora = "buenas tardes"
-                        else:
-                            saludo_hora = "buenas noches"
+                        saludos = _load_json_config("preguntas_saludos", _DEFAULT_SALUDOS)
+                        frases  = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
 
-                        # Nombre del usuario de la app
+                        tz_arg   = timezone(timedelta(hours=-3))
+                        hora_str = datetime.now(tz_arg).strftime("%H:%M")
+
                         _user = app.storage.user.get("user") or {}
-                        nombre_usuario = (_user.get("name") or _user.get("username") or "").strip() or "vendedor"
-
-                        # Nickname de ML (obtenido al cargar la tab)
+                        nombre_usuario = (
+                            (_user.get("name") or _user.get("username") or "").strip()
+                            or "vendedor"
+                        )
                         ml_nickname = ml_nickname_holder[0] or nombre_usuario
 
-                        # Frase aleatoria
-                        frase = random.choice([
-                            "Esperamos tu compra.",
-                            "Estamos para lo que necesites.",
-                            "Tenemos el producto en stock.",
-                            "No dudes en consultarnos.",
-                            "Con gusto te ayudamos.",
-                        ])
-
-                        # Nickname del comprador desde ML API
                         from_id = (q.get("from") or {}).get("id")
                         buyer_nick = ""
                         if from_id:
-                            buyer_nick = await run.io_bound(_ml_get_buyer_nickname, access_token, from_id)
+                            buyer_nick = await run.io_bound(
+                                _ml_get_buyer_nickname, access_token, from_id
+                            )
 
-                        # Saludo con o sin nombre
-                        if buyer_nick:
-                            saludo = f"Hola {buyer_nick}, {saludo_hora}."
-                        else:
-                            saludo = f"Hola, {saludo_hora}."
+                        saludo_prefix = f"Hola {buyer_nick}," if buyer_nick else "Hola,"
+                        saludos_str   = ", ".join(f'"{s}"' for s in saludos)
+                        frases_str    = ", ".join(f'"{f}"' for f in frases)
 
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina. "
                             f"El producto es: {title}. "
                             f"La pregunta del comprador es: {text}. "
-                            f"Respondé EXACTAMENTE con este formato, sin agregar nada más:\n\n"
-                            f"{saludo}\n"
+                            f"La hora actual en Argentina es {hora_str}. "
+                            f"Respondé EXACTAMENTE con este formato "
+                            f"(reemplazá los corchetes con texto real, sin corchetes en el resultado):\n\n"
+                            f"{saludo_prefix} [elegí el saludo apropiado para la hora de: {saludos_str}].\n"
                             f"[respuesta clara y breve en español rioplatense]\n"
-                            f"{frase}\n"
+                            f"[elegí UNA frase de cierre de: {frases_str}]\n"
                             f"Muchas gracias, {ml_nickname}.\n\n"
-                            f"No agregues saludos extra, aclaraciones ni texto fuera del formato."
+                            f"IMPORTANTE: sin corchetes ni explicaciones en el resultado final."
                         )
 
                         gemini_btn.props("loading")
