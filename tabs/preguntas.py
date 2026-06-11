@@ -164,15 +164,16 @@ def _build_frases_card(resp_area_ref: list) -> None:
     with ui.element("div").style(
         "display:flex;flex-direction:column;flex:1;"
         "border:0.5px solid var(--color-border-tertiary);"
+        "border-top:3px solid #2e7d32;"
         "border-radius:var(--border-radius-md);padding:10px;box-sizing:border-box;"
         "background:var(--color-background-secondary)"
     ):
         with ui.element("div").style(
             "display:flex;align-items:center;gap:4px;margin-bottom:6px"
         ):
-            ui.html('<i class="ti ti-quote" style="font-size:13px;color:#888"></i>')
+            ui.html('<i class="ti ti-quote" style="font-size:13px;color:#2e7d32"></i>')
             ui.label("FRASES DE CIERRE").style(
-                "font-size:10px;color:#888;letter-spacing:0.05em;font-weight:600"
+                "font-size:10px;color:#2e7d32;letter-spacing:0.05em;font-weight:600"
             )
 
         list_col = ui.column().classes("w-full gap-0").style("flex:1")
@@ -299,6 +300,7 @@ def build_tab_preguntas(container) -> None:
 .pq-row { cursor: pointer; }
 .pq-row:hover > td { background: #f5f5f5 !important; }
 .pq-row.pq-selected > td { background: #e3f2fd !important; }
+.pq-row.pq-selected > td:first-child { border-left: 3px solid #1976d2; }
 </style>
 """)
 
@@ -367,11 +369,11 @@ def build_tab_preguntas(container) -> None:
                 # ── BARRA SUPERIOR ──────────────────────────────────────────────
                 with ui.element("div").style(
                     "width:100%;display:flex;align-items:center;justify-content:space-between;"
-                    "background:#f5f5f5;border-bottom:1px solid #e0e0e0;"
+                    "background:#e3f2fd;border-bottom:0.5px solid #bbdefb;"
                     "padding:6px 12px;box-sizing:border-box"
                 ):
                     ui.html(
-                        f'<span style="font-size:13px;color:#555">Sin responder:&nbsp;</span>'
+                        f'<span style="font-size:13px;color:#1565c0">Sin responder:&nbsp;</span>'
                         f'<span style="font-size:13px;font-weight:700;color:#d32f2f">{len(questions)}</span>'
                     )
                     ui.button(
@@ -380,12 +382,12 @@ def build_tab_preguntas(container) -> None:
                             _cargar_async(), name="cargar_preguntas"
                         ),
                     ).props("flat dense no-caps icon=refresh").style(
-                        "font-size:13px;color:#555"
+                        "font-size:13px;color:#1565c0"
                     )
 
                 # ── TABLA ───────────────────────────────────────────────────────
                 _TH = (
-                    "background:#fafafa;color:#888;font-size:10px;font-weight:600;"
+                    "background:#e8f4fd;color:#1565c0;font-size:10px;font-weight:600;"
                     "text-transform:uppercase;letter-spacing:0.05em;"
                     "padding:6px 8px;white-space:nowrap;border-bottom:0.5px solid #eeeeee;"
                     "position:sticky;top:0;z-index:10"
@@ -459,8 +461,8 @@ def build_tab_preguntas(container) -> None:
 
                 # ── PANEL DE DETALLE ────────────────────────────────────────────
                 detail_panel = ui.element("div").style(
-                    "display:grid;grid-template-columns:1fr 1fr;gap:8px;"
-                    "width:100%;background:var(--color-background-secondary);"
+                    "display:grid;grid-template-columns:1fr 1fr;gap:16px;"
+                    "width:100%;background:#fafafa;"
                     "border-top:0.5px solid var(--color-border-tertiary);"
                     "padding:10px;box-sizing:border-box"
                 )
@@ -483,11 +485,13 @@ def build_tab_preguntas(container) -> None:
                     with detail_panel:
                         # ── Columna izquierda ───────────────────────────────────
                         with ui.element("div").style(
-                            "display:flex;flex-direction:column;gap:8px"
+                            "display:flex;flex-direction:column;gap:8px;"
+                            "border-right:1.5px solid #e0e0e0;padding-right:8px"
                         ):
                             # Tarjeta PREGUNTA DEL COMPRADOR
                             with ui.element("div").style(
                                 "border:0.5px solid var(--color-border-tertiary);"
+                                "border-top:3px solid #1976d2;"
                                 "border-radius:var(--border-radius-md);padding:10px;"
                                 "background:var(--color-background-secondary)"
                             ):
@@ -496,10 +500,10 @@ def build_tab_preguntas(container) -> None:
                                 ):
                                     ui.html(
                                         '<i class="ti ti-message-circle"'
-                                        ' style="font-size:13px;color:#888"></i>'
+                                        ' style="font-size:13px;color:#1976d2"></i>'
                                     )
                                     ui.label("PREGUNTA DEL COMPRADOR").style(
-                                        "font-size:10px;color:#888;"
+                                        "font-size:10px;color:#1565c0;"
                                         "letter-spacing:0.05em;font-weight:600"
                                     )
                                 ui.label(text).style(
@@ -509,6 +513,7 @@ def build_tab_preguntas(container) -> None:
                             # Tarjeta TU RESPUESTA
                             with ui.element("div").style(
                                 "border:0.5px solid var(--color-border-tertiary);"
+                                "border-top:3px solid #f57c00;"
                                 "border-radius:var(--border-radius-md);padding:10px;"
                                 "background:var(--color-background-secondary)"
                             ):
@@ -517,10 +522,10 @@ def build_tab_preguntas(container) -> None:
                                 ):
                                     ui.html(
                                         '<i class="ti ti-pencil"'
-                                        ' style="font-size:13px;color:#888"></i>'
+                                        ' style="font-size:13px;color:#f57c00"></i>'
                                     )
                                     ui.label("TU RESPUESTA").style(
-                                        "font-size:10px;color:#888;"
+                                        "font-size:10px;color:#e65100;"
                                         "letter-spacing:0.05em;font-weight:600"
                                     )
                                 resp_area = ui.textarea(
@@ -530,13 +535,6 @@ def build_tab_preguntas(container) -> None:
                                     "font-size:12px"
                                 )
                                 resp_area_ref[0] = resp_area
-
-                                def _cerrar() -> None:
-                                    for r in row_elements:
-                                        r.classes(remove="pq-selected")
-                                    detail_panel.clear()
-                                    detail_panel.set_visibility(False)
-                                    resp_area_ref[0] = None
 
                                 with ui.element("div").style(
                                     "display:flex;align-items:center;gap:8px;"
@@ -551,12 +549,6 @@ def build_tab_preguntas(container) -> None:
                                         "unelevated dense no-caps"
                                     ).style(
                                         "background:#2e7d32;color:#fff;font-size:12px"
-                                    )
-                                    ui.button("Cerrar", on_click=_cerrar).props(
-                                        "flat dense no-caps"
-                                    ).style(
-                                        "border:1px solid #ccc;color:#555;"
-                                        "font-size:12px;background:transparent"
                                     )
 
                         # ── Columna derecha ─────────────────────────────────────
