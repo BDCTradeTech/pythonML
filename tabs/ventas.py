@@ -102,11 +102,18 @@ def build_tab_ventas(container) -> None:
 
     sort_col_ventas: Dict[str, str] = {"val": "dt"}
     sort_asc_ventas: Dict[str, bool] = {"val": False}  # Fecha más reciente primero
+    is_mobile_ref: Dict[str, bool] = {"val": False}
 
     with container:
         header_card = ui.column().classes("w-full mb-2")
         filtro_row = ui.row().classes("w-full mb-2 items-center gap-4")
         result_area = ui.column().classes("w-full gap-2")
+
+        async def _detect_mobile() -> None:
+            w = await ui.run_javascript("window.innerWidth")
+            is_mobile_ref["val"] = int(w or 9999) < 768
+
+        ui.timer(0, _detect_mobile, once=True)
 
         def _tipo_base_desde_body(body: Dict[str, Any]) -> str:
             """Devuelve Propia o Catálogo. Solo catalog_listing=True es Catálogo; catalog_listing=false o ausente es Propia."""
@@ -862,58 +869,63 @@ def build_tab_ventas(container) -> None:
             gan_prom_dia = ganancia_total / dias_total if dias_total > 0 else 0
             header_card.clear()
             with header_card:
-                with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
-                    with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
-                        with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
-                            ui.label("TOTALES").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
-                            with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Facturación").classes("text-xs text-gray-500")
-                                    ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Ventas").classes("text-xs text-gray-500")
-                                    ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Unidades vendidas").classes("text-xs text-gray-500")
-                                    ui.label(str(total_unidades_ok)).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Ganancia total").classes("text-xs text-gray-500")
-                                    _gt_cls = "text-positive" if ganancia_total >= 0 else "text-negative"
-                                    ui.label(f"$ {ganancia_total:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gt_cls}")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Días").classes("text-xs text-gray-500")
-                                    ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
-                        ui.element("div").style("width: 2px; background: rgba(0,0,0,0.2); align-self: stretch; margin: 8px 4px;")
-                        with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
-                            ui.label("PROMEDIO DIARIO").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
-                            with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Facturación").classes("text-xs text-gray-500")
-                                    ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Ventas/día $").classes("text-xs text-gray-500")
-                                    _vpd = n_ventas_ok / dias_total if dias_total > 0 else 0
-                                    ui.label(f"{_vpd:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Unidades").classes("text-xs text-gray-500")
-                                    ui.label(f"{ventas_diarias_u:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Ticket promedio").classes("text-xs text-gray-500")
-                                    ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Gan. prom. $").classes("text-xs text-gray-500")
-                                    _gd_cls = "text-positive" if gan_prom_dia >= 0 else "text-negative"
-                                    ui.label(f"$ {gan_prom_dia:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gd_cls}")
-                                with ui.column().classes("gap-0"):
-                                    ui.label("Gan. prom. %").classes("text-xs text-gray-500")
-                                    if gan_prom_pct is not None:
-                                        _gpp_cls = "text-positive" if gan_prom_pct >= 0 else "text-negative"
-                                        ui.label(f"{gan_prom_pct:.2f}%".replace(".", ",")).classes(f"text-lg font-bold {_gpp_cls}")
-                                    else:
-                                        ui.label("—").classes("text-lg font-bold text-gray-400")
-                        with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
-                            ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
-                            ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                if is_mobile_ref.get("val"):
+                    with ui.row().classes("w-full items-center gap-3 px-2 py-2"):
+                        ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
+                        ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                else:
+                    with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
+                        with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
+                            with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
+                                ui.label("TOTALES").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
+                                with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Facturación").classes("text-xs text-gray-500")
+                                        ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Ventas").classes("text-xs text-gray-500")
+                                        ui.label(str(n_ventas_ok)).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Unidades vendidas").classes("text-xs text-gray-500")
+                                        ui.label(str(total_unidades_ok)).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Ganancia total").classes("text-xs text-gray-500")
+                                        _gt_cls = "text-positive" if ganancia_total >= 0 else "text-negative"
+                                        ui.label(f"$ {ganancia_total:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gt_cls}")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Días").classes("text-xs text-gray-500")
+                                        ui.label(str(dias_total)).classes("text-lg font-bold text-primary")
+                            ui.element("div").style("width: 2px; background: rgba(0,0,0,0.2); align-self: stretch; margin: 8px 4px;")
+                            with ui.element("div").classes("px-4 py-2").style("flex: 1; min-width: 0;"):
+                                ui.label("PROMEDIO DIARIO").style("font-size: 10px; font-weight: 600; color: rgba(0,0,0,0.35); letter-spacing: 0.06em;")
+                                with ui.row().classes("gap-5 mt-1 flex-wrap items-end"):
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Facturación").classes("text-xs text-gray-500")
+                                        ui.label(f"$ {ventas_diarias:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Ventas/día $").classes("text-xs text-gray-500")
+                                        _vpd = n_ventas_ok / dias_total if dias_total > 0 else 0
+                                        ui.label(f"{_vpd:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Unidades").classes("text-xs text-gray-500")
+                                        ui.label(f"{ventas_diarias_u:,.2f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Ticket promedio").classes("text-xs text-gray-500")
+                                        ui.label(f"$ {ticket_promedio:,.0f}".replace(",", ".")).classes("text-lg font-bold text-primary")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Gan. prom. $").classes("text-xs text-gray-500")
+                                        _gd_cls = "text-positive" if gan_prom_dia >= 0 else "text-negative"
+                                        ui.label(f"$ {gan_prom_dia:,.0f}".replace(",", ".")).classes(f"text-lg font-bold {_gd_cls}")
+                                    with ui.column().classes("gap-0"):
+                                        ui.label("Gan. prom. %").classes("text-xs text-gray-500")
+                                        if gan_prom_pct is not None:
+                                            _gpp_cls = "text-positive" if gan_prom_pct >= 0 else "text-negative"
+                                            ui.label(f"{gan_prom_pct:.2f}%".replace(".", ",")).classes(f"text-lg font-bold {_gpp_cls}")
+                                        else:
+                                            ui.label("—").classes("text-lg font-bold text-gray-400")
+                            with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
+                                ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
+                                ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
@@ -954,6 +966,8 @@ def build_tab_ventas(container) -> None:
                                     grupos[key]["item_ids"].add(str(v["item_id"]))
                                 grupos[key]["cantidad"] += v["cantidad"]
                                 grupos[key]["monto"] += v["monto"]
+                                if v.get("gan_pesos") is not None:
+                                    grupos[key]["gan_pesos"] = grupos[key].get("gan_pesos", 0.0) + v["gan_pesos"]
                             filas = list(grupos.values())
                             sort_col = sort_col_ventas.get("val", "cantidad")
                             asc = sort_asc_ventas.get("val", False)
@@ -963,59 +977,90 @@ def build_tab_ventas(container) -> None:
                                 filas.sort(key=lambda x: x["monto"], reverse=not asc)
                             else:
                                 filas.sort(key=lambda x: x["cantidad"], reverse=not asc)
-                            with ui.element("div").classes("w-full"):
-                                with ui.element("table").classes("w-full border-collapse text-sm"):
-                                    with ui.element("thead"):
-                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("#")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("ID publicación")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Publicación")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Cuotas")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Tipo")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.button("Cant.", on_click=lambda: _on_sort_ventas("cantidad")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.label("Margen")
-                                            with ui.element("th").classes("px-2 py-2 border text-center"):
-                                                ui.button("Monto total", on_click=lambda: _on_sort_ventas("monto")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
-                                    with ui.element("tbody"):
-                                        for idx, v in enumerate(filas, 1):
-                                            productos_key = str(v["productos"])
-                                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    ui.label(str(idx))
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                    item_ids = v.get("item_ids", set())
-                                                    ids_list = sorted(item_ids)[:3]
-                                                    ids_str = ", ".join(ids_list)
-                                                    if len(item_ids) > 3:
-                                                        ids_str += "..."
-                                                    ui.label(ids_str or "—")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    tipos_venta_str = ", ".join(sorted(v.get("tipos_venta", set()))) or "—"
-                                                    ui.label(tipos_venta_str).classes("text-xs")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    cuotas_str = ", ".join(sorted(v.get("cuotas", set()))) or "—"
-                                                    ui.label(cuotas_str).classes("text-xs")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    tipos_oferta_str = ", ".join(sorted(v.get("tipos_oferta_display", v.get("tipos_oferta", set())))) or "—"
-                                                    ui.label(tipos_oferta_str).classes("text-xs")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
-                                                    ui.label(productos_key[:80]).classes("truncate")
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                                    ui.label(str(v["cantidad"]))
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
-                                                    _inp = ui.input(value=margenes_ref.get(productos_key, "")).props("dense").classes("w-20")
-                                                    _inp.on_value_change(lambda e, k=productos_key: _update_margen(k, str(getattr(e, "value", "") or "")))
-                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
-                                                    ui.label(f"$ {v['monto']:,.0f}".replace(",", "."))
+                            if is_mobile_ref.get("val"):
+                                with ui.element("div").style("width:100%;overflow-x:auto;max-height:75vh;overflow-y:scroll"):
+                                    with ui.element("table").style("width:100%;border-collapse:collapse;font-size:12px"):
+                                        with ui.element("thead"):
+                                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                                for _hm in ("Producto", "Cant", "Monto", "Gan $", "Gan %"):
+                                                    with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                        ui.label(_hm)
+                                        with ui.element("tbody"):
+                                            for idx, v in enumerate(filas, 1):
+                                                productos_key = str(v["productos"])
+                                                _gp_g = v.get("gan_pesos")
+                                                _gvp_g = (_gp_g / v["monto"] * 100) if (_gp_g is not None and v["monto"] > 0) else None
+                                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-xs"):
+                                                        ui.label(productos_key[:60]).classes("truncate block max-w-[160px]")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                        ui.label(str(v["cantidad"]))
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs whitespace-nowrap"):
+                                                        ui.label(f"$ {v['monto']:,.0f}".replace(",", "."))
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs whitespace-nowrap"):
+                                                        if _gp_g is None:
+                                                            ui.label("—").classes("text-gray-400")
+                                                        else:
+                                                            ui.label(f"$ {_gp_g:,.0f}".replace(",", ".")).classes(f"font-medium {'text-positive' if _gp_g >= 0 else 'text-negative'}")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs whitespace-nowrap"):
+                                                        if _gvp_g is None:
+                                                            ui.label("—").classes("text-gray-400")
+                                                        else:
+                                                            ui.label(f"{_gvp_g:.2f}%".replace(".", ",")).classes(f"font-medium {'text-positive' if _gvp_g >= 0 else 'text-negative'}")
+                            else:
+                                with ui.element("div").classes("w-full"):
+                                    with ui.element("table").classes("w-full border-collapse text-sm"):
+                                        with ui.element("thead"):
+                                            with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("#")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("ID publicación")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("Publicación")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("Cuotas")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("Tipo")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.button("Producto", on_click=lambda: _on_sort_ventas("productos")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.button("Cant.", on_click=lambda: _on_sort_ventas("cantidad")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label("Margen")
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.button("Monto total", on_click=lambda: _on_sort_ventas("monto")).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                        with ui.element("tbody"):
+                                            for idx, v in enumerate(filas, 1):
+                                                productos_key = str(v["productos"])
+                                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                        ui.label(str(idx))
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                        item_ids = v.get("item_ids", set())
+                                                        ids_list = sorted(item_ids)[:3]
+                                                        ids_str = ", ".join(ids_list)
+                                                        if len(item_ids) > 3:
+                                                            ids_str += "..."
+                                                        ui.label(ids_str or "—")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                        tipos_venta_str = ", ".join(sorted(v.get("tipos_venta", set()))) or "—"
+                                                        ui.label(tipos_venta_str).classes("text-xs")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                        cuotas_str = ", ".join(sorted(v.get("cuotas", set()))) or "—"
+                                                        ui.label(cuotas_str).classes("text-xs")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                        tipos_oferta_str = ", ".join(sorted(v.get("tipos_oferta_display", v.get("tipos_oferta", set())))) or "—"
+                                                        ui.label(tipos_oferta_str).classes("text-xs")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[350px]"):
+                                                        ui.label(productos_key[:80]).classes("truncate")
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
+                                                        ui.label(str(v["cantidad"]))
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100"):
+                                                        _inp = ui.input(value=margenes_ref.get(productos_key, "")).props("dense").classes("w-20")
+                                                        _inp.on_value_change(lambda e, k=productos_key: _update_margen(k, str(getattr(e, "value", "") or "")))
+                                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium"):
+                                                        ui.label(f"$ {v['monto']:,.0f}".replace(",", "."))
                     else:
                         sort_col = sort_col_ventas.get("val", "dt")
                         asc = sort_asc_ventas.get("val", False)
@@ -1024,125 +1069,164 @@ def build_tab_ventas(container) -> None:
                             key=lambda x: _sort_key_ventas(x, sort_col),
                             reverse=not asc,
                         )
-                        # Sticky header: dos tablas separadas (igual que Cuotas)
-                        _vhd = ui.element("div").style("width:100%;overflow:hidden")
-                        _vtc = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
-                        _vhid = _vhd.id
-                        _vcid = _vtc.id
-                        async def _setup_ventas_sync(_vhid=_vhid, _vcid=_vcid) -> None:
-                            await ui.run_javascript(
-                                f"(function(){{"
-                                f"var body=document.getElementById('c{_vcid}');"
-                                f"var hdr=document.getElementById('c{_vhid}');"
-                                f"if(!body||!hdr)return;"
-                                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
-                                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
-                                f"_sg();new ResizeObserver(_sg).observe(body);"
-                                f"}})();"
-                            )
-                        ui.timer(0.1, _setup_ventas_sync, once=True)
-                        def _build_colgroup_ventas() -> None:
-                            with ui.element("colgroup"):
-                                ui.element("col").style("width:3%")
-                                ui.element("col").style("width:7%")
-                                ui.element("col").style("width:9%")
-                                ui.element("col").style("width:9%")
-                                ui.element("col").style("width:5%")
-                                ui.element("col").style("width:8%")
-                                ui.element("col").style("width:5%")
-                                ui.element("col").style("width:5%")
-                                ui.element("col").style("width:20%")
-                                ui.element("col").style("width:4%")
-                                ui.element("col").style("width:7%")
-                                ui.element("col").style("width:7%")
-                                ui.element("col").style("width:6%")
-                                ui.element("col").style("width:5%")
-                        cols_ventas = [
-                            ("#", "#", "text-center"),
-                            ("dt", "Fecha", "text-center"),
-                            ("order_id", "Order ID", "text-center"),
-                            ("item_id", "ID publicación", "text-center"),
-                            ("envio_tipo", "Envío", "text-center"),
-                            ("tipo_venta", "Publicacion", "text-center"),
-                            ("cuotas", "Cuotas", "text-center"),
-                            ("tipo", "Tipo", "text-center"),
-                            ("productos", "Producto", "text-center"),
-                            ("cantidad", "Cant.", "text-center"),
-                            ("monto", "Monto", "text-center"),
-                            ("gan_pesos", "Gan $", "text-center"),
-                            ("gan_vta_pct", "Gan Vta%", "text-center"),
-                            ("status", "Estado", "text-center"),
-                        ]
-                        # Tabla header (thead solamente)
-                        with _vhd:
-                            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
-                                _build_colgroup_ventas()
-                                with ui.element("thead"):
-                                    with ui.element("tr").classes("bg-primary text-white font-semibold"):
-                                        for col_key, h, align in cols_ventas:
-                                            th_cls = f"px-2 py-2 border {align or 'text-left'}"
-                                            with ui.element("th").classes(th_cls):
-                                                if col_key == "#":
-                                                    ui.label(h)
-                                                else:
-                                                    ui.button(h, on_click=lambda c=col_key: _on_sort_ventas(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
-                        # Tabla body (tbody solamente, scrolleable)
-                        with _vtc:
-                            with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
-                                _build_colgroup_ventas()
-                                with ui.element("tbody"):
-                                    for idx, v in enumerate(ventas_orden, 1):
-                                        _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
-                                        _is_rej_row = v.get("pay_status") == "rejected"
-                                        _is_dev_row = bool(v.get("has_refund"))
-                                        _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
-                                        with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(str(idx))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(f'{v["fecha"]} - {v.get("hora", "")}')
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v.get("order_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v.get("item_id", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                _lt = (v.get("logistic_type") or "").lower().strip()
-                                                if _lt in ("self_service", "flex"):
-                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
-                                                elif _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2", "correo"):
-                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
-                                                elif _lt == "fulfillment":
-                                                    ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
-                                                else:
-                                                    ui.label("—").classes("text-gray-400 text-xs")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v.get("tipo_venta", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v.get("cuotas", "—"))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v.get("tipo_display", v.get("tipo", v.get("tipo_oferta", "Regular"))))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px] text-xs"):
-                                                _titulo = v.get("productos", v.get("title", "—"))[:80]
-                                                ui.button(_titulo, on_click=lambda row=v: _abrir_popup_venta(row)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-600 hover:underline cursor-pointer w-full truncate")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(str(v["cantidad"]))
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs"):
-                                                ui.label(v["monto_fmt"])
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
+                        if is_mobile_ref.get("val"):
+                            # Mobile: tabla simple 6 columnas
+                            with ui.element("div").style("width:100%;overflow-x:auto;max-height:75vh;overflow-y:scroll"):
+                                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:12px"):
+                                    with ui.element("thead"):
+                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                            for _hm in ("Fecha", "Producto", "Cant", "Monto", "Gan $", "Gan %"):
+                                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                                    ui.label(_hm)
+                                    with ui.element("tbody"):
+                                        for idx, v in enumerate(ventas_orden, 1):
+                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
+                                            _is_rej_row = v.get("pay_status") == "rejected"
+                                            _is_dev_row = bool(v.get("has_refund"))
+                                            _hide_gan = _is_cancelled_row or _is_rej_row or _is_dev_row
+                                            _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
+                                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs whitespace-nowrap"):
+                                                    ui.label(v["fecha"])
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-xs max-w-[150px]"):
+                                                    _titulo = v.get("productos", v.get("title", "—"))[:50]
+                                                    ui.button(_titulo, on_click=lambda row=v: _abrir_popup_venta(row)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-600 hover:underline cursor-pointer w-full truncate")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(str(v["cantidad"]))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs whitespace-nowrap"):
+                                                    ui.label(v["monto_fmt"])
                                                 _gp = v.get("gan_pesos")
-                                                _hide_gan = _is_cancelled_row or _is_rej_row or _is_dev_row
-                                                if _hide_gan or _gp is None:
-                                                    ui.label("—").classes("text-gray-400 text-xs")
-                                                else:
-                                                    ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs whitespace-nowrap"):
+                                                    if _hide_gan or _gp is None:
+                                                        ui.label("—").classes("text-gray-400")
+                                                    else:
+                                                        ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium {'text-positive' if _gp >= 0 else 'text-negative'}")
                                                 _gvp = v.get("gan_vta_pct")
-                                                if _hide_gan or _gvp is None:
-                                                    ui.label("—").classes("text-gray-400 text-xs")
-                                                else:
-                                                    ui.label(f"{_gvp:.2f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
-                                            with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                ui.label(v["status"])
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs whitespace-nowrap"):
+                                                    if _hide_gan or _gvp is None:
+                                                        ui.label("—").classes("text-gray-400")
+                                                    else:
+                                                        ui.label(f"{_gvp:.2f}%".replace(".", ",")).classes(f"font-medium {'text-positive' if _gvp >= 0 else 'text-negative'}")
+                        else:
+                            # Desktop: sticky header 14 columnas
+                            _vhd = ui.element("div").style("width:100%;overflow:hidden")
+                            _vtc = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
+                            _vhid = _vhd.id
+                            _vcid = _vtc.id
+                            async def _setup_ventas_sync(_vhid=_vhid, _vcid=_vcid) -> None:
+                                await ui.run_javascript(
+                                    f"(function(){{"
+                                    f"var body=document.getElementById('c{_vcid}');"
+                                    f"var hdr=document.getElementById('c{_vhid}');"
+                                    f"if(!body||!hdr)return;"
+                                    f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                                    f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                                    f"_sg();new ResizeObserver(_sg).observe(body);"
+                                    f"}})();"
+                                )
+                            ui.timer(0.1, _setup_ventas_sync, once=True)
+                            def _build_colgroup_ventas() -> None:
+                                with ui.element("colgroup"):
+                                    ui.element("col").style("width:3%")
+                                    ui.element("col").style("width:7%")
+                                    ui.element("col").style("width:9%")
+                                    ui.element("col").style("width:9%")
+                                    ui.element("col").style("width:5%")
+                                    ui.element("col").style("width:8%")
+                                    ui.element("col").style("width:5%")
+                                    ui.element("col").style("width:5%")
+                                    ui.element("col").style("width:20%")
+                                    ui.element("col").style("width:4%")
+                                    ui.element("col").style("width:7%")
+                                    ui.element("col").style("width:7%")
+                                    ui.element("col").style("width:6%")
+                                    ui.element("col").style("width:5%")
+                            cols_ventas = [
+                                ("#", "#", "text-center"),
+                                ("dt", "Fecha", "text-center"),
+                                ("order_id", "Order ID", "text-center"),
+                                ("item_id", "ID publicación", "text-center"),
+                                ("envio_tipo", "Envío", "text-center"),
+                                ("tipo_venta", "Publicacion", "text-center"),
+                                ("cuotas", "Cuotas", "text-center"),
+                                ("tipo", "Tipo", "text-center"),
+                                ("productos", "Producto", "text-center"),
+                                ("cantidad", "Cant.", "text-center"),
+                                ("monto", "Monto", "text-center"),
+                                ("gan_pesos", "Gan $", "text-center"),
+                                ("gan_vta_pct", "Gan Vta%", "text-center"),
+                                ("status", "Estado", "text-center"),
+                            ]
+                            # Tabla header (thead solamente)
+                            with _vhd:
+                                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                                    _build_colgroup_ventas()
+                                    with ui.element("thead"):
+                                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                                            for col_key, h, align in cols_ventas:
+                                                th_cls = f"px-2 py-2 border {align or 'text-left'}"
+                                                with ui.element("th").classes(th_cls):
+                                                    if col_key == "#":
+                                                        ui.label(h)
+                                                    else:
+                                                        ui.button(h, on_click=lambda c=col_key: _on_sort_ventas(c)).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                            # Tabla body (tbody solamente, scrolleable)
+                            with _vtc:
+                                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                                    _build_colgroup_ventas()
+                                    with ui.element("tbody"):
+                                        for idx, v in enumerate(ventas_orden, 1):
+                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
+                                            _is_rej_row = v.get("pay_status") == "rejected"
+                                            _is_dev_row = bool(v.get("has_refund"))
+                                            _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
+                                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(str(idx))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(f'{v["fecha"]} - {v.get("hora", "")}')
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v.get("order_id", "—"))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v.get("item_id", "—"))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    _lt = (v.get("logistic_type") or "").lower().strip()
+                                                    if _lt in ("self_service", "flex"):
+                                                        ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#16a34a"><i class="ti ti-motorbike" style="font-size:13px" aria-hidden="true"></i>Flex</span>')
+                                                    elif _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2", "correo"):
+                                                        ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#ea580c"><i class="ti ti-package" style="font-size:13px" aria-hidden="true"></i>Correo</span>')
+                                                    elif _lt == "fulfillment":
+                                                        ui.html('<span style="display:inline-flex;align-items:center;gap:4px;font-size:11px;color:#2563eb"><i class="ti ti-building-warehouse" style="font-size:13px" aria-hidden="true"></i>Full</span>')
+                                                    else:
+                                                        ui.label("—").classes("text-gray-400 text-xs")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v.get("tipo_venta", "—"))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v.get("cuotas", "—"))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v.get("tipo_display", v.get("tipo", v.get("tipo_oferta", "Regular"))))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 max-w-[300px] text-xs"):
+                                                    _titulo = v.get("productos", v.get("title", "—"))[:80]
+                                                    ui.button(_titulo, on_click=lambda row=v: _abrir_popup_venta(row)).props("flat dense no-caps align=left").classes("text-left text-xs text-blue-600 hover:underline cursor-pointer w-full truncate")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(str(v["cantidad"]))
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right font-medium text-xs"):
+                                                    ui.label(v["monto_fmt"])
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
+                                                    _gp = v.get("gan_pesos")
+                                                    _hide_gan = _is_cancelled_row or _is_rej_row or _is_dev_row
+                                                    if _hide_gan or _gp is None:
+                                                        ui.label("—").classes("text-gray-400 text-xs")
+                                                    else:
+                                                        ui.label(f"$ {_gp:,.0f}".replace(",", ".")).classes(f"font-medium text-xs {'text-positive' if _gp >= 0 else 'text-negative'}")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right text-xs"):
+                                                    _gvp = v.get("gan_vta_pct")
+                                                    if _hide_gan or _gvp is None:
+                                                        ui.label("—").classes("text-gray-400 text-xs")
+                                                    else:
+                                                        ui.label(f"{_gvp:.2f}%".replace(".", ",")).classes(f"font-medium text-xs {'text-positive' if _gvp >= 0 else 'text-negative'}")
+                                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
+                                                    ui.label(v["status"])
 
         def _abrir_dialog_enriquecer() -> None:
             with ui.dialog().props("persistent") as dlg, ui.card().classes("w-96"):
@@ -1576,7 +1660,7 @@ def build_tab_ventas(container) -> None:
                     with result_area:
                         ui.label("No se pudo obtener el perfil del vendedor.").classes("text-negative")
                     if filtro_controls_ref:
-                        filtro_controls_ref[0].set_visibility(True)
+                        filtro_controls_ref[0].set_visibility(not is_mobile_ref.get("val"))
                     return
                 hoy = datetime.now().date()
                 fecha_val = filtro_fecha_ref.get("val", "hoy")
@@ -1592,7 +1676,7 @@ def build_tab_ventas(container) -> None:
                 with result_area:
                     ui.label(f"❌ Error al cargar ventas: {e}").classes("text-negative")
                 if filtro_controls_ref:
-                    filtro_controls_ref[0].set_visibility(True)
+                    filtro_controls_ref[0].set_visibility(not is_mobile_ref.get("val"))
                 return
             raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
             orders = [o for o in raw_orders if isinstance(o, dict)]
@@ -1877,7 +1961,7 @@ def build_tab_ventas(container) -> None:
                         v["status"] = "Cancelada"
             ventas_raw = ventas_mes
             if filtro_controls_ref:
-                filtro_controls_ref[0].set_visibility(True)
+                filtro_controls_ref[0].set_visibility(not is_mobile_ref.get("val"))
             _pintar_tabla()
             _enrich_cl = context.client
             background_tasks.create(_enriquecer_ventas_async(_enrich_cl), name="enriquecer_ventas")
