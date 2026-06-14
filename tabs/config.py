@@ -122,19 +122,26 @@ def build_tab_config() -> None:
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
 
-            # 1b. IA / Groq
+            # 1b. IA / Sugerencias (Groq + Gemini)
             _gkey_row = None
+            _gemkey_row = None
             try:
                 _gc = get_connection()
                 _gkey_row = _gc.execute(
                     "SELECT value, updated_at FROM app_config WHERE key = ?",
                     ("groq_api_key",),
                 ).fetchone()
+                _gemkey_row = _gc.execute(
+                    "SELECT value, updated_at FROM app_config WHERE key = ?",
+                    ("gemini_api_key",),
+                ).fetchone()
                 _gc.close()
             except Exception:
                 pass
             with ui.column().classes("w-[400px] flex-shrink-0"):
                 with ui.card().classes(_card_class):
+                    ui.label("IA / Sugerencias").classes("text-base font-semibold mb-2")
+
                     def _desvincular_groq() -> None:
                         _conn = get_connection()
                         try:
@@ -145,54 +152,41 @@ def build_tab_config() -> None:
                         ui.notify("API Key desvinculada", color="positive")
                         ui.navigate.reload()
 
-                    ui.label("IA / Groq").classes("text-base font-semibold mb-2")
-                    ui.label("Groq API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
-                    groq_inp = (
-                        ui.input(placeholder="gsk_...")
-                        .props("dense outlined hide-bottom-space type=password password-toggle")
-                        .classes("w-full mt-1")
-                    )
+                    with ui.expansion("Groq", icon="bolt").classes("w-full").props("expand-icon-toggle dense"):
+                        groq_inp = (
+                            ui.input(placeholder="gsk_...")
+                            .props("dense outlined hide-bottom-space type=password")
+                            .classes("w-full mt-1")
+                        )
 
-                    def _vincular_groq() -> None:
-                        val = str(groq_inp.value or "").strip()
-                        if not val:
-                            ui.notify("Ingresá una API Key válida", type="warning")
-                            return
-                        set_app_config("groq_api_key", val)
-                        groq_inp.value = ""
-                        ui.notify("API Key guardada", type="positive")
-                        ui.navigate.reload()
+                        def _vincular_groq() -> None:
+                            val = str(groq_inp.value or "").strip()
+                            if not val:
+                                ui.notify("Ingresá una API Key válida", type="warning")
+                                return
+                            set_app_config("groq_api_key", val)
+                            groq_inp.value = ""
+                            ui.notify("API Key guardada", type="positive")
+                            ui.navigate.reload()
 
-                    with ui.row().classes("gap-2 mt-2"):
-                        ui.button("Vincular", on_click=_vincular_groq, color="primary").props("dense no-caps")
+                        with ui.row().classes("gap-2 mt-2"):
+                            ui.button("Vincular", on_click=_vincular_groq, color="primary").props("dense no-caps")
+                            if _gkey_row and _gkey_row["value"]:
+                                ui.button("Desvincular", on_click=_desvincular_groq, color="secondary").props("dense no-caps")
+                        ui.separator().classes("my-2")
+                        ui.label("Estado").classes("text-xs font-semibold mb-1")
                         if _gkey_row and _gkey_row["value"]:
-                            ui.button("Desvincular", on_click=_desvincular_groq, color="secondary").props("dense no-caps")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle", color="positive", size="sm")
+                                ui.label("Vinculada").classes("text-positive text-sm")
+                            _ua = str(_gkey_row["updated_at"] or "")[:10]
+                            if _ua:
+                                ui.label(f"Actualizada: {_ua}").classes("text-xs text-gray-600")
+                        else:
+                            ui.label("Sin vincular").classes("text-warning text-sm")
 
                     ui.separator().classes("my-2")
-                    ui.label("Estado").classes("text-xs font-semibold mb-1")
-                    if _gkey_row and _gkey_row["value"]:
-                        with ui.row().classes("items-center gap-2"):
-                            ui.icon("check_circle", color="positive", size="sm")
-                            ui.label("Vinculada").classes("text-positive text-sm")
-                        _ua = str(_gkey_row["updated_at"] or "")[:10]
-                        if _ua:
-                            ui.label(f"Actualizada: {_ua}").classes("text-xs text-gray-600")
-                    else:
-                        ui.label("Sin vincular").classes("text-warning text-sm")
 
-            # 1c. IA / Gemini
-            _gemkey_row = None
-            try:
-                _gemc = get_connection()
-                _gemkey_row = _gemc.execute(
-                    "SELECT value, updated_at FROM app_config WHERE key = ?",
-                    ("gemini_api_key",),
-                ).fetchone()
-                _gemc.close()
-            except Exception:
-                pass
-            with ui.column().classes("w-[400px] flex-shrink-0"):
-                with ui.card().classes(_card_class):
                     def _desvincular_gemini() -> None:
                         _conn = get_connection()
                         try:
@@ -203,40 +197,38 @@ def build_tab_config() -> None:
                         ui.notify("API Key desvinculada", color="positive")
                         ui.navigate.reload()
 
-                    ui.label("IA / Gemini").classes("text-base font-semibold mb-2")
-                    ui.label("Gemini API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
-                    gemini_inp = (
-                        ui.input(placeholder="AQ...")
-                        .props("dense outlined hide-bottom-space type=password password-toggle")
-                        .classes("w-full mt-1")
-                    )
+                    with ui.expansion("Gemini", icon="auto_awesome").classes("w-full").props("expand-icon-toggle dense"):
+                        gemini_inp = (
+                            ui.input(placeholder="AQ...")
+                            .props("dense outlined hide-bottom-space type=password")
+                            .classes("w-full mt-1")
+                        )
 
-                    def _vincular_gemini() -> None:
-                        val = str(gemini_inp.value or "").strip()
-                        if not val:
-                            ui.notify("Ingresá una API Key válida", type="warning")
-                            return
-                        set_app_config("gemini_api_key", val)
-                        gemini_inp.value = ""
-                        ui.notify("API Key guardada", type="positive")
-                        ui.navigate.reload()
+                        def _vincular_gemini() -> None:
+                            val = str(gemini_inp.value or "").strip()
+                            if not val:
+                                ui.notify("Ingresá una API Key válida", type="warning")
+                                return
+                            set_app_config("gemini_api_key", val)
+                            gemini_inp.value = ""
+                            ui.notify("API Key guardada", type="positive")
+                            ui.navigate.reload()
 
-                    with ui.row().classes("gap-2 mt-2"):
-                        ui.button("Vincular", on_click=_vincular_gemini, color="primary").props("dense no-caps")
+                        with ui.row().classes("gap-2 mt-2"):
+                            ui.button("Vincular", on_click=_vincular_gemini, color="primary").props("dense no-caps")
+                            if _gemkey_row and _gemkey_row["value"]:
+                                ui.button("Desvincular", on_click=_desvincular_gemini, color="secondary").props("dense no-caps")
+                        ui.separator().classes("my-2")
+                        ui.label("Estado").classes("text-xs font-semibold mb-1")
                         if _gemkey_row and _gemkey_row["value"]:
-                            ui.button("Desvincular", on_click=_desvincular_gemini, color="secondary").props("dense no-caps")
-
-                    ui.separator().classes("my-2")
-                    ui.label("Estado").classes("text-xs font-semibold mb-1")
-                    if _gemkey_row and _gemkey_row["value"]:
-                        with ui.row().classes("items-center gap-2"):
-                            ui.icon("check_circle", color="positive", size="sm")
-                            ui.label("Vinculada").classes("text-positive text-sm")
-                        _gua = str(_gemkey_row["updated_at"] or "")[:10]
-                        if _gua:
-                            ui.label(f"Actualizada: {_gua}").classes("text-xs text-gray-600")
-                    else:
-                        ui.label("Sin vincular").classes("text-warning text-sm")
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle", color="positive", size="sm")
+                                ui.label("Vinculada").classes("text-positive text-sm")
+                            _gua = str(_gemkey_row["updated_at"] or "")[:10]
+                            if _gua:
+                                ui.label(f"Actualizada: {_gua}").classes("text-xs text-gray-600")
+                        else:
+                            ui.label("Sin vincular").classes("text-warning text-sm")
 
             # 2. QuickBooks — un poco más largo que ML para igualar tamaño
             with ui.column().classes("w-[420px] flex-shrink-0"):
