@@ -679,9 +679,7 @@ def build_tab_preguntas(container) -> None:
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 resp_area_ref[0] = None
-                                background_tasks.create(
-                                    _cargar_async(), name="cargar_preguntas"
-                                )
+                                await _cargar_async()
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
