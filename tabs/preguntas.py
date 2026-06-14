@@ -106,6 +106,17 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def _gemini_generate(api_key: str, prompt: str) -> str:
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    headers = {"Content-Type": "application/json"}
+    payload = {"contents": [{"parts": [{"text": prompt}]}]}
+    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    print(f"[GEMINI] status={resp.status_code} body={resp.text[:300]}")
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
 def _get_user_nickname(access_token: str, user_id: Any) -> str:
     try:
         resp = _requests.get(
@@ -545,6 +556,11 @@ def build_tab_preguntas(container) -> None:
                                     ).style(
                                         "background:#f57c00;color:#fff;font-size:12px"
                                     )
+                                    gemini_btn = ui.button("💡 Sugerir con Gemini").props(
+                                        "unelevated dense no-caps"
+                                    ).style(
+                                        "background:#1a73e8;color:#fff;font-size:12px"
+                                    )
                                     enviar_btn = ui.button("Enviar respuesta").props(
                                         "unelevated dense no-caps"
                                     ).style(
@@ -602,6 +618,51 @@ def build_tab_preguntas(container) -> None:
                         finally:
                             groq_btn.props(remove="loading")
 
+                    async def _on_gemini_click() -> None:
+                        gemini_key = get_app_config("gemini_api_key")
+                        if not gemini_key:
+                            ui.notify(
+                                "Configurá tu API key de Gemini en Configuración → IA/Gemini",
+                                type="warning",
+                            )
+                            return
+                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
+                        frase_aleatoria = random.choice(frases) if frases else ""
+                        gemini_btn.props("loading")
+                        try:
+                            buyer_nick = ""
+                            if from_id:
+                                buyer_nick = await run.io_bound(
+                                    _get_user_nickname, access_token, from_id
+                                )
+                            if not buyer_nick:
+                                buyer_nick = "estimado cliente"
+                            saludo = _saludo_por_hora()
+                            saludo_completo = f"Hola {buyer_nick}, {saludo}."
+                            prompt = (
+                                f"Sos vendedor en MercadoLibre Argentina.\n"
+                                f"Producto: {title}\n"
+                                f"Pregunta: {text}\n\n"
+                                f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
+                                f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
+                            )
+                            texto_gemini = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                            texto_gemini = (texto_gemini or "").strip()
+                            if texto_gemini:
+                                partes = [saludo_completo, texto_gemini]
+                                if frase_aleatoria:
+                                    partes.append(frase_aleatoria)
+                                if ml_nickname:
+                                    partes.append(f"Muchas gracias, {ml_nickname}.")
+                                resp_area.set_value("\n".join(partes))
+                                ui.notify("Sugerencia lista ✓", color="positive")
+                            else:
+                                ui.notify("Gemini no devolvió texto", type="warning")
+                        except Exception as exc:
+                            ui.notify(f"Error Gemini: {exc}", type="negative")
+                        finally:
+                            gemini_btn.props(remove="loading")
+
                     async def _on_enviar_click() -> None:
                         text_resp = (resp_area.value or "").strip()
                         if not text_resp:
@@ -631,6 +692,7 @@ def build_tab_preguntas(container) -> None:
                             ui.notify(f"Error al enviar: {exc}", type="negative")
 
                     groq_btn.on_click(_on_groq_click)
+                    gemini_btn.on_click(_on_gemini_click)
                     enviar_btn.on_click(_on_enviar_click)
 
         background_tasks.create(_cargar_async(), name="cargar_preguntas")

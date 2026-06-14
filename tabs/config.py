@@ -180,6 +180,64 @@ def build_tab_config() -> None:
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
 
+            # 1c. IA / Gemini
+            _gemkey_row = None
+            try:
+                _gemc = get_connection()
+                _gemkey_row = _gemc.execute(
+                    "SELECT value, updated_at FROM app_config WHERE key = ?",
+                    ("gemini_api_key",),
+                ).fetchone()
+                _gemc.close()
+            except Exception:
+                pass
+            with ui.column().classes("w-[400px] flex-shrink-0"):
+                with ui.card().classes(_card_class):
+                    def _desvincular_gemini() -> None:
+                        _conn = get_connection()
+                        try:
+                            _conn.execute("DELETE FROM app_config WHERE key = 'gemini_api_key'")
+                            _conn.commit()
+                        finally:
+                            _conn.close()
+                        ui.notify("API Key desvinculada", color="positive")
+                        ui.navigate.reload()
+
+                    ui.label("IA / Gemini").classes("text-base font-semibold mb-2")
+                    ui.label("Gemini API Key para sugerencias automáticas en Preguntas.").classes("text-xs text-gray-600 mb-1")
+                    gemini_inp = (
+                        ui.input(placeholder="AQ...")
+                        .props("dense outlined hide-bottom-space type=password password-toggle")
+                        .classes("w-full mt-1")
+                    )
+
+                    def _vincular_gemini() -> None:
+                        val = str(gemini_inp.value or "").strip()
+                        if not val:
+                            ui.notify("Ingresá una API Key válida", type="warning")
+                            return
+                        set_app_config("gemini_api_key", val)
+                        gemini_inp.value = ""
+                        ui.notify("API Key guardada", type="positive")
+                        ui.navigate.reload()
+
+                    with ui.row().classes("gap-2 mt-2"):
+                        ui.button("Vincular", on_click=_vincular_gemini, color="primary").props("dense no-caps")
+                        if _gemkey_row and _gemkey_row["value"]:
+                            ui.button("Desvincular", on_click=_desvincular_gemini, color="secondary").props("dense no-caps")
+
+                    ui.separator().classes("my-2")
+                    ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    if _gemkey_row and _gemkey_row["value"]:
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon("check_circle", color="positive", size="sm")
+                            ui.label("Vinculada").classes("text-positive text-sm")
+                        _gua = str(_gemkey_row["updated_at"] or "")[:10]
+                        if _gua:
+                            ui.label(f"Actualizada: {_gua}").classes("text-xs text-gray-600")
+                    else:
+                        ui.label("Sin vincular").classes("text-warning text-sm")
+
             # 2. QuickBooks — un poco más largo que ML para igualar tamaño
             with ui.column().classes("w-[420px] flex-shrink-0"):
                 with ui.card().classes(_card_class):
