@@ -5,6 +5,7 @@ Pestaña Estadísticas: datos de la cuenta ML, reputación y ventas.
 from __future__ import annotations
 import calendar
 import re
+import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -851,11 +852,11 @@ def build_tab_estadisticas(estadisticas_container) -> None:
 
             t0 = time.perf_counter()
             profile = await run.io_bound(ml_get_user_profile, access_token)
-            print(f"[TIMING] ml_get_user_profile: {time.perf_counter()-t0:.2f}s")
+            logging.warning(f"[TIMING] ml_get_user_profile: {time.perf_counter()-t0:.2f}s")
 
             t0 = time.perf_counter()
             seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
-            print(f"[TIMING] ml_get_user_id (si aplica): {time.perf_counter()-t0:.2f}s")
+            logging.warning(f"[TIMING] ml_get_user_id (si aplica): {time.perf_counter()-t0:.2f}s")
 
             orders_data: Dict[str, Any] = {}
             items_data: Dict[str, Any] = {"results": []}
@@ -871,7 +872,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
 
                 t0 = time.perf_counter()
                 orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit_ordenes, 0)
-                print(f"[TIMING] ml_get_orders ({limit_ordenes}): {time.perf_counter()-t0:.2f}s")
+                logging.warning(f"[TIMING] ml_get_orders ({limit_ordenes}): {time.perf_counter()-t0:.2f}s")
 
                 _tz_arg = timezone(timedelta(hours=-3))
                 _today_str = datetime.now(_tz_arg).strftime("%Y-%m-%d")
@@ -885,7 +886,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 try:
                     t0 = time.perf_counter()
                     shipments_today = await run.io_bound(ml_get_shipments_today, access_token, shipping_ids_hoy)
-                    print(f"[TIMING] ml_get_shipments_today ({len(shipping_ids_hoy)} ids): {time.perf_counter()-t0:.2f}s")
+                    logging.warning(f"[TIMING] ml_get_shipments_today ({len(shipping_ids_hoy)} ids): {time.perf_counter()-t0:.2f}s")
                 except Exception:
                     pass
 
@@ -894,7 +895,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 try:
                     t0 = time.perf_counter()
                     pending_labels = await run.io_bound(ml_get_pending_labels, access_token, str(seller_id))
-                    print(f"[TIMING] ml_get_pending_labels: {time.perf_counter()-t0:.2f}s")
+                    logging.warning(f"[TIMING] ml_get_pending_labels: {time.perf_counter()-t0:.2f}s")
                 except Exception:
                     pass
 
@@ -904,7 +905,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                     t0 = time.perf_counter()
                     _sched = await run.io_bound(ml_get_dispatch_schedule, access_token, str(seller_id))
                     _prefs = await run.io_bound(ml_get_shipping_preferences, access_token, str(seller_id))
-                    print(f"[TIMING] ml_get_dispatch_schedule + preferences: {time.perf_counter()-t0:.2f}s")
+                    logging.warning(f"[TIMING] ml_get_dispatch_schedule + preferences: {time.perf_counter()-t0:.2f}s")
                     _picking_type = ((_prefs or {}).get("picking_type") or "")
                     if _sched:
                         _days = {0: "monday", 1: "tuesday", 2: "wednesday",
@@ -926,7 +927,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             try:
                 t0 = time.perf_counter()
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
-                print(f"[TIMING] ml_get_my_items: {time.perf_counter()-t0:.2f}s")
+                logging.warning(f"[TIMING] ml_get_my_items: {time.perf_counter()-t0:.2f}s")
             except Exception:
                 pass
 
@@ -935,11 +936,11 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 try:
                     t0 = time.perf_counter()
                     questions = await run.io_bound(ml_get_unanswered_questions, access_token, str(seller_id))
-                    print(f"[TIMING] ml_get_unanswered_questions: {time.perf_counter()-t0:.2f}s")
+                    logging.warning(f"[TIMING] ml_get_unanswered_questions: {time.perf_counter()-t0:.2f}s")
                 except Exception:
                     pass
 
-            print(f"[TIMING] TOTAL estadisticas: {time.perf_counter()-t_inicio:.2f}s")
+            logging.warning(f"[TIMING] TOTAL estadisticas: {time.perf_counter()-t_inicio:.2f}s")
 
         except Exception as e:
             estadisticas_container.clear()
