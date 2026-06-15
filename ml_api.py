@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1323,29 +1324,34 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
                 break
         except Exception:
             break
-    flex = 0
-    correo = 0
-    seen: set = set()
-    for sid in ship_ids:
-        if sid in seen:
-            continue
-        seen.add(sid)
+    unique_ids = list(dict.fromkeys(ship_ids))  # dedup preservando orden
+
+    def _fetch_shipment(sid: str):
         try:
             sr = requests.get(
                 f"https://api.mercadolibre.com/shipments/{sid}",
                 headers=headers, timeout=10,
             )
             if sr.status_code != 200:
+                return None
+            return sr.json()
+        except Exception:
+            return None
+
+    flex = 0
+    correo = 0
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(_fetch_shipment, sid): sid for sid in unique_ids}
+        for future in as_completed(futures):
+            sd = future.result()
+            if sd is None:
                 continue
-            sd = sr.json()
             if (str(sd.get("status") or "") == "ready_to_ship"
                     and "ready_to_print" in str(sd.get("substatus") or "")):
                 if str(sd.get("logistic_type") or "").lower() == "self_service":
                     flex += 1
                 else:
                     correo += 1
-        except Exception:
-            continue
     return {"total": flex + correo, "flex": flex, "correo": correo}
 
 
