@@ -555,7 +555,7 @@ def build_tab_preguntas(container) -> None:
                                     ).style(
                                         "background:#f57c00;color:#fff;font-size:12px"
                                     )
-                                    gemini_btn = ui.button("💡 Sugerir con Gemini").props(
+                                    gemini_btn = ui.button("Sugerir con Gemini").props(
                                         "unelevated dense no-caps"
                                     ).style(
                                         "background:#1a73e8;color:#fff;font-size:12px"
@@ -594,11 +594,17 @@ def build_tab_preguntas(container) -> None:
                             saludo = _saludo_por_hora()
                             saludo_completo = f"Hola {buyer_nick}, {saludo}."
                             prompt = (
-                                f"Sos vendedor en MercadoLibre Argentina.\n"
+                                f"Sos un vendedor profesional de tecnología en MercadoLibre Argentina.\n"
                                 f"Producto: {title}\n"
-                                f"Pregunta: {text}\n\n"
-                                f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
-                                f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
+                                f"Pregunta del comprador: {text}\n\n"
+                                f"INSTRUCCIONES IMPORTANTES:\n"
+                                f"- Respondé SOLO con información que estés seguro que es correcta sobre este producto específico.\n"
+                                f"- Si no sabés algo con certeza, decí 'Te recomendamos consultar con nuestro equipo' en lugar de inventar.\n"
+                                f"- Usá un tono formal y profesional, NO uses expresiones coloquiales como 'che', 'probá', 'te funciona'.\n"
+                                f"- El objetivo es cerrar la venta: sé claro, confiable y profesional.\n"
+                                f"- NO uses lenguaje informal ni diminutivos.\n"
+                                f"- Respondé SOLO el cuerpo de la respuesta, sin saludo ni cierre.\n"
+                                f"- Máximo 3 oraciones."
                             )
                             texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
                             texto_groq = (texto_groq or "").strip()
@@ -639,11 +645,17 @@ def build_tab_preguntas(container) -> None:
                             saludo = _saludo_por_hora()
                             saludo_completo = f"Hola {buyer_nick}, {saludo}."
                             prompt = (
-                                f"Sos vendedor en MercadoLibre Argentina.\n"
+                                f"Sos un vendedor profesional de tecnología en MercadoLibre Argentina.\n"
                                 f"Producto: {title}\n"
-                                f"Pregunta: {text}\n\n"
-                                f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
-                                f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
+                                f"Pregunta del comprador: {text}\n\n"
+                                f"INSTRUCCIONES IMPORTANTES:\n"
+                                f"- Respondé SOLO con información que estés seguro que es correcta sobre este producto específico.\n"
+                                f"- Si no sabés algo con certeza, decí 'Te recomendamos consultar con nuestro equipo' en lugar de inventar.\n"
+                                f"- Usá un tono formal y profesional, NO uses expresiones coloquiales como 'che', 'probá', 'te funciona'.\n"
+                                f"- El objetivo es cerrar la venta: sé claro, confiable y profesional.\n"
+                                f"- NO uses lenguaje informal ni diminutivos.\n"
+                                f"- Respondé SOLO el cuerpo de la respuesta, sin saludo ni cierre.\n"
+                                f"- Máximo 3 oraciones."
                             )
                             texto_gemini = await run.io_bound(_gemini_generate, gemini_key, prompt)
                             texto_gemini = (texto_gemini or "").strip()
