@@ -16,6 +16,7 @@ from ml_api import (
     ml_get_user_id,
     ml_get_orders,
     ml_get_shipments_today,
+    ml_get_pending_labels,
     ml_get_my_items,
     ml_get_unanswered_questions,
     ml_get_dispatch_schedule,
@@ -77,7 +78,7 @@ def _cuotas_key(it: dict) -> tuple:
 # ---------------------------------------------------------------------------
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None,
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -182,6 +183,9 @@ def _pintar_home_inline(
     if shipments_today is not None:
         flex_hoy = shipments_today.get("flex", 0)
         me_hoy = shipments_today.get("me", 0)
+    _pl_total  = (pending_labels or {}).get("total", 0)
+    _pl_flex   = (pending_labels or {}).get("flex", 0)
+    _pl_correo = (pending_labels or {}).get("correo", 0)
 
     # Incluir siempre el mes actual aunque no tenga ventas (para que el gráfico muestre marzo, etc.)
     mes_actual_key = today_local.strftime("%Y-%m")
@@ -265,6 +269,24 @@ def _pintar_home_inline(
                             ui.label("NO CONCRETADAS").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(fmt_n(no_concretadas)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("cancel./pend.").style("font-size:11px;color:#6b7280")
+
+                # BLOQUE 2b — Envíos pendientes
+                with ui.element("div").style("flex:1.5;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
+                    with ui.element("div").style("border-bottom:2px solid #f59e0b;padding-bottom:5px;margin-bottom:8px"):
+                        ui.label("ENVÍOS PENDIENTES").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
+                    with ui.element("div").style("display:flex;align-items:flex-start;flex-wrap:wrap"):
+                        with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("TOTAL").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(_pl_total)).style("font-size:22px;font-weight:600;color:#f59e0b;line-height:1.2")
+                            ui.label("etiquetas").style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
+                            ui.label("FLEX").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(_pl_flex)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
+                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                        with ui.element("div").style("flex:1;padding-left:14px"):
+                            ui.label("CORREO").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
+                            ui.label(fmt_n(_pl_correo)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
+                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
 
                 # BLOQUE 3 — Facturación mes
                 with ui.element("div").style("flex:1.3;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
@@ -851,6 +873,12 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                     shipments_today = await run.io_bound(ml_get_shipments_today, access_token, shipping_ids_hoy)
                 except Exception:
                     pass
+            pending_labels: Dict[str, int] = {"total": 0, "flex": 0, "correo": 0}
+            if seller_id:
+                try:
+                    pending_labels = await run.io_bound(ml_get_pending_labels, access_token, str(seller_id))
+                except Exception:
+                    pass
             dispatch_deadline: Optional[str] = None
             if seller_id:
                 try:
@@ -890,6 +918,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline, pending_labels=pending_labels)
 
     cargar_y_pintar()
