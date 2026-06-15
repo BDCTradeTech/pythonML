@@ -1271,6 +1271,84 @@ def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, i
     return {"flex": flex_count, "me": me_count}
 
 
+def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
+    """Etiquetas pendientes de imprimir (ready_to_ship + ready_to_print).
+    Rango según día de semana Argentina (UTC-3):
+      Domingo: vie+sab+dom | Lunes: vie+sab+dom+lun | resto: ayer+hoy
+    Retorna {"total": N, "flex": N, "correo": N}."""
+    if not access_token or not seller_id:
+        return {"total": 0, "flex": 0, "correo": 0}
+    tz_arg = timezone(timedelta(hours=-3))
+    hoy = datetime.now(tz_arg).date()
+    dia = hoy.weekday()  # 0=lunes … 6=domingo
+    if dia == 6:    # domingo
+        dias = {hoy - timedelta(days=2), hoy - timedelta(days=1), hoy}
+    elif dia == 0:  # lunes
+        dias = {hoy - timedelta(days=3), hoy - timedelta(days=2),
+                hoy - timedelta(days=1), hoy}
+    else:           # martes a sábado
+        dias = {hoy - timedelta(days=1), hoy}
+    fechas_str = {d.strftime("%Y-%m-%d") for d in dias}
+    cutoff = min(fechas_str)
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    ship_ids: List[str] = []
+    offset = 0
+    stop = False
+    while not stop:
+        try:
+            r = requests.get(
+                "https://api.mercadolibre.com/orders/search",
+                params={"seller": seller_id, "order.status": "paid",
+                        "limit": 50, "offset": offset, "sort": "date_desc"},
+                headers=headers, timeout=15,
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            results = data.get("results", [])
+            total_paging = data.get("paging", {}).get("total", 0)
+            if not results:
+                break
+            for o in results:
+                fecha = str(o.get("date_created") or "")[:10]
+                if fecha < cutoff:
+                    stop = True
+                    break
+                if fecha in fechas_str:
+                    sid = (o.get("shipping") or {}).get("id")
+                    if sid:
+                        ship_ids.append(str(sid))
+            offset += 50
+            if offset >= total_paging:
+                break
+        except Exception:
+            break
+    flex = 0
+    correo = 0
+    seen: set = set()
+    for sid in ship_ids:
+        if sid in seen:
+            continue
+        seen.add(sid)
+        try:
+            sr = requests.get(
+                f"https://api.mercadolibre.com/shipments/{sid}",
+                headers=headers, timeout=10,
+            )
+            if sr.status_code != 200:
+                continue
+            sd = sr.json()
+            if (str(sd.get("status") or "") == "ready_to_ship"
+                    and "ready_to_print" in str(sd.get("substatus") or "")):
+                if str(sd.get("logistic_type") or "").lower() == "self_service":
+                    flex += 1
+                else:
+                    correo += 1
+        except Exception:
+            continue
+    return {"total": flex + correo, "flex": flex, "correo": correo}
+
+
 def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[str, Any]]:
     """GET /questions/search?status=unanswered — preguntas sin responder del vendedor."""
     if not access_token or not seller_id:
