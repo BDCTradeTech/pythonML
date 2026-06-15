@@ -107,14 +107,13 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 
 
 def _gemini_generate(api_key: str, prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
-    headers = {"Content-Type": "application/json"}
-    payload = {"contents": [{"parts": [{"text": prompt}]}]}
-    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
-    print(f"[GEMINI] status={resp.status_code} body={resp.text[:300]}")
-    resp.raise_for_status()
-    data = resp.json()
-    return data["candidates"][0]["content"]["parts"][0]["text"]
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+    )
+    return response.text
 
 
 def _get_user_nickname(access_token: str, user_id: Any) -> str:
