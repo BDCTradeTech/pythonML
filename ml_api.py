@@ -179,6 +179,11 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
     """Obtiene las publicaciones del vendedor desde la API de MercadoLibre (paginado).
     include_paused=False (default): solo activas, carga más rápido.
     include_paused=True: incluye pausadas (sin stock), carga más lento."""
+    from db import get_cached, set_cached
+    _cache_key = f"cache_my_items_{'all' if include_paused else 'active'}"
+    cached = get_cached(_cache_key, max_age_minutes=15)
+    if cached is not None:
+        return cached
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
@@ -254,7 +259,9 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                 body = item_data["body"]
                 all_items.append(_item_from_body(body))
 
-    return {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+    resultado = {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+    set_cached(_cache_key, resultado)
+    return resultado
 
 
 def _tipo_publicacion_desde_item(item: Dict[str, Any]) -> str:
@@ -1279,6 +1286,10 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
     Retorna {"total": N, "flex": N, "correo": N}."""
     if not access_token or not seller_id:
         return {"total": 0, "flex": 0, "correo": 0}
+    from db import get_cached, set_cached
+    cached = get_cached("cache_pending_labels", max_age_minutes=15)
+    if cached is not None:
+        return cached
     tz_arg = timezone(timedelta(hours=-3))
     hoy = datetime.now(tz_arg).date()
     dia = hoy.weekday()  # 0=lunes … 6=domingo
@@ -1352,7 +1363,9 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
                     flex += 1
                 else:
                     correo += 1
-    return {"total": flex + correo, "flex": flex, "correo": correo}
+    resultado = {"total": flex + correo, "flex": flex, "correo": correo}
+    set_cached("cache_pending_labels", resultado)
+    return resultado
 
 
 def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[str, Any]]:
