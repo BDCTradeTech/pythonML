@@ -1722,3 +1722,28 @@ def set_app_config(key: str, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def get_cached(key: str, max_age_minutes: int) -> Optional[Any]:
+    from datetime import datetime as _dt
+    import json as _json
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT value, updated_at FROM app_config WHERE key = ?", (key,))
+        row = cur.fetchone()
+        if not row or not row["updated_at"]:
+            return None
+        age = (_dt.utcnow() - _dt.fromisoformat(row["updated_at"])).total_seconds() / 60
+        if age > max_age_minutes:
+            return None
+        return _json.loads(row["value"])
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
+def set_cached(key: str, value: Any) -> None:
+    import json as _json
+    set_app_config(key, _json.dumps(value))
