@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import random
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
@@ -511,15 +512,19 @@ def build_tab_preguntas(container) -> None:
                     # ── async helpers ───────────────────────────────────────────
 
                     async def _enviar_respuesta(ta_holder: list) -> None:
+                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
                         ta = ta_holder[0]
                         text_resp = (ta.value or "").strip() if ta else ""
                         if not text_resp:
                             ui.notify("Escribí una respuesta antes de enviar", type="warning")
+                            logging.warning("ENVIAR: texto vacío, abortando")
                             return
                         try:
+                            logging.warning("ENVIAR: llamando _ml_post_answer qid=%s texto=%r", qid, text_resp[:80])
                             result = await run.io_bound(
                                 _ml_post_answer, access_token, qid, text_resp
                             )
+                            logging.warning("ENVIAR: resultado status_code=%s body=%s", result["status_code"], str(result.get("body", ""))[:200])
                             if result["status_code"] in (200, 201):
                                 ui.notify("Respuesta enviada ✓", color="positive")
                                 for r in row_elements:
@@ -528,7 +533,9 @@ def build_tab_preguntas(container) -> None:
                                 detail_panel.set_visibility(False)
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
+                                logging.warning("ENVIAR: llamando _cargar_async()")
                                 await _cargar_async()
+                                logging.warning("ENVIAR: _cargar_async() terminó OK")
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
@@ -536,6 +543,7 @@ def build_tab_preguntas(container) -> None:
                                 )
                                 ui.notify(f"Error ML: {err_msg}", type="negative")
                         except Exception as exc:
+                            logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
                             ui.notify(f"Error al enviar: {exc}", type="negative")
 
                     async def _load_ais() -> None:
