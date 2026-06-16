@@ -833,7 +833,7 @@ def build_tab_ventas(container) -> None:
             elif pub_val == "catalogo":
                 ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Catálogo"]
             cuotas_val = str(filtro_cuotas_ref.get("val", "todas") or "todas")
-            if cuotas_val in ("x1", "x3", "x6"):
+            if cuotas_val in ("x1", "x3", "x6", "x9", "x12"):
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("cuotas") or "x1") == cuotas_val]
             tipo_val = str(filtro_tipo_ref.get("val", "todas") or "todas")
             if tipo_val == "promo":
@@ -2007,7 +2007,7 @@ def build_tab_ventas(container) -> None:
                 ).classes("w-36").bind_value(filtro_publicacion_ref, "val")
                 filtro_publicacion.on_value_change(lambda: _pintar_tabla())
                 filtro_cuotas = ui.select(
-                    {"todas": "Todas", "x1": "x1", "x3": "x3", "x6": "x6"},
+                    {"todas": "Todas", "x1": "x1", "x3": "x3", "x6": "x6", "x9": "x9", "x12": "x12"},
                     value=filtro_cuotas_ref.get("val", "todas"),
                     label="Cuotas",
                 ).classes("w-36").bind_value(filtro_cuotas_ref, "val")
