@@ -175,15 +175,17 @@ def _parse_ml_item_body(body: dict) -> dict:
     }
 
 
-def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str, Any]:
+def ml_get_my_items(access_token: str, include_paused: bool = False, force_refresh: bool = False) -> Dict[str, Any]:
     """Obtiene las publicaciones del vendedor desde la API de MercadoLibre (paginado).
     include_paused=False (default): solo activas, carga más rápido.
-    include_paused=True: incluye pausadas (sin stock), carga más lento."""
+    include_paused=True: incluye pausadas (sin stock), carga más lento.
+    force_refresh=True: saltea el cache y llama la API directamente."""
     from db import get_cached, set_cached
     _cache_key = f"cache_my_items_{'all' if include_paused else 'active'}"
-    cached = get_cached(_cache_key, max_age_minutes=15)
-    if cached is not None:
-        return cached
+    if not force_refresh:
+        cached = get_cached(_cache_key, max_age_minutes=15)
+        if cached is not None:
+            return cached
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
