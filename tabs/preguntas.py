@@ -4,6 +4,7 @@ Pestaña Preguntas: preguntas sin responder recibidas en MercadoLibre.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import random
 from datetime import datetime, timezone, timedelta
@@ -106,6 +107,21 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
+def _gemini_generate(api_key: str, prompt: str) -> str:
+    url = (
+        "https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-1.5-flash:generateContent?key={api_key}"
+    )
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 300, "temperature": 0.7},
+    }
+    resp = _requests.post(url, json=payload, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    return data["candidates"][0]["content"]["parts"][0]["text"]
+
+
 def _get_user_nickname(access_token: str, user_id: Any) -> str:
     try:
         resp = _requests.get(
@@ -143,23 +159,31 @@ def _saludo_por_hora() -> str:
     return "buenas noches"
 
 
-def _build_frases_card(resp_area_ref: list) -> None:
+def _replace_closing_phrase(ta, frase: str) -> None:
+    lines = (ta.value or "").split("\n")
+    if len(lines) >= 2:
+        lines[-2] = frase
+    elif len(lines) == 1 and lines[0]:
+        lines.append(frase)
+    else:
+        lines = [frase]
+    ta.set_value("\n".join(lines))
+
+
+def _build_frases_card(resp_groq_ref: list, resp_gemini_ref: list) -> None:
     items: list = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
     state: dict = {"editing_idx": None, "adding": False}
 
-    def _apply_to_textarea(texto: str) -> None:
-        ta = resp_area_ref[0]
-        if ta is None:
+    def _apply_to_both(texto: str) -> None:
+        ta_g = resp_groq_ref[0]
+        ta_m = resp_gemini_ref[0]
+        if ta_g is None and ta_m is None:
             ui.notify("Seleccioná una pregunta primero", type="warning")
             return
-        lines = (ta.value or "").split("\n")
-        if len(lines) >= 2:
-            lines[-2] = texto
-        elif len(lines) == 1 and lines[0]:
-            lines.append(texto)
-        else:
-            lines = [texto]
-        ta.set_value("\n".join(lines))
+        if ta_g is not None:
+            _replace_closing_phrase(ta_g, texto)
+        if ta_m is not None:
+            _replace_closing_phrase(ta_m, texto)
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;flex:1;"
@@ -206,7 +230,7 @@ def _build_frases_card(resp_area_ref: list) -> None:
                         else:
                             ui.label(texto).style(
                                 "flex:1;font-size:11px;color:#1976d2;cursor:pointer;line-height:1.4"
-                            ).on("click", lambda t=texto: _apply_to_textarea(t))
+                            ).on("click", lambda t=texto: _apply_to_both(t))
 
                             def _edit(i=idx) -> None:
                                 state["editing_idx"] = i
@@ -294,7 +318,6 @@ def build_tab_preguntas(container) -> None:
             )
             return
 
-        # CSS inyectado una vez; persiste a través de _cargar_async
         ui.html("""
 <style>
 .pq-row { cursor: pointer; }
@@ -305,7 +328,8 @@ def build_tab_preguntas(container) -> None:
 """)
 
         ml_nickname_holder: list = [""]
-        resp_area_ref: list = [None]
+        resp_area_groq_ref: list = [None]
+        resp_area_gemini_ref: list = [None]
 
         main_area = ui.column().classes("w-full gap-0")
         with main_area:
@@ -352,7 +376,8 @@ def build_tab_preguntas(container) -> None:
                 pass
 
             main_area.clear()
-            resp_area_ref[0] = None
+            resp_area_groq_ref[0] = None
+            resp_area_gemini_ref[0] = None
 
             if not questions:
                 with main_area:
@@ -416,12 +441,12 @@ def build_tab_preguntas(container) -> None:
 
                         with ui.element("tbody"):
                             for _i, q in enumerate(questions):
-                                item_id       = str(q.get("item_id") or "")
-                                item_title    = item_titles.get(item_id, item_id)
-                                text_q        = q.get("text") or ""
-                                from_obj      = q.get("from") or {}
+                                item_id    = str(q.get("item_id") or "")
+                                item_title = item_titles.get(item_id, item_id)
+                                text_q     = q.get("text") or ""
+                                from_obj   = q.get("from") or {}
                                 buyer_display = f"#{from_obj.get('id', '—')}"
-                                age           = _time_ago(q.get("date_created") or "")
+                                age        = _time_ago(q.get("date_created") or "")
 
                                 tr = ui.element("tr").classes("pq-row")
                                 row_elements.append(tr)
@@ -461,7 +486,6 @@ def build_tab_preguntas(container) -> None:
 
                 # ── PANEL DE DETALLE ────────────────────────────────────────────
                 detail_panel = ui.element("div").style(
-                    "display:grid;grid-template-columns:1fr 1fr;gap:16px;"
                     "width:100%;background:#fafafa;"
                     "border-top:0.5px solid var(--color-border-tertiary);"
                     "padding:10px;box-sizing:border-box"
@@ -482,128 +506,18 @@ def build_tab_preguntas(container) -> None:
                     from_id     = from_obj.get("id")
                     ml_nickname = ml_nickname_holder[0]
 
-                    with detail_panel:
-                        # ── Columna izquierda ───────────────────────────────────
-                        with ui.element("div").style(
-                            "display:flex;flex-direction:column;gap:8px;"
-                            "border-right:1.5px solid #e0e0e0;padding-right:8px"
-                        ):
-                            # Tarjeta PREGUNTA DEL COMPRADOR
-                            with ui.element("div").style(
-                                "border:0.5px solid var(--color-border-tertiary);"
-                                "border-top:3px solid #1976d2;"
-                                "border-radius:var(--border-radius-md);padding:10px;"
-                                "background:var(--color-background-secondary)"
-                            ):
-                                with ui.element("div").style(
-                                    "display:flex;align-items:center;gap:4px;margin-bottom:6px"
-                                ):
-                                    ui.html(
-                                        '<i class="ti ti-message-circle"'
-                                        ' style="font-size:13px;color:#1976d2"></i>'
-                                    )
-                                    ui.label("PREGUNTA DEL COMPRADOR").style(
-                                        "font-size:10px;color:#1565c0;"
-                                        "letter-spacing:0.05em;font-weight:600"
-                                    )
-                                ui.label(text).style(
-                                    "font-size:12px;line-height:1.5;color:#374151"
-                                )
+                    resp_groq_holder   = [None]
+                    resp_gemini_holder = [None]
+                    groq_spin_ref      = [None]
+                    gemini_spin_ref    = [None]
+                    groq_err_ref       = [None]
+                    gemini_err_ref     = [None]
 
-                            # Tarjeta TU RESPUESTA
-                            with ui.element("div").style(
-                                "border:0.5px solid var(--color-border-tertiary);"
-                                "border-top:3px solid #f57c00;"
-                                "border-radius:var(--border-radius-md);padding:10px;"
-                                "background:var(--color-background-secondary)"
-                            ):
-                                with ui.element("div").style(
-                                    "display:flex;align-items:center;gap:4px;margin-bottom:6px"
-                                ):
-                                    ui.html(
-                                        '<i class="ti ti-pencil"'
-                                        ' style="font-size:13px;color:#f57c00"></i>'
-                                    )
-                                    ui.label("TU RESPUESTA").style(
-                                        "font-size:10px;color:#e65100;"
-                                        "letter-spacing:0.05em;font-weight:600"
-                                    )
-                                resp_area = ui.textarea(
-                                    value="",
-                                    placeholder="Escribí tu respuesta aquí...",
-                                ).classes("w-full").props("outlined rows=8").style(
-                                    "font-size:12px"
-                                )
-                                resp_area_ref[0] = resp_area
+                    # ── async helpers ───────────────────────────────────────────
 
-                                with ui.element("div").style(
-                                    "display:flex;align-items:center;gap:8px;"
-                                    "margin-top:8px;flex-wrap:wrap"
-                                ):
-                                    groq_btn = ui.button("Sugerir con Groq").props(
-                                        "unelevated dense no-caps"
-                                    ).style(
-                                        "background:#f57c00;color:#fff;font-size:12px"
-                                    )
-                                    enviar_btn = ui.button("Enviar respuesta").props(
-                                        "unelevated dense no-caps"
-                                    ).style(
-                                        "background:#2e7d32;color:#fff;font-size:12px"
-                                    )
-
-                        # ── Columna derecha ─────────────────────────────────────
-                        with ui.element("div").style(
-                            "display:flex;flex-direction:column;height:100%"
-                        ):
-                            _build_frases_card(resp_area_ref)
-
-                    async def _on_groq_click() -> None:
-                        groq_key = get_app_config("groq_api_key")
-                        if not groq_key:
-                            ui.notify(
-                                "Configurá tu API key de Groq en Configuración → IA/Groq",
-                                type="warning",
-                            )
-                            return
-                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
-                        frase_aleatoria = random.choice(frases) if frases else ""
-                        groq_btn.props("loading")
-                        try:
-                            buyer_nick = ""
-                            if from_id:
-                                buyer_nick = await run.io_bound(
-                                    _get_user_nickname, access_token, from_id
-                                )
-                            if not buyer_nick:
-                                buyer_nick = "estimado cliente"
-                            saludo = _saludo_por_hora()
-                            saludo_completo = f"Hola {buyer_nick}, {saludo}."
-                            prompt = (
-                                f"Sos vendedor en MercadoLibre Argentina.\n"
-                                f"Producto: {title}\n"
-                                f"Pregunta: {text}\n\n"
-                                f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
-                                f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
-                            )
-                            texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
-                            texto_groq = (texto_groq or "").strip()
-                            if texto_groq:
-                                partes = [saludo_completo, texto_groq]
-                                if frase_aleatoria:
-                                    partes.append(frase_aleatoria)
-                                if ml_nickname:
-                                    partes.append(f"Muchas gracias, {ml_nickname}.")
-                                resp_area.set_value("\n".join(partes))
-                                ui.notify("Sugerencia lista ✓", color="positive")
-                            else:
-                                ui.notify("Groq no devolvió texto", type="warning")
-                        except Exception as exc:
-                            ui.notify(f"Error Groq: {exc}", type="negative")
-                        finally:
-                            groq_btn.props(remove="loading")
-
-                    async def _on_enviar_click() -> None:
-                        text_resp = (resp_area.value or "").strip()
+                    async def _enviar_respuesta(ta_holder: list) -> None:
+                        ta = ta_holder[0]
+                        text_resp = (ta.value or "").strip() if ta else ""
                         if not text_resp:
                             ui.notify("Escribí una respuesta antes de enviar", type="warning")
                             return
@@ -617,7 +531,8 @@ def build_tab_preguntas(container) -> None:
                                     r.classes(remove="pq-selected")
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
-                                resp_area_ref[0] = None
+                                resp_area_groq_ref[0] = None
+                                resp_area_gemini_ref[0] = None
                                 background_tasks.create(
                                     _cargar_async(), name="cargar_preguntas"
                                 )
@@ -630,7 +545,230 @@ def build_tab_preguntas(container) -> None:
                         except Exception as exc:
                             ui.notify(f"Error al enviar: {exc}", type="negative")
 
-                    groq_btn.on_click(_on_groq_click)
-                    enviar_btn.on_click(_on_enviar_click)
+                    async def _load_ais() -> None:
+                        groq_key   = get_app_config("groq_api_key")
+                        gemini_key = get_app_config("gemini_api_key")
+
+                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
+                        frase_aleatoria = random.choice(frases) if frases else ""
+
+                        buyer_nick = ""
+                        if from_id:
+                            try:
+                                buyer_nick = await run.io_bound(
+                                    _get_user_nickname, access_token, from_id
+                                )
+                            except Exception:
+                                pass
+                        if not buyer_nick:
+                            buyer_nick = "estimado cliente"
+
+                        saludo = _saludo_por_hora()
+                        saludo_completo = f"Hola {buyer_nick}, {saludo}."
+                        prompt = (
+                            f"Sos vendedor en MercadoLibre Argentina.\n"
+                            f"Producto: {title}\n"
+                            f"Pregunta: {text}\n\n"
+                            f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
+                            f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
+                        )
+
+                        def _build_resp(body: str) -> str:
+                            partes = [saludo_completo, body.strip()]
+                            if frase_aleatoria:
+                                partes.append(frase_aleatoria)
+                            if ml_nickname:
+                                partes.append(f"Muchas gracias, {ml_nickname}.")
+                            return "\n".join(partes)
+
+                        if not groq_key:
+                            groq_spin_ref[0].set_visibility(False)
+                            groq_err_ref[0].set_text(
+                                "Configurá tu API key de Grok en Config → IA/Sugerencias"
+                            )
+                            groq_err_ref[0].set_visibility(True)
+
+                        if not gemini_key:
+                            gemini_spin_ref[0].set_visibility(False)
+                            gemini_err_ref[0].set_text(
+                                "Configurá tu API key de Gemini en Config → IA/Sugerencias"
+                            )
+                            gemini_err_ref[0].set_visibility(True)
+
+                        if not groq_key and not gemini_key:
+                            return
+
+                        async def _run_groq() -> None:
+                            if not groq_key:
+                                return
+                            try:
+                                texto = await run.io_bound(_groq_generate, groq_key, prompt)
+                                resp_groq_holder[0].set_value(_build_resp(texto))
+                            except Exception as exc:
+                                groq_err_ref[0].set_text(f"Error Grok: {exc}")
+                                groq_err_ref[0].set_visibility(True)
+                            finally:
+                                groq_spin_ref[0].set_visibility(False)
+
+                        async def _run_gemini() -> None:
+                            if not gemini_key:
+                                return
+                            try:
+                                texto = await run.io_bound(_gemini_generate, gemini_key, prompt)
+                                resp_gemini_holder[0].set_value(_build_resp(texto))
+                            except Exception as exc:
+                                gemini_err_ref[0].set_text(f"Error Gemini: {exc}")
+                                gemini_err_ref[0].set_visibility(True)
+                            finally:
+                                gemini_spin_ref[0].set_visibility(False)
+
+                        await asyncio.gather(_run_groq(), _run_gemini())
+
+                    # ── UI: 3 columnas ──────────────────────────────────────────
+                    with detail_panel:
+                        with ui.element("div").style(
+                            "display:flex;gap:12px;width:100%;align-items:flex-start"
+                        ):
+
+                            # ── COL 1 ────────────────────────────────────────────
+                            with ui.element("div").style(
+                                "flex:1;display:flex;flex-direction:column;gap:8px;min-width:0"
+                            ):
+                                with ui.element("div").style(
+                                    "border:0.5px solid var(--color-border-tertiary);"
+                                    "border-top:3px solid #1976d2;"
+                                    "border-radius:var(--border-radius-md);padding:10px;"
+                                    "background:var(--color-background-secondary)"
+                                ):
+                                    with ui.element("div").style(
+                                        "display:flex;align-items:center;gap:4px;margin-bottom:6px"
+                                    ):
+                                        ui.html(
+                                            '<i class="ti ti-message-circle"'
+                                            ' style="font-size:13px;color:#1976d2"></i>'
+                                        )
+                                        ui.label("PREGUNTA DEL COMPRADOR").style(
+                                            "font-size:10px;color:#1565c0;"
+                                            "letter-spacing:0.05em;font-weight:600"
+                                        )
+                                    ui.label(text).style(
+                                        "font-size:12px;line-height:1.5;color:#374151"
+                                    )
+
+                                _build_frases_card(resp_groq_holder, resp_gemini_holder)
+
+                            # ── COL 2 — GROK ─────────────────────────────────────
+                            with ui.element("div").style("flex:1;min-width:0"):
+                                with ui.element("div").style(
+                                    "border:0.5px solid var(--color-border-tertiary);"
+                                    "border-top:3px solid #f57c00;"
+                                    "border-radius:var(--border-radius-md);padding:10px;"
+                                    "background:var(--color-background-secondary);"
+                                    "display:flex;flex-direction:column;gap:8px"
+                                ):
+                                    with ui.element("div").style(
+                                        "display:flex;align-items:center;gap:4px"
+                                    ):
+                                        ui.html(
+                                            '<i class="ti ti-robot"'
+                                            ' style="font-size:13px;color:#e65100"></i>'
+                                        )
+                                        ui.label("Respuesta Grok").style(
+                                            "font-size:10px;color:#e65100;"
+                                            "letter-spacing:0.05em;font-weight:600"
+                                        )
+
+                                    groq_spin = ui.element("div").style(
+                                        "display:flex;align-items:center;gap:6px"
+                                    )
+                                    groq_spin_ref[0] = groq_spin
+                                    with groq_spin:
+                                        ui.spinner(size="sm").style("color:#f57c00")
+                                        ui.label("generando...").style(
+                                            "font-size:11px;color:#f57c00"
+                                        )
+
+                                    groq_err = ui.label("").style(
+                                        "font-size:11px;color:#e65100"
+                                    )
+                                    groq_err.set_visibility(False)
+                                    groq_err_ref[0] = groq_err
+
+                                    resp_groq = (
+                                        ui.textarea(value="", placeholder="")
+                                        .classes("w-full")
+                                        .props("outlined rows=8")
+                                        .style("font-size:12px")
+                                    )
+                                    resp_groq_holder[0] = resp_groq
+                                    resp_area_groq_ref[0] = resp_groq
+
+                                    ui.button(
+                                        "Enviar esta respuesta",
+                                        on_click=lambda: background_tasks.create(
+                                            _enviar_respuesta(resp_groq_holder),
+                                            name="enviar_grok",
+                                        ),
+                                    ).props("unelevated dense no-caps").style(
+                                        "background:#f57c00;color:#fff;font-size:12px"
+                                    )
+
+                            # ── COL 3 — GEMINI ───────────────────────────────────
+                            with ui.element("div").style("flex:1;min-width:0"):
+                                with ui.element("div").style(
+                                    "border:0.5px solid var(--color-border-tertiary);"
+                                    "border-top:3px solid #1565c0;"
+                                    "border-radius:var(--border-radius-md);padding:10px;"
+                                    "background:var(--color-background-secondary);"
+                                    "display:flex;flex-direction:column;gap:8px"
+                                ):
+                                    with ui.element("div").style(
+                                        "display:flex;align-items:center;gap:4px"
+                                    ):
+                                        ui.html(
+                                            '<i class="ti ti-sparkles"'
+                                            ' style="font-size:13px;color:#1565c0"></i>'
+                                        )
+                                        ui.label("Respuesta Gemini").style(
+                                            "font-size:10px;color:#1565c0;"
+                                            "letter-spacing:0.05em;font-weight:600"
+                                        )
+
+                                    gemini_spin = ui.element("div").style(
+                                        "display:flex;align-items:center;gap:6px"
+                                    )
+                                    gemini_spin_ref[0] = gemini_spin
+                                    with gemini_spin:
+                                        ui.spinner(size="sm").style("color:#1565c0")
+                                        ui.label("generando...").style(
+                                            "font-size:11px;color:#1565c0"
+                                        )
+
+                                    gemini_err = ui.label("").style(
+                                        "font-size:11px;color:#1565c0"
+                                    )
+                                    gemini_err.set_visibility(False)
+                                    gemini_err_ref[0] = gemini_err
+
+                                    resp_gemini = (
+                                        ui.textarea(value="", placeholder="")
+                                        .classes("w-full")
+                                        .props("outlined rows=8")
+                                        .style("font-size:12px")
+                                    )
+                                    resp_gemini_holder[0] = resp_gemini
+                                    resp_area_gemini_ref[0] = resp_gemini
+
+                                    ui.button(
+                                        "Enviar esta respuesta",
+                                        on_click=lambda: background_tasks.create(
+                                            _enviar_respuesta(resp_gemini_holder),
+                                            name="enviar_gemini",
+                                        ),
+                                    ).props("unelevated dense no-caps").style(
+                                        "background:#1565c0;color:#fff;font-size:12px"
+                                    )
+
+                    background_tasks.create(_load_ais(), name="load_ais")
 
         background_tasks.create(_cargar_async(), name="cargar_preguntas")
