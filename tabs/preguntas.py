@@ -384,6 +384,14 @@ def build_tab_preguntas(container) -> None:
                         ui.label("No tenés preguntas sin responder").classes(
                             "text-xl text-gray-500"
                         )
+                        ui.button(
+                            "Actualizar",
+                            on_click=lambda: background_tasks.create(
+                                _cargar_async(), name="cargar_preguntas"
+                            ),
+                        ).props("flat dense no-caps icon=refresh").style(
+                            "font-size:13px;color:#1565c0"
+                        )
                 return
 
             with main_area:
