@@ -510,142 +510,9 @@ def build_tab_preguntas(container) -> None:
 
                     # ── async helpers ───────────────────────────────────────────
 
-<<<<<<< HEAD
                     async def _enviar_respuesta(ta_holder: list) -> None:
                         ta = ta_holder[0]
                         text_resp = (ta.value or "").strip() if ta else ""
-=======
-                                with ui.element("div").style(
-                                    "display:flex;align-items:center;gap:8px;"
-                                    "margin-top:8px;flex-wrap:wrap"
-                                ):
-                                    groq_btn = ui.button("Sugerir con Groq").props(
-                                        "unelevated dense no-caps"
-                                    ).style(
-                                        "background:#f57c00;color:#fff;font-size:12px"
-                                    )
-                                    gemini_btn = ui.button("Sugerir con Gemini").props(
-                                        "unelevated dense no-caps"
-                                    ).style(
-                                        "background:#1a73e8;color:#fff;font-size:12px"
-                                    )
-                                    enviar_btn = ui.button("Enviar respuesta").props(
-                                        "unelevated dense no-caps"
-                                    ).style(
-                                        "background:#2e7d32;color:#fff;font-size:12px"
-                                    )
-
-                        # ── Columna derecha ─────────────────────────────────────
-                        with ui.element("div").style(
-                            "display:flex;flex-direction:column;height:100%"
-                        ):
-                            _build_frases_card(resp_area_ref)
-
-                    async def _on_groq_click() -> None:
-                        groq_key = get_app_config("groq_api_key")
-                        if not groq_key:
-                            ui.notify(
-                                "Configurá tu API key de Groq en Configuración → IA/Groq",
-                                type="warning",
-                            )
-                            return
-                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
-                        frase_aleatoria = random.choice(frases) if frases else ""
-                        groq_btn.props("loading")
-                        try:
-                            buyer_nick = ""
-                            if from_id:
-                                buyer_nick = await run.io_bound(
-                                    _get_user_nickname, access_token, from_id
-                                )
-                            if not buyer_nick:
-                                buyer_nick = "estimado cliente"
-                            saludo = _saludo_por_hora()
-                            saludo_completo = f"Hola {buyer_nick}, {saludo}."
-                            prompt = (
-                                f"Sos un vendedor profesional de tecnología en MercadoLibre Argentina.\n"
-                                f"Producto: {title}\n"
-                                f"Pregunta del comprador: {text}\n\n"
-                                f"INSTRUCCIONES IMPORTANTES:\n"
-                                f"- Respondé SOLO con información que estés seguro que es correcta sobre este producto específico.\n"
-                                f"- Si no sabés algo con certeza, decí 'Te recomendamos consultar con nuestro equipo' en lugar de inventar.\n"
-                                f"- Usá un tono formal y profesional, NO uses expresiones coloquiales como 'che', 'probá', 'te funciona'.\n"
-                                f"- El objetivo es cerrar la venta: sé claro, confiable y profesional.\n"
-                                f"- NO uses lenguaje informal ni diminutivos.\n"
-                                f"- Respondé SOLO el cuerpo de la respuesta, sin saludo ni cierre.\n"
-                                f"- Máximo 3 oraciones."
-                            )
-                            texto_groq = await run.io_bound(_groq_generate, groq_key, prompt)
-                            texto_groq = (texto_groq or "").strip()
-                            if texto_groq:
-                                partes = [saludo_completo, texto_groq]
-                                if frase_aleatoria:
-                                    partes.append(frase_aleatoria)
-                                if ml_nickname:
-                                    partes.append(f"Muchas gracias, {ml_nickname}.")
-                                resp_area.set_value("\n".join(partes))
-                                ui.notify("Sugerencia lista ✓", color="positive")
-                            else:
-                                ui.notify("Groq no devolvió texto", type="warning")
-                        except Exception as exc:
-                            ui.notify(f"Error Groq: {exc}", type="negative")
-                        finally:
-                            groq_btn.props(remove="loading")
-
-                    async def _on_gemini_click() -> None:
-                        gemini_key = get_app_config("gemini_api_key")
-                        if not gemini_key:
-                            ui.notify(
-                                "Configurá tu API key de Gemini en Configuración → IA/Gemini",
-                                type="warning",
-                            )
-                            return
-                        frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
-                        frase_aleatoria = random.choice(frases) if frases else ""
-                        gemini_btn.props("loading")
-                        try:
-                            buyer_nick = ""
-                            if from_id:
-                                buyer_nick = await run.io_bound(
-                                    _get_user_nickname, access_token, from_id
-                                )
-                            if not buyer_nick:
-                                buyer_nick = "estimado cliente"
-                            saludo = _saludo_por_hora()
-                            saludo_completo = f"Hola {buyer_nick}, {saludo}."
-                            prompt = (
-                                f"Sos un vendedor profesional de tecnología en MercadoLibre Argentina.\n"
-                                f"Producto: {title}\n"
-                                f"Pregunta del comprador: {text}\n\n"
-                                f"INSTRUCCIONES IMPORTANTES:\n"
-                                f"- Respondé SOLO con información que estés seguro que es correcta sobre este producto específico.\n"
-                                f"- Si no sabés algo con certeza, decí 'Te recomendamos consultar con nuestro equipo' en lugar de inventar.\n"
-                                f"- Usá un tono formal y profesional, NO uses expresiones coloquiales como 'che', 'probá', 'te funciona'.\n"
-                                f"- El objetivo es cerrar la venta: sé claro, confiable y profesional.\n"
-                                f"- NO uses lenguaje informal ni diminutivos.\n"
-                                f"- Respondé SOLO el cuerpo de la respuesta, sin saludo ni cierre.\n"
-                                f"- Máximo 3 oraciones."
-                            )
-                            texto_gemini = await run.io_bound(_gemini_generate, gemini_key, prompt)
-                            texto_gemini = (texto_gemini or "").strip()
-                            if texto_gemini:
-                                partes = [saludo_completo, texto_gemini]
-                                if frase_aleatoria:
-                                    partes.append(frase_aleatoria)
-                                if ml_nickname:
-                                    partes.append(f"Muchas gracias, {ml_nickname}.")
-                                resp_area.set_value("\n".join(partes))
-                                ui.notify("Sugerencia lista ✓", color="positive")
-                            else:
-                                ui.notify("Gemini no devolvió texto", type="warning")
-                        except Exception as exc:
-                            ui.notify(f"Error Gemini: {exc}", type="negative")
-                        finally:
-                            gemini_btn.props(remove="loading")
-
-                    async def _on_enviar_click() -> None:
-                        text_resp = (resp_area.value or "").strip()
->>>>>>> dc0197ca98e776d3c6f314fd906edc49968e641c
                         if not text_resp:
                             ui.notify("Escribí una respuesta antes de enviar", type="warning")
                             return
@@ -659,16 +526,11 @@ def build_tab_preguntas(container) -> None:
                                     r.classes(remove="pq-selected")
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
-<<<<<<< HEAD
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
                                 background_tasks.create(
                                     _cargar_async(), name="cargar_preguntas"
                                 )
-=======
-                                resp_area_ref[0] = None
-                                await _cargar_async()
->>>>>>> dc0197ca98e776d3c6f314fd906edc49968e641c
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
@@ -678,7 +540,6 @@ def build_tab_preguntas(container) -> None:
                         except Exception as exc:
                             ui.notify(f"Error al enviar: {exc}", type="negative")
 
-<<<<<<< HEAD
                     async def _load_ais() -> None:
                         groq_key   = get_app_config("groq_api_key")
                         gemini_key = get_app_config("gemini_api_key")
@@ -904,10 +765,5 @@ def build_tab_preguntas(container) -> None:
                                     )
 
                     background_tasks.create(_load_ais(), name="load_ais")
-=======
-                    groq_btn.on_click(_on_groq_click)
-                    gemini_btn.on_click(_on_gemini_click)
-                    enviar_btn.on_click(_on_enviar_click)
->>>>>>> dc0197ca98e776d3c6f314fd906edc49968e641c
 
         background_tasks.create(_cargar_async(), name="cargar_preguntas")
