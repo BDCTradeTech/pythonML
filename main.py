@@ -553,6 +553,42 @@ def show_main_layout(container) -> None:
                     show_login_screen(container)
                 ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
 
+        # Breadcrumb
+        _BREADCRUMB_MAP = {
+            "Home":          ("", "Inicio"),
+            "Dashboard":     ("MercadoLibre", "Dashboard"),
+            "Estadísticas":  ("MercadoLibre", "Estadísticas"),
+            "Ventas":        ("MercadoLibre", "Ventas"),
+            "Productos":     ("MercadoLibre", "Productos"),
+            "Cuotas":        ("MercadoLibre", "Cuotas"),
+            "Promos":        ("MercadoLibre", "Promos"),
+            "Flex":          ("MercadoLibre", "Flex"),
+            "Búsqueda":      ("MercadoLibre", "Búsqueda"),
+            "Balance":       ("MercadoLibre", "Balance"),
+            "Preguntas":     ("MercadoLibre", "Preguntas"),
+            "Invoices":      ("BDC", "Compras"),
+            "Stock":         ("BDC", "Stock"),
+            "Compras":       ("BDC", "Lista Compras"),
+            "Pedidos":       ("BDC", "Pedidos"),
+            "Históricos":    ("BDC", "Históricos"),
+            "Importacion":   ("Comex", "Importación"),
+            "Pesos":         ("Comex", "Pesos"),
+            "ARCA":          ("Impuestos", "ARCA"),
+            "Datos":         ("Config", "Datos"),
+            "Configuración": ("Config", "Configuración"),
+            "Admin":         ("Config", "Admin"),
+            "Actividad":     ("Config", "Actividad"),
+        }
+
+        def _breadcrumb_text(tab: str) -> str:
+            seccion, nombre = _BREADCRUMB_MAP.get(tab or "Home", ("", "Inicio"))
+            if not seccion:
+                return "🏠  Inicio"
+            return f"🏠  {seccion}  ›  {nombre}"
+
+        with ui.row().style("width:100%;background:#f1f5f9;border-bottom:0.5px solid #e0e2e7;padding:4px 16px;align-items:center;min-height:28px"):
+            ui.label().bind_text_from(app.storage.user, "last_tab", backward=_breadcrumb_text).style("font-size:13px;color:#475569")
+
         tab_panels = ui.tab_panels(tabs, value=tab_map.get(tab_inicial, tab_home)).classes("w-full")
 
         with tab_panels:
