@@ -170,7 +170,13 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
             "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? AND gan_pesos < 0 AND gan_pesos IS NOT NULL AND COALESCE(order_date, fetched_at) >= ?",
             (user_id, desde))
         gan_neg = cur.fetchone()[0]
-        return {"sin_revisar": sin_revisar, "gan_neg": gan_neg}
+        cur.execute(
+            "SELECT COUNT(*) FROM ventas_datos WHERE user_id=? "
+            "AND (pay_status IS NULL OR pay_status NOT IN ('rejected', 'cancelled')) "
+            "AND COALESCE(order_date, fetched_at) >= ?",
+            (user_id, desde))
+        total = cur.fetchone()[0]
+        return {"sin_revisar": sin_revisar, "gan_neg": gan_neg, "total": total}
     finally:
         conn.close()
 
@@ -672,8 +678,11 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
                     _card_header("Ventas — últimos 30 días", ven_color)
                     with ui.column().classes("w-full gap-2"):
+                        _vt = ventas.get("total", 0)
+                        _pct_neg = f" ({ventas['gan_neg']/_vt*100:.0f}%)" if _vt else ""
+                        _pct_sin = f" ({ventas['sin_revisar']/_vt*100:.0f}%)" if _vt else ""
                         _stat_row_popup(
-                            "A pérdida", str(ventas["gan_neg"]),
+                            "A pérdida", f"{ventas['gan_neg']} / {_vt}{_pct_neg}",
                             _RED if ventas["gan_neg"] > 0 else _GREEN,
                             lambda: _open_popup_list(
                                 "A pérdida — Ventas",
@@ -683,7 +692,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                  ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—"),
                                  ("Gan$",   lambda r: f"${r['gan_pesos']:,.0f}" if r.get("gan_pesos") is not None else "—")]))
                         _stat_row_popup(
-                            "Sin revisar", str(ventas["sin_revisar"]),
+                            "Sin revisar", f"{ventas['sin_revisar']} / {_vt}{_pct_sin}",
                             _YELLOW if ventas["sin_revisar"] > 0 else _GREEN,
                             lambda: _open_popup_list(
                                 "Ventas sin revisar",
