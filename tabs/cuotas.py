@@ -43,7 +43,7 @@ def _require_login() -> Optional[Dict[str, Any]]:
 def _cuotas_key(it: dict) -> tuple:
     sku = (it.get("seller_sku") or "").strip()
     if sku:
-        return ("sku", sku)
+        return ("sku", sku.lower())
     cpid = (it.get("catalog_product_id") or "").strip()
     if cpid:
         return ("catalog", cpid)
@@ -668,6 +668,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     )
                                 with ui.element("td").style(f"{TD_BASE};text-align:center;padding:2px"):
                                     _propia_p_fix = row["propia"]["price"]
+                                    if _propia_p_fix is None:
+                                        _propia_p_fix = row["catalogo"]["price"]
                                     _needs_fix = False
                                     if _propia_p_fix is not None:
                                         try:
@@ -690,9 +692,11 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                             cl = context.client
                                             async def _do_fix(client_=cl, rr=r_fix) -> None:
                                                 _pp = rr["propia"]["price"]
+                                                if _pp is None:
+                                                    _pp = rr["catalogo"]["price"]
                                                 if _pp is None or float(_pp) == 0:
                                                     with client_:
-                                                        ui.notify("No hay precio de publicación propia.", color="warning")
+                                                        ui.notify("No hay precio de referencia (propia ni catálogo).", color="warning")
                                                     return
                                                 _pp = float(_pp)
                                                 _to_fix = []
