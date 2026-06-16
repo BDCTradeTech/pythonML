@@ -536,14 +536,17 @@ def build_tab_preguntas(container) -> None:
                                 logging.warning("ENVIAR: llamando _cargar_async()")
                                 await _cargar_async()
                                 logging.warning("ENVIAR: _cargar_async() terminó OK")
-                                # Notify al final con fallback JS (slot stack vacío en bg tasks)
+                                # Notify al final — slot stack vacío en bg tasks, ambos fallan silenciosamente
                                 try:
                                     ui.notify("Respuesta enviada ✓", color="positive")
                                 except Exception:
-                                    await ui.run_javascript(
-                                        "Quasar.Notify.create({message:'Respuesta enviada ✓',"
-                                        "color:'green',position:'bottom'})"
-                                    )
+                                    try:
+                                        await ui.run_javascript(
+                                            "Quasar.Notify.create({message:'Respuesta enviada ✓',"
+                                            "color:'green',position:'bottom'})"
+                                        )
+                                    except Exception:
+                                        pass  # toast cosmético; respuesta enviada y tabla actualizada
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
