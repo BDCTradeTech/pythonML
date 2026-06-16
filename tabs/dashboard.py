@@ -314,7 +314,8 @@ def _cuotas_row(label: str, pct: float):
 def _stat_row(label: str, value: str, color: str):
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
-        ui.label(label).classes("text-xs text-gray-700 flex-1")
+        lbl_color = color if color == _GREEN else "#374151"
+        ui.label(label).classes("text-xs flex-1").style(f"color:{lbl_color}")
         ui.label(value).classes("text-xs font-semibold").style(f"color:{color}")
 
 def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
@@ -328,7 +329,8 @@ def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
 def _stat_row_popup(label: str, value: str, color: str, on_click) -> None:
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
-        ui.label(label).classes("text-xs text-gray-700 flex-1")
+        lbl_color = color if color == _GREEN else "#374151"
+        ui.label(label).classes("text-xs flex-1").style(f"color:{lbl_color}")
         ui.label(value).classes("text-xs font-semibold cursor-pointer hover:underline").style(
             f"color:{color}").on("click", lambda: on_click())
 
