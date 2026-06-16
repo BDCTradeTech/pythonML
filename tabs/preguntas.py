@@ -526,7 +526,7 @@ def build_tab_preguntas(container) -> None:
                             )
                             logging.warning("ENVIAR: resultado status_code=%s body=%s", result["status_code"], str(result.get("body", ""))[:200])
                             if result["status_code"] in (200, 201):
-                                ui.notify("Respuesta enviada ✓", color="positive")
+                                # DOM ops primero — no necesitan slot context
                                 for r in row_elements:
                                     r.classes(remove="pq-selected")
                                 detail_panel.clear()
@@ -536,15 +536,29 @@ def build_tab_preguntas(container) -> None:
                                 logging.warning("ENVIAR: llamando _cargar_async()")
                                 await _cargar_async()
                                 logging.warning("ENVIAR: _cargar_async() terminó OK")
+                                # Notify al final con fallback JS (slot stack vacío en bg tasks)
+                                try:
+                                    ui.notify("Respuesta enviada ✓", color="positive")
+                                except Exception:
+                                    await ui.run_javascript(
+                                        "Quasar.Notify.create({message:'Respuesta enviada ✓',"
+                                        "color:'green',position:'bottom'})"
+                                    )
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
                                     or str(result["body"])[:200]
                                 )
-                                ui.notify(f"Error ML: {err_msg}", type="negative")
+                                try:
+                                    ui.notify(f"Error ML: {err_msg}", type="negative")
+                                except Exception:
+                                    pass
                         except Exception as exc:
                             logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
-                            ui.notify(f"Error al enviar: {exc}", type="negative")
+                            try:
+                                ui.notify(f"Error al enviar: {exc}", type="negative")
+                            except Exception:
+                                pass
 
                     async def _load_ais() -> None:
                         groq_key   = get_app_config("groq_api_key")
