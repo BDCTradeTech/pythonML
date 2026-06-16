@@ -318,7 +318,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                 ui.label(f"{_nc} cuotas").style("font-size:11px;color:#9e9e9e;line-height:1.3")
                 if container is not None:
                     ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container)).props("flat dense")
+                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container, force_refresh=True)).props("flat dense")
 
         with ui.row().classes("items-center gap-3 mb-3"):
             filtro_cuotas_sel = ui.select(
@@ -919,7 +919,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
 # Tab principal
 # ---------------------------------------------------------------------------
 
-def build_tab_cuotas(container) -> None:
+def build_tab_cuotas(container, force_refresh: bool = False) -> None:
     """Pestaña Cuotas: lista deduplicada por SKU con info de cuotas de cada publicación."""
     container.clear()
     user = _require_login()
@@ -941,7 +941,7 @@ def build_tab_cuotas(container) -> None:
 
         async def _cargar_cuotas_async() -> None:
             try:
-                data = await run.io_bound(ml_get_my_items, access_token, False)
+                data = await run.io_bound(ml_get_my_items, access_token, False, force_refresh)
             except requests.exceptions.HTTPError as e:
                 result_area.clear()
                 with result_area:
@@ -975,7 +975,7 @@ def build_tab_cuotas(container) -> None:
             with result_area:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
-                    promo_lbl = ui.label(f"Cargando promociones 0/{total_grupos}...").classes("text-xl text-gray-700")
+                    promo_lbl = ui.label(f"Cargando cuotas 0/{total_grupos}...").classes("text-xl text-gray-700")
             _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
             promo_data: Dict[str, Dict] = {}
             for _i, (_rep_id, _iids) in enumerate(zip(rep_ids, _all_iids_per_grp)):
@@ -993,7 +993,7 @@ def build_tab_cuotas(container) -> None:
                         best_price, best_pd = float(_pp), _pd
                 promo_data[_rep_id] = best_pd
                 if promo_lbl:
-                    promo_lbl.set_text(f"Cargando promociones {_i + 1}/{total_grupos}...")
+                    promo_lbl.set_text(f"Cargando cuotas {_i + 1}/{total_grupos}...")
             try:
                 _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
             except Exception as e:
