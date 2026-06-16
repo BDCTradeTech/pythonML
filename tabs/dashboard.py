@@ -13,7 +13,7 @@ from nicegui import app, background_tasks, run, ui
 from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral
 from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions, ml_delete_question
 
-_GREEN  = "#3B6D11"
+_GREEN  = "#2E7D32"
 _YELLOW = "#BA7517"
 _RED    = "#A32D2D"
 _BLUE   = "#185FA5"
