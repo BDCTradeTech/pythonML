@@ -314,9 +314,8 @@ def _cuotas_row(label: str, pct: float):
 def _stat_row(label: str, value: str, color: str):
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
-        lbl_color = color if color == _GREEN else "#374151"
-        ui.label(label).classes("text-xs flex-1").style(f"color:{lbl_color}")
-        ui.label(value).classes("text-xs font-semibold").style(f"color:{color}")
+        ui.label(label).classes("text-xs flex-1").style("color:#374151")
+        ui.label(value).classes("text-xs font-semibold").style("color:#1a1a1a")
 
 def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
     if rate is None:
@@ -329,10 +328,9 @@ def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
 def _stat_row_popup(label: str, value: str, color: str, on_click) -> None:
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
-        lbl_color = color if color == _GREEN else "#374151"
-        ui.label(label).classes("text-xs flex-1").style(f"color:{lbl_color}")
+        ui.label(label).classes("text-xs flex-1").style("color:#374151")
         ui.label(value).classes("text-xs font-semibold cursor-pointer hover:underline").style(
-            f"color:{color}").on("click", lambda: on_click())
+            "color:#1a1a1a").on("click", lambda: on_click())
 
 
 def _open_questions_popup(q_list: list, access_token: str, on_deleted) -> None:
@@ -568,11 +566,11 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 with ui.row().classes("w-full items-center gap-4"):
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("error", size="xs").style(f"color:{_RED}")
-                        red_count_lbl = ui.label(str(n_red_init)).classes("font-bold text-sm").style(f"color:{_RED}")
+                        red_count_lbl = ui.label(str(n_red_init)).classes("font-bold text-sm").style("color:#1a1a1a")
                         ui.label("urgente(s)").classes("text-sm text-gray-600")
                     with ui.row().classes("items-center gap-1"):
                         ui.icon("warning", size="xs").style(f"color:{_YELLOW}")
-                        yel_count_lbl = ui.label(str(n_yellow_init)).classes("font-bold text-sm").style(f"color:{_YELLOW}")
+                        yel_count_lbl = ui.label(str(n_yellow_init)).classes("font-bold text-sm").style("color:#1a1a1a")
                         ui.label("importante(s)").classes("text-sm text-gray-600")
                     ui.element("div").classes("flex-1")
                     ui.button("Actualizar", icon="refresh",
@@ -755,7 +753,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
                             ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-xs text-gray-800")
                             if intim_v:
-                                ui.label("Intimación activa").classes("text-xs font-semibold").style(f"color:{_RED}")
+                                ui.label("Intimación activa").classes("text-xs font-semibold").style("color:#374151")
 
                         mc          = _color_multilateral(mr)
                         total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
@@ -766,7 +764,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             if mr:
                                 ui.label(f"{len(mr)} provincia(s)").classes("text-xs text-gray-800")
                                 if total_pagar > 0:
-                                    ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style(f"color:{_RED}")
+                                    ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style("color:#374151")
                                 else:
                                     ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
                             else:
@@ -932,7 +930,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 ui.label("Preguntas sin responder").classes("text-xs text-gray-700 flex-1")
                                 ui.label(str(n_q)).classes(
                                     "text-xs font-semibold cursor-pointer hover:underline"
-                                ).style(f"color:{color}").on(
+                                ).style("color:#1a1a1a").on(
                                     "click", lambda tok=tok, ql=ql, cont=cont: _open_questions_popup(
                                         ql, tok,
                                         lambda n, cont=cont, tok=tok, ql=ql: _rebuild_q_row(n, tok, ql, cont)))
@@ -962,7 +960,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 f"display:inline-block;width:10px;height:10px;border-radius:9999px;"
                 f"background:{_c};flex-shrink:0")
             _susp_lbl.set_text(str(cnt_susp))
-            _susp_lbl.style(f"color:{_c}")
+            _susp_lbl.style("color:#1a1a1a")
             if cnt_susp > 0:
                 _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}",
                            on_nav=(lambda: navigate_to("Productos")) if navigate_to else None)
