@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -178,6 +179,11 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
     """Obtiene las publicaciones del vendedor desde la API de MercadoLibre (paginado).
     include_paused=False (default): solo activas, carga más rápido.
     include_paused=True: incluye pausadas (sin stock), carga más lento."""
+    from db import get_cached, set_cached
+    _cache_key = f"cache_my_items_{'all' if include_paused else 'active'}"
+    cached = get_cached(_cache_key, max_age_minutes=15)
+    if cached is not None:
+        return cached
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
@@ -253,7 +259,9 @@ def ml_get_my_items(access_token: str, include_paused: bool = False) -> Dict[str
                 body = item_data["body"]
                 all_items.append(_item_from_body(body))
 
-    return {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+    resultado = {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+    set_cached(_cache_key, resultado)
+    return resultado
 
 
 def _tipo_publicacion_desde_item(item: Dict[str, Any]) -> str:
@@ -1269,6 +1277,95 @@ def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, i
         except Exception:
             continue
     return {"flex": flex_count, "me": me_count}
+
+
+def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
+    """Etiquetas pendientes de imprimir (ready_to_ship + ready_to_print).
+    Rango según día de semana Argentina (UTC-3):
+      Domingo: vie+sab+dom | Lunes: vie+sab+dom+lun | resto: ayer+hoy
+    Retorna {"total": N, "flex": N, "correo": N}."""
+    if not access_token or not seller_id:
+        return {"total": 0, "flex": 0, "correo": 0}
+    from db import get_cached, set_cached
+    cached = get_cached("cache_pending_labels", max_age_minutes=15)
+    if cached is not None:
+        return cached
+    tz_arg = timezone(timedelta(hours=-3))
+    hoy = datetime.now(tz_arg).date()
+    dia = hoy.weekday()  # 0=lunes … 6=domingo
+    if dia == 6:    # domingo
+        dias = {hoy - timedelta(days=2), hoy - timedelta(days=1), hoy}
+    elif dia == 0:  # lunes
+        dias = {hoy - timedelta(days=3), hoy - timedelta(days=2),
+                hoy - timedelta(days=1), hoy}
+    else:           # martes a sábado
+        dias = {hoy - timedelta(days=1), hoy}
+    fechas_str = {d.strftime("%Y-%m-%d") for d in dias}
+    cutoff = min(fechas_str)
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    ship_ids: List[str] = []
+    offset = 0
+    stop = False
+    while not stop:
+        try:
+            r = requests.get(
+                "https://api.mercadolibre.com/orders/search",
+                params={"seller": seller_id, "order.status": "paid",
+                        "limit": 50, "offset": offset, "sort": "date_desc"},
+                headers=headers, timeout=15,
+            )
+            if r.status_code != 200:
+                break
+            data = r.json()
+            results = data.get("results", [])
+            total_paging = data.get("paging", {}).get("total", 0)
+            if not results:
+                break
+            for o in results:
+                fecha = str(o.get("date_created") or "")[:10]
+                if fecha < cutoff:
+                    stop = True
+                    break
+                if fecha in fechas_str:
+                    sid = (o.get("shipping") or {}).get("id")
+                    if sid:
+                        ship_ids.append(str(sid))
+            offset += 50
+            if offset >= total_paging:
+                break
+        except Exception:
+            break
+    unique_ids = list(dict.fromkeys(ship_ids))  # dedup preservando orden
+
+    def _fetch_shipment(sid: str):
+        try:
+            sr = requests.get(
+                f"https://api.mercadolibre.com/shipments/{sid}",
+                headers=headers, timeout=10,
+            )
+            if sr.status_code != 200:
+                return None
+            return sr.json()
+        except Exception:
+            return None
+
+    flex = 0
+    correo = 0
+    with ThreadPoolExecutor(max_workers=20) as executor:
+        futures = {executor.submit(_fetch_shipment, sid): sid for sid in unique_ids}
+        for future in as_completed(futures):
+            sd = future.result()
+            if sd is None:
+                continue
+            if (str(sd.get("status") or "") == "ready_to_ship"
+                    and "ready_to_print" in str(sd.get("substatus") or "")):
+                if str(sd.get("logistic_type") or "").lower() == "self_service":
+                    flex += 1
+                else:
+                    correo += 1
+    resultado = {"total": flex + correo, "flex": flex, "correo": correo}
+    set_cached("cache_pending_labels", resultado)
+    return resultado
 
 
 def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[str, Any]]:
