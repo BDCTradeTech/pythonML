@@ -320,7 +320,7 @@ def _stat_row(label: str, value: str, color: str):
 
 def _rep_stat_row(label: str, rate: Optional[float], maxv: float):
     if rate is None:
-        _stat_row(f"{label} (máx {maxv*100:.1f}%)", "—", "#9ca3af")
+        _stat_row(f"{label} (máx {maxv*100:.1f}%)", "—", _GREEN)
         return
     c = _RED if rate > maxv else (_YELLOW if rate > maxv * 0.7 else _GREEN)
     _stat_row(f"{label} (máx {maxv*100:.1f}%)", f"{rate*100:.2f}%", c)
