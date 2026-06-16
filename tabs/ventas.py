@@ -344,7 +344,7 @@ def build_tab_ventas(container) -> None:
                                f'<i class="ti {icon}" style="font-size:12px;color:{color_icon};margin-right:4px" aria-hidden="true"></i>'
                                f'{texto}</span>')
 
-            sku          = str(row.get("seller_sku") or "")
+            sku          = str(row.get("seller_sku") or "").removeprefix("SKU ").strip()
             unit_price   = float(row.get("unit_price") or 0)
             cantidad     = int(row.get("cantidad") or 1)
             cuotas_val   = str(row.get("cuotas") or "x1").strip().lower()
@@ -1314,7 +1314,7 @@ def build_tab_ventas(container) -> None:
                 unit_price  = float(v.get("unit_price") or 0)
                 cantidad    = int(v.get("cantidad") or 1)
                 total_price = unit_price * cantidad
-                sku = v.get("seller_sku") or ""
+                sku = (v.get("seller_sku") or "").removeprefix("SKU ").strip()
                 prod = costos_sku_ref.get(sku) if sku else None
                 costo_usd = float((prod or {}).get("costo_usd") or 0)
                 tipo_iva = float((prod or {}).get("tipo_iva") or 0.105)
@@ -1595,7 +1595,7 @@ def build_tab_ventas(container) -> None:
                 if v.get("payment_type") == "account_money" and v.get("gan_pesos") is None:
                     _up   = float(v.get("unit_price") or 0)
                     _cant = int(v.get("cantidad") or 1)
-                    _sk   = str(v.get("seller_sku") or "")
+                    _sk   = str(v.get("seller_sku") or "").removeprefix("SKU ").strip()
                     _cv   = str(v.get("cuotas") or "x1").strip().lower()
                     _gp_u, _ = _calc_gan_row(_up, _sk, _cv)
                     if _gp_u is not None:
