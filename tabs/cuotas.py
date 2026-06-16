@@ -465,6 +465,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                 ui.separator().classes("my-2")
                                                 ui.label("Publicaciones").classes("text-xs font-bold text-gray-500 uppercase mb-1")
                                                 _pp = r["propia"]["price"]
+                                                if _pp is None:
+                                                    _pp = r["catalogo"]["price"]
                                                 with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                                     with ui.element("thead"):
                                                         with ui.element("tr"):
@@ -571,8 +573,10 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                         async def _do_corregir(client_=cl, rr2=rr_c, d2=d_c, af2=af_c) -> None:
                                                             propia_p = rr2["propia"]["price"]
                                                             if propia_p is None:
+                                                                propia_p = rr2["catalogo"]["price"]
+                                                            if propia_p is None:
                                                                 with client_:
-                                                                    ui.notify("No hay precio de publicación propia.", color="warning")
+                                                                    ui.notify("No hay precio de referencia (propia ni catálogo).", color="warning")
                                                                 return
                                                             try:
                                                                 propia_p = float(propia_p)
