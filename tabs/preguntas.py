@@ -401,7 +401,8 @@ def build_tab_preguntas(container) -> None:
                     "background:#e3f2fd;border-bottom:0.5px solid #bbdefb;"
                     "padding:6px 12px;box-sizing:border-box"
                 ):
-                    ui.html(
+                    counter_ref = [len(questions)]
+                    counter_label = ui.html(
                         f'<span style="font-size:13px;color:#1565c0">Sin responder:&nbsp;</span>'
                         f'<span style="font-size:13px;font-weight:700;color:#d32f2f">{len(questions)}</span>'
                     )
@@ -534,17 +535,18 @@ def build_tab_preguntas(container) -> None:
                             )
                             logging.warning("ENVIAR: resultado status_code=%s body=%s", result["status_code"], str(result.get("body", ""))[:200])
                             if result["status_code"] in (200, 201):
-                                # DOM ops primero — no necesitan slot context
-                                for r in row_elements:
-                                    r.classes(remove="pq-selected")
+                                # Optimistic update: ocultar fila sin esperar re-fetch
+                                active_tr.set_visibility(False)
+                                new_count = counter_ref[0] - 1
+                                counter_ref[0] = new_count
+                                counter_label.set_content(
+                                    f'<span style="font-size:13px;color:#1565c0">Sin responder:&nbsp;</span>'
+                                    f'<span style="font-size:13px;font-weight:700;color:#d32f2f">{new_count}</span>'
+                                )
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
-                                logging.warning("ENVIAR: llamando _cargar_async()")
-                                await _cargar_async()
-                                logging.warning("ENVIAR: _cargar_async() terminó OK")
-                                # Notify al final — slot stack vacío en bg tasks, ambos fallan silenciosamente
                                 try:
                                     ui.notify("Respuesta enviada ✓", color="positive")
                                 except Exception:
@@ -554,7 +556,11 @@ def build_tab_preguntas(container) -> None:
                                             "color:'green',position:'bottom'})"
                                         )
                                     except Exception:
-                                        pass  # toast cosmético; respuesta enviada y tabla actualizada
+                                        pass
+                                async def _delayed_refresh() -> None:
+                                    await asyncio.sleep(3)
+                                    await _cargar_async()
+                                background_tasks.create(_delayed_refresh(), name="refresh_after_answer")
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
