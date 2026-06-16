@@ -742,6 +742,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                     sv = row.get("stock")
                                     ui.label(str(sv) if sv is not None else "")
                                 propia_price = row["propia"]["price"]
+                                if propia_price is None:
+                                    propia_price = row["catalogo"]["price"]
                                 promo = row.get("promo", {})
                                 promo_bg = PROMO_BG_EVEN if idx % 2 == 0 else PROMO_BG_ODD
                                 promo_price = promo.get("price_promo")
