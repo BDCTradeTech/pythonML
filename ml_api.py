@@ -181,20 +181,21 @@ def ml_get_my_items(access_token: str, include_paused: bool = False, force_refre
     include_paused=True: incluye pausadas (sin stock), carga más lento.
     force_refresh=True: saltea el cache y llama la API directamente."""
     from db import get_cached, set_cached
-    _cache_key = f"cache_my_items_{'all' if include_paused else 'active'}"
-    if not force_refresh:
-        cached = get_cached(_cache_key, max_age_minutes=15)
-        if cached is not None:
-            return cached
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
-    # 1. Obtener el user_id de ML del token
+    # 1. Obtener el user_id de ML del token (necesario para cache key user-scoped)
     me = requests.get(f"{base}/users/me", headers=headers, timeout=10)
     me.raise_for_status()
     ml_user_id = me.json().get("id")
     if not ml_user_id:
         return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener el usuario de ML"}
+
+    _cache_key = f"cache_my_items_{ml_user_id}_{'all' if include_paused else 'active'}"
+    if not force_refresh:
+        cached = get_cached(_cache_key, max_age_minutes=15)
+        if cached is not None:
+            return cached
 
     # 2. Listar IDs: activas siempre; pausadas, closed y under_review solo si include_paused.
     # ML no soporta status=under_review en /items/search; se usa sub_status=pending_documentation
@@ -1308,7 +1309,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
     if not access_token or not seller_id:
         return {"total": 0, "flex": 0, "correo": 0}
     from db import get_cached, set_cached
-    cached = get_cached("cache_pending_labels", max_age_minutes=15)
+    cached = get_cached(f"cache_pending_labels_{seller_id}", max_age_minutes=15)
     if cached is not None:
         return cached
     tz_arg = timezone(timedelta(hours=-3))
@@ -1385,7 +1386,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
                 else:
                     correo += 1
     resultado = {"total": flex + correo, "flex": flex, "correo": correo}
-    set_cached("cache_pending_labels", resultado)
+    set_cached(f"cache_pending_labels_{seller_id}", resultado)
     return resultado
 
 
