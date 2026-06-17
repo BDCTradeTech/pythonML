@@ -531,6 +531,15 @@ def build_tab_preguntas(container) -> None:
 
                     async def _enviar_respuesta(ta_holder: list) -> None:
                         logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
+                        # Forzar blur para que el valor del textarea se sincronice al servidor
+                        # antes de leerlo (necesario en mobile con teclado virtual)
+                        try:
+                            await ui.run_javascript(
+                                "if(document.activeElement) document.activeElement.blur()"
+                            )
+                            await asyncio.sleep(0.05)
+                        except Exception:
+                            pass
                         ta = ta_holder[0]
                         text_resp = (ta.value or "").strip() if ta else ""
                         if not text_resp:
