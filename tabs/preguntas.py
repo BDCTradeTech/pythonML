@@ -307,6 +307,14 @@ def build_tab_preguntas(container) -> None:
     uid = user["id"]
 
     with container:
+        is_mobile_ref = {"val": False}
+
+        async def _detect_mobile():
+            w = await ui.run_javascript("return window.innerWidth")
+            is_mobile_ref["val"] = int(w or 9999) < 768
+
+        ui.timer(0, _detect_mobile, once=True)
+
         access_token = get_ml_access_token(uid)
         if not access_token:
             ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración.").classes(
@@ -657,21 +665,156 @@ def build_tab_preguntas(container) -> None:
 
                         await asyncio.gather(_run_groq(), _run_gemini())
 
-                    # ── UI: 3 columnas ──────────────────────────────────────────
+                    # ── UI: layout responsive ───────────────────────────────────────
                     with detail_panel:
-                        with ui.element("div").style(
-                            "display:flex;gap:12px;width:100%;align-items:flex-start"
-                        ):
+                        is_mobile = is_mobile_ref["val"]
 
-                            # ── COL 1 ────────────────────────────────────────────
+                        if not is_mobile:
+                            # ── DESKTOP: 3 columnas ──────────────────────────────────
                             with ui.element("div").style(
-                                "flex:1;display:flex;flex-direction:column;gap:8px;min-width:0"
+                                "display:flex;gap:12px;width:100%;align-items:flex-start"
                             ):
+                                # ── COL 1 ────────────────────────────────────────────
+                                with ui.element("div").style(
+                                    "flex:1;display:flex;flex-direction:column;gap:8px;min-width:0"
+                                ):
+                                    with ui.element("div").style(
+                                        "border:0.5px solid var(--color-border-tertiary);"
+                                        "border-top:3px solid #1976d2;"
+                                        "border-radius:var(--border-radius-md);padding:10px;"
+                                        "background:var(--color-background-secondary)"
+                                    ):
+                                        with ui.element("div").style(
+                                            "display:flex;align-items:center;gap:4px;margin-bottom:6px"
+                                        ):
+                                            ui.html(
+                                                '<i class="ti ti-message-circle"'
+                                                ' style="font-size:13px;color:#1976d2"></i>'
+                                            )
+                                            ui.label("PREGUNTA DEL COMPRADOR").style(
+                                                "font-size:10px;color:#1565c0;"
+                                                "letter-spacing:0.05em;font-weight:600"
+                                            )
+                                        ui.label(text).style(
+                                            "font-size:12px;line-height:1.5;color:#374151"
+                                        )
+                                    _build_frases_card(resp_groq_holder, resp_gemini_holder)
+
+                                # ── COL 2 — GROK ─────────────────────────────────────
+                                with ui.element("div").style("flex:1;min-width:0"):
+                                    with ui.element("div").style(
+                                        "border:0.5px solid var(--color-border-tertiary);"
+                                        "border-top:3px solid #f57c00;"
+                                        "border-radius:var(--border-radius-md);padding:10px;"
+                                        "background:var(--color-background-secondary);"
+                                        "display:flex;flex-direction:column;gap:8px"
+                                    ):
+                                        with ui.element("div").style(
+                                            "display:flex;align-items:center;gap:4px"
+                                        ):
+                                            ui.html(
+                                                '<i class="ti ti-robot"'
+                                                ' style="font-size:13px;color:#e65100"></i>'
+                                            )
+                                            ui.label("Respuesta Grok").style(
+                                                "font-size:10px;color:#e65100;"
+                                                "letter-spacing:0.05em;font-weight:600"
+                                            )
+                                        groq_spin = ui.element("div").style(
+                                            "display:flex;align-items:center;gap:6px"
+                                        )
+                                        groq_spin_ref[0] = groq_spin
+                                        with groq_spin:
+                                            ui.spinner(size="sm").style("color:#f57c00")
+                                            ui.label("generando...").style(
+                                                "font-size:11px;color:#f57c00"
+                                            )
+                                        groq_err = ui.label("").style(
+                                            "font-size:11px;color:#e65100"
+                                        )
+                                        groq_err.set_visibility(False)
+                                        groq_err_ref[0] = groq_err
+                                        resp_groq = (
+                                            ui.textarea(value="", placeholder="")
+                                            .classes("w-full")
+                                            .props("outlined rows=8")
+                                            .style("font-size:12px")
+                                        )
+                                        resp_groq_holder[0] = resp_groq
+                                        resp_area_groq_ref[0] = resp_groq
+                                        ui.button(
+                                            "Enviar esta respuesta",
+                                            on_click=lambda: background_tasks.create(
+                                                _enviar_respuesta(resp_groq_holder),
+                                                name="enviar_grok",
+                                            ),
+                                        ).props("unelevated dense no-caps").style(
+                                            "background:#f57c00;color:#fff;font-size:12px"
+                                        )
+
+                                # ── COL 3 — GEMINI ───────────────────────────────────
+                                with ui.element("div").style("flex:1;min-width:0"):
+                                    with ui.element("div").style(
+                                        "border:0.5px solid var(--color-border-tertiary);"
+                                        "border-top:3px solid #1565c0;"
+                                        "border-radius:var(--border-radius-md);padding:10px;"
+                                        "background:var(--color-background-secondary);"
+                                        "display:flex;flex-direction:column;gap:8px"
+                                    ):
+                                        with ui.element("div").style(
+                                            "display:flex;align-items:center;gap:4px"
+                                        ):
+                                            ui.html(
+                                                '<i class="ti ti-sparkles"'
+                                                ' style="font-size:13px;color:#1565c0"></i>'
+                                            )
+                                            ui.label("Respuesta Gemini").style(
+                                                "font-size:10px;color:#1565c0;"
+                                                "letter-spacing:0.05em;font-weight:600"
+                                            )
+                                        gemini_spin = ui.element("div").style(
+                                            "display:flex;align-items:center;gap:6px"
+                                        )
+                                        gemini_spin_ref[0] = gemini_spin
+                                        with gemini_spin:
+                                            ui.spinner(size="sm").style("color:#1565c0")
+                                            ui.label("generando...").style(
+                                                "font-size:11px;color:#1565c0"
+                                            )
+                                        gemini_err = ui.label("").style(
+                                            "font-size:11px;color:#1565c0"
+                                        )
+                                        gemini_err.set_visibility(False)
+                                        gemini_err_ref[0] = gemini_err
+                                        resp_gemini = (
+                                            ui.textarea(value="", placeholder="")
+                                            .classes("w-full")
+                                            .props("outlined rows=8")
+                                            .style("font-size:12px")
+                                        )
+                                        resp_gemini_holder[0] = resp_gemini
+                                        resp_area_gemini_ref[0] = resp_gemini
+                                        ui.button(
+                                            "Enviar esta respuesta",
+                                            on_click=lambda: background_tasks.create(
+                                                _enviar_respuesta(resp_gemini_holder),
+                                                name="enviar_gemini",
+                                            ),
+                                        ).props("unelevated dense no-caps").style(
+                                            "background:#1565c0;color:#fff;font-size:12px"
+                                        )
+
+                        else:
+                            # ── MOBILE: apilado ──────────────────────────────────────
+                            with ui.column().classes("w-full gap-3"):
+
+                                # ── Sección 1 — PREGUNTA ─────────────────────────────
                                 with ui.element("div").style(
                                     "border:0.5px solid var(--color-border-tertiary);"
                                     "border-top:3px solid #1976d2;"
                                     "border-radius:var(--border-radius-md);padding:10px;"
-                                    "background:var(--color-background-secondary)"
+                                    "background:var(--color-background-secondary);"
+                                    "width:100%;box-sizing:border-box"
                                 ):
                                     with ui.element("div").style(
                                         "display:flex;align-items:center;gap:4px;margin-bottom:6px"
@@ -688,15 +831,13 @@ def build_tab_preguntas(container) -> None:
                                         "font-size:12px;line-height:1.5;color:#374151"
                                     )
 
-                                _build_frases_card(resp_groq_holder, resp_gemini_holder)
-
-                            # ── COL 2 — GROK ─────────────────────────────────────
-                            with ui.element("div").style("flex:1;min-width:0"):
+                                # ── Sección 2 — GROK ─────────────────────────────────
                                 with ui.element("div").style(
                                     "border:0.5px solid var(--color-border-tertiary);"
                                     "border-top:3px solid #f57c00;"
                                     "border-radius:var(--border-radius-md);padding:10px;"
                                     "background:var(--color-background-secondary);"
+                                    "width:100%;box-sizing:border-box;"
                                     "display:flex;flex-direction:column;gap:8px"
                                 ):
                                     with ui.element("div").style(
@@ -710,7 +851,6 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#e65100;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
-
                                     groq_spin = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
@@ -720,22 +860,19 @@ def build_tab_preguntas(container) -> None:
                                         ui.label("generando...").style(
                                             "font-size:11px;color:#f57c00"
                                         )
-
                                     groq_err = ui.label("").style(
                                         "font-size:11px;color:#e65100"
                                     )
                                     groq_err.set_visibility(False)
                                     groq_err_ref[0] = groq_err
-
                                     resp_groq = (
                                         ui.textarea(value="", placeholder="")
                                         .classes("w-full")
-                                        .props("outlined rows=8")
+                                        .props("outlined rows=6")
                                         .style("font-size:12px")
                                     )
                                     resp_groq_holder[0] = resp_groq
                                     resp_area_groq_ref[0] = resp_groq
-
                                     ui.button(
                                         "Enviar esta respuesta",
                                         on_click=lambda: background_tasks.create(
@@ -746,13 +883,13 @@ def build_tab_preguntas(container) -> None:
                                         "background:#f57c00;color:#fff;font-size:12px"
                                     )
 
-                            # ── COL 3 — GEMINI ───────────────────────────────────
-                            with ui.element("div").style("flex:1;min-width:0"):
+                                # ── Sección 3 — GEMINI ───────────────────────────────
                                 with ui.element("div").style(
                                     "border:0.5px solid var(--color-border-tertiary);"
                                     "border-top:3px solid #1565c0;"
                                     "border-radius:var(--border-radius-md);padding:10px;"
                                     "background:var(--color-background-secondary);"
+                                    "width:100%;box-sizing:border-box;"
                                     "display:flex;flex-direction:column;gap:8px"
                                 ):
                                     with ui.element("div").style(
@@ -766,7 +903,6 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#1565c0;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
-
                                     gemini_spin = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
@@ -776,22 +912,19 @@ def build_tab_preguntas(container) -> None:
                                         ui.label("generando...").style(
                                             "font-size:11px;color:#1565c0"
                                         )
-
                                     gemini_err = ui.label("").style(
                                         "font-size:11px;color:#1565c0"
                                     )
                                     gemini_err.set_visibility(False)
                                     gemini_err_ref[0] = gemini_err
-
                                     resp_gemini = (
                                         ui.textarea(value="", placeholder="")
                                         .classes("w-full")
-                                        .props("outlined rows=8")
+                                        .props("outlined rows=6")
                                         .style("font-size:12px")
                                     )
                                     resp_gemini_holder[0] = resp_gemini
                                     resp_area_gemini_ref[0] = resp_gemini
-
                                     ui.button(
                                         "Enviar esta respuesta",
                                         on_click=lambda: background_tasks.create(
@@ -801,6 +934,9 @@ def build_tab_preguntas(container) -> None:
                                     ).props("unelevated dense no-caps").style(
                                         "background:#1565c0;color:#fff;font-size:12px"
                                     )
+
+                                # ── Sección 4 — FRASES DE CIERRE ────────────────────
+                                _build_frases_card(resp_groq_holder, resp_gemini_holder)
 
                     background_tasks.create(_load_ais(), name="load_ais")
 
