@@ -562,29 +562,8 @@ def build_tab_preguntas(container) -> None:
 
                     # ── async helpers ───────────────────────────────────────────
 
-                    async def _enviar_respuesta(ta_holder: list) -> None:
-                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
-                        try:
-                            logging.warning(
-                                "[ENVIAR2] resp_area_groq=%s resp_area_gemini=%s",
-                                resp_area_groq_ref[0] is not None,
-                                resp_area_gemini_ref[0] is not None,
-                            )
-                            _text_diag = ""
-                            if resp_area_groq_ref[0]:
-                                _text_diag = (resp_area_groq_ref[0].value or "").strip()
-                            logging.warning(
-                                "[ENVIAR3] text_resp=%s",
-                                _text_diag[:30] if _text_diag else "VACIO",
-                            )
-                        except Exception as _ex_diag:
-                            logging.warning("[ENVIAR_EX] excepcion al leer textarea: %s", _ex_diag)
-                        try:
-                            _client = Client.current
-                        except Exception as _ex_client:
-                            logging.warning("[ENVIAR_CLIENT_EX] Client.current falló: %s: %s", type(_ex_client).__name__, _ex_client)
-                            _client = None
-                        logging.warning("ENVIAR: _client=%s", _client)
+                    async def _enviar_respuesta(ta_holder: list, _client) -> None:
+                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s client=%s", qid, _client)
                         try:
                             await _client.run_javascript(
                                 "if(document.activeElement) document.activeElement.blur()"
@@ -687,8 +666,7 @@ def build_tab_preguntas(container) -> None:
                             except Exception as _e:
                                 logging.warning("ENVIAR: notify exc falló: %s", _e)
 
-                    async def _eliminar_pregunta() -> None:
-                        _client = Client.current
+                    async def _eliminar_pregunta(_client) -> None:
                         try:
                             result = await run.io_bound(_ml_delete_question, access_token, qid)
                             if result["status_code"] == 200:
@@ -847,7 +825,7 @@ def build_tab_preguntas(container) -> None:
                                     ui.button(
                                         "Eliminar pregunta",
                                         on_click=lambda: background_tasks.create(
-                                            _eliminar_pregunta(), name="eliminar_pregunta"
+                                            _eliminar_pregunta(Client.current), name="eliminar_pregunta"
                                         ),
                                     ).props("unelevated dense no-caps icon=delete").style(
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
@@ -898,7 +876,7 @@ def build_tab_preguntas(container) -> None:
                                         ui.button(
                                             "Enviar esta respuesta",
                                             on_click=lambda: background_tasks.create(
-                                                _enviar_respuesta(resp_groq_holder),
+                                                _enviar_respuesta(resp_groq_holder, Client.current),
                                                 name="enviar_grok",
                                             ),
                                         ).props("unelevated dense no-caps").style(
@@ -950,7 +928,7 @@ def build_tab_preguntas(container) -> None:
                                         ui.button(
                                             "Enviar esta respuesta",
                                             on_click=lambda: background_tasks.create(
-                                                _enviar_respuesta(resp_gemini_holder),
+                                                _enviar_respuesta(resp_gemini_holder, Client.current),
                                                 name="enviar_gemini",
                                             ),
                                         ).props("unelevated dense no-caps").style(
@@ -986,7 +964,7 @@ def build_tab_preguntas(container) -> None:
                                     ui.button(
                                         "Eliminar pregunta",
                                         on_click=lambda: background_tasks.create(
-                                            _eliminar_pregunta(), name="eliminar_pregunta"
+                                            _eliminar_pregunta(Client.current), name="eliminar_pregunta"
                                         ),
                                     ).props("unelevated dense no-caps icon=delete").style(
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
@@ -1037,7 +1015,7 @@ def build_tab_preguntas(container) -> None:
                                     ui.button(
                                         "Enviar esta respuesta",
                                         on_click=lambda: background_tasks.create(
-                                            _enviar_respuesta(resp_groq_holder),
+                                            _enviar_respuesta(resp_groq_holder, Client.current),
                                             name="enviar_grok",
                                         ),
                                     ).props("unelevated dense no-caps").style(
@@ -1089,7 +1067,7 @@ def build_tab_preguntas(container) -> None:
                                     ui.button(
                                         "Enviar esta respuesta",
                                         on_click=lambda: background_tasks.create(
-                                            _enviar_respuesta(resp_gemini_holder),
+                                            _enviar_respuesta(resp_gemini_holder, Client.current),
                                             name="enviar_gemini",
                                         ),
                                     ).props("unelevated dense no-caps").style(
