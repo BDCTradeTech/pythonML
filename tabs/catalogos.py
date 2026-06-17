@@ -1,22 +1,23 @@
 """
 tabs/catalogos.py
-Pestaña Catálogos ML: tabla unificada por SKU, competidores ordenados por precio.
+Pestaña Catálogos ML: tabla por SKU con estado de competencia en catálogos.
 """
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from typing import Any, Dict, List, Optional, Set
 
+import requests
 from nicegui import app, background_tasks, ui
 
 from db import (
-    get_connection,
+    get_app_config,
+    get_catalogo_competidores,
     get_sku_catalogos,
     add_sku_catalogo,
-    update_sku_catalogo_name,
-    set_sku_catalogo_activo,
     delete_sku_catalogo,
-    get_catalogo_competidores,
     upsert_catalogo_competidores,
 )
 from ml_api import (
@@ -30,7 +31,7 @@ from ml_api import (
 def _require_login() -> Optional[Dict[str, Any]]:
     user = app.storage.user.get("user")
     if not user:
-        ui.notify("Debes iniciar sesión para continuar", color="negative")
+        ui.notify("Debes iniciar sesión", color="negative")
     return user
 
 
@@ -44,13 +45,68 @@ def _fmt_precio(v: Any) -> str:
 
 
 def _tipo_label(lt: str) -> str:
-    return {"gold_special": "gold_sp", "gold_pro": "gold_pro", "gold_premium": "gold_prem"}.get(lt, lt or "—")
+    return {
+        "gold_special": "gold_sp",
+        "gold_pro": "gold_pro",
+        "gold_premium": "gold_prem",
+    }.get(lt, lt or "—")
 
 
-async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> tuple:
+def _get_cache_items() -> List[Dict]:
+    raw = get_app_config("cache_my_items_active")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data.get("results", []) if isinstance(data, dict) else []
+    except Exception:
+        return []
+
+
+def _group_by_sku(items: List[Dict]) -> Dict[str, Dict]:
+    """Retorna {sku: {"item": mejor_item, "item_ids": [str]}}"""
+    groups: Dict[str, Dict] = {}
+    for item in items:
+        sku = (item.get("seller_sku") or "").strip()
+        if not sku:
+            continue
+        item_id = str(item.get("id") or "")
+        if sku not in groups:
+            groups[sku] = {"item": item, "item_ids": [item_id] if item_id else []}
+        else:
+            if (item.get("available_quantity") or 0) > (groups[sku]["item"].get("available_quantity") or 0):
+                groups[sku]["item"] = item
+            if item_id and item_id not in groups[sku]["item_ids"]:
+                groups[sku]["item_ids"].append(item_id)
+    return groups
+
+
+def _calc_ganando(sku: str, item_ids: Set[str], all_cats: List[Dict]) -> str:
+    cats = [c for c in all_cats if c.get("sku") == sku and c.get("activo")]
+    if not cats:
+        return "—"
+    for cat in cats:
+        comps = get_catalogo_competidores(cat["catalog_product_id"])
+        if not comps:
+            continue
+        prices = [float(c.get("price") or 0) for c in comps if c.get("price") is not None]
+        if not prices:
+            continue
+        min_price = min(prices)
+        for comp in comps:
+            if str(comp.get("item_id", "")) in item_ids:
+                try:
+                    if float(comp.get("price") or 0) <= min_price + 0.01:
+                        return "✅"
+                except Exception:
+                    pass
+    return "❌"
+
+
+async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[Dict]:
     items = await asyncio.to_thread(ml_get_catalog_items, access_token, catalog_product_id)
     if not items:
-        return [], ""
+        return []
     seller_ids = list({str(it.get("seller_id", "")) for it in items if it.get("seller_id")})
     nicknames: Dict[str, str] = {}
     for i in range(0, len(seller_ids), 20):
@@ -60,18 +116,47 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> tuple
     for it in items:
         sid = str(it.get("seller_id", ""))
         it["seller_nickname"] = nicknames.get(sid, f"ID {sid}")
-    return items, ""
+    return items
 
 
-def _get_our_item_ids(user_id: int) -> Set[str]:
-    conn = get_connection()
+def _search_catalogs_sync(access_token: str, query: str) -> List[Dict]:
+    q = query.strip()
+    if not q:
+        return []
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     try:
-        rows = conn.execute(
-            "SELECT ml_id FROM ml_publicaciones WHERE user_id=?", (user_id,)
-        ).fetchall()
-        return {r["ml_id"] for r in rows}
-    finally:
-        conn.close()
+        if q.upper().startswith("MLA"):
+            resp = requests.get(
+                f"https://api.mercadolibre.com/products/{q.upper()}",
+                headers=headers, timeout=10,
+            )
+            if resp.status_code == 200:
+                d = resp.json()
+                if isinstance(d, dict) and d.get("id"):
+                    return [{"id": d["id"], "name": d.get("name", d["id"])}]
+            return []
+        elif re.match(r"^\d{8,14}$", q):
+            resp = requests.get(
+                "https://api.mercadolibre.com/products/search",
+                params={"product_identifier": q, "site_id": "MLA"},
+                headers=headers, timeout=10,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                return [{"id": r.get("id", ""), "name": r.get("name", r.get("id", ""))} for r in results]
+            return []
+        else:
+            resp = requests.get(
+                "https://api.mercadolibre.com/products/search",
+                params={"status": "active", "site_id": "MLA", "q": q, "limit": 10},
+                headers=headers, timeout=10,
+            )
+            if resp.status_code == 200:
+                results = resp.json().get("results", [])
+                return [{"id": r.get("id", ""), "name": r.get("name", r.get("id", ""))} for r in results]
+            return []
+    except Exception:
+        return []
 
 
 _TH = "padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;font-weight:600;background:#f3f4f6;font-size:12px"
@@ -91,47 +176,43 @@ def build_tab_catalogos(container) -> None:
             ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración.").classes("text-warning")
             return
 
-        state: Dict[str, Any] = {"syncing": False, "our_ids": set()}
+        state: Dict[str, Any] = {"syncing": False}
         sync_btn_ref: List[Any] = [None]
-        sync_spinner_ref: List[Any] = [None]
+        spinner_ref: List[Any] = [None]
         counter_ref: List[Any] = [None]
+        expanded_skus: Set[str] = set()
 
-        # ── Header ────────────────────────────────────────────────────────────
+        # ── Header ─────────────────────────────────────────────────────────
         with ui.row().classes("w-full items-center gap-3 mb-2"):
             ui.label("CATÁLOGOS ML").classes("text-xl font-bold")
             counter_lbl = ui.label("").classes("text-sm text-gray-400")
             counter_ref[0] = counter_lbl
             ui.space()
             sp = ui.spinner(size="sm").classes("hidden")
-            sync_spinner_ref[0] = sp
+            spinner_ref[0] = sp
 
             async def _do_sync_all() -> None:
                 if state["syncing"]:
                     return
                 state["syncing"] = True
-                sync_spinner_ref[0].classes(remove="hidden")
-                btn = sync_btn_ref[0]
-                if btn:
-                    btn.props("disable")
+                spinner_ref[0].classes(remove="hidden")
+                if sync_btn_ref[0]:
+                    sync_btn_ref[0].props("disable")
                 try:
                     cats = get_sku_catalogos()
                     active = [c for c in cats if c.get("activo")]
                     for cat in active:
-                        cpid = cat["catalog_product_id"]
-                        items, cat_name = await _sync_one_catalog(access_token, cpid)
-                        await asyncio.to_thread(upsert_catalogo_competidores, cpid, items)
-                        if cat_name and not cat.get("catalog_name"):
-                            await asyncio.to_thread(update_sku_catalogo_name, cat["id"], cat_name)
+                        items = await _sync_one_catalog(access_token, cat["catalog_product_id"])
+                        await asyncio.to_thread(upsert_catalogo_competidores, cat["catalog_product_id"], items)
                     _rebuild_table()
                     ui.notify(f"Sincronizados {len(active)} catálogo(s)", color="positive")
                 except Exception as ex:
                     ui.notify(f"Error en sync: {ex}", color="negative")
                 finally:
                     state["syncing"] = False
-                    sync_spinner_ref[0].classes(add="hidden")
-                    btn = sync_btn_ref[0]
-                    if btn:
-                        btn.props(remove="disable")
+                    spinner_ref[0].classes(add="hidden")
+                    if sync_btn_ref[0]:
+                        sync_btn_ref[0].props(remove="disable")
 
             btn = ui.button(
                 "Sincronizar Todo",
@@ -140,20 +221,20 @@ def build_tab_catalogos(container) -> None:
             ).props("no-caps")
             sync_btn_ref[0] = btn
 
-        # ── Tabla principal ───────────────────────────────────────────────────
+        # ── Área de tabla ───────────────────────────────────────────────────
         table_area = ui.column().classes("w-full overflow-x-auto")
 
-        # Factory: handler async corre con client context → ui.dialog() funciona
-        def _make_detail_handler(c: str):
+        # ── Factory: popup detalle catálogo ─────────────────────────────────
+        def _make_detail_handler(cpid: str):
             async def handler():
-                detail = await asyncio.to_thread(ml_get_product_detail, access_token, c)
+                detail = await asyncio.to_thread(ml_get_product_detail, access_token, cpid)
                 if not detail:
                     ui.notify("No se pudo obtener detalle del catálogo", color="warning")
                     return
                 with ui.dialog() as dlg:
                     with ui.card().classes("w-96 p-4"):
-                        ui.label(detail.get("name", c)).classes("text-lg font-bold")
-                        ui.label(f"ID: {c}").classes("font-mono text-sm text-gray-500")
+                        ui.label(detail.get("name", cpid)).classes("text-lg font-bold")
+                        ui.label(f"ID: {cpid}").classes("font-mono text-sm text-gray-500")
                         ui.separator().classes("my-2")
                         with ui.grid(columns=2).classes("gap-x-4 gap-y-1 text-sm w-full"):
                             ui.label("Status:").classes("text-gray-500")
@@ -182,213 +263,318 @@ def build_tab_catalogos(container) -> None:
                 dlg.open()
             return handler
 
-        def _make_del_handler(c: int):
-            def handler():
-                delete_sku_catalogo(c)
-                _rebuild_table()
+        # ── Factory: dialog gestión de catálogos del SKU ────────────────────
+        def _make_manage_handler(sku: str):
+            async def handler():
+                with ui.dialog() as dlg:
+                    dlg.props("persistent")
+                    with ui.card().classes("w-[540px] p-5"):
+                        ui.label(f"Catálogos de {sku}").classes("text-lg font-bold mb-3")
+
+                        cats_list_area = ui.column().classes("w-full gap-1 mb-1")
+
+                        def _refresh_cats():
+                            cats_list_area.clear()
+                            current_cats = [c for c in get_sku_catalogos() if c.get("sku") == sku]
+                            if not current_cats:
+                                with cats_list_area:
+                                    ui.label("Sin catálogos configurados").classes(
+                                        "text-gray-400 text-sm italic py-2"
+                                    )
+                            else:
+                                with cats_list_area:
+                                    for cat in current_cats:
+                                        cpid = cat["catalog_product_id"]
+                                        cname = cat.get("catalog_name") or cpid
+
+                                        def _make_del(cid=cat["id"]):
+                                            def _do_del():
+                                                delete_sku_catalogo(cid)
+                                                _refresh_cats()
+                                                _rebuild_table()
+                                            return _do_del
+
+                                        with ui.row().classes(
+                                            "items-center gap-2 w-full py-1 border-b border-gray-100"
+                                        ):
+                                            ui.label(cpid).classes(
+                                                "font-mono text-sm text-blue-600 w-28 flex-none"
+                                            )
+                                            ui.label(cname[:50]).classes(
+                                                "text-sm text-gray-700 flex-1 truncate"
+                                            )
+                                            ui.button(
+                                                icon="delete", on_click=_make_del()
+                                            ).props("flat dense color=negative size=xs")
+
+                        _refresh_cats()
+
+                        ui.separator().classes("my-4")
+                        ui.label("Buscar catálogo").classes("font-semibold text-sm mb-2")
+
+                        with ui.row().classes("items-center gap-2 w-full"):
+                            search_input = ui.input(
+                                placeholder="ID (MLA...), EAN (solo números) o texto libre"
+                            ).props("dense outlined").classes("flex-1")
+                            search_btn = ui.button("Buscar").props("no-caps dense color=primary")
+
+                        results_area = ui.column().classes("w-full mt-2 gap-0")
+
+                        async def _do_catalog_search():
+                            q = (search_input.value or "").strip()
+                            if not q:
+                                return
+                            search_btn.props("loading")
+                            results_area.clear()
+                            try:
+                                found = await asyncio.to_thread(
+                                    _search_catalogs_sync, access_token, q
+                                )
+                                with results_area:
+                                    if not found:
+                                        ui.label("Sin resultados").classes(
+                                            "text-gray-400 text-sm italic py-2"
+                                        )
+                                    else:
+                                        for r in found:
+                                            rid = r.get("id", "")
+                                            rname = r.get("name", rid)
+                                            if not rid:
+                                                continue
+
+                                            def _make_add(add_id=rid, add_name=rname):
+                                                async def _do_add():
+                                                    name_to_use = add_name
+                                                    if not name_to_use or name_to_use == add_id:
+                                                        det = await asyncio.to_thread(
+                                                            ml_get_product_detail, access_token, add_id
+                                                        )
+                                                        if det:
+                                                            name_to_use = det.get("name", add_id)
+                                                    add_sku_catalogo(sku, add_id, name_to_use)
+                                                    _refresh_cats()
+                                                    _rebuild_table()
+                                                    ui.notify(
+                                                        f"Catálogo {add_id} agregado", color="positive"
+                                                    )
+                                                return _do_add
+
+                                            with ui.row().classes(
+                                                "items-center gap-2 w-full py-1 border-b border-gray-100"
+                                            ):
+                                                ui.label(rid).classes(
+                                                    "font-mono text-xs text-blue-600 w-28 flex-none"
+                                                )
+                                                ui.label(rname[:60]).classes(
+                                                    "text-sm flex-1 truncate text-gray-800"
+                                                )
+                                                ui.button(
+                                                    "Agregar", on_click=_make_add()
+                                                ).props("no-caps dense size=sm color=secondary")
+                            except Exception as ex:
+                                with results_area:
+                                    ui.label(f"Error: {ex}").classes("text-red-500 text-sm")
+                            finally:
+                                search_btn.props(remove="loading")
+
+                        search_btn.on("click", _do_catalog_search)
+                        search_input.on("keydown.enter", _do_catalog_search)
+
+                        ui.separator().classes("my-4")
+                        ui.button("Cerrar", on_click=dlg.close).props("flat no-caps")
+
+                dlg.open()
             return handler
 
+        # ── Rebuild principal ───────────────────────────────────────────────
         def _rebuild_table() -> None:
             table_area.clear()
+
+            cache_items = _get_cache_items()
+            sku_groups = _group_by_sku(cache_items)
             all_cats = get_sku_catalogos()
-            active_cats = [c for c in all_cats if c.get("activo")]
-            total_comps = sum(
-                len(get_catalogo_competidores(c["catalog_product_id"])) for c in active_cats
+
+            total_skus = len(sku_groups)
+            total_cats = len([c for c in all_cats if c.get("activo")])
+            compitiendo = sum(
+                1 for sku in sku_groups
+                if any(
+                    bool(get_catalogo_competidores(c["catalog_product_id"]))
+                    for c in all_cats
+                    if c.get("sku") == sku and c.get("activo")
+                )
             )
+
             if counter_ref[0]:
-                counter_ref[0].set_text(f"{len(active_cats)} catálogos · {total_comps} competidores")
+                counter_ref[0].set_text(
+                    f"{total_skus} SKUs · {total_cats} catálogos · {compitiendo} compitiendo"
+                )
 
             with table_area:
-                if not all_cats:
-                    ui.label("No hay catálogos configurados. Agregá uno abajo.").classes("text-gray-500 py-4")
+                if not cache_items:
+                    ui.label(
+                        "Sin datos de publicaciones. Actualizá desde la pestaña Productos."
+                    ).classes("text-gray-400 italic py-4")
                     return
-
-                # Agrupar por SKU (orden de inserción)
-                sku_to_cats: Dict[str, List[Dict]] = {}
-                for cat in all_cats:
-                    s = cat["sku"]
-                    if s not in sku_to_cats:
-                        sku_to_cats[s] = []
-                    sku_to_cats[s].append(cat)
-
-                # Construir lista de filas: competidores por precio, luego inactivos/sin datos
-                display_rows: List[Dict] = []
-                for sku, cats in sku_to_cats.items():
-                    comp_rows: List[Dict] = []
-                    meta_rows: List[Dict] = []
-                    for cat in cats:
-                        is_active = bool(cat.get("activo"))
-                        if not is_active:
-                            meta_rows.append({"sku": sku, "cat": cat, "comp": None, "type": "inactive"})
-                        else:
-                            comps = get_catalogo_competidores(cat["catalog_product_id"])
-                            if not comps:
-                                meta_rows.append({"sku": sku, "cat": cat, "comp": None, "type": "nodata"})
-                            else:
-                                for comp in comps:
-                                    comp_rows.append({
-                                        "sku": sku, "cat": cat, "comp": comp, "type": "comp",
-                                        "_p": float(comp.get("price") or 0),
-                                    })
-                    comp_rows.sort(key=lambda r: r["_p"])
-                    display_rows.extend(comp_rows + meta_rows)
 
                 with ui.element("table").style("width:100%;border-collapse:collapse"):
                     with ui.element("thead"):
                         with ui.element("tr"):
-                            for col in ["#", "SKU", "Catálogo ID", "Vendedor", "Precio", "Tipo", "Logística", "Envío", "Acciones"]:
+                            for col in ["#", "SKU", "Marca", "Producto", "Color", "Stock", "Precio", "Catálogos", "Ganando", "▶"]:
                                 with ui.element("th").style(_TH):
                                     ui.label(col)
 
                     with ui.element("tbody"):
-                        row_num = 0
-                        prev_sku: Optional[str] = None
-                        seen_cpids: Set[str] = set()
+                        for row_num, (sku, grp) in enumerate(sku_groups.items(), 1):
+                            item = grp["item"]
+                            item_ids_set: Set[str] = set(grp["item_ids"])
 
-                        for row in display_rows:
-                            sku = row["sku"]
-                            cat = row["cat"]
-                            comp = row["comp"]
-                            row_type = row["type"]
-                            cat_id = cat["id"]
-                            cpid = cat["catalog_product_id"]
-                            is_active = bool(cat.get("activo"))
+                            sku_cats = [c for c in all_cats if c.get("sku") == sku]
+                            n_cats = len([c for c in sku_cats if c.get("activo")])
+                            ganando = _calc_ganando(sku, item_ids_set, all_cats)
+                            titulo = (item.get("title") or "")[:40]
+                            bg = "background:#f9fafb" if row_num % 2 == 0 else "background:#ffffff"
 
-                            is_first_sku = sku != prev_sku
-                            is_first_cat = cpid not in seen_cpids
-                            row_num += 1
-                            prev_sku = sku
-                            if is_first_cat:
-                                seen_cpids.add(cpid)
-
-                            # Borde grueso entre grupos de SKU
-                            sep = ";border-top:2px solid #d1d5db" if is_first_sku and row_num > 1 else ""
-
-                            if row_type == "comp":
-                                is_ours = comp["item_id"] in state["our_ids"]
-                                bg = "background:#f0fdf4" if is_ours else (
-                                    "background:#ffffff" if row_num % 2 == 0 else "background:#f9fafb"
-                                )
-                            elif row_type == "inactive":
-                                is_ours = False
-                                bg = "background:#f9fafb"
-                            else:
-                                is_ours = False
-                                bg = "background:#fffbeb"
-
+                            # Fila principal del SKU
                             with ui.element("tr").style(bg):
-                                # #
-                                with ui.element("td").style(_TD + sep + ";text-align:center;color:#9ca3af;font-size:12px"):
+                                with ui.element("td").style(
+                                    _TD + ";text-align:center;color:#9ca3af;font-size:12px"
+                                ):
                                     ui.label(str(row_num))
+                                with ui.element("td").style(
+                                    _TD + ";font-family:monospace;font-size:12px;font-weight:600"
+                                ):
+                                    ui.label(sku)
+                                with ui.element("td").style(_TD + ";font-size:12px"):
+                                    ui.label(item.get("marca") or "—")
+                                with ui.element("td").style(_TD + ";font-size:12px;max-width:200px"):
+                                    ui.label(titulo)
+                                with ui.element("td").style(_TD + ";font-size:12px"):
+                                    ui.label(item.get("color") or "—")
+                                with ui.element("td").style(
+                                    _TD + ";text-align:right;font-family:monospace"
+                                ):
+                                    qty = item.get("available_quantity")
+                                    ui.label(str(qty) if qty is not None else "—")
+                                with ui.element("td").style(
+                                    _TD + ";text-align:right;font-family:monospace;font-weight:600"
+                                ):
+                                    ui.label(_fmt_precio(item.get("price")))
 
-                                # SKU — solo en primera fila del grupo
-                                if is_first_sku:
-                                    with ui.element("td").style(_TD + sep + ";font-family:monospace;font-size:12px;font-weight:600"):
-                                        ui.label(sku)
-                                else:
-                                    with ui.element("td").style(_TD):
-                                        pass
+                                # Catálogos — número clickeable o "+"
+                                with ui.element("td").style(_TD + ";text-align:center"):
+                                    if n_cats > 0:
+                                        ui.label(str(n_cats)).classes(
+                                            "font-bold text-blue-600 cursor-pointer hover:underline"
+                                        ).on("click", _make_manage_handler(sku))
+                                    else:
+                                        ui.label("+").classes(
+                                            "font-bold text-gray-400 cursor-pointer hover:text-blue-600 text-lg"
+                                        ).on("click", _make_manage_handler(sku))
 
-                                # Catálogo ID — ui.label con .on("click") → async handler con client context
-                                clr = "#6b7280" if not is_active else "#2563eb"
-                                with ui.element("td").style(_TD + sep):
-                                    ui.label(cpid).classes(
-                                        "font-mono cursor-pointer underline text-sm"
-                                    ).style(f"color:{clr}").on("click", _make_detail_handler(cpid))
+                                # Ganando
+                                with ui.element("td").style(_TD + ";text-align:center;font-size:16px"):
+                                    if ganando == "✅":
+                                        ui.label("✅")
+                                    elif ganando == "❌":
+                                        ui.label("❌")
+                                    else:
+                                        ui.label("—").style("color:#9ca3af")
 
-                                # Columnas de datos
-                                if row_type == "comp":
-                                    nick = comp.get("seller_nickname") or f"ID {comp.get('seller_id', '')}"
-                                    with ui.element("td").style(
-                                        _TD + sep + (";color:#15803d;font-weight:600" if is_ours else "")
+                                # ▶ toggle expansión
+                                with ui.element("td").style(_TD + ";text-align:center"):
+                                    is_exp = sku in expanded_skus
+
+                                    def _make_toggle(s=sku):
+                                        def _toggle():
+                                            if s in expanded_skus:
+                                                expanded_skus.discard(s)
+                                            else:
+                                                expanded_skus.add(s)
+                                            _rebuild_table()
+                                        return _toggle
+
+                                    ui.button(
+                                        "▼" if is_exp else "▶",
+                                        on_click=_make_toggle(),
+                                    ).props("flat dense size=sm no-caps").style(
+                                        "color:#6b7280;font-size:12px"
+                                    )
+
+                            # Fila expandida con competidores
+                            if sku in expanded_skus:
+                                active_cats = [c for c in sku_cats if c.get("activo")]
+                                all_comps: List[Dict] = []
+                                for cat in active_cats:
+                                    for comp in get_catalogo_competidores(cat["catalog_product_id"]):
+                                        entry = dict(comp)
+                                        entry["_cpid"] = cat["catalog_product_id"]
+                                        all_comps.append(entry)
+                                all_comps.sort(key=lambda c: float(c.get("price") or 0))
+
+                                with ui.element("tr"):
+                                    with ui.element("td").props("colspan=10").style(
+                                        "padding:0;border:none"
                                     ):
-                                        ui.label(f"{nick} ✓" if is_ours else nick)
-                                    with ui.element("td").style(_TD + sep + ";text-align:right;font-family:monospace;font-weight:600"):
-                                        ui.label(_fmt_precio(comp.get("price")))
-                                    with ui.element("td").style(_TD + sep + ";font-size:12px"):
-                                        ui.label(_tipo_label(comp.get("listing_type") or ""))
-                                    with ui.element("td").style(_TD + sep + ";font-size:12px"):
-                                        ui.label(comp.get("logistica") or "—")
-                                    with ui.element("td").style(_TD + sep + ";text-align:center"):
-                                        if comp.get("free_shipping"):
-                                            ui.label("Sí").style("color:#16a34a;font-weight:600")
-                                        else:
-                                            ui.label("No").style("color:#9ca3af")
-                                elif row_type == "inactive":
-                                    with ui.element("td").style(_TD + sep + ";color:#9ca3af;font-style:italic"):
-                                        ui.label("(inactivo)")
-                                    for _ in range(4):
-                                        with ui.element("td").style(_TD + sep):
-                                            pass
-                                else:  # nodata
-                                    with ui.element("td").style(_TD + sep + ";color:#b45309;font-style:italic"):
-                                        ui.label("Sin datos — Sincronizar")
-                                    for _ in range(4):
-                                        with ui.element("td").style(_TD + sep):
-                                            pass
+                                        with ui.element("div").style(
+                                            "background:#f0f9ff;padding:8px 12px 12px 24px;"
+                                            "border-bottom:1px solid #e5e7eb"
+                                        ):
+                                            if not all_comps:
+                                                ui.label(
+                                                    "Sin datos — presioná Sincronizar Todo"
+                                                ).classes("text-amber-600 text-sm italic py-2")
+                                            else:
+                                                with ui.element("table").style(
+                                                    "width:100%;border-collapse:collapse"
+                                                ):
+                                                    with ui.element("thead"):
+                                                        with ui.element("tr"):
+                                                            for col in [
+                                                                "#", "Catálogo ID", "Vendedor",
+                                                                "Precio", "Tipo", "Logística", "Envío gratis",
+                                                            ]:
+                                                                with ui.element("th").style(
+                                                                    _TH + ";background:#e0f2fe;font-size:11px"
+                                                                ):
+                                                                    ui.label(col)
+                                                    with ui.element("tbody"):
+                                                        for ci, comp in enumerate(all_comps, 1):
+                                                            is_ours = str(comp.get("item_id", "")) in item_ids_set
+                                                            cbg = (
+                                                                "background:#f0fdf4" if is_ours
+                                                                else ("background:#ffffff" if ci % 2 == 0 else "background:#f0f9ff")
+                                                            )
+                                                            cpid = comp.get("_cpid", "")
+                                                            with ui.element("tr").style(cbg):
+                                                                with ui.element("td").style(
+                                                                    _TD + ";text-align:center;font-size:11px;color:#9ca3af"
+                                                                ):
+                                                                    ui.label(str(ci))
+                                                                with ui.element("td").style(_TD):
+                                                                    ui.label(cpid).classes(
+                                                                        "font-mono cursor-pointer underline text-sm text-blue-600"
+                                                                    ).on("click", _make_detail_handler(cpid))
+                                                                nick = comp.get("seller_nickname") or f"ID {comp.get('seller_id', '')}"
+                                                                with ui.element("td").style(
+                                                                    _TD + (";color:#15803d;font-weight:600" if is_ours else "")
+                                                                ):
+                                                                    ui.label(f"{nick} ✓" if is_ours else nick)
+                                                                with ui.element("td").style(
+                                                                    _TD + ";text-align:right;font-family:monospace;font-weight:600"
+                                                                ):
+                                                                    ui.label(_fmt_precio(comp.get("price")))
+                                                                with ui.element("td").style(_TD + ";font-size:12px"):
+                                                                    ui.label(_tipo_label(comp.get("listing_type") or ""))
+                                                                with ui.element("td").style(_TD + ";font-size:12px"):
+                                                                    ui.label(comp.get("logistica") or "—")
+                                                                with ui.element("td").style(
+                                                                    _TD + ";text-align:center"
+                                                                ):
+                                                                    if comp.get("free_shipping"):
+                                                                        ui.label("Sí").style("color:#16a34a;font-weight:600")
+                                                                    else:
+                                                                        ui.label("No").style("color:#9ca3af")
 
-                                # Acciones — toggle+delete solo en primera fila del catálogo
-                                with ui.element("td").style(_TD + sep + ";text-align:center"):
-                                    if is_first_cat:
-                                        with ui.row().classes("gap-0 items-center justify-center flex-nowrap"):
-                                            ui.checkbox(
-                                                value=is_active,
-                                                on_change=lambda e, c=cat_id: (
-                                                    set_sku_catalogo_activo(c, 1 if e.value else 0),
-                                                    _rebuild_table(),
-                                                ),
-                                            )
-                                            ui.button(
-                                                icon="delete",
-                                                on_click=_make_del_handler(cat_id),
-                                            ).props("flat dense color=negative size=sm")
-
-        # ── Agregar catálogo ──────────────────────────────────────────────────
-        ui.separator().classes("my-3")
-        with ui.expansion("Agregar catálogo", icon="add_circle").classes("w-full"):
-            with ui.row().classes("items-end gap-2 mt-2"):
-                sku_input = ui.input("SKU").props("dense outlined").classes("w-28")
-                cpid_input = ui.input("Catálogo ID (ej: MLA52897968)").props("dense outlined").classes("w-52")
-                name_input = ui.input("Nombre (opcional)").props("dense outlined").classes("w-64")
-
-                async def _do_add() -> None:
-                    sku = (sku_input.value or "").strip()
-                    cpid = (cpid_input.value or "").strip().upper()
-                    if not sku or not cpid:
-                        ui.notify("SKU y Catálogo ID son requeridos", color="warning")
-                        return
-                    name = (name_input.value or "").strip()
-                    if not name:
-                        detail = await asyncio.to_thread(ml_get_product_detail, access_token, cpid)
-                        if detail:
-                            name = detail.get("name", "")
-                    add_sku_catalogo(sku, cpid, name)
-                    sku_input.value = ""
-                    cpid_input.value = ""
-                    name_input.value = ""
-                    _rebuild_table()
-                    ui.notify(f"Catálogo {cpid} agregado para SKU {sku}", color="positive")
-
-                ui.button(
-                    "Agregar",
-                    on_click=lambda: background_tasks.create(_do_add(), name="add_catalogo"),
-                    color="secondary",
-                ).props("no-caps dense")
-
-        # ── Carga inicial ─────────────────────────────────────────────────────
-        async def _init_load() -> None:
-            state["our_ids"] = await asyncio.to_thread(_get_our_item_ids, uid)
-            cats = get_sku_catalogos()
-            active = [c for c in cats if c.get("activo")]
-            needs_sync = [
-                c for c in active
-                if not get_catalogo_competidores(c["catalog_product_id"])
-            ]
-            for cat in needs_sync:
-                items, cat_name = await _sync_one_catalog(access_token, cat["catalog_product_id"])
-                await asyncio.to_thread(upsert_catalogo_competidores, cat["catalog_product_id"], items)
-                if cat_name and not cat.get("catalog_name"):
-                    await asyncio.to_thread(update_sku_catalogo_name, cat["id"], cat_name)
-            _rebuild_table()
-
-        background_tasks.create(_init_load(), name="init_catalogos")
+        # Carga inicial
+        _rebuild_table()
