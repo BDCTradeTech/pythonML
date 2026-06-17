@@ -630,10 +630,12 @@ def build_tab_preguntas(container) -> None:
                                 _body = result["body"] or {}
                                 _error_code = _body.get("error", "")
                                 if result["status_code"] == 400 and _error_code == "not_active_item":
+                                    logging.warning("[ENVIAR] entrando a bloque not_active_item")
                                     _msg = (
                                         "No se puede responder: la publicación está pausada o cerrada. "
                                         "Activala en MercadoLibre primero."
                                     )
+                                    logging.warning("[ENVIAR] antes de notify")
                                     try:
                                         await _client.run_javascript(
                                             "Quasar.Notify.create({message:"
@@ -642,6 +644,7 @@ def build_tab_preguntas(container) -> None:
                                         )
                                     except Exception as _e:
                                         logging.warning("ENVIAR: notify not_active falló: %s", _e)
+                                    logging.warning("[ENVIAR] después de notify")
                                 else:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"

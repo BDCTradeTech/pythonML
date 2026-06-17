@@ -257,7 +257,7 @@ def build_tab_catalogos(container) -> None:
                 try:
                     # Auto-agregar catálogos desde cache_my_items_active
                     cache_items = _get_cache_items()
-                    existing_cats = get_sku_catalogos()
+                    existing_cats = get_sku_catalogos(uid)
                     existing_pairs: Set[tuple] = {
                         (c["sku"], c["catalog_product_id"]) for c in existing_cats
                     }
@@ -265,13 +265,13 @@ def build_tab_catalogos(container) -> None:
                         item_sku = (item.get("seller_sku") or "").strip()
                         cpid = str(item.get("catalog_product_id") or "").strip()
                         if item_sku and cpid and (item_sku, cpid) not in existing_pairs:
-                            add_sku_catalogo(item_sku, cpid, "")
+                            add_sku_catalogo(uid, item_sku, cpid, "")
                             existing_pairs.add((item_sku, cpid))
 
                     # price_to_win por item (solo SKUs con catálogos)
                     new_ptw: Dict[str, str] = {}
                     sku_groups = _group_by_sku(cache_items)
-                    all_cats_ptw = get_sku_catalogos()
+                    all_cats_ptw = get_sku_catalogos(uid)
                     for ptw_sku, grp in sku_groups.items():
                         sku_cats = [
                             c for c in all_cats_ptw
@@ -288,7 +288,7 @@ def build_tab_catalogos(container) -> None:
                     state["ptw_cache"] = new_ptw
 
                     # Sincronizar competidores
-                    all_cats_fresh = get_sku_catalogos()
+                    all_cats_fresh = get_sku_catalogos(uid)
                     active = [c for c in all_cats_fresh if c.get("activo")]
                     for cat in active:
                         items = await _sync_one_catalog(access_token, cat["catalog_product_id"])
@@ -410,7 +410,7 @@ def build_tab_catalogos(container) -> None:
 
                         def _refresh_cats():
                             cats_list_area.clear()
-                            current_cats = [c for c in get_sku_catalogos() if c.get("sku") == sku]
+                            current_cats = [c for c in get_sku_catalogos(uid) if c.get("sku") == sku]
                             if not current_cats:
                                 with cats_list_area:
                                     ui.label("Sin catálogos configurados").classes(
@@ -424,7 +424,7 @@ def build_tab_catalogos(container) -> None:
 
                                         def _make_del(cid=cat["id"]):
                                             def _do_del():
-                                                delete_sku_catalogo(cid)
+                                                delete_sku_catalogo(cid, uid)
                                                 _refresh_cats()
                                                 _rebuild_table()
                                             return _do_del
@@ -486,7 +486,7 @@ def build_tab_catalogos(container) -> None:
                                                         )
                                                         if det:
                                                             name_to_use = det.get("name", add_id)
-                                                    add_sku_catalogo(sku, add_id, name_to_use)
+                                                    add_sku_catalogo(uid, sku, add_id, name_to_use)
                                                     _refresh_cats()
                                                     _rebuild_table()
                                                     ui.notify(
@@ -527,7 +527,7 @@ def build_tab_catalogos(container) -> None:
 
             cache_items = _get_cache_items()
             sku_groups = _group_by_sku(cache_items)
-            all_cats = get_sku_catalogos()
+            all_cats = get_sku_catalogos(uid)
 
             total_skus = len(sku_groups)
             total_cats = len([c for c in all_cats if c.get("activo")])
