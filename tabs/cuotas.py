@@ -260,6 +260,7 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         "seller_sku":     lambda r: (r.get("seller_sku") or "").lower(),
         "title":          lambda r: r.get("title", "").lower(),
         "stock":          lambda r: int(r.get("stock") or 0),
+        "tipo":           lambda r: (0 if _is_reacondicionado(r) else 1),
         "propia_price":   lambda r: r["propia"]["price"]   if r["propia"]["price"]   is not None else -1,
         "catalogo_price":  lambda r: r["catalogo"]["price"] if r["catalogo"]["price"] is not None else -1,
         "x3_price":        lambda r: r["x3"]["price"]       if r["x3"]["price"]       is not None else -1,
@@ -374,8 +375,8 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
         def _build_colgroup() -> None:
             with ui.element("colgroup"):
                 ui.element("col").style("width:4%")
-                ui.element("col").style("width:14%")
-                ui.element("col").style("width:26%")
+                ui.element("col").style("width:11%")
+                ui.element("col").style("width:29%")
                 ui.element("col").style("width:2%")
                 ui.element("col").style("width:3%")
                 ui.element("col").style("width:3%")
@@ -401,16 +402,16 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                         with ui.element("tr"):
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:4%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("marca")):
                                 ui.label("Marca" + _ind("marca"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:14%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("seller_sku")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:11%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("seller_sku")):
                                 ui.label("SKU" + _ind("seller_sku"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:26%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:29%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;cursor:pointer").on("click", lambda: _on_sort("title")):
                                 ui.label("Nombre" + _ind("title"))
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:2%;text-align:center"):
                                 ui.label("Fix")
                             with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("stock")):
                                 ui.label("Stock" + _ind("stock"))
-                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center"):
-                                ui.label("Tipo")
+                            with ui.element("th").props('rowspan="2"').style(f"{TH_HDR1};width:3%;text-align:center;cursor:pointer").on("click", lambda: _on_sort("tipo")):
+                                ui.label("Tipo" + _ind("tipo"))
                             for gkey, glabel, gbg_e, gbg_o, gborder in GROUPS:
                                 if gkey in ("propia", "catalogo"):
                                     _cspan = "2"
@@ -483,7 +484,11 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                                                     ui.label(_tipo)
                                                                 with ui.element("td").style("padding:3px 8px;font-family:monospace;font-size:10px"):
                                                                     if _sk == "propia":
-                                                                        ui.label(_sid if _sid else "—").classes("" if _sid else "text-gray-400")
+                                                                        if _sid:
+                                                                            _plink = _slink or f"https://www.mercadolibre.com.ar/p/{_sid}"
+                                                                            ui.link(_sid, _plink, new_tab=True).classes("text-blue-700 hover:underline")
+                                                                        else:
+                                                                            ui.label("—").classes("text-gray-400")
                                                                     elif _sid and _slink:
                                                                         ui.link(_sid, _slink, new_tab=True).classes("text-blue-700 hover:underline")
                                                                     elif _sid:
