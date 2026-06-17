@@ -144,7 +144,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.17.06"
+VERSION = "3.26.06.17.07"
 
 
 # ==========================
@@ -450,7 +450,7 @@ def show_main_layout(container) -> None:
                 _nav_font = "text-lg font-medium"
                 if perms.get("home", True):
                     ui.button("HOME", on_click=_go("Home")).props("flat dense no-caps").classes(_nav_font)
-                ml_subs = [("DASHBOARD", "Dashboard", "dashboard"), ("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("PROMOS", "Promos", "promos"), ("PREGUNTAS", "Preguntas", "preguntas"), ("FLEX", "Flex", "flex"), ("CATÁLOGOS", "Catálogos", "catalogos"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
+                ml_subs = [("DASHBOARD", "Dashboard", "dashboard"), ("ESTADÍSTICAS", "Estadísticas", "estadisticas"), ("VENTAS", "Ventas", "ventas"), ("PRODUCTOS", "Productos", "productos"), ("CUOTAS", "Cuotas", "cuotas"), ("PROMOS", "Promos", "promos"), ("CATÁLOGOS", "Catálogos", "catalogos"), ("PREGUNTAS", "Preguntas", "preguntas"), ("FLEX", "Flex", "flex"), ("BÚSQUEDA", "Búsqueda", "busqueda"), ("BALANCE", "Balance", "balance")]
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
