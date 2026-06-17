@@ -71,6 +71,18 @@ def _logistica_label(lt: str) -> str:
     return _LOGISTICA_MAP.get(lt, lt or "—")
 
 
+_ORIGEN_BADGE: Dict[str, str] = {
+    "internacional": (
+        '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;'
+        'border-radius:12px;padding:2px 8px;font-size:11px">🌎 Internacional</span>'
+    ),
+    "local": (
+        '<span style="background:#f9fafb;color:#6b7280;border:1px solid #e5e7eb;'
+        'border-radius:12px;padding:2px 8px;font-size:11px">📦 Local</span>'
+    ),
+}
+
+
 _TIPO_BADGE: Dict[str, str] = {
     "gold_special": (
         '<span style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;'
@@ -759,7 +771,7 @@ def build_tab_catalogos(container) -> None:
                                     all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
                                     with ui.element("tr"):
-                                        with ui.element("td").props("colspan=9").style(
+                                        with ui.element("td").props("colspan=10").style(
                                             "padding:0;border:none"
                                         ):
                                             with ui.element("div").style(
@@ -777,7 +789,7 @@ def build_tab_catalogos(container) -> None:
                                                         with ui.element("thead"):
                                                             with ui.element("tr"):
                                                                 for col in [
-                                                                    "#", "Catálogo ID", "Vendedor",
+                                                                    "#", "Catálogo ID", "Item", "Origen", "Vendedor",
                                                                     "Precio", "Tipo",
                                                                 ]:
                                                                     with ui.element("th").style(
@@ -815,6 +827,26 @@ def build_tab_catalogos(container) -> None:
                                                                             "click",
                                                                             _make_detail_handler(cpid),
                                                                         )
+                                                                    item_id_val = comp.get("item_id", "")
+                                                                    item_url = f"https://www.mercadolibre.com.ar/p/{item_id_val}"
+                                                                    item_link_style = (
+                                                                        "color:#15803d;font-weight:600"
+                                                                        if is_ours else "color:#2563eb"
+                                                                    )
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:center"
+                                                                    ):
+                                                                        ui.html(
+                                                                            f'<a href="{item_url}" target="_blank" '
+                                                                            f'style="font-family:monospace;font-size:11px;'
+                                                                            f'{item_link_style};text-decoration:underline">'
+                                                                            f'{item_id_val}</a>'
+                                                                        )
+                                                                    origen_val = comp.get("origen") or "local"
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:center"
+                                                                    ):
+                                                                        ui.html(_ORIGEN_BADGE.get(origen_val, _ORIGEN_BADGE["local"]))
                                                                     nick = (
                                                                         comp.get("seller_nickname")
                                                                         or f"ID {comp.get('seller_id', '')}"
