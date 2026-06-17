@@ -143,46 +143,43 @@ def build_tab_catalogos(container) -> None:
         # ── Tabla principal ───────────────────────────────────────────────────
         table_area = ui.column().classes("w-full overflow-x-auto")
 
-        async def _show_catalog_detail(catalog_product_id: str) -> None:
-            detail = await asyncio.to_thread(ml_get_product_detail, access_token, catalog_product_id)
-            if not detail:
-                ui.notify("No se pudo obtener detalle del catálogo", color="warning")
-                return
-            with ui.dialog() as dlg:
-                with ui.card().classes("w-96 p-4"):
-                    ui.label(detail.get("name", catalog_product_id)).classes("text-lg font-bold")
-                    ui.label(f"ID: {catalog_product_id}").classes("font-mono text-sm text-gray-500")
-                    ui.separator().classes("my-2")
-                    with ui.grid(columns=2).classes("gap-x-4 gap-y-1 text-sm w-full"):
-                        ui.label("Status:").classes("text-gray-500")
-                        ui.label(str(detail.get("status", "—")))
-                        ui.label("Dominio:").classes("text-gray-500")
-                        ui.label(str(detail.get("domain_id", "—")))
-                        if detail.get("parent_id"):
-                            ui.label("Padre:").classes("text-gray-500")
-                            ui.label(str(detail.get("parent_id")))
-                    pickers = detail.get("pickers", [])
-                    if pickers:
-                        ui.label("Variantes:").classes("font-semibold mt-3 text-sm")
-                        for p in pickers:
-                            ui.label(
-                                f"• {p.get('label', '')}: {len(p.get('products', []))} opciones"
-                            ).classes("text-sm text-gray-600 ml-2")
-                    winner = detail.get("buy_box_winner")
-                    if winner:
-                        ui.label("Buy Box Winner:").classes("font-semibold mt-3 text-sm")
-                        try:
-                            price_fmt = "$" + f"{int(float(winner.get('price', 0))):,}".replace(",", ".")
-                        except Exception:
-                            price_fmt = str(winner.get("price", "—"))
-                        ui.label(f"{winner.get('item_id', '—')} — {price_fmt}").classes("text-sm font-mono ml-2")
-                    ui.button("Cerrar", on_click=dlg.close).props("flat no-caps").classes("mt-4")
-            dlg.open()
-
-        # Factory functions — captura por valor, evita closure bugs en loops
+        # Factory: handler async corre con client context → ui.dialog() funciona
         def _make_detail_handler(c: str):
-            def handler():
-                background_tasks.create(_show_catalog_detail(c), name=f"detail_{c}")
+            async def handler():
+                detail = await asyncio.to_thread(ml_get_product_detail, access_token, c)
+                if not detail:
+                    ui.notify("No se pudo obtener detalle del catálogo", color="warning")
+                    return
+                with ui.dialog() as dlg:
+                    with ui.card().classes("w-96 p-4"):
+                        ui.label(detail.get("name", c)).classes("text-lg font-bold")
+                        ui.label(f"ID: {c}").classes("font-mono text-sm text-gray-500")
+                        ui.separator().classes("my-2")
+                        with ui.grid(columns=2).classes("gap-x-4 gap-y-1 text-sm w-full"):
+                            ui.label("Status:").classes("text-gray-500")
+                            ui.label(str(detail.get("status", "—")))
+                            ui.label("Dominio:").classes("text-gray-500")
+                            ui.label(str(detail.get("domain_id", "—")))
+                            if detail.get("parent_id"):
+                                ui.label("Padre:").classes("text-gray-500")
+                                ui.label(str(detail.get("parent_id")))
+                        pickers = detail.get("pickers", [])
+                        if pickers:
+                            ui.label("Variantes:").classes("font-semibold mt-3 text-sm")
+                            for p in pickers:
+                                ui.label(
+                                    f"• {p.get('label', '')}: {len(p.get('products', []))} opciones"
+                                ).classes("text-sm text-gray-600 ml-2")
+                        winner = detail.get("buy_box_winner")
+                        if winner:
+                            ui.label("Buy Box Winner:").classes("font-semibold mt-3 text-sm")
+                            try:
+                                price_fmt = "$" + f"{int(float(winner.get('price', 0))):,}".replace(",", ".")
+                            except Exception:
+                                price_fmt = str(winner.get("price", "—"))
+                            ui.label(f"{winner.get('item_id', '—')} — {price_fmt}").classes("text-sm font-mono ml-2")
+                        ui.button("Cerrar", on_click=dlg.close).props("flat no-caps").classes("mt-4")
+                dlg.open()
             return handler
 
         def _make_del_handler(c: int):
@@ -292,15 +289,12 @@ def build_tab_catalogos(container) -> None:
                                     with ui.element("td").style(_TD):
                                         pass
 
-                                # Catálogo ID — siempre, como botón (factory evita closure bug)
+                                # Catálogo ID — ui.label con .on("click") → async handler con client context
                                 clr = "#6b7280" if not is_active else "#2563eb"
                                 with ui.element("td").style(_TD + sep):
-                                    ui.button(
-                                        cpid,
-                                        on_click=_make_detail_handler(cpid),
-                                    ).props("flat dense no-caps").style(
-                                        f"font-family:monospace;font-size:12px;color:{clr};min-height:0;padding:0 2px"
-                                    )
+                                    ui.label(cpid).classes(
+                                        "font-mono cursor-pointer underline text-sm"
+                                    ).style(f"color:{clr}").on("click", _make_detail_handler(cpid))
 
                                 # Columnas de datos
                                 if row_type == "comp":
