@@ -563,44 +563,28 @@ def build_tab_preguntas(container) -> None:
                     # ── async helpers ───────────────────────────────────────────
 
                     async def _enviar_respuesta(client, qid, resp_area) -> None:
-                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s client=%s", qid, client)
                         try:
                             await client.run_javascript(
                                 "if(document.activeElement) document.activeElement.blur()"
                             )
-                            logging.warning("ENVIAR: blur OK")
-                        except Exception as _e_blur:
-                            logging.warning("ENVIAR: blur falló: %s: %s", type(_e_blur).__name__, _e_blur)
-                        logging.warning("ENVIAR: post-blur, iniciando sleep")
+                        except Exception:
+                            pass
                         await asyncio.sleep(0.05)
-                        logging.warning("ENVIAR: post-sleep, leyendo ta_holder")
                         ta = resp_area
-                        _raw_val = ta.value if ta else None
-                        logging.warning(
-                            "ENVIAR: ta_none=%s raw_val=%r",
-                            ta is None,
-                            str(_raw_val)[:80] if _raw_val else _raw_val,
-                        )
                         text_resp = (ta.value or "").strip() if ta else ""
-                        logging.warning(
-                            "ENVIAR: text_resp=%r len=%d", text_resp[:60], len(text_resp)
-                        )
                         if not text_resp:
                             try:
                                 await client.run_javascript(
                                     "Quasar.Notify.create({message:'Escribí una respuesta antes de enviar',"
                                     "color:'orange',position:'bottom',timeout:4000})"
                                 )
-                            except Exception as _e:
-                                logging.warning("ENVIAR: notify texto_vacio falló: %s", _e)
-                            logging.warning("ENVIAR: texto vacío, abortando")
+                            except Exception:
+                                pass
                             return
                         try:
-                            logging.warning("ENVIAR: llamando _ml_post_answer qid=%s texto=%r", qid, text_resp[:80])
                             result = await run.io_bound(
                                 _ml_post_answer, access_token, qid, text_resp
                             )
-                            logging.warning("ENVIAR: resultado status_code=%s body=%s", result["status_code"], str(result.get("body", ""))[:200])
                             if result["status_code"] in (200, 201):
                                 active_tr.set_visibility(False)
                                 new_count = counter_ref[0] - 1
@@ -618,8 +602,8 @@ def build_tab_preguntas(container) -> None:
                                         "Quasar.Notify.create({message:'Respuesta enviada ✓',"
                                         "color:'green',position:'bottom'})"
                                     )
-                                except Exception as _e:
-                                    logging.warning("ENVIAR: notify enviada falló: %s", _e)
+                                except Exception:
+                                    pass
                                 async def _delayed_refresh() -> None:
                                     await asyncio.sleep(3)
                                     await _cargar_async()
@@ -628,21 +612,18 @@ def build_tab_preguntas(container) -> None:
                                 _body = result["body"] or {}
                                 _error_code = _body.get("error", "")
                                 if result["status_code"] == 400 and _error_code == "not_active_item":
-                                    logging.warning("[ENVIAR] entrando a bloque not_active_item")
                                     _msg = (
                                         "No se puede responder: la publicación está pausada o cerrada. "
                                         "Activala en MercadoLibre primero."
                                     )
-                                    logging.warning("[ENVIAR] antes de notify")
                                     try:
                                         await client.run_javascript(
                                             "Quasar.Notify.create({message:"
                                             + json.dumps(_msg)
                                             + ",color:'orange',position:'bottom',timeout:6000})"
                                         )
-                                    except Exception as _e:
-                                        logging.warning("ENVIAR: notify not_active falló: %s", _e)
-                                    logging.warning("[ENVIAR] después de notify")
+                                    except Exception:
+                                        pass
                                 else:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"
@@ -652,10 +633,9 @@ def build_tab_preguntas(container) -> None:
                                             + json.dumps(_err_full)
                                             + ",color:'red',position:'bottom',timeout:4000})"
                                         )
-                                    except Exception as _e:
-                                        logging.warning("ENVIAR: notify err_ml falló: %s", _e)
+                                    except Exception:
+                                        pass
                         except Exception as exc:
-                            logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
                             _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
                                 await client.run_javascript(
@@ -663,8 +643,8 @@ def build_tab_preguntas(container) -> None:
                                     + json.dumps(_exc_msg)
                                     + ",color:'red',position:'bottom',timeout:4000})"
                                 )
-                            except Exception as _e:
-                                logging.warning("ENVIAR: notify exc falló: %s", _e)
+                            except Exception:
+                                pass
 
                     async def _eliminar_pregunta(client) -> None:
                         try:
