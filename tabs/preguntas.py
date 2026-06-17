@@ -614,12 +614,19 @@ def build_tab_preguntas(container) -> None:
                                     await _cargar_async()
                                 background_tasks.create(_delayed_refresh(), name="refresh_after_answer")
                             else:
-                                err_msg = (
-                                    (result["body"] or {}).get("message")
-                                    or str(result["body"])[:200]
-                                )
+                                _body = result["body"] or {}
+                                _error_code = _body.get("error", "")
                                 try:
-                                    ui.notify(f"Error ML: {err_msg}", type="negative")
+                                    if result["status_code"] == 400 and _error_code == "not_active_item":
+                                        ui.notify(
+                                            "No se puede responder: la publicación está pausada o cerrada. "
+                                            "Activala en MercadoLibre primero.",
+                                            type="warning",
+                                            timeout=6000,
+                                        )
+                                    else:
+                                        err_msg = _body.get("message") or str(_body)[:200]
+                                        ui.notify(f"Error ML: {err_msg}", type="negative")
                                 except Exception:
                                     pass
                         except Exception as exc:
