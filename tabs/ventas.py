@@ -87,7 +87,6 @@ def build_tab_ventas(container) -> None:
     ventas_raw: List[Dict[str, Any]] = []
     all_orders_ref: Dict[str, List[Dict]] = {"orders": [], "item_id_to_catalog": {}, "item_id_to_sku": {}, "item_id_to_tipo_venta": {}, "item_id_to_cuotas": {}, "item_id_to_tipo_oferta": {}, "item_id_to_promo_display": {}}
     filtro_fecha_ref: Dict[str, str] = {"val": "hoy"}
-    filtro_publicacion_ref: Dict[str, str] = {"val": "todas"}
     filtro_cuotas_ref: Dict[str, str] = {"val": "todas"}
     filtro_tipo_ref: Dict[str, str] = {"val": "todas"}
     filtro_estado_ref: Dict[str, str] = {"val": "pagada"}
@@ -827,11 +826,6 @@ def build_tab_ventas(container) -> None:
                 ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered") and v.get("pay_status") != "rejected" and not v.get("has_refund")]
             elif estado_val == "cancelada":
                 ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower() or v.get("pay_status") == "rejected" or v.get("has_refund")]
-            pub_val = str(filtro_publicacion_ref.get("val", "todas") or "todas")
-            if pub_val == "propias":
-                ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Propia"]
-            elif pub_val == "catalogo":
-                ventas_filtradas = [v for v in ventas_filtradas if v.get("tipo") == "Catálogo"]
             cuotas_val = str(filtro_cuotas_ref.get("val", "todas") or "todas")
             if cuotas_val in ("x1", "x3", "x6", "x9", "x12"):
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("cuotas") or "x1") == cuotas_val]
@@ -2000,12 +1994,6 @@ def build_tab_ventas(container) -> None:
                     label="Fecha",
                 ).classes("w-48").bind_value(filtro_fecha_ref, "val")
                 filtro_fecha.on_value_change(lambda: _aplicar_filtro_fecha())
-                filtro_publicacion = ui.select(
-                    {"todas": "Todas", "propias": "Propias", "catalogo": "Catálogo"},
-                    value=filtro_publicacion_ref.get("val", "todas"),
-                    label="Publicación",
-                ).classes("w-36").bind_value(filtro_publicacion_ref, "val")
-                filtro_publicacion.on_value_change(lambda: _pintar_tabla())
                 filtro_cuotas = ui.select(
                     {"todas": "Todas", "x1": "x1", "x3": "x3", "x6": "x6", "x9": "x9", "x12": "x12"},
                     value=filtro_cuotas_ref.get("val", "todas"),
