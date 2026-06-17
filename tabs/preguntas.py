@@ -58,13 +58,13 @@ def _ml_get_questions(access_token: str, seller_id: str) -> List[dict]:
     return resp.json().get("questions", [])
 
 
-def _ml_get_items_titles(access_token: str, item_ids: List[str]) -> Dict[str, str]:
-    titles: Dict[str, str] = {}
+def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict]:
+    info: Dict[str, dict] = {}
     for i in range(0, len(item_ids), 20):
         batch = item_ids[i : i + 20]
         resp = _requests.get(
             "https://api.mercadolibre.com/items",
-            params={"ids": ",".join(batch), "attributes": "id,title"},
+            params={"ids": ",".join(batch), "attributes": "id,title,status"},
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=15,
         )
@@ -72,8 +72,25 @@ def _ml_get_items_titles(access_token: str, item_ids: List[str]) -> Dict[str, st
             for entry in resp.json():
                 body = entry.get("body") or {}
                 if body.get("id"):
-                    titles[str(body["id"])] = body.get("title") or str(body["id"])
-    return titles
+                    info[str(body["id"])] = {
+                        "title": body.get("title") or str(body["id"]),
+                        "status": body.get("status") or "",
+                    }
+    return info
+
+
+def _ml_delete_question(access_token: str, question_id: Any) -> Dict[str, Any]:
+    resp = _requests.delete(
+        f"https://api.mercadolibre.com/questions/{question_id}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=15,
+    )
+    body: Any = {}
+    try:
+        body = resp.json()
+    except Exception:
+        pass
+    return {"status_code": resp.status_code, "body": body}
 
 
 def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str, Any]:
@@ -366,10 +383,10 @@ def build_tab_preguntas(container) -> None:
                 return
 
             item_ids = list({str(q.get("item_id") or "") for q in questions if q.get("item_id")})
-            item_titles: Dict[str, str] = {}
+            item_info: Dict[str, dict] = {}
             if item_ids:
                 try:
-                    item_titles = await run.io_bound(_ml_get_items_titles, access_token, item_ids)
+                    item_info = await run.io_bound(_ml_get_items_info, access_token, item_ids)
                 except Exception:
                     pass
 
@@ -454,9 +471,16 @@ def build_tab_preguntas(container) -> None:
                                         ui.label(_h)
 
                         with ui.element("tbody"):
+                            _STATUS_DOT = {
+                                "active":  "#22c55e",
+                                "paused":  "#f59e0b",
+                                "closed":  "#ef4444",
+                            }
                             for _i, q in enumerate(questions):
                                 item_id    = str(q.get("item_id") or "")
-                                item_title = item_titles.get(item_id, item_id)
+                                item_entry = item_info.get(item_id, {})
+                                item_title = item_entry.get("title", item_id)
+                                item_status = item_entry.get("status", "")
                                 text_q     = q.get("text") or ""
                                 from_obj   = q.get("from") or {}
                                 buyer_display = f"#{from_obj.get('id', '—')}"
@@ -465,10 +489,19 @@ def build_tab_preguntas(container) -> None:
                                 tr = ui.element("tr").classes("pq-row")
                                 row_elements.append(tr)
                                 with tr:
+                                    _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
                                     with ui.element("td").style(
-                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                                        f"{_TD};overflow:hidden"
                                     ):
-                                        ui.label(item_title[:60]).style("font-weight:500")
+                                        ui.html(
+                                            f'<div style="display:flex;align-items:center;gap:5px;overflow:hidden">'
+                                            f'<span style="width:7px;height:7px;border-radius:50%;'
+                                            f'background:{_dot_color};flex-shrink:0" '
+                                            f'title="{item_status}"></span>'
+                                            f'<span style="overflow:hidden;text-overflow:ellipsis;'
+                                            f'white-space:nowrap;font-weight:500">{item_title[:55]}</span>'
+                                            f'</div>'
+                                        )
                                     with ui.element("td").style(
                                         f"{_TD};overflow:hidden;text-overflow:ellipsis;"
                                         "white-space:nowrap;color:#374151"
@@ -596,6 +629,38 @@ def build_tab_preguntas(container) -> None:
                             except Exception:
                                 pass
 
+                    async def _eliminar_pregunta() -> None:
+                        try:
+                            result = await run.io_bound(_ml_delete_question, access_token, qid)
+                            if result["status_code"] == 200:
+                                active_tr.set_visibility(False)
+                                new_count = counter_ref[0] - 1
+                                counter_ref[0] = new_count
+                                counter_label.set_content(
+                                    f'<span style="font-size:13px;color:#1565c0">Sin responder:&nbsp;</span>'
+                                    f'<span style="font-size:13px;font-weight:700;color:#d32f2f">{new_count}</span>'
+                                )
+                                detail_panel.clear()
+                                detail_panel.set_visibility(False)
+                                try:
+                                    ui.notify("Pregunta eliminada", color="positive")
+                                except Exception:
+                                    pass
+                            else:
+                                err_msg = (
+                                    (result["body"] or {}).get("message")
+                                    or str(result["body"])[:200]
+                                )
+                                try:
+                                    ui.notify(f"Error al eliminar: {err_msg}", type="negative")
+                                except Exception:
+                                    pass
+                        except Exception as exc:
+                            try:
+                                ui.notify(f"Error al eliminar: {exc}", type="negative")
+                            except Exception:
+                                pass
+
                     async def _load_ais() -> None:
                         groq_key   = get_app_config("groq_api_key")
                         gemini_key = get_app_config("gemini_api_key")
@@ -709,6 +774,14 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:12px;line-height:1.5;color:#374151"
                                         )
                                     _build_frases_card(resp_groq_holder, resp_gemini_holder)
+                                    ui.button(
+                                        "Eliminar pregunta",
+                                        on_click=lambda: background_tasks.create(
+                                            _eliminar_pregunta(), name="eliminar_pregunta"
+                                        ),
+                                    ).props("unelevated dense no-caps icon=delete").style(
+                                        "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
+                                    )
 
                                 # ── COL 2 — GROK ─────────────────────────────────────
                                 with ui.element("div").style("flex:1;min-width:0"):
@@ -839,6 +912,14 @@ def build_tab_preguntas(container) -> None:
                                         )
                                     ui.label(text).style(
                                         "font-size:12px;line-height:1.5;color:#374151"
+                                    )
+                                    ui.button(
+                                        "Eliminar pregunta",
+                                        on_click=lambda: background_tasks.create(
+                                            _eliminar_pregunta(), name="eliminar_pregunta"
+                                        ),
+                                    ).props("unelevated dense no-caps icon=delete").style(
+                                        "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
                                     )
 
                                 # ── Sección 2 — GROK ─────────────────────────────────
