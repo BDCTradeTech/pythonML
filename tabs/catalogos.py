@@ -88,15 +88,11 @@ _TIPO_BADGE: Dict[str, str] = {
 
 
 def _get_cache_items(seller_id: str) -> List[Dict]:
-    raw = None
-    if seller_id:
-        raw = get_app_config(f"cache_my_items_{seller_id}_active")
-        if not raw:
-            raw = get_app_config(f"cache_my_items_{seller_id}_all")
+    if not seller_id:
+        return []
+    raw = get_app_config(f"cache_my_items_{seller_id}_active")
     if not raw:
-        raw = get_app_config("cache_my_items_active")
-    if not raw:
-        raw = get_app_config("cache_my_items_all")
+        raw = get_app_config(f"cache_my_items_{seller_id}_all")
     if not raw:
         return []
     try:
@@ -844,5 +840,10 @@ def build_tab_catalogos(container) -> None:
                                                                                 "font-size:11px"
                                                                             )
 
-        # Carga inicial
-        _rebuild_table()
+        # Carga inicial: obtener seller_id async antes de renderizar para no mostrar datos de otro usuario
+        async def _init_and_rebuild():
+            if not seller_id_ref[0]:
+                seller_id_ref[0] = await run.io_bound(ml_get_user_id, access_token) or ""
+            _rebuild_table()
+
+        ui.timer(0.0, _init_and_rebuild, once=True)
