@@ -38,6 +38,7 @@ TAB_KEYS = [
     ("ventas", "Ventas"),
     ("productos", "Productos"),
     ("cuotas", "Cuotas"),
+    ("catalogos", "Catálogos"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
     ("dashboard", "Dashboard"),
@@ -606,7 +607,7 @@ def init_db() -> None:
     cur.execute("SELECT id FROM users ORDER BY id")
     for row in cur.fetchall():
         uid = row["id"]
-        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "busqueda", "balance", "dashboard", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin", "actividad"):
+        for tab_key in ("home", "estadisticas", "ventas", "productos", "cuotas", "catalogos", "busqueda", "balance", "dashboard", "compras", "stock", "compras_lista", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion", "admin", "actividad"):
             can = 1 if tab_key not in ("admin", "actividad") or uid == _admin_uid else 0
             cur.execute(
                 "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, ?)",
@@ -639,6 +640,40 @@ def init_db() -> None:
             key        TEXT PRIMARY KEY,
             value      TEXT,
             updated_at TEXT
+        )
+        """
+    )
+
+    # Catálogos ML asociados manualmente a cada SKU
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sku_catalogos (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            sku                TEXT NOT NULL,
+            catalog_product_id TEXT NOT NULL,
+            catalog_name       TEXT,
+            activo             INTEGER DEFAULT 1,
+            agregado_at        TEXT,
+            UNIQUE(sku, catalog_product_id)
+        )
+        """
+    )
+
+    # Cache de competidores por catálogo ML
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS catalogo_competidores (
+            id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            catalog_product_id TEXT NOT NULL,
+            item_id            TEXT NOT NULL,
+            seller_id          TEXT,
+            seller_nickname    TEXT,
+            price              REAL,
+            listing_type       TEXT,
+            logistica          TEXT,
+            free_shipping      INTEGER,
+            updated_at         TEXT,
+            UNIQUE(catalog_product_id, item_id)
         )
         """
     )
@@ -712,6 +747,108 @@ def set_ml_nickname(user_id: int, nickname: str) -> None:
             "UPDATE ml_credentials SET ml_nickname = ? WHERE user_id = ?",
             (nickname, user_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Catálogos ML (sku_catalogos + catalogo_competidores)
+# ---------------------------------------------------------------------------
+
+
+def get_sku_catalogos() -> List[Dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM sku_catalogos ORDER BY sku, id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def add_sku_catalogo(sku: str, catalog_product_id: str, catalog_name: str = "") -> bool:
+    """Agrega asociación SKU-catálogo. Retorna True si se insertó, False si ya existía."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR IGNORE INTO sku_catalogos (sku, catalog_product_id, catalog_name, activo, agregado_at) VALUES (?, ?, ?, 1, ?)",
+            (sku.strip(), catalog_product_id.strip().upper(), catalog_name.strip(), now),
+        )
+        conn.commit()
+        return conn.execute(
+            "SELECT changes()"
+        ).fetchone()[0] > 0
+    finally:
+        conn.close()
+
+
+def update_sku_catalogo_name(id_: int, catalog_name: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE sku_catalogos SET catalog_name=? WHERE id=?", (catalog_name, id_))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_sku_catalogo_activo(id_: int, activo: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("UPDATE sku_catalogos SET activo=? WHERE id=?", (activo, id_))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_sku_catalogo(id_: int) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM sku_catalogos WHERE id=?", (id_,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_catalogo_competidores(catalog_product_id: str) -> List[Dict]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM catalogo_competidores WHERE catalog_product_id=? ORDER BY price",
+            (catalog_product_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> None:
+    """Reemplaza todos los competidores del catálogo con la lista recibida."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM catalogo_competidores WHERE catalog_product_id=?", (catalog_product_id,))
+        for it in items:
+            ship = it.get("shipping") or {}
+            conn.execute(
+                """INSERT INTO catalogo_competidores
+                   (catalog_product_id, item_id, seller_id, seller_nickname, price,
+                    listing_type, logistica, free_shipping, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    catalog_product_id,
+                    it.get("item_id", ""),
+                    str(it.get("seller_id", "")),
+                    it.get("seller_nickname", ""),
+                    it.get("price"),
+                    it.get("listing_type_id", ""),
+                    ship.get("logistic_type", "") if isinstance(ship, dict) else "",
+                    1 if (isinstance(ship, dict) and ship.get("free_shipping")) else 0,
+                    now,
+                ),
+            )
         conn.commit()
     finally:
         conn.close()

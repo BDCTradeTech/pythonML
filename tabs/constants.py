@@ -21,6 +21,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("promos", "Promos"),
     ("preguntas", "Preguntas"),
     ("flex", "Flex"),
+    ("catalogos", "Catálogos"),
     ("busqueda", "Busquedas"),
     ("balance", "Balance"),
     ("dashboard", "Dashboard"),
@@ -40,7 +41,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "preguntas", "flex", "historicos", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "preguntas", "flex", "catalogos", "historicos", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -79,6 +80,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "promos": "Promos",
     "preguntas": "Preguntas",
     "flex": "Flex",
+    "catalogos": "Catálogos",
     "compras": "Invoices",
     "stock": "Stock",
     "compras_lista": "Compras",
