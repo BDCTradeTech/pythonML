@@ -706,6 +706,12 @@ def init_db() -> None:
         """
     )
 
+    # Migration: agregar columna origen a catalogo_competidores si no existe
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN origen TEXT DEFAULT 'local'")
+    except sqlite3.OperationalError:
+        pass
+
     conn.commit()
     conn.close()
 
@@ -861,11 +867,18 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
         conn.execute("DELETE FROM catalogo_competidores WHERE catalog_product_id=?", (catalog_product_id,))
         for it in items:
             ship = it.get("shipping") or {}
+            tags = it.get("tags") or []
+            intl_mode = ship.get("international_delivery_mode", "") if isinstance(ship, dict) else ""
+            is_intl = (
+                any(t in tags for t in ("cbt_item", "cbt_fulfillment_us"))
+                or bool(intl_mode and intl_mode not in ("none", "not_specified", ""))
+            )
+            origen = "internacional" if is_intl else "local"
             conn.execute(
                 """INSERT INTO catalogo_competidores
                    (catalog_product_id, item_id, seller_id, seller_nickname, price,
-                    listing_type, logistica, free_shipping, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    listing_type, logistica, free_shipping, updated_at, origen)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     catalog_product_id,
                     it.get("item_id", ""),
@@ -876,6 +889,7 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                     ship.get("logistic_type", "") if isinstance(ship, dict) else "",
                     1 if (isinstance(ship, dict) and ship.get("free_shipping")) else 0,
                     now,
+                    origen,
                 ),
             )
         conn.commit()
