@@ -630,45 +630,55 @@ def build_tab_preguntas(container) -> None:
                                         "No se puede responder: la publicación está pausada o cerrada. "
                                         "Activala en MercadoLibre primero."
                                     )
+                                    logging.warning("[TEST] llegué al bloque not_active_item qid=%s", qid)
+                                    try:
+                                        _quasar_test = await ui.run_javascript("return typeof Quasar !== 'undefined'")
+                                        logging.warning("[TEST] Quasar disponible: %s", _quasar_test)
+                                    except Exception as _e_test:
+                                        logging.warning("[TEST] ui.run_javascript falló: %s: %s", type(_e_test).__name__, _e_test)
                                     try:
                                         ui.notify(_msg, type="warning", timeout=6000)
-                                    except Exception:
+                                    except Exception as _e_notify:
+                                        logging.warning("[TEST] ui.notify falló: %s: %s", type(_e_notify).__name__, _e_notify)
                                         try:
                                             await ui.run_javascript(
                                                 "Quasar.Notify.create({message:"
                                                 + json.dumps(_msg)
                                                 + ",color:'orange',position:'bottom',timeout:6000})"
                                             )
-                                        except Exception:
-                                            pass
+                                            logging.warning("[TEST] Quasar.Notify.create ejecutado OK")
+                                        except Exception as _e_js:
+                                            logging.warning("[TEST] Quasar.Notify.create falló: %s: %s", type(_e_js).__name__, _e_js)
                                 else:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"
                                     try:
                                         ui.notify(_err_full, type="negative")
-                                    except Exception:
+                                    except Exception as _e_notify2:
+                                        logging.warning("[TEST] ui.notify(err_full) falló: %s: %s", type(_e_notify2).__name__, _e_notify2)
                                         try:
                                             await ui.run_javascript(
                                                 "Quasar.Notify.create({message:"
                                                 + json.dumps(_err_full)
                                                 + ",color:'red',position:'bottom',timeout:4000})"
                                             )
-                                        except Exception:
-                                            pass
+                                        except Exception as _e_js2:
+                                            logging.warning("[TEST] Quasar.Notify(err) falló: %s: %s", type(_e_js2).__name__, _e_js2)
                         except Exception as exc:
                             logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
                             _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
                                 ui.notify(_exc_msg, type="negative")
-                            except Exception:
+                            except Exception as _e_notifyexc:
+                                logging.warning("[TEST] ui.notify(exc) falló: %s: %s", type(_e_notifyexc).__name__, _e_notifyexc)
                                 try:
                                     await ui.run_javascript(
                                         "Quasar.Notify.create({message:"
                                         + json.dumps(_exc_msg)
                                         + ",color:'red',position:'bottom',timeout:4000})"
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as _e_jsexc:
+                                    logging.warning("[TEST] Quasar.Notify(exc) falló: %s: %s", type(_e_jsexc).__name__, _e_jsexc)
 
                     async def _eliminar_pregunta() -> None:
                         try:
