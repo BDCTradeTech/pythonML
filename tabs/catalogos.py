@@ -10,7 +10,7 @@ import re
 from typing import Any, Dict, List, Optional, Set
 
 import requests
-from nicegui import app, background_tasks, ui
+from nicegui import app, background_tasks, run, ui
 
 from db import (
     get_app_config,
@@ -23,6 +23,7 @@ from db import (
 from ml_api import (
     get_ml_access_token,
     ml_get_catalog_items,
+    ml_get_user_id,
     ml_get_users_multiget,
     ml_get_product_detail,
     ml_get_item_price_to_win,
@@ -86,8 +87,8 @@ _TIPO_BADGE: Dict[str, str] = {
 }
 
 
-def _get_cache_items() -> List[Dict]:
-    raw = get_app_config("cache_my_items_active")
+def _get_cache_items(seller_id: str) -> List[Dict]:
+    raw = get_app_config(f"cache_my_items_{seller_id}_active")
     if not raw:
         return []
     try:
@@ -230,6 +231,7 @@ def build_tab_catalogos(container) -> None:
             ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración.").classes("text-warning")
             return
 
+        seller_id_ref: List[str] = [""]
         state: Dict[str, Any] = {"syncing": False, "ptw_cache": {}}
         sync_btn_ref: List[Any] = [None]
         spinner_ref: List[Any] = [None]
@@ -256,7 +258,9 @@ def build_tab_catalogos(container) -> None:
                     sync_btn_ref[0].props("disable")
                 try:
                     # Auto-agregar catálogos desde cache_my_items_active
-                    cache_items = _get_cache_items()
+                    if not seller_id_ref[0]:
+                        seller_id_ref[0] = await run.io_bound(ml_get_user_id, access_token) or ""
+                    cache_items = _get_cache_items(seller_id_ref[0])
                     existing_cats = get_sku_catalogos(uid)
                     existing_pairs: Set[tuple] = {
                         (c["sku"], c["catalog_product_id"]) for c in existing_cats
@@ -525,7 +529,7 @@ def build_tab_catalogos(container) -> None:
         def _rebuild_table() -> None:
             table_area.clear()
 
-            cache_items = _get_cache_items()
+            cache_items = _get_cache_items(seller_id_ref[0])
             sku_groups = _group_by_sku(cache_items)
             all_cats = get_sku_catalogos(uid)
 
