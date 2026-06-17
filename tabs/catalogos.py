@@ -46,10 +46,27 @@ def _fmt_precio(v: Any) -> str:
 
 def _tipo_label(lt: str) -> str:
     return {
-        "gold_special": "gold_sp",
-        "gold_pro": "gold_pro",
-        "gold_premium": "gold_prem",
+        "gold_special": "Sin cuotas",
+        "gold_pro": "Con cuotas",
+        "gold_premium": "Premium",
     }.get(lt, lt or "—")
+
+
+_LOGISTICA_MAP: Dict[str, str] = {
+    "cross_docking": "Correo",
+    "xd_drop_off": "Correo",
+    "drop_off": "Correo",
+    "me1": "Correo",
+    "me2": "Correo",
+    "fulfillment": "Full",
+    "self_service": "Flex",
+    "flex": "Flex",
+    "correo": "Correo",
+}
+
+
+def _logistica_label(lt: str) -> str:
+    return _LOGISTICA_MAP.get(lt, lt or "—")
 
 
 def _get_cache_items() -> List[Dict]:
@@ -281,7 +298,7 @@ def build_tab_catalogos(container) -> None:
             ).props("dense outlined clearable").style("min-width:230px")
 
         # ── Área de tabla ───────────────────────────────────────────────────
-        table_area = ui.column().classes("w-full overflow-x-auto")
+        table_area = ui.element("div").style("width:100%;overflow-x:auto")
 
         # ── Factory: popup detalle catálogo ─────────────────────────────────
         def _make_detail_handler(cpid: str):
@@ -555,7 +572,7 @@ def build_tab_catalogos(container) -> None:
                     return _do_sort
 
                 # Render — tabla con scroll (MEJORA 3)
-                with ui.element("div").style("max-height:65vh;overflow-y:auto"):
+                with ui.element("div").style("width:100%;max-height:65vh;overflow-y:auto"):
                     with ui.element("table").style("width:100%;border-collapse:collapse"):
                         with ui.element("thead"):
                             with ui.element("tr"):
@@ -653,7 +670,7 @@ def build_tab_catalogos(container) -> None:
                                     all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
                                     with ui.element("tr"):
-                                        with ui.element("td").props("colspan=10").style(
+                                        with ui.element("td").props("colspan=9").style(
                                             "padding:0;border:none"
                                         ):
                                             with ui.element("div").style(
@@ -672,7 +689,7 @@ def build_tab_catalogos(container) -> None:
                                                             with ui.element("tr"):
                                                                 for col in [
                                                                     "#", "Catálogo ID", "Vendedor",
-                                                                    "Precio", "Tipo", "Logística", "Envío gratis",
+                                                                    "Precio", "Tipo", "Logística",
                                                                 ]:
                                                                     with ui.element("th").style(
                                                                         _TH + ";background:#e0f2fe;font-size:11px"
@@ -707,14 +724,7 @@ def build_tab_catalogos(container) -> None:
                                                                     with ui.element("td").style(_TD + ";font-size:12px"):
                                                                         ui.label(_tipo_label(comp.get("listing_type") or ""))
                                                                     with ui.element("td").style(_TD + ";font-size:12px"):
-                                                                        ui.label(comp.get("logistica") or "—")
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center"
-                                                                    ):
-                                                                        if comp.get("free_shipping"):
-                                                                            ui.label("Sí").style("color:#16a34a;font-weight:600")
-                                                                        else:
-                                                                            ui.label("No").style("color:#9ca3af")
+                                                                        ui.label(_logistica_label(comp.get("logistica") or ""))
 
         # Carga inicial
         _rebuild_table()
