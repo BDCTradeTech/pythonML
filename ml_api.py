@@ -876,6 +876,25 @@ def ml_get_product_detail(access_token: Optional[str], product_id: str) -> Optio
         return None
 
 
+def ml_get_catalog_items(access_token: Optional[str], catalog_product_id: str) -> List[Dict[str, Any]]:
+    """GET /products/{id}/items — vendedores compitiendo en un catálogo. Retorna [] si 404 o error."""
+    if not access_token or not str(catalog_product_id).strip():
+        return []
+    try:
+        resp = requests.get(
+            f"https://api.mercadolibre.com/products/{catalog_product_id}/items",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            return []
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("results", []) if isinstance(data, dict) else []
+    except Exception:
+        return []
+
+
 def _extraer_color_desde_texto(texto: str) -> str:
     """Busca palabras de color en un texto. Devuelve la primera coincidencia o ''."""
     if not texto or not isinstance(texto, str):
