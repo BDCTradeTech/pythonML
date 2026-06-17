@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import requests as _requests
 
-from nicegui import Client, app, background_tasks, run, ui
+from nicegui import app, background_tasks, context, run, ui
 
 from db import get_app_config, set_app_config
 from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
@@ -822,10 +822,11 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:12px;line-height:1.5;color:#374151"
                                         )
                                     _build_frases_card(resp_groq_holder, resp_gemini_holder)
+                                    _c_elim = context.client
                                     ui.button(
                                         "Eliminar pregunta",
-                                        on_click=lambda: background_tasks.create(
-                                            _eliminar_pregunta(Client.current), name="eliminar_pregunta"
+                                        on_click=lambda c=_c_elim: background_tasks.create(
+                                            _eliminar_pregunta(c), name="eliminar_pregunta"
                                         ),
                                     ).props("unelevated dense no-caps icon=delete").style(
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
@@ -873,10 +874,10 @@ def build_tab_preguntas(container) -> None:
                                         )
                                         resp_groq_holder[0] = resp_groq
                                         resp_area_groq_ref[0] = resp_groq
+                                        _c_groq = context.client
                                         def _btn_enviar_groq_click():
-                                            _c = Client.current
                                             background_tasks.create(
-                                                _enviar_respuesta(_c, qid, resp_groq_holder[0]),
+                                                _enviar_respuesta(_c_groq, qid, resp_groq_holder[0]),
                                                 name="enviar_grok",
                                             )
                                         ui.button(
@@ -928,10 +929,10 @@ def build_tab_preguntas(container) -> None:
                                         )
                                         resp_gemini_holder[0] = resp_gemini
                                         resp_area_gemini_ref[0] = resp_gemini
+                                        _c_gemini = context.client
                                         def _btn_enviar_gemini_click():
-                                            _c = Client.current
                                             background_tasks.create(
-                                                _enviar_respuesta(_c, qid, resp_gemini_holder[0]),
+                                                _enviar_respuesta(_c_gemini, qid, resp_gemini_holder[0]),
                                                 name="enviar_gemini",
                                             )
                                         ui.button(
@@ -967,10 +968,11 @@ def build_tab_preguntas(container) -> None:
                                     ui.label(text).style(
                                         "font-size:12px;line-height:1.5;color:#374151"
                                     )
+                                    _c_elim = context.client
                                     ui.button(
                                         "Eliminar pregunta",
-                                        on_click=lambda: background_tasks.create(
-                                            _eliminar_pregunta(Client.current), name="eliminar_pregunta"
+                                        on_click=lambda c=_c_elim: background_tasks.create(
+                                            _eliminar_pregunta(c), name="eliminar_pregunta"
                                         ),
                                     ).props("unelevated dense no-caps icon=delete").style(
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
@@ -1018,10 +1020,10 @@ def build_tab_preguntas(container) -> None:
                                     )
                                     resp_groq_holder[0] = resp_groq
                                     resp_area_groq_ref[0] = resp_groq
+                                    _c_groq = context.client
                                     def _btn_enviar_groq_click():
-                                        _c = Client.current
                                         background_tasks.create(
-                                            _enviar_respuesta(_c, qid, resp_groq_holder[0]),
+                                            _enviar_respuesta(_c_groq, qid, resp_groq_holder[0]),
                                             name="enviar_grok",
                                         )
                                     ui.button(
@@ -1073,10 +1075,10 @@ def build_tab_preguntas(container) -> None:
                                     )
                                     resp_gemini_holder[0] = resp_gemini
                                     resp_area_gemini_ref[0] = resp_gemini
+                                    _c_gemini = context.client
                                     def _btn_enviar_gemini_click():
-                                        _c = Client.current
                                         background_tasks.create(
-                                            _enviar_respuesta(_c, qid, resp_gemini_holder[0]),
+                                            _enviar_respuesta(_c_gemini, qid, resp_gemini_holder[0]),
                                             name="enviar_gemini",
                                         )
                                     ui.button(
