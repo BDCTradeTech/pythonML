@@ -577,7 +577,16 @@ def build_tab_preguntas(container) -> None:
                             "ENVIAR: text_resp=%r ta_none=%s", text_resp[:60], ta is None
                         )
                         if not text_resp:
-                            ui.notify("Escribí una respuesta antes de enviar", type="warning")
+                            try:
+                                ui.notify("Escribí una respuesta antes de enviar", type="warning")
+                            except Exception:
+                                try:
+                                    await ui.run_javascript(
+                                        "Quasar.Notify.create({message:'Escribí una respuesta antes de enviar',"
+                                        "color:'orange',position:'bottom',timeout:4000})"
+                                    )
+                                except Exception:
+                                    pass
                             logging.warning("ENVIAR: texto vacío, abortando")
                             return
                         try:
@@ -616,25 +625,50 @@ def build_tab_preguntas(container) -> None:
                             else:
                                 _body = result["body"] or {}
                                 _error_code = _body.get("error", "")
-                                try:
-                                    if result["status_code"] == 400 and _error_code == "not_active_item":
-                                        ui.notify(
-                                            "No se puede responder: la publicación está pausada o cerrada. "
-                                            "Activala en MercadoLibre primero.",
-                                            type="warning",
-                                            timeout=6000,
-                                        )
-                                    else:
-                                        err_msg = _body.get("message") or str(_body)[:200]
-                                        ui.notify(f"Error ML: {err_msg}", type="negative")
-                                except Exception:
-                                    pass
+                                if result["status_code"] == 400 and _error_code == "not_active_item":
+                                    _msg = (
+                                        "No se puede responder: la publicación está pausada o cerrada. "
+                                        "Activala en MercadoLibre primero."
+                                    )
+                                    try:
+                                        ui.notify(_msg, type="warning", timeout=6000)
+                                    except Exception:
+                                        try:
+                                            await ui.run_javascript(
+                                                "Quasar.Notify.create({message:"
+                                                + json.dumps(_msg)
+                                                + ",color:'orange',position:'bottom',timeout:6000})"
+                                            )
+                                        except Exception:
+                                            pass
+                                else:
+                                    _err_msg = _body.get("message") or str(_body)[:200]
+                                    _err_full = f"Error ML: {_err_msg}"
+                                    try:
+                                        ui.notify(_err_full, type="negative")
+                                    except Exception:
+                                        try:
+                                            await ui.run_javascript(
+                                                "Quasar.Notify.create({message:"
+                                                + json.dumps(_err_full)
+                                                + ",color:'red',position:'bottom',timeout:4000})"
+                                            )
+                                        except Exception:
+                                            pass
                         except Exception as exc:
                             logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
+                            _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
-                                ui.notify(f"Error al enviar: {exc}", type="negative")
+                                ui.notify(_exc_msg, type="negative")
                             except Exception:
-                                pass
+                                try:
+                                    await ui.run_javascript(
+                                        "Quasar.Notify.create({message:"
+                                        + json.dumps(_exc_msg)
+                                        + ",color:'red',position:'bottom',timeout:4000})"
+                                    )
+                                except Exception:
+                                    pass
 
                     async def _eliminar_pregunta() -> None:
                         try:
