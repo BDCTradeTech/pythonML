@@ -564,7 +564,26 @@ def build_tab_preguntas(container) -> None:
 
                     async def _enviar_respuesta(ta_holder: list) -> None:
                         logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
-                        _client = Client.current
+                        try:
+                            logging.warning(
+                                "[ENVIAR2] resp_area_groq=%s resp_area_gemini=%s",
+                                resp_area_groq_ref[0] is not None,
+                                resp_area_gemini_ref[0] is not None,
+                            )
+                            _text_diag = ""
+                            if resp_area_groq_ref[0]:
+                                _text_diag = (resp_area_groq_ref[0].value or "").strip()
+                            logging.warning(
+                                "[ENVIAR3] text_resp=%s",
+                                _text_diag[:30] if _text_diag else "VACIO",
+                            )
+                        except Exception as _ex_diag:
+                            logging.warning("[ENVIAR_EX] excepcion al leer textarea: %s", _ex_diag)
+                        try:
+                            _client = Client.current
+                        except Exception as _ex_client:
+                            logging.warning("[ENVIAR_CLIENT_EX] Client.current falló: %s: %s", type(_ex_client).__name__, _ex_client)
+                            _client = None
                         logging.warning("ENVIAR: _client=%s", _client)
                         try:
                             await _client.run_javascript(
