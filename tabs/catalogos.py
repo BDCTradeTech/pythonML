@@ -71,6 +71,13 @@ def _logistica_label(lt: str) -> str:
     return _LOGISTICA_MAP.get(lt, lt or "—")
 
 
+def _item_url(item_id: str) -> str:
+    match = re.match(r'^([A-Z]+)(\d+)$', item_id or '')
+    if match:
+        return f"https://articulo.mercadolibre.com.ar/{match.group(1)}-{match.group(2)}"
+    return "https://www.mercadolibre.com.ar"
+
+
 _ORIGEN_BADGE: Dict[str, str] = {
     "internacional": (
         '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;'
@@ -517,10 +524,25 @@ def build_tab_catalogos(container) -> None:
                                                             name_to_use = det.get("name", add_id)
                                                     add_sku_catalogo(uid, sku, add_id, name_to_use)
                                                     _refresh_cats()
-                                                    _rebuild_table()
                                                     ui.notify(
-                                                        f"Catálogo {add_id} agregado", color="positive"
+                                                        f"Catálogo {add_id} agregado, sincronizando...",
+                                                        color="info",
                                                     )
+                                                    try:
+                                                        sync_items = await _sync_one_catalog(
+                                                            access_token, add_id
+                                                        )
+                                                        await asyncio.to_thread(
+                                                            upsert_catalogo_competidores, add_id, sync_items
+                                                        )
+                                                        ui.notify(
+                                                            f"{add_id} sincronizado", color="positive"
+                                                        )
+                                                    except Exception as ex:
+                                                        ui.notify(
+                                                            f"Error al sincronizar: {ex}", color="warning"
+                                                        )
+                                                    _rebuild_table()
                                                 return _do_add
 
                                             with ui.row().classes(
@@ -549,6 +571,30 @@ def build_tab_catalogos(container) -> None:
 
                 dlg.open()
             return handler
+
+        # ── Factory: sync un SKU ─────────────────────────────────────────────
+        def _make_sync_sku_handler(s_sku: str, s_cats: List[Dict]):
+            async def _do():
+                active = [c for c in s_cats if c.get("activo")]
+                if not active:
+                    ui.notify("Sin catálogos activos", color="warning")
+                    return
+                ui.notify(f"Sincronizando {s_sku}...", color="info")
+                try:
+                    for cat in active:
+                        its = await _sync_one_catalog(access_token, cat["catalog_product_id"])
+                        await asyncio.to_thread(
+                            upsert_catalogo_competidores, cat["catalog_product_id"], its
+                        )
+                    _rebuild_table()
+                    ui.notify(f"{s_sku}: sincronizado", color="positive")
+                except Exception as ex:
+                    ui.notify(f"Error: {ex}", color="negative")
+
+            def _click():
+                background_tasks.create(_do(), name=f"sync_sku_{s_sku}")
+
+            return _click
 
         # ── Rebuild principal ────────────────────────────────────────────────
         def _rebuild_table() -> None:
@@ -665,7 +711,7 @@ def build_tab_catalogos(container) -> None:
                             with ui.element("tr"):
                                 for col_name in [
                                     "#", "SKU", "Marca", "Producto", "Color",
-                                    "Stock", "Precio", "Catálogos", "Ganando", "▶",
+                                    "Stock", "Precio", "Catálogos", "Ganando", "↺", "▶",
                                 ]:
                                     if col_name in _SORTABLE_COLS:
                                         is_active = sort_col_ref["col"] == col_name
@@ -740,6 +786,15 @@ def build_tab_catalogos(container) -> None:
                                             ui.label("—").classes("text-gray-400")
 
                                     with ui.element("td").style(_TD + ";text-align:center"):
+                                        if n_cats > 0:
+                                            ui.button(
+                                                "↺",
+                                                on_click=_make_sync_sku_handler(sku, sku_cats),
+                                            ).props("flat dense size=sm no-caps").style(
+                                                "color:#6b7280;font-size:13px"
+                                            )
+
+                                    with ui.element("td").style(_TD + ";text-align:center"):
                                         is_exp = sku in expanded_skus
 
                                         def _make_toggle(s=sku):
@@ -771,7 +826,7 @@ def build_tab_catalogos(container) -> None:
                                     all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
                                     with ui.element("tr"):
-                                        with ui.element("td").props("colspan=10").style(
+                                        with ui.element("td").props("colspan=11").style(
                                             "padding:0;border:none"
                                         ):
                                             with ui.element("div").style(
@@ -828,7 +883,7 @@ def build_tab_catalogos(container) -> None:
                                                                             _make_detail_handler(cpid),
                                                                         )
                                                                     item_id_val = comp.get("item_id", "")
-                                                                    item_url = f"https://www.mercadolibre.com.ar/p/{item_id_val}"
+                                                                    item_url = _item_url(item_id_val)
                                                                     item_link_style = (
                                                                         "color:#15803d;font-weight:600"
                                                                         if is_ours else "color:#2563eb"
