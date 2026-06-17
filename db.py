@@ -649,15 +649,43 @@ def init_db() -> None:
         """
         CREATE TABLE IF NOT EXISTS sku_catalogos (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id            INTEGER NOT NULL DEFAULT 1,
             sku                TEXT NOT NULL,
             catalog_product_id TEXT NOT NULL,
             catalog_name       TEXT,
             activo             INTEGER DEFAULT 1,
             agregado_at        TEXT,
-            UNIQUE(sku, catalog_product_id)
+            UNIQUE(user_id, sku, catalog_product_id),
+            FOREIGN KEY (user_id) REFERENCES users (id)
         )
         """
     )
+
+    # Migration: si la tabla ya existía sin user_id, recrearla con user_id
+    _sc_cols = [r[1] for r in conn.execute("PRAGMA table_info(sku_catalogos)").fetchall()]
+    if "user_id" not in _sc_cols:
+        conn.execute(
+            """
+            CREATE TABLE sku_catalogos_new (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id            INTEGER NOT NULL DEFAULT 1,
+                sku                TEXT NOT NULL,
+                catalog_product_id TEXT NOT NULL,
+                catalog_name       TEXT,
+                activo             INTEGER DEFAULT 1,
+                agregado_at        TEXT,
+                UNIQUE(user_id, sku, catalog_product_id),
+                FOREIGN KEY (user_id) REFERENCES users (id)
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO sku_catalogos_new (id, sku, catalog_product_id, catalog_name, activo, agregado_at) "
+            "SELECT id, sku, catalog_product_id, catalog_name, activo, agregado_at FROM sku_catalogos"
+        )
+        conn.execute("DROP TABLE sku_catalogos")
+        conn.execute("ALTER TABLE sku_catalogos_new RENAME TO sku_catalogos")
+        conn.commit()
 
     # Cache de competidores por catálogo ML
     cur.execute(
@@ -757,25 +785,26 @@ def set_ml_nickname(user_id: int, nickname: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def get_sku_catalogos() -> List[Dict]:
+def get_sku_catalogos(user_id: int) -> List[Dict]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM sku_catalogos ORDER BY sku, id"
+            "SELECT * FROM sku_catalogos WHERE user_id=? ORDER BY sku, id",
+            (user_id,),
         ).fetchall()
         return [dict(r) for r in rows]
     finally:
         conn.close()
 
 
-def add_sku_catalogo(sku: str, catalog_product_id: str, catalog_name: str = "") -> bool:
+def add_sku_catalogo(user_id: int, sku: str, catalog_product_id: str, catalog_name: str = "") -> bool:
     """Agrega asociación SKU-catálogo. Retorna True si se insertó, False si ya existía."""
     now = datetime.now(timezone.utc).isoformat()
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT OR IGNORE INTO sku_catalogos (sku, catalog_product_id, catalog_name, activo, agregado_at) VALUES (?, ?, ?, 1, ?)",
-            (sku.strip(), catalog_product_id.strip().upper(), catalog_name.strip(), now),
+            "INSERT OR IGNORE INTO sku_catalogos (user_id, sku, catalog_product_id, catalog_name, activo, agregado_at) VALUES (?, ?, ?, ?, 1, ?)",
+            (user_id, sku.strip(), catalog_product_id.strip().upper(), catalog_name.strip(), now),
         )
         conn.commit()
         return conn.execute(
@@ -785,28 +814,28 @@ def add_sku_catalogo(sku: str, catalog_product_id: str, catalog_name: str = "") 
         conn.close()
 
 
-def update_sku_catalogo_name(id_: int, catalog_name: str) -> None:
+def update_sku_catalogo_name(id_: int, catalog_name: str, user_id: int) -> None:
     conn = get_connection()
     try:
-        conn.execute("UPDATE sku_catalogos SET catalog_name=? WHERE id=?", (catalog_name, id_))
+        conn.execute("UPDATE sku_catalogos SET catalog_name=? WHERE id=? AND user_id=?", (catalog_name, id_, user_id))
         conn.commit()
     finally:
         conn.close()
 
 
-def set_sku_catalogo_activo(id_: int, activo: int) -> None:
+def set_sku_catalogo_activo(id_: int, activo: int, user_id: int) -> None:
     conn = get_connection()
     try:
-        conn.execute("UPDATE sku_catalogos SET activo=? WHERE id=?", (activo, id_))
+        conn.execute("UPDATE sku_catalogos SET activo=? WHERE id=? AND user_id=?", (activo, id_, user_id))
         conn.commit()
     finally:
         conn.close()
 
 
-def delete_sku_catalogo(id_: int) -> None:
+def delete_sku_catalogo(id_: int, user_id: int) -> None:
     conn = get_connection()
     try:
-        conn.execute("DELETE FROM sku_catalogos WHERE id=?", (id_,))
+        conn.execute("DELETE FROM sku_catalogos WHERE id=? AND user_id=?", (id_, user_id))
         conn.commit()
     finally:
         conn.close()
