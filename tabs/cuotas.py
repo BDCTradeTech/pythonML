@@ -152,10 +152,10 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
             cuotas = _cuotas_desde_item(it)
             is_cat = it.get("catalog_listing") is True
             lt = str(it.get("listing_type_id") or "").lower()
-            if not is_cat and lt == "gold_special":
+            if lt == "gold_special":
                 if propia is None or _cuotas_score(it) > _cuotas_score(propia):
                     propia = it
-            if is_cat:
+            if is_cat and lt != "gold_special":
                 if catalogo is None or _cuotas_score(it) > _cuotas_score(catalogo):
                     catalogo = it
             if cuotas == "x3":
