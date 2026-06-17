@@ -562,10 +562,10 @@ def build_tab_preguntas(container) -> None:
 
                     # ── async helpers ───────────────────────────────────────────
 
-                    async def _enviar_respuesta(ta_holder: list, _client) -> None:
-                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s client=%s", qid, _client)
+                    async def _enviar_respuesta(client, qid, resp_area) -> None:
+                        logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s client=%s", qid, client)
                         try:
-                            await _client.run_javascript(
+                            await client.run_javascript(
                                 "if(document.activeElement) document.activeElement.blur()"
                             )
                             logging.warning("ENVIAR: blur OK")
@@ -574,7 +574,7 @@ def build_tab_preguntas(container) -> None:
                         logging.warning("ENVIAR: post-blur, iniciando sleep")
                         await asyncio.sleep(0.05)
                         logging.warning("ENVIAR: post-sleep, leyendo ta_holder")
-                        ta = ta_holder[0]
+                        ta = resp_area
                         _raw_val = ta.value if ta else None
                         logging.warning(
                             "ENVIAR: ta_none=%s raw_val=%r",
@@ -587,7 +587,7 @@ def build_tab_preguntas(container) -> None:
                         )
                         if not text_resp:
                             try:
-                                await _client.run_javascript(
+                                await client.run_javascript(
                                     "Quasar.Notify.create({message:'Escribí una respuesta antes de enviar',"
                                     "color:'orange',position:'bottom',timeout:4000})"
                                 )
@@ -614,7 +614,7 @@ def build_tab_preguntas(container) -> None:
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
                                 try:
-                                    await _client.run_javascript(
+                                    await client.run_javascript(
                                         "Quasar.Notify.create({message:'Respuesta enviada ✓',"
                                         "color:'green',position:'bottom'})"
                                     )
@@ -635,7 +635,7 @@ def build_tab_preguntas(container) -> None:
                                     )
                                     logging.warning("[ENVIAR] antes de notify")
                                     try:
-                                        await _client.run_javascript(
+                                        await client.run_javascript(
                                             "Quasar.Notify.create({message:"
                                             + json.dumps(_msg)
                                             + ",color:'orange',position:'bottom',timeout:6000})"
@@ -647,7 +647,7 @@ def build_tab_preguntas(container) -> None:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"
                                     try:
-                                        await _client.run_javascript(
+                                        await client.run_javascript(
                                             "Quasar.Notify.create({message:"
                                             + json.dumps(_err_full)
                                             + ",color:'red',position:'bottom',timeout:4000})"
@@ -658,7 +658,7 @@ def build_tab_preguntas(container) -> None:
                             logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
                             _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
-                                await _client.run_javascript(
+                                await client.run_javascript(
                                     "Quasar.Notify.create({message:"
                                     + json.dumps(_exc_msg)
                                     + ",color:'red',position:'bottom',timeout:4000})"
@@ -666,7 +666,7 @@ def build_tab_preguntas(container) -> None:
                             except Exception as _e:
                                 logging.warning("ENVIAR: notify exc falló: %s", _e)
 
-                    async def _eliminar_pregunta(_client) -> None:
+                    async def _eliminar_pregunta(client) -> None:
                         try:
                             result = await run.io_bound(_ml_delete_question, access_token, qid)
                             if result["status_code"] == 200:
@@ -680,7 +680,7 @@ def build_tab_preguntas(container) -> None:
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 try:
-                                    await _client.run_javascript(
+                                    await client.run_javascript(
                                         "Quasar.Notify.create({message:'Pregunta eliminada',"
                                         "color:'green',position:'bottom'})"
                                     )
@@ -692,7 +692,7 @@ def build_tab_preguntas(container) -> None:
                                     or str(result["body"])[:200]
                                 )
                                 try:
-                                    await _client.run_javascript(
+                                    await client.run_javascript(
                                         "Quasar.Notify.create({message:"
                                         + json.dumps(f"Error al eliminar: {err_msg}")
                                         + ",color:'red',position:'bottom',timeout:4000})"
@@ -701,7 +701,7 @@ def build_tab_preguntas(container) -> None:
                                     logging.warning("ELIMINAR: notify err falló: %s", _e)
                         except Exception as exc:
                             try:
-                                await _client.run_javascript(
+                                await client.run_javascript(
                                     "Quasar.Notify.create({message:"
                                     + json.dumps(f"Error al eliminar: {str(exc)[:100]}")
                                     + ",color:'red',position:'bottom',timeout:4000})"
@@ -873,12 +873,15 @@ def build_tab_preguntas(container) -> None:
                                         )
                                         resp_groq_holder[0] = resp_groq
                                         resp_area_groq_ref[0] = resp_groq
+                                        def _btn_enviar_groq_click():
+                                            _c = Client.current
+                                            background_tasks.create(
+                                                _enviar_respuesta(_c, qid, resp_groq_holder[0]),
+                                                name="enviar_grok",
+                                            )
                                         ui.button(
                                             "Enviar esta respuesta",
-                                            on_click=lambda: background_tasks.create(
-                                                _enviar_respuesta(resp_groq_holder, Client.current),
-                                                name="enviar_grok",
-                                            ),
+                                            on_click=_btn_enviar_groq_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#f57c00;color:#fff;font-size:12px"
                                         )
@@ -925,12 +928,15 @@ def build_tab_preguntas(container) -> None:
                                         )
                                         resp_gemini_holder[0] = resp_gemini
                                         resp_area_gemini_ref[0] = resp_gemini
+                                        def _btn_enviar_gemini_click():
+                                            _c = Client.current
+                                            background_tasks.create(
+                                                _enviar_respuesta(_c, qid, resp_gemini_holder[0]),
+                                                name="enviar_gemini",
+                                            )
                                         ui.button(
                                             "Enviar esta respuesta",
-                                            on_click=lambda: background_tasks.create(
-                                                _enviar_respuesta(resp_gemini_holder, Client.current),
-                                                name="enviar_gemini",
-                                            ),
+                                            on_click=_btn_enviar_gemini_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#1565c0;color:#fff;font-size:12px"
                                         )
@@ -1012,12 +1018,15 @@ def build_tab_preguntas(container) -> None:
                                     )
                                     resp_groq_holder[0] = resp_groq
                                     resp_area_groq_ref[0] = resp_groq
+                                    def _btn_enviar_groq_click():
+                                        _c = Client.current
+                                        background_tasks.create(
+                                            _enviar_respuesta(_c, qid, resp_groq_holder[0]),
+                                            name="enviar_grok",
+                                        )
                                     ui.button(
                                         "Enviar esta respuesta",
-                                        on_click=lambda: background_tasks.create(
-                                            _enviar_respuesta(resp_groq_holder, Client.current),
-                                            name="enviar_grok",
-                                        ),
+                                        on_click=_btn_enviar_groq_click,
                                     ).props("unelevated dense no-caps").style(
                                         "background:#f57c00;color:#fff;font-size:12px"
                                     )
@@ -1064,12 +1073,15 @@ def build_tab_preguntas(container) -> None:
                                     )
                                     resp_gemini_holder[0] = resp_gemini
                                     resp_area_gemini_ref[0] = resp_gemini
+                                    def _btn_enviar_gemini_click():
+                                        _c = Client.current
+                                        background_tasks.create(
+                                            _enviar_respuesta(_c, qid, resp_gemini_holder[0]),
+                                            name="enviar_gemini",
+                                        )
                                     ui.button(
                                         "Enviar esta respuesta",
-                                        on_click=lambda: background_tasks.create(
-                                            _enviar_respuesta(resp_gemini_holder, Client.current),
-                                            name="enviar_gemini",
-                                        ),
+                                        on_click=_btn_enviar_gemini_click,
                                     ).props("unelevated dense no-caps").style(
                                         "background:#1565c0;color:#fff;font-size:12px"
                                     )
