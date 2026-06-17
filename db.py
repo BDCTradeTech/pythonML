@@ -867,13 +867,14 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
         conn.execute("DELETE FROM catalogo_competidores WHERE catalog_product_id=?", (catalog_product_id,))
         for it in items:
             ship = it.get("shipping") or {}
-            tags = it.get("tags") or []
-            intl_mode = ship.get("international_delivery_mode", "") if isinstance(ship, dict) else ""
-            is_intl = (
-                any(t in tags for t in ("cbt_item", "cbt_fulfillment_us"))
-                or bool(intl_mode and intl_mode not in ("none", "not_specified", ""))
+            tags = it.get("tags", [])
+            intl_mode = it.get("international_delivery_mode", "") or ship.get("international_delivery_mode", "")
+            es_internacional = (
+                "cbt_item" in tags
+                or "cbt_fulfillment_us" in tags
+                or (intl_mode and intl_mode != "none")
             )
-            origen = "internacional" if is_intl else "local"
+            origen = "internacional" if es_internacional else "local"
             conn.execute(
                 """INSERT INTO catalogo_competidores
                    (catalog_product_id, item_id, seller_id, seller_nickname, price,
