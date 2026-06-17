@@ -102,6 +102,16 @@ def _get_cache_items(seller_id: str) -> List[Dict]:
         return []
 
 
+def _better_item(a: Dict, b: Dict) -> Dict:
+    """Prefiere gold_special sobre gold_pro; desempate por precio menor."""
+    _RANK = {"gold_special": 0, "gold_pro": 1}
+    rank_a = _RANK.get(str(a.get("listing_type_id") or ""), 2)
+    rank_b = _RANK.get(str(b.get("listing_type_id") or ""), 2)
+    if rank_a != rank_b:
+        return a if rank_a < rank_b else b
+    return a if float(a.get("price") or 0) <= float(b.get("price") or 0) else b
+
+
 def _group_by_sku(items: List[Dict]) -> Dict[str, Dict]:
     """Retorna {sku: {"item": mejor_item, "item_ids": [str]}}"""
     groups: Dict[str, Dict] = {}
@@ -113,8 +123,7 @@ def _group_by_sku(items: List[Dict]) -> Dict[str, Dict]:
         if sku not in groups:
             groups[sku] = {"item": item, "item_ids": [item_id] if item_id else []}
         else:
-            if (item.get("available_quantity") or 0) > (groups[sku]["item"].get("available_quantity") or 0):
-                groups[sku]["item"] = item
+            groups[sku]["item"] = _better_item(groups[sku]["item"], item)
             if item_id and item_id not in groups[sku]["item_ids"]:
                 groups[sku]["item_ids"].append(item_id)
     return groups
