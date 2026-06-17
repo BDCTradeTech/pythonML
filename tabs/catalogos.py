@@ -1,15 +1,14 @@
 """
 tabs/catalogos.py
-Pestaña Catálogos ML: gestión de catálogos por SKU y monitoreo de competidores.
+Pestaña Catálogos ML: tabla unificada de catálogos y competidores.
 """
 from __future__ import annotations
 
 import asyncio
-import html as _html
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
-from nicegui import app, background_tasks, ui
+from nicegui import app, background_tasks, run, ui
 
 from db import (
     get_connection,
@@ -49,46 +48,19 @@ def _tipo_label(lt: str) -> str:
     return {"gold_special": "gold_sp", "gold_pro": "gold_pro", "gold_premium": "gold_prem"}.get(lt, lt or "—")
 
 
-def _ago(updated_at: str) -> str:
-    if not updated_at:
-        return "—"
-    try:
-        dt = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        diff = int((datetime.now(timezone.utc) - dt).total_seconds())
-        if diff < 60:
-            return "ahora"
-        if diff < 3600:
-            return f"hace {diff // 60} min"
-        if diff < 86400:
-            return f"hace {diff // 3600} h"
-        return f"hace {diff // 86400} días"
-    except Exception:
-        return updated_at[:16] if len(updated_at) >= 16 else updated_at
-
-
-def _esc(s: Any) -> str:
-    return _html.escape(str(s) if s is not None else "")
-
-
 async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> tuple:
-    """Llama /products/{id}/items, resuelve nicknames. Retorna (items, catalog_name)."""
     items = await asyncio.to_thread(ml_get_catalog_items, access_token, catalog_product_id)
     if not items:
         return [], ""
-
     seller_ids = list({str(it.get("seller_id", "")) for it in items if it.get("seller_id")})
     nicknames: Dict[str, str] = {}
     for i in range(0, len(seller_ids), 20):
         batch = seller_ids[i : i + 20]
         batch_nicks = await asyncio.to_thread(ml_get_users_multiget, access_token, batch)
         nicknames.update(batch_nicks)
-
     for it in items:
         sid = str(it.get("seller_id", ""))
         it["seller_nickname"] = nicknames.get(sid, f"ID {sid}")
-
     return items, ""
 
 
@@ -103,70 +75,8 @@ def _get_our_item_ids(user_id: int) -> Set[str]:
         conn.close()
 
 
-def _build_competitors_html(competitors: List[Dict], our_ids: Set[str]) -> str:
-    """Construye el HTML de la tabla de competidores."""
-    th_style = "padding:4px 8px;border:1px solid #e5e7eb;white-space:nowrap;font-weight:600;background:#f3f4f6"
-    rows_html = ""
-    for idx, comp in enumerate(competitors, 1):
-        is_ours = comp["item_id"] in our_ids
-        bg = "background:#f0fdf4" if is_ours else ("background:#ffffff" if idx % 2 == 0 else "background:#f9fafb")
-        fw = "font-weight:600" if is_ours else ""
-        item_id_txt = _esc(comp["item_id"]) + (" ✓" if is_ours else "")
-        item_color = "color:#15803d" if is_ours else ""
-        nick = _esc(comp.get("seller_nickname") or f"ID {comp.get('seller_id','')}")
-        precio = _esc(_fmt_precio(comp.get("price")))
-        tipo = _esc(_tipo_label(comp.get("listing_type") or ""))
-        logistica = _esc(comp.get("logistica") or "—")
-        envio = "Sí" if comp.get("free_shipping") else "No"
-        envio_color = "color:#16a34a" if comp.get("free_shipping") else "color:#9ca3af"
-        td = f"padding:3px 8px;border:1px solid #e5e7eb;{bg};{fw}"
-        rows_html += (
-            f"<tr>"
-            f"<td style='{td};text-align:center'>{idx}</td>"
-            f"<td style='{td};font-family:monospace;font-size:12px;{item_color}'>{item_id_txt}</td>"
-            f"<td style='{td}'>{nick}</td>"
-            f"<td style='{td};text-align:right;font-family:monospace'>{precio}</td>"
-            f"<td style='{td};font-size:12px'>{tipo}</td>"
-            f"<td style='{td};font-size:12px'>{logistica}</td>"
-            f"<td style='{td};text-align:center;{envio_color}'>{envio}</td>"
-            f"</tr>"
-        )
-    return (
-        "<div style='overflow-x:auto;width:100%'>"
-        "<table style='width:100%;border-collapse:collapse;font-size:13px'>"
-        "<thead><tr>"
-        f"<th style='{th_style}'>#</th>"
-        f"<th style='{th_style}'>Item ID</th>"
-        f"<th style='{th_style}'>Vendedor</th>"
-        f"<th style='{th_style}'>Precio</th>"
-        f"<th style='{th_style}'>Tipo</th>"
-        f"<th style='{th_style}'>Logística</th>"
-        f"<th style='{th_style}'>Envío</th>"
-        "</tr></thead>"
-        f"<tbody>{rows_html}</tbody>"
-        "</table></div>"
-    )
-
-
-def _render_catalogo_card(parent, cat: Dict, competitors: List[Dict], our_ids: Set[str]) -> None:
-    """Pinta la card de un catálogo con su tabla de competidores."""
-    updated_at = competitors[0]["updated_at"] if competitors else None
-    ts_text = _ago(updated_at) if updated_at else "sin datos"
-
-    with parent:
-        with ui.row().classes("items-center gap-2 w-full flex-wrap"):
-            ui.label(f"SKU: {cat['sku']}").classes("font-bold")
-            ui.label(f"› {cat['catalog_product_id']}").classes("text-gray-500 font-mono text-sm")
-            if cat.get("catalog_name"):
-                ui.label(cat["catalog_name"]).classes("text-gray-700 text-sm")
-            ui.space()
-            ui.label(f"Actualizado: {ts_text}").classes("text-xs text-gray-400")
-
-        if not competitors:
-            ui.label("Sin competidores (catálogo vacío o sin datos aún).").classes("text-gray-500 text-sm mt-1")
-            return
-
-        ui.html(_build_competitors_html(competitors, our_ids)).classes("w-full mt-1")
+_TH = "padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;font-weight:600;background:#f3f4f6;font-size:12px"
+_TD = "padding:3px 8px;border:1px solid #e5e7eb;font-size:13px;vertical-align:middle"
 
 
 def build_tab_catalogos(container) -> None:
@@ -183,21 +93,24 @@ def build_tab_catalogos(container) -> None:
             return
 
         state: Dict[str, Any] = {"syncing": False, "our_ids": set()}
-
-        # ── Header ───────────────────────────────────────────────────────────
-        sync_spinner = ui.spinner(size="sm").classes("hidden")
         sync_btn_ref: List[Any] = [None]
+        sync_spinner_ref: List[Any] = [None]
+        counter_ref: List[Any] = [None]
 
+        # ── Header ────────────────────────────────────────────────────────────
         with ui.row().classes("w-full items-center gap-3 mb-2"):
             ui.label("CATÁLOGOS ML").classes("text-xl font-bold")
+            counter_lbl = ui.label("").classes("text-sm text-gray-400")
+            counter_ref[0] = counter_lbl
             ui.space()
-            sync_spinner
+            sp = ui.spinner(size="sm").classes("hidden")
+            sync_spinner_ref[0] = sp
 
             async def _do_sync_all() -> None:
                 if state["syncing"]:
                     return
                 state["syncing"] = True
-                sync_spinner.classes(remove="hidden")
+                sync_spinner_ref[0].classes(remove="hidden")
                 btn = sync_btn_ref[0]
                 if btn:
                     btn.props("disable")
@@ -210,13 +123,13 @@ def build_tab_catalogos(container) -> None:
                         await asyncio.to_thread(upsert_catalogo_competidores, cpid, items)
                         if cat_name and not cat.get("catalog_name"):
                             await asyncio.to_thread(update_sku_catalogo_name, cat["id"], cat_name)
-                    _rebuild_competitors()
+                    _rebuild_table()
                     ui.notify(f"Sincronizados {len(active)} catálogo(s)", color="positive")
                 except Exception as ex:
                     ui.notify(f"Error en sync: {ex}", color="negative")
                 finally:
                     state["syncing"] = False
-                    sync_spinner.classes(add="hidden")
+                    sync_spinner_ref[0].classes(add="hidden")
                     btn = sync_btn_ref[0]
                     if btn:
                         btn.props(remove="disable")
@@ -228,53 +141,226 @@ def build_tab_catalogos(container) -> None:
             ).props("no-caps")
             sync_btn_ref[0] = btn
 
-        # ── Sección configurar catálogos ──────────────────────────────────────
-        with ui.expansion("Catálogos configurados", icon="settings").classes("w-full"):
-            config_area = ui.column().classes("w-full gap-1")
+        # ── Tabla principal ───────────────────────────────────────────────────
+        table_area = ui.column().classes("w-full overflow-x-auto")
 
-            def _rebuild_config_table() -> None:
-                config_area.clear()
-                cats = get_sku_catalogos()
-                if not cats:
-                    with config_area:
-                        ui.label("No hay catálogos configurados aún.").classes("text-gray-500 text-sm")
+        async def _show_catalog_detail(catalog_product_id: str) -> None:
+            detail = await run.io_bound(ml_get_product_detail, access_token, catalog_product_id)
+            if not detail:
+                ui.notify("No se pudo obtener detalle del catálogo", color="warning")
+                return
+            with ui.dialog() as dlg, ui.card().classes("w-96 p-4"):
+                ui.label(detail.get("name", catalog_product_id)).classes("text-lg font-bold")
+                ui.label(f"ID: {catalog_product_id}").classes("font-mono text-sm text-gray-500")
+                ui.separator().classes("my-2")
+                with ui.grid(columns=2).classes("gap-x-4 gap-y-1 text-sm w-full"):
+                    ui.label("Status:").classes("text-gray-500")
+                    ui.label(str(detail.get("status", "—")))
+                    ui.label("Dominio:").classes("text-gray-500")
+                    ui.label(str(detail.get("domain_id", "—")))
+                    if detail.get("parent_id"):
+                        ui.label("Padre:").classes("text-gray-500")
+                        ui.label(str(detail.get("parent_id")))
+                pickers = detail.get("pickers", [])
+                if pickers:
+                    ui.label("Variantes:").classes("font-semibold mt-3 text-sm")
+                    for p in pickers:
+                        ui.label(
+                            f"• {p.get('label', '')}: {len(p.get('products', []))} opciones"
+                        ).classes("text-sm text-gray-600 ml-2")
+                winner = detail.get("buy_box_winner")
+                if winner:
+                    ui.label("Buy Box Winner:").classes("font-semibold mt-3 text-sm")
+                    try:
+                        price_fmt = "$" + f"{int(float(winner.get('price', 0))):,}".replace(",", ".")
+                    except Exception:
+                        price_fmt = str(winner.get("price", "—"))
+                    ui.label(f"{winner.get('item_id', '—')} — {price_fmt}").classes("text-sm font-mono ml-2")
+                ui.button("Cerrar", on_click=dlg.close).props("flat no-caps").classes("mt-4")
+            dlg.open()
+
+        def _rebuild_table() -> None:
+            table_area.clear()
+            all_cats = get_sku_catalogos()
+            active_cats = [c for c in all_cats if c.get("activo")]
+            total_comps = sum(
+                len(get_catalogo_competidores(c["catalog_product_id"])) for c in active_cats
+            )
+            if counter_ref[0]:
+                counter_ref[0].set_text(f"{len(active_cats)} catálogos · {total_comps} competidores")
+
+            with table_area:
+                if not all_cats:
+                    ui.label("No hay catálogos configurados. Agregá uno abajo.").classes("text-gray-500 py-4")
                     return
-                with config_area:
-                    with ui.element("table").classes("text-sm border-collapse"):
-                        with ui.element("thead"):
-                            with ui.element("tr"):
-                                for col_h in ["SKU", "Catálogo ID", "Nombre", "Activo", ""]:
-                                    with ui.element("th").style("padding:4px 8px;border:1px solid #e5e7eb;background:#f3f4f6;font-weight:600;white-space:nowrap"):
-                                        ui.label(col_h)
-                        with ui.element("tbody"):
-                            for cat in cats:
-                                with ui.element("tr"):
-                                    td_s = "padding:3px 8px;border:1px solid #e5e7eb"
-                                    with ui.element("td").style(td_s + ";font-family:monospace;font-size:12px"):
+
+                with ui.element("table").style("width:100%;border-collapse:collapse"):
+                    with ui.element("thead"):
+                        with ui.element("tr"):
+                            for col in ["#", "SKU", "Catálogo ID", "Nombre", "Vendedor", "Precio", "Tipo", "Logística", "Envío", "Activo", ""]:
+                                with ui.element("th").style(_TH):
+                                    ui.label(col)
+
+                    with ui.element("tbody"):
+                        row_num = 0
+
+                        for cat in all_cats:
+                            is_active = bool(cat.get("activo"))
+                            comps = get_catalogo_competidores(cat["catalog_product_id"]) if is_active else []
+                            cat_id = cat["id"]
+                            cpid = cat["catalog_product_id"]
+                            cat_name = cat.get("catalog_name") or "—"
+
+                            if not is_active:
+                                row_num += 1
+                                with ui.element("tr").style("background:#f9fafb"):
+                                    with ui.element("td").style(_TD + ";text-align:center;color:#9ca3af"):
+                                        ui.label(str(row_num))
+                                    with ui.element("td").style(_TD + ";font-family:monospace;font-size:12px;color:#9ca3af"):
                                         ui.label(cat["sku"])
-                                    with ui.element("td").style(td_s + ";font-family:monospace;font-size:12px"):
-                                        ui.label(cat["catalog_product_id"])
-                                    with ui.element("td").style(td_s + ";font-size:12px"):
-                                        ui.label(cat.get("catalog_name") or "—")
-                                    with ui.element("td").style(td_s + ";text-align:center"):
-                                        cid = cat["id"]
+                                    with ui.element("td").style(_TD):
+                                        ui.button(
+                                            cpid,
+                                            on_click=lambda _, c=cpid: background_tasks.create(
+                                                _show_catalog_detail(c), name=f"detail_{c}"
+                                            ),
+                                        ).props("flat dense no-caps").style(
+                                            "font-family:monospace;font-size:11px;color:#6b7280;min-height:0;padding:0 2px"
+                                        )
+                                    with ui.element("td").style(_TD + ";font-size:12px;color:#9ca3af"):
+                                        ui.label(cat_name)
+                                    with ui.element("td").style(_TD + ";color:#9ca3af;font-style:italic"):
+                                        ui.label("(inactivo)")
+                                    for _ in range(4):
+                                        with ui.element("td").style(_TD):
+                                            pass
+                                    with ui.element("td").style(_TD + ";text-align:center"):
                                         ui.checkbox(
-                                            value=bool(cat.get("activo")),
-                                            on_change=lambda e, c=cid: (
+                                            value=False,
+                                            on_change=lambda e, c=cat_id: (
                                                 set_sku_catalogo_activo(c, 1 if e.value else 0),
-                                                _rebuild_competitors(),
+                                                _rebuild_table(),
                                             ),
                                         )
-                                    with ui.element("td").style(td_s + ";text-align:center"):
-                                        def _del(c=cat["id"]):
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        def _del_i(c=cat_id):
                                             delete_sku_catalogo(c)
-                                            _rebuild_config_table()
-                                            _rebuild_competitors()
-                                        ui.button(icon="delete", on_click=_del).props("flat dense color=negative size=sm")
+                                            _rebuild_table()
+                                        ui.button(icon="delete", on_click=_del_i).props("flat dense color=negative size=sm")
+                                continue
 
-            _rebuild_config_table()
+                            if not comps:
+                                row_num += 1
+                                with ui.element("tr").style("background:#fffbeb"):
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        ui.label(str(row_num))
+                                    with ui.element("td").style(_TD + ";font-family:monospace;font-size:12px;font-weight:600"):
+                                        ui.label(cat["sku"])
+                                    with ui.element("td").style(_TD):
+                                        ui.button(
+                                            cpid,
+                                            on_click=lambda _, c=cpid: background_tasks.create(
+                                                _show_catalog_detail(c), name=f"detail_{c}"
+                                            ),
+                                        ).props("flat dense no-caps").style(
+                                            "font-family:monospace;font-size:12px;color:#2563eb;min-height:0;padding:0 2px"
+                                        )
+                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                        ui.label(cat_name)
+                                    with ui.element("td").style(_TD + ";color:#b45309;font-style:italic"):
+                                        ui.label("Sin datos — Sincronizar")
+                                    for _ in range(4):
+                                        with ui.element("td").style(_TD):
+                                            pass
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        ui.checkbox(
+                                            value=True,
+                                            on_change=lambda e, c=cat_id: (
+                                                set_sku_catalogo_activo(c, 1 if e.value else 0),
+                                                _rebuild_table(),
+                                            ),
+                                        )
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        def _del_nd(c=cat_id):
+                                            delete_sku_catalogo(c)
+                                            _rebuild_table()
+                                        ui.button(icon="delete", on_click=_del_nd).props("flat dense color=negative size=sm")
+                                continue
 
-            with ui.row().classes("items-end gap-2 mt-3"):
+                            for idx, comp in enumerate(comps):
+                                is_ours = comp["item_id"] in state["our_ids"]
+                                row_num += 1
+                                if is_ours:
+                                    bg = "background:#f0fdf4"
+                                elif row_num % 2 == 0:
+                                    bg = "background:#ffffff"
+                                else:
+                                    bg = "background:#f9fafb"
+
+                                with ui.element("tr").style(bg):
+                                    with ui.element("td").style(_TD + ";text-align:center;color:#9ca3af;font-size:12px"):
+                                        ui.label(str(row_num))
+
+                                    if idx == 0:
+                                        with ui.element("td").style(_TD + ";font-family:monospace;font-size:12px;font-weight:600"):
+                                            ui.label(cat["sku"])
+                                        with ui.element("td").style(_TD):
+                                            ui.button(
+                                                cpid,
+                                                on_click=lambda _, c=cpid: background_tasks.create(
+                                                    _show_catalog_detail(c), name=f"detail_{c}"
+                                                ),
+                                            ).props("flat dense no-caps").style(
+                                                "font-family:monospace;font-size:12px;color:#2563eb;min-height:0;padding:0 2px"
+                                            )
+                                        with ui.element("td").style(_TD + ";font-size:12px"):
+                                            ui.label(cat_name)
+                                    else:
+                                        for _ in range(3):
+                                            with ui.element("td").style(_TD + ";border-top:1px solid #f3f4f6"):
+                                                pass
+
+                                    nick = comp.get("seller_nickname") or f"ID {comp.get('seller_id', '')}"
+                                    with ui.element("td").style(
+                                        _TD + (";color:#15803d;font-weight:600" if is_ours else "")
+                                    ):
+                                        ui.label(f"{nick} ✓" if is_ours else nick)
+
+                                    with ui.element("td").style(_TD + ";text-align:right;font-family:monospace;font-weight:600"):
+                                        ui.label(_fmt_precio(comp.get("price")))
+                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                        ui.label(_tipo_label(comp.get("listing_type") or ""))
+                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                        ui.label(comp.get("logistica") or "—")
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        if comp.get("free_shipping"):
+                                            ui.label("Sí").style("color:#16a34a;font-weight:600")
+                                        else:
+                                            ui.label("No").style("color:#9ca3af")
+
+                                    if idx == 0:
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            ui.checkbox(
+                                                value=True,
+                                                on_change=lambda e, c=cat_id: (
+                                                    set_sku_catalogo_activo(c, 1 if e.value else 0),
+                                                    _rebuild_table(),
+                                                ),
+                                            )
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            def _del_c(c=cat_id):
+                                                delete_sku_catalogo(c)
+                                                _rebuild_table()
+                                            ui.button(icon="delete", on_click=_del_c).props("flat dense color=negative size=sm")
+                                    else:
+                                        for _ in range(2):
+                                            with ui.element("td").style(_TD + ";border-top:1px solid #f3f4f6"):
+                                                pass
+
+        # ── Agregar catálogo ──────────────────────────────────────────────────
+        ui.separator().classes("my-3")
+        with ui.expansion("Agregar catálogo", icon="add_circle").classes("w-full"):
+            with ui.row().classes("items-end gap-2 mt-2"):
                 sku_input = ui.input("SKU").props("dense outlined").classes("w-28")
                 cpid_input = ui.input("Catálogo ID (ej: MLA52897968)").props("dense outlined").classes("w-52")
                 name_input = ui.input("Nombre (opcional)").props("dense outlined").classes("w-64")
@@ -294,7 +380,7 @@ def build_tab_catalogos(container) -> None:
                     sku_input.value = ""
                     cpid_input.value = ""
                     name_input.value = ""
-                    _rebuild_config_table()
+                    _rebuild_table()
                     ui.notify(f"Catálogo {cpid} agregado para SKU {sku}", color="positive")
 
                 ui.button(
@@ -302,28 +388,6 @@ def build_tab_catalogos(container) -> None:
                     on_click=lambda: background_tasks.create(_do_add(), name="add_catalogo"),
                     color="secondary",
                 ).props("no-caps dense")
-
-        ui.separator().classes("my-3")
-
-        # ── Área de competidores (se puebla en _rebuild_competitors) ──────────
-        catalogos_area = ui.column().classes("w-full gap-4")
-
-        def _rebuild_competitors() -> None:
-            catalogos_area.clear()
-            cats = get_sku_catalogos()
-            active_cats = [c for c in cats if c.get("activo")]
-            if not active_cats:
-                with catalogos_area:
-                    ui.label("No hay catálogos activos configurados.").classes("text-gray-500 mt-4")
-                return
-            for cat in active_cats:
-                comps = get_catalogo_competidores(cat["catalog_product_id"])
-                with catalogos_area:
-                    with ui.card().classes("w-full"):
-                        _render_catalogo_card(
-                            ui.column().classes("w-full p-1"),
-                            cat, comps, state["our_ids"],
-                        )
 
         # ── Carga inicial ─────────────────────────────────────────────────────
         async def _init_load() -> None:
@@ -339,6 +403,6 @@ def build_tab_catalogos(container) -> None:
                 await asyncio.to_thread(upsert_catalogo_competidores, cat["catalog_product_id"], items)
                 if cat_name and not cat.get("catalog_name"):
                     await asyncio.to_thread(update_sku_catalogo_name, cat["id"], cat_name)
-            _rebuild_competitors()
+            _rebuild_table()
 
         background_tasks.create(_init_load(), name="init_catalogos")
