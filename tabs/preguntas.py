@@ -565,17 +565,27 @@ def build_tab_preguntas(container) -> None:
                     async def _enviar_respuesta(ta_holder: list) -> None:
                         logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
                         _client = Client.current
+                        logging.warning("ENVIAR: _client=%s", _client)
                         try:
                             await _client.run_javascript(
                                 "if(document.activeElement) document.activeElement.blur()"
                             )
-                        except Exception:
-                            pass
+                            logging.warning("ENVIAR: blur OK")
+                        except Exception as _e_blur:
+                            logging.warning("ENVIAR: blur falló: %s: %s", type(_e_blur).__name__, _e_blur)
+                        logging.warning("ENVIAR: post-blur, iniciando sleep")
                         await asyncio.sleep(0.05)
+                        logging.warning("ENVIAR: post-sleep, leyendo ta_holder")
                         ta = ta_holder[0]
+                        _raw_val = ta.value if ta else None
+                        logging.warning(
+                            "ENVIAR: ta_none=%s raw_val=%r",
+                            ta is None,
+                            str(_raw_val)[:80] if _raw_val else _raw_val,
+                        )
                         text_resp = (ta.value or "").strip() if ta else ""
                         logging.warning(
-                            "ENVIAR: text_resp=%r ta_none=%s", text_resp[:60], ta is None
+                            "ENVIAR: text_resp=%r len=%d", text_resp[:60], len(text_resp)
                         )
                         if not text_resp:
                             try:
