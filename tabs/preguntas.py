@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 import requests as _requests
 
-from nicegui import app, background_tasks, run, ui
+from nicegui import Client, app, background_tasks, run, ui
 
 from db import get_app_config, set_app_config
 from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
@@ -564,8 +564,9 @@ def build_tab_preguntas(container) -> None:
 
                     async def _enviar_respuesta(ta_holder: list) -> None:
                         logging.warning("ENVIAR: entrando a _enviar_respuesta qid=%s", qid)
+                        _client = Client.current
                         try:
-                            await ui.run_javascript(
+                            await _client.run_javascript(
                                 "if(document.activeElement) document.activeElement.blur()"
                             )
                         except Exception:
@@ -578,15 +579,12 @@ def build_tab_preguntas(container) -> None:
                         )
                         if not text_resp:
                             try:
-                                ui.notify("Escribí una respuesta antes de enviar", type="warning")
-                            except Exception:
-                                try:
-                                    await ui.run_javascript(
-                                        "Quasar.Notify.create({message:'Escribí una respuesta antes de enviar',"
-                                        "color:'orange',position:'bottom',timeout:4000})"
-                                    )
-                                except Exception:
-                                    pass
+                                await _client.run_javascript(
+                                    "Quasar.Notify.create({message:'Escribí una respuesta antes de enviar',"
+                                    "color:'orange',position:'bottom',timeout:4000})"
+                                )
+                            except Exception as _e:
+                                logging.warning("ENVIAR: notify texto_vacio falló: %s", _e)
                             logging.warning("ENVIAR: texto vacío, abortando")
                             return
                         try:
@@ -596,7 +594,6 @@ def build_tab_preguntas(container) -> None:
                             )
                             logging.warning("ENVIAR: resultado status_code=%s body=%s", result["status_code"], str(result.get("body", ""))[:200])
                             if result["status_code"] in (200, 201):
-                                # Optimistic update: ocultar fila sin esperar re-fetch
                                 active_tr.set_visibility(False)
                                 new_count = counter_ref[0] - 1
                                 counter_ref[0] = new_count
@@ -609,15 +606,12 @@ def build_tab_preguntas(container) -> None:
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
                                 try:
-                                    ui.notify("Respuesta enviada ✓", color="positive")
-                                except Exception:
-                                    try:
-                                        await ui.run_javascript(
-                                            "Quasar.Notify.create({message:'Respuesta enviada ✓',"
-                                            "color:'green',position:'bottom'})"
-                                        )
-                                    except Exception:
-                                        pass
+                                    await _client.run_javascript(
+                                        "Quasar.Notify.create({message:'Respuesta enviada ✓',"
+                                        "color:'green',position:'bottom'})"
+                                    )
+                                except Exception as _e:
+                                    logging.warning("ENVIAR: notify enviada falló: %s", _e)
                                 async def _delayed_refresh() -> None:
                                     await asyncio.sleep(3)
                                     await _cargar_async()
@@ -630,57 +624,39 @@ def build_tab_preguntas(container) -> None:
                                         "No se puede responder: la publicación está pausada o cerrada. "
                                         "Activala en MercadoLibre primero."
                                     )
-                                    logging.warning("[TEST] llegué al bloque not_active_item qid=%s", qid)
                                     try:
-                                        _quasar_test = await ui.run_javascript("return typeof Quasar !== 'undefined'")
-                                        logging.warning("[TEST] Quasar disponible: %s", _quasar_test)
-                                    except Exception as _e_test:
-                                        logging.warning("[TEST] ui.run_javascript falló: %s: %s", type(_e_test).__name__, _e_test)
-                                    try:
-                                        ui.notify(_msg, type="warning", timeout=6000)
-                                    except Exception as _e_notify:
-                                        logging.warning("[TEST] ui.notify falló: %s: %s", type(_e_notify).__name__, _e_notify)
-                                        try:
-                                            await ui.run_javascript(
-                                                "Quasar.Notify.create({message:"
-                                                + json.dumps(_msg)
-                                                + ",color:'orange',position:'bottom',timeout:6000})"
-                                            )
-                                            logging.warning("[TEST] Quasar.Notify.create ejecutado OK")
-                                        except Exception as _e_js:
-                                            logging.warning("[TEST] Quasar.Notify.create falló: %s: %s", type(_e_js).__name__, _e_js)
+                                        await _client.run_javascript(
+                                            "Quasar.Notify.create({message:"
+                                            + json.dumps(_msg)
+                                            + ",color:'orange',position:'bottom',timeout:6000})"
+                                        )
+                                    except Exception as _e:
+                                        logging.warning("ENVIAR: notify not_active falló: %s", _e)
                                 else:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"
                                     try:
-                                        ui.notify(_err_full, type="negative")
-                                    except Exception as _e_notify2:
-                                        logging.warning("[TEST] ui.notify(err_full) falló: %s: %s", type(_e_notify2).__name__, _e_notify2)
-                                        try:
-                                            await ui.run_javascript(
-                                                "Quasar.Notify.create({message:"
-                                                + json.dumps(_err_full)
-                                                + ",color:'red',position:'bottom',timeout:4000})"
-                                            )
-                                        except Exception as _e_js2:
-                                            logging.warning("[TEST] Quasar.Notify(err) falló: %s: %s", type(_e_js2).__name__, _e_js2)
+                                        await _client.run_javascript(
+                                            "Quasar.Notify.create({message:"
+                                            + json.dumps(_err_full)
+                                            + ",color:'red',position:'bottom',timeout:4000})"
+                                        )
+                                    except Exception as _e:
+                                        logging.warning("ENVIAR: notify err_ml falló: %s", _e)
                         except Exception as exc:
                             logging.warning("ENVIAR: excepción %s: %s", type(exc).__name__, exc, exc_info=True)
                             _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
-                                ui.notify(_exc_msg, type="negative")
-                            except Exception as _e_notifyexc:
-                                logging.warning("[TEST] ui.notify(exc) falló: %s: %s", type(_e_notifyexc).__name__, _e_notifyexc)
-                                try:
-                                    await ui.run_javascript(
-                                        "Quasar.Notify.create({message:"
-                                        + json.dumps(_exc_msg)
-                                        + ",color:'red',position:'bottom',timeout:4000})"
-                                    )
-                                except Exception as _e_jsexc:
-                                    logging.warning("[TEST] Quasar.Notify(exc) falló: %s: %s", type(_e_jsexc).__name__, _e_jsexc)
+                                await _client.run_javascript(
+                                    "Quasar.Notify.create({message:"
+                                    + json.dumps(_exc_msg)
+                                    + ",color:'red',position:'bottom',timeout:4000})"
+                                )
+                            except Exception as _e:
+                                logging.warning("ENVIAR: notify exc falló: %s", _e)
 
                     async def _eliminar_pregunta() -> None:
+                        _client = Client.current
                         try:
                             result = await run.io_bound(_ml_delete_question, access_token, qid)
                             if result["status_code"] == 200:
@@ -694,23 +670,34 @@ def build_tab_preguntas(container) -> None:
                                 detail_panel.clear()
                                 detail_panel.set_visibility(False)
                                 try:
-                                    ui.notify("Pregunta eliminada", color="positive")
-                                except Exception:
-                                    pass
+                                    await _client.run_javascript(
+                                        "Quasar.Notify.create({message:'Pregunta eliminada',"
+                                        "color:'green',position:'bottom'})"
+                                    )
+                                except Exception as _e:
+                                    logging.warning("ELIMINAR: notify ok falló: %s", _e)
                             else:
                                 err_msg = (
                                     (result["body"] or {}).get("message")
                                     or str(result["body"])[:200]
                                 )
                                 try:
-                                    ui.notify(f"Error al eliminar: {err_msg}", type="negative")
-                                except Exception:
-                                    pass
+                                    await _client.run_javascript(
+                                        "Quasar.Notify.create({message:"
+                                        + json.dumps(f"Error al eliminar: {err_msg}")
+                                        + ",color:'red',position:'bottom',timeout:4000})"
+                                    )
+                                except Exception as _e:
+                                    logging.warning("ELIMINAR: notify err falló: %s", _e)
                         except Exception as exc:
                             try:
-                                ui.notify(f"Error al eliminar: {exc}", type="negative")
-                            except Exception:
-                                pass
+                                await _client.run_javascript(
+                                    "Quasar.Notify.create({message:"
+                                    + json.dumps(f"Error al eliminar: {str(exc)[:100]}")
+                                    + ",color:'red',position:'bottom',timeout:4000})"
+                                )
+                            except Exception as _e:
+                                logging.warning("ELIMINAR: notify exc falló: %s", _e)
 
                     async def _load_ais() -> None:
                         groq_key   = get_app_config("groq_api_key")
