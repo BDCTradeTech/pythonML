@@ -159,8 +159,23 @@ def _search_catalogs_sync(access_token: str, query: str) -> List[Dict]:
         return []
 
 
+# th subtabla (gris)
 _TH = "padding:5px 8px;border:1px solid #e5e7eb;white-space:nowrap;font-weight:600;background:#f3f4f6;font-size:12px"
+# th tabla principal — ordenable (azul, sticky, cursor pointer)
+_TH_BLUE = (
+    "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
+    "background:#1976d2;color:white;font-size:12px;"
+    "position:sticky;top:0;z-index:1;cursor:pointer;user-select:none"
+)
+# th tabla principal — no ordenable (# y ▶)
+_TH_BLUE_FIXED = (
+    "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
+    "background:#1976d2;color:white;font-size:12px;"
+    "position:sticky;top:0;z-index:1"
+)
 _TD = "padding:3px 8px;border:1px solid #e5e7eb;font-size:13px;vertical-align:middle"
+
+_SORTABLE_COLS = {"SKU", "Marca", "Producto", "Color", "Stock", "Precio", "Catálogos", "Ganando"}
 
 
 def build_tab_catalogos(container) -> None:
@@ -181,6 +196,8 @@ def build_tab_catalogos(container) -> None:
         spinner_ref: List[Any] = [None]
         counter_ref: List[Any] = [None]
         expanded_skus: Set[str] = set()
+        sort_col_ref: Dict[str, Any] = {"col": None, "asc": True}
+        filter_state: Dict[str, Any] = {"ganando": "todos", "cats": "todos", "text": ""}
 
         # ── Header ─────────────────────────────────────────────────────────
         with ui.row().classes("w-full items-center gap-3 mb-2"):
@@ -220,6 +237,48 @@ def build_tab_catalogos(container) -> None:
                 color="primary",
             ).props("no-caps")
             sync_btn_ref[0] = btn
+
+        # ── Filtros (MEJORA 4) ──────────────────────────────────────────────
+        def _on_filter_ganando(e):
+            filter_state["ganando"] = e.value or "todos"
+            _rebuild_table()
+
+        def _on_filter_cats(e):
+            filter_state["cats"] = e.value or "todos"
+            _rebuild_table()
+
+        def _on_filter_text(e):
+            filter_state["text"] = e.value or ""
+            _rebuild_table()
+
+        with ui.row().classes("w-full gap-3 mb-2 flex-wrap items-end"):
+            ui.select(
+                options={
+                    "todos": "Todos",
+                    "ganando": "✅ Ganando",
+                    "perdiendo": "❌ Perdiendo",
+                    "sin_catalogo": "— Sin catálogo",
+                },
+                value="todos",
+                label="Ganando",
+                on_change=_on_filter_ganando,
+            ).props("dense outlined").style("min-width:160px")
+
+            ui.select(
+                options={
+                    "todos": "Todos",
+                    "sin_catalogo": "Sin catálogo asociado",
+                    "con_catalogo": "Con catálogos",
+                },
+                value="todos",
+                label="Catálogos",
+                on_change=_on_filter_cats,
+            ).props("dense outlined").style("min-width:190px")
+
+            ui.input(
+                placeholder="Buscar por SKU o nombre...",
+                on_change=_on_filter_text,
+            ).props("dense outlined clearable").style("min-width:230px")
 
         # ── Área de tabla ───────────────────────────────────────────────────
         table_area = ui.column().classes("w-full overflow-x-auto")
@@ -417,164 +476,245 @@ def build_tab_catalogos(container) -> None:
                     ).classes("text-gray-400 italic py-4")
                     return
 
-                with ui.element("table").style("width:100%;border-collapse:collapse"):
-                    with ui.element("thead"):
-                        with ui.element("tr"):
-                            for col in ["#", "SKU", "Marca", "Producto", "Color", "Stock", "Precio", "Catálogos", "Ganando", "▶"]:
-                                with ui.element("th").style(_TH):
-                                    ui.label(col)
+                # Pre-computar datos por SKU
+                rows: List[Dict] = []
+                for sku, grp in sku_groups.items():
+                    item = grp["item"]
+                    item_ids_set: Set[str] = set(grp["item_ids"])
+                    sku_cats = [c for c in all_cats if c.get("sku") == sku]
+                    n_cats = len([c for c in sku_cats if c.get("activo")])
+                    ganando = _calc_ganando(sku, item_ids_set, all_cats)
+                    rows.append({
+                        "sku": sku,
+                        "grp": grp,
+                        "item": item,
+                        "item_ids_set": item_ids_set,
+                        "sku_cats": sku_cats,
+                        "n_cats": n_cats,
+                        "ganando": ganando,
+                    })
 
-                    with ui.element("tbody"):
-                        for row_num, (sku, grp) in enumerate(sku_groups.items(), 1):
-                            item = grp["item"]
-                            item_ids_set: Set[str] = set(grp["item_ids"])
+                # Aplicar filtros (MEJORA 4)
+                f_ganando = filter_state["ganando"]
+                f_cats = filter_state["cats"]
+                f_text = (filter_state["text"] or "").strip().lower()
 
-                            sku_cats = [c for c in all_cats if c.get("sku") == sku]
-                            n_cats = len([c for c in sku_cats if c.get("activo")])
-                            ganando = _calc_ganando(sku, item_ids_set, all_cats)
-                            titulo = (item.get("title") or "")[:40]
-                            bg = "background:#f9fafb" if row_num % 2 == 0 else "background:#ffffff"
+                def _passes(row: Dict) -> bool:
+                    if f_ganando == "ganando" and row["ganando"] != "✅":
+                        return False
+                    if f_ganando == "perdiendo" and row["ganando"] != "❌":
+                        return False
+                    if f_ganando == "sin_catalogo" and row["ganando"] != "—":
+                        return False
+                    if f_cats == "sin_catalogo" and row["n_cats"] > 0:
+                        return False
+                    if f_cats == "con_catalogo" and row["n_cats"] == 0:
+                        return False
+                    if f_text:
+                        if f_text not in row["sku"].lower() and f_text not in (row["item"].get("title") or "").lower():
+                            return False
+                    return True
 
-                            # Fila principal del SKU
-                            with ui.element("tr").style(bg):
-                                with ui.element("td").style(
-                                    _TD + ";text-align:center;color:#9ca3af;font-size:12px"
-                                ):
-                                    ui.label(str(row_num))
-                                with ui.element("td").style(
-                                    _TD + ";font-family:monospace;font-size:12px;font-weight:600"
-                                ):
-                                    ui.label(sku)
-                                with ui.element("td").style(_TD + ";font-size:12px"):
-                                    ui.label(item.get("marca") or "—")
-                                with ui.element("td").style(_TD + ";font-size:12px;max-width:200px"):
-                                    ui.label(titulo)
-                                with ui.element("td").style(_TD + ";font-size:12px"):
-                                    ui.label(item.get("color") or "—")
-                                with ui.element("td").style(
-                                    _TD + ";text-align:right;font-family:monospace"
-                                ):
-                                    qty = item.get("available_quantity")
-                                    ui.label(str(qty) if qty is not None else "—")
-                                with ui.element("td").style(
-                                    _TD + ";text-align:right;font-family:monospace;font-weight:600"
-                                ):
-                                    ui.label(_fmt_precio(item.get("price")))
+                rows = [r for r in rows if _passes(r)]
 
-                                # Catálogos — número clickeable o "+"
-                                with ui.element("td").style(_TD + ";text-align:center"):
-                                    if n_cats > 0:
-                                        ui.label(str(n_cats)).classes(
-                                            "font-bold text-blue-600 cursor-pointer hover:underline"
-                                        ).on("click", _make_manage_handler(sku))
+                # Ordenar (MEJORA 2)
+                active_sort_col = sort_col_ref["col"]
+                if active_sort_col:
+                    reverse = not sort_col_ref["asc"]
+
+                    def _sort_key(row: Dict):
+                        if active_sort_col == "SKU":
+                            return row["sku"].lower()
+                        if active_sort_col == "Marca":
+                            return (row["item"].get("marca") or "").lower()
+                        if active_sort_col == "Producto":
+                            return (row["item"].get("title") or "").lower()
+                        if active_sort_col == "Color":
+                            return (row["item"].get("color") or "").lower()
+                        if active_sort_col == "Stock":
+                            return row["item"].get("available_quantity") or 0
+                        if active_sort_col == "Precio":
+                            return float(row["item"].get("price") or 0)
+                        if active_sort_col == "Catálogos":
+                            return row["n_cats"]
+                        if active_sort_col == "Ganando":
+                            return {"✅": 0, "❌": 1, "—": 2}.get(row["ganando"], 2)
+                        return ""
+
+                    rows.sort(key=_sort_key, reverse=reverse)
+
+                # Factory para click en header
+                def _make_sort_handler(col_name: str):
+                    def _do_sort():
+                        if sort_col_ref["col"] == col_name:
+                            sort_col_ref["asc"] = not sort_col_ref["asc"]
+                        else:
+                            sort_col_ref["col"] = col_name
+                            sort_col_ref["asc"] = True
+                        _rebuild_table()
+                    return _do_sort
+
+                # Render — tabla con scroll (MEJORA 3)
+                with ui.element("div").style("max-height:65vh;overflow-y:auto"):
+                    with ui.element("table").style("width:100%;border-collapse:collapse"):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for col_name in ["#", "SKU", "Marca", "Producto", "Color", "Stock", "Precio", "Catálogos", "Ganando", "▶"]:
+                                    if col_name in _SORTABLE_COLS:
+                                        is_active = sort_col_ref["col"] == col_name
+                                        arrow = (" ▲" if sort_col_ref["asc"] else " ▼") if is_active else ""
+                                        with ui.element("th").style(_TH_BLUE).on("click", _make_sort_handler(col_name)):
+                                            ui.label(col_name + arrow)
                                     else:
-                                        ui.label("+").classes(
-                                            "font-bold text-gray-400 cursor-pointer hover:text-blue-600 text-lg"
-                                        ).on("click", _make_manage_handler(sku))
+                                        with ui.element("th").style(_TH_BLUE_FIXED):
+                                            ui.label(col_name)
 
-                                # Ganando
-                                with ui.element("td").style(_TD + ";text-align:center;font-size:16px"):
-                                    if ganando == "✅":
-                                        ui.label("✅")
-                                    elif ganando == "❌":
-                                        ui.label("❌")
-                                    else:
-                                        ui.label("—").style("color:#9ca3af")
+                        with ui.element("tbody"):
+                            for row_num, row in enumerate(rows, 1):
+                                sku = row["sku"]
+                                item = row["item"]
+                                item_ids_set = row["item_ids_set"]
+                                sku_cats = row["sku_cats"]
+                                n_cats = row["n_cats"]
+                                ganando = row["ganando"]
+                                titulo = (item.get("title") or "")[:40]
+                                bg = "background:#f9fafb" if row_num % 2 == 0 else "background:#ffffff"
 
-                                # ▶ toggle expansión
-                                with ui.element("td").style(_TD + ";text-align:center"):
-                                    is_exp = sku in expanded_skus
-
-                                    def _make_toggle(s=sku):
-                                        def _toggle():
-                                            if s in expanded_skus:
-                                                expanded_skus.discard(s)
-                                            else:
-                                                expanded_skus.add(s)
-                                            _rebuild_table()
-                                        return _toggle
-
-                                    ui.button(
-                                        "▼" if is_exp else "▶",
-                                        on_click=_make_toggle(),
-                                    ).props("flat dense size=sm no-caps").style(
-                                        "color:#6b7280;font-size:12px"
-                                    )
-
-                            # Fila expandida con competidores
-                            if sku in expanded_skus:
-                                active_cats = [c for c in sku_cats if c.get("activo")]
-                                all_comps: List[Dict] = []
-                                for cat in active_cats:
-                                    for comp in get_catalogo_competidores(cat["catalog_product_id"]):
-                                        entry = dict(comp)
-                                        entry["_cpid"] = cat["catalog_product_id"]
-                                        all_comps.append(entry)
-                                all_comps.sort(key=lambda c: float(c.get("price") or 0))
-
-                                with ui.element("tr"):
-                                    with ui.element("td").props("colspan=10").style(
-                                        "padding:0;border:none"
+                                with ui.element("tr").style(bg):
+                                    with ui.element("td").style(
+                                        _TD + ";text-align:center;color:#9ca3af;font-size:12px"
                                     ):
-                                        with ui.element("div").style(
-                                            "background:#f0f9ff;padding:8px 12px 12px 24px;"
-                                            "border-bottom:1px solid #e5e7eb"
+                                        ui.label(str(row_num))
+                                    with ui.element("td").style(
+                                        _TD + ";font-family:monospace;font-size:12px;font-weight:600"
+                                    ):
+                                        ui.label(sku)
+                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                        ui.label(item.get("marca") or "—")
+                                    with ui.element("td").style(_TD + ";font-size:12px;max-width:200px"):
+                                        ui.label(titulo)
+                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                        ui.label(item.get("color") or "—")
+                                    with ui.element("td").style(
+                                        _TD + ";text-align:right;font-family:monospace"
+                                    ):
+                                        qty = item.get("available_quantity")
+                                        ui.label(str(qty) if qty is not None else "—")
+                                    with ui.element("td").style(
+                                        _TD + ";text-align:right;font-family:monospace;font-weight:600"
+                                    ):
+                                        ui.label(_fmt_precio(item.get("price")))
+
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        if n_cats > 0:
+                                            ui.label(str(n_cats)).classes(
+                                                "font-bold text-blue-600 cursor-pointer hover:underline"
+                                            ).on("click", _make_manage_handler(sku))
+                                        else:
+                                            ui.label("+").classes(
+                                                "font-bold text-gray-400 cursor-pointer hover:text-blue-600 text-lg"
+                                            ).on("click", _make_manage_handler(sku))
+
+                                    with ui.element("td").style(_TD + ";text-align:center;font-size:16px"):
+                                        if ganando == "✅":
+                                            ui.label("✅")
+                                        elif ganando == "❌":
+                                            ui.label("❌")
+                                        else:
+                                            ui.label("—").style("color:#9ca3af")
+
+                                    with ui.element("td").style(_TD + ";text-align:center"):
+                                        is_exp = sku in expanded_skus
+
+                                        def _make_toggle(s=sku):
+                                            def _toggle():
+                                                if s in expanded_skus:
+                                                    expanded_skus.discard(s)
+                                                else:
+                                                    expanded_skus.add(s)
+                                                _rebuild_table()
+                                            return _toggle
+
+                                        ui.button(
+                                            "▼" if is_exp else "▶",
+                                            on_click=_make_toggle(),
+                                        ).props("flat dense size=sm no-caps").style(
+                                            "color:#6b7280;font-size:12px"
+                                        )
+
+                                if sku in expanded_skus:
+                                    active_cats = [c for c in sku_cats if c.get("activo")]
+                                    all_comps: List[Dict] = []
+                                    for cat in active_cats:
+                                        for comp in get_catalogo_competidores(cat["catalog_product_id"]):
+                                            entry = dict(comp)
+                                            entry["_cpid"] = cat["catalog_product_id"]
+                                            all_comps.append(entry)
+                                    all_comps.sort(key=lambda c: float(c.get("price") or 0))
+
+                                    with ui.element("tr"):
+                                        with ui.element("td").props("colspan=10").style(
+                                            "padding:0;border:none"
                                         ):
-                                            if not all_comps:
-                                                ui.label(
-                                                    "Sin datos — presioná Sincronizar Todo"
-                                                ).classes("text-amber-600 text-sm italic py-2")
-                                            else:
-                                                with ui.element("table").style(
-                                                    "width:100%;border-collapse:collapse"
-                                                ):
-                                                    with ui.element("thead"):
-                                                        with ui.element("tr"):
-                                                            for col in [
-                                                                "#", "Catálogo ID", "Vendedor",
-                                                                "Precio", "Tipo", "Logística", "Envío gratis",
-                                                            ]:
-                                                                with ui.element("th").style(
-                                                                    _TH + ";background:#e0f2fe;font-size:11px"
-                                                                ):
-                                                                    ui.label(col)
-                                                    with ui.element("tbody"):
-                                                        for ci, comp in enumerate(all_comps, 1):
-                                                            is_ours = str(comp.get("item_id", "")) in item_ids_set
-                                                            cbg = (
-                                                                "background:#f0fdf4" if is_ours
-                                                                else ("background:#ffffff" if ci % 2 == 0 else "background:#f0f9ff")
-                                                            )
-                                                            cpid = comp.get("_cpid", "")
-                                                            with ui.element("tr").style(cbg):
-                                                                with ui.element("td").style(
-                                                                    _TD + ";text-align:center;font-size:11px;color:#9ca3af"
-                                                                ):
-                                                                    ui.label(str(ci))
-                                                                with ui.element("td").style(_TD):
-                                                                    ui.label(cpid).classes(
-                                                                        "font-mono cursor-pointer underline text-sm text-blue-600"
-                                                                    ).on("click", _make_detail_handler(cpid))
-                                                                nick = comp.get("seller_nickname") or f"ID {comp.get('seller_id', '')}"
-                                                                with ui.element("td").style(
-                                                                    _TD + (";color:#15803d;font-weight:600" if is_ours else "")
-                                                                ):
-                                                                    ui.label(f"{nick} ✓" if is_ours else nick)
-                                                                with ui.element("td").style(
-                                                                    _TD + ";text-align:right;font-family:monospace;font-weight:600"
-                                                                ):
-                                                                    ui.label(_fmt_precio(comp.get("price")))
-                                                                with ui.element("td").style(_TD + ";font-size:12px"):
-                                                                    ui.label(_tipo_label(comp.get("listing_type") or ""))
-                                                                with ui.element("td").style(_TD + ";font-size:12px"):
-                                                                    ui.label(comp.get("logistica") or "—")
-                                                                with ui.element("td").style(
-                                                                    _TD + ";text-align:center"
-                                                                ):
-                                                                    if comp.get("free_shipping"):
-                                                                        ui.label("Sí").style("color:#16a34a;font-weight:600")
-                                                                    else:
-                                                                        ui.label("No").style("color:#9ca3af")
+                                            with ui.element("div").style(
+                                                "background:#f0f9ff;padding:8px 12px 12px 24px;"
+                                                "border-bottom:1px solid #e5e7eb"
+                                            ):
+                                                if not all_comps:
+                                                    ui.label(
+                                                        "Sin datos — presioná Sincronizar Todo"
+                                                    ).classes("text-amber-600 text-sm italic py-2")
+                                                else:
+                                                    with ui.element("table").style(
+                                                        "width:100%;border-collapse:collapse"
+                                                    ):
+                                                        with ui.element("thead"):
+                                                            with ui.element("tr"):
+                                                                for col in [
+                                                                    "#", "Catálogo ID", "Vendedor",
+                                                                    "Precio", "Tipo", "Logística", "Envío gratis",
+                                                                ]:
+                                                                    with ui.element("th").style(
+                                                                        _TH + ";background:#e0f2fe;font-size:11px"
+                                                                    ):
+                                                                        ui.label(col)
+                                                        with ui.element("tbody"):
+                                                            for ci, comp in enumerate(all_comps, 1):
+                                                                is_ours = str(comp.get("item_id", "")) in item_ids_set
+                                                                cbg = (
+                                                                    "background:#f0fdf4" if is_ours
+                                                                    else ("background:#ffffff" if ci % 2 == 0 else "background:#f0f9ff")
+                                                                )
+                                                                cpid = comp.get("_cpid", "")
+                                                                with ui.element("tr").style(cbg):
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:center;font-size:11px;color:#9ca3af"
+                                                                    ):
+                                                                        ui.label(str(ci))
+                                                                    with ui.element("td").style(_TD):
+                                                                        ui.label(cpid).classes(
+                                                                            "font-mono cursor-pointer underline text-sm text-blue-600"
+                                                                        ).on("click", _make_detail_handler(cpid))
+                                                                    nick = comp.get("seller_nickname") or f"ID {comp.get('seller_id', '')}"
+                                                                    with ui.element("td").style(
+                                                                        _TD + (";color:#15803d;font-weight:600" if is_ours else "")
+                                                                    ):
+                                                                        ui.label(f"{nick} ✓" if is_ours else nick)
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:right;font-family:monospace;font-weight:600"
+                                                                    ):
+                                                                        ui.label(_fmt_precio(comp.get("price")))
+                                                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                                                        ui.label(_tipo_label(comp.get("listing_type") or ""))
+                                                                    with ui.element("td").style(_TD + ";font-size:12px"):
+                                                                        ui.label(comp.get("logistica") or "—")
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:center"
+                                                                    ):
+                                                                        if comp.get("free_shipping"):
+                                                                            ui.label("Sí").style("color:#16a34a;font-weight:600")
+                                                                        else:
+                                                                            ui.label("No").style("color:#9ca3af")
 
         # Carga inicial
         _rebuild_table()
