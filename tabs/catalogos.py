@@ -88,7 +88,15 @@ _TIPO_BADGE: Dict[str, str] = {
 
 
 def _get_cache_items(seller_id: str) -> List[Dict]:
-    raw = get_app_config(f"cache_my_items_{seller_id}_active")
+    raw = None
+    if seller_id:
+        raw = get_app_config(f"cache_my_items_{seller_id}_active")
+        if not raw:
+            raw = get_app_config(f"cache_my_items_{seller_id}_all")
+    if not raw:
+        raw = get_app_config("cache_my_items_active")
+    if not raw:
+        raw = get_app_config("cache_my_items_all")
     if not raw:
         return []
     try:
