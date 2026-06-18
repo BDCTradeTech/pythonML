@@ -1528,3 +1528,34 @@ def ml_get_shipping_preferences(access_token: str, seller_id: str) -> Optional[D
     except Exception:
         pass
     return None
+
+
+def ml_get_orders_incremental(access_token: str, seller_id: str, user_id: int) -> Dict[str, Any]:
+    """Fetch incremental usando cache en DB. Primera vez: fetch completo (~23s). Subsiguiente: solo nuevas."""
+    from db import get_orders_cache, get_orders_cache_max_date, upsert_orders_cache
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+
+    log = logging.getLogger(__name__)
+    max_date = get_orders_cache_max_date(user_id)
+
+    if max_date:
+        try:
+            dt_from = _dt.fromisoformat(max_date.replace("Z", "+00:00"))
+        except Exception:
+            dt_from = _dt.now(_tz.utc) - _td(days=2)
+        dt_from -= _td(days=1)
+        date_from_str = dt_from.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
+        log.warning(f"[ORDERS_CACHE] incremental desde {date_from_str}")
+        new_data = ml_get_orders(access_token, seller_id, limit=500, date_from=date_from_str)
+        new_results = new_data.get("results") or []
+        if new_results:
+            upsert_orders_cache(user_id, new_results)
+            log.warning(f"[ORDERS_CACHE] upserted {len(new_results)} nuevas")
+    else:
+        log.warning("[ORDERS_CACHE] primera carga — fetch completo")
+        all_data = ml_get_orders(access_token, seller_id, limit=10000)
+        all_results = all_data.get("results") or []
+        upsert_orders_cache(user_id, all_results)
+        log.warning(f"[ORDERS_CACHE] cacheadas {len(all_results)} órdenes")
+
+    return {"results": get_orders_cache(user_id)}

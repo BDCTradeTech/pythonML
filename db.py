@@ -724,6 +724,23 @@ def init_db() -> None:
     except sqlite3.OperationalError:
         pass
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_orders_cache (
+            order_id      TEXT NOT NULL,
+            user_id       INTEGER NOT NULL,
+            date_created  TEXT,
+            date_closed   TEXT,
+            total_amount  REAL,
+            paid_amount   REAL,
+            status        TEXT,
+            items_json    TEXT,
+            payments_json TEXT,
+            PRIMARY KEY (order_id, user_id)
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -1944,3 +1961,69 @@ def get_cached(key: str, max_age_minutes: int) -> Optional[Any]:
 def set_cached(key: str, value: Any) -> None:
     import json as _json
     set_app_config(key, _json.dumps(value))
+
+
+# ---------------------------------------------------------------------------
+# Cache de órdenes ML
+# ---------------------------------------------------------------------------
+
+
+def get_orders_cache(user_id: int) -> List[Dict]:
+    import json as _json
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ml_orders_cache WHERE user_id = ? ORDER BY date_created DESC",
+            (user_id,),
+        ).fetchall()
+        result = []
+        for r in rows:
+            order = dict(r)
+            order["order_items"] = _json.loads(order.pop("items_json") or "[]")
+            order["payments"] = _json.loads(order.pop("payments_json") or "[]")
+            result.append(order)
+        return result
+    finally:
+        conn.close()
+
+
+def get_orders_cache_max_date(user_id: int) -> Optional[str]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(date_created) FROM ml_orders_cache WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+
+def upsert_orders_cache(user_id: int, orders: List[Dict]) -> None:
+    import json as _json
+    conn = get_connection()
+    try:
+        for o in orders:
+            oid = str(o.get("id") or o.get("order_id") or "")
+            if not oid:
+                continue
+            items = o.get("order_items") or o.get("items") or []
+            pays = o.get("payments") or []
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO ml_orders_cache
+                    (order_id, user_id, date_created, date_closed, total_amount, paid_amount,
+                     status, items_json, payments_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    oid, user_id,
+                    o.get("date_created"), o.get("date_closed"),
+                    o.get("total_amount"), o.get("paid_amount"),
+                    o.get("status"),
+                    _json.dumps(items), _json.dumps(pays),
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
