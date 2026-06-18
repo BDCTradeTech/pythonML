@@ -663,7 +663,7 @@ def _pintar_home_inline(
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                        ui.label(f"CUOTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
+                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
                         total_unidades_mes_c = 0
                         for _ord in results:
@@ -689,11 +689,11 @@ def _pintar_home_inline(
                         _base_c = total_unidades_mes_c or 1
                         with ui.row().classes("w-full gap-3 items-start mt-1"):
                             with ui.element("div").style("min-width:70px;text-align:center"):
-                                ui.label(str(total_unidades_mes_c)).style(
-                                    "font-size:28px;font-weight:700;color:#185fa5;line-height:1")
+                                ui.label(f"{total_unidades_mes_c:,}".replace(",", ".")).style(
+                                    "font-size:36px;font-weight:700;color:#185fa5;line-height:1")
                                 ui.label("unidades").style("font-size:9px;color:#6b7280")
                             with ui.element("div").style(
-                                    "flex:1;display:flex;flex-direction:column;gap:3px"):
+                                    "flex:1;display:flex;flex-direction:column;gap:8px"):
                                 for _cx, _lx, _clr in [
                                     (1, "1x", "#185fa5"),
                                     (3, "3x", "#1d9e75"),
@@ -707,11 +707,11 @@ def _pintar_home_inline(
                                         ui.label(_lx).style(
                                             "font-size:8px;color:#6b7280;min-width:20px;font-weight:600")
                                         ui.html(
-                                            f'<div style="background:#e5e7eb;height:14px;border-radius:3px;'
+                                            f'<div style="background:#e5e7eb;height:22px;border-radius:3px;'
                                             f'overflow:hidden"><div style="width:{_pct_c:.1f}%;height:100%;'
                                             f'background:{_clr};border-radius:3px"></div></div>'
                                         ).style("flex:1")
-                                        ui.label(f"{_cu} · {_pct_c:.1f}%").style(
+                                        ui.label(f'{f"{_cu:,}".replace(",",".")} · {_pct_c:.1f}%').style(
                                             "font-size:8px;color:#6b7280;min-width:70px;text-align:right")
 
                 # Card Gráfico Semanal — 14 días
