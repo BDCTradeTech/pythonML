@@ -2641,7 +2641,7 @@ def _mostrar_tabla_precios(
                     _CAT_HTML = {
                         "winning":             '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#27500a"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 ML</span>',
                         "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 Cat.</span>',
-                        "competing":           f'<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>{"Per. #" + str(row.get("catalog_position")) if row.get("catalog_position") else "Perdiendo"}</span>',
+                        "competing":           f'<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>{"Per. #" + str(row.get("catalog_position")) if row.get("catalog_position") and row.get("catalog_position") > 1 else "Perdiendo"}</span>',
                         "listed":              '<span style="font-size:12px;color:#888780">Listado</span>',
                     }
                     _sku_cp = row.get("seller_sku") or ""
