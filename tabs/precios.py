@@ -17,7 +17,11 @@ from typing import Any, Dict, List, Optional
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_connection, get_cotizador_param, COTIZADOR_DEFAULTS
+from db import (
+    get_connection, get_cotizador_param, COTIZADOR_DEFAULTS,
+    get_sku_catalogos, add_sku_catalogo, delete_sku_catalogo,
+    get_catalogo_competidores, upsert_catalogo_competidores,
+)
 from ml_api import (
     get_ml_access_token,
     _cuotas_desde_item,
@@ -29,7 +33,11 @@ from ml_api import (
     ml_get_items_multiget_with_attributes,
     ml_get_orders,
     ml_get_seller_promotions_item,
+    ml_get_catalog_items,
+    ml_get_product_detail,
+    ml_get_users_multiget,
 )
+from tabs.catalogos import _search_catalogs_sync, _sync_one_catalog, _item_url
 from tabs.cuotas import _cuotas_key
 
 
@@ -542,6 +550,12 @@ def _mostrar_tabla_precios(
             _grp_ids_map[_rep_id] = [str(x.get("id") or "") for x in grupo if x.get("id")]
 
     _uid = user["id"]
+    _sku_cats_all = get_sku_catalogos(_uid)
+    _n_cat_by_sku: Dict[str, int] = {}
+    for _sc in _sku_cats_all:
+        _sc_sku = _sc.get("sku") or ""
+        if _sc_sku:
+            _n_cat_by_sku[_sc_sku] = _n_cat_by_sku.get(_sc_sku, 0) + 1
     _skus_dedup = [i.get("seller_sku") for i in items_dedup if i.get("seller_sku")]
     _prod_map: Dict[str, Dict[str, Any]] = {}
     if _skus_dedup:
@@ -704,6 +718,7 @@ def _mostrar_tabla_precios(
             "price_updated_at":     _price_upd_at,
             "dias_sin_modificar":   _dias_sin_modif,
             "has_promo":            tiene_promo,
+            "n_catalogos":          _n_cat_by_sku.get(i.get("seller_sku") or "", 0),
         })
 
     _gan_rows = [
@@ -916,6 +931,223 @@ def _mostrar_tabla_precios(
         revisiones_hoy = {r["sku"]: bool(r["precio_cambiado"]) for r in _rows_rev}
     finally:
         _conn_rev_init.close()
+
+    def _open_catalogo_popup(sku: str) -> None:
+        dlg = ui.dialog()
+        with dlg:
+            with ui.card().classes("w-[620px] max-w-[95vw] p-4"):
+                with ui.row().classes("w-full items-center justify-between mb-1"):
+                    ui.label(f"Catálogos — {sku}").classes("text-lg font-bold")
+                    ui.button(icon="close", on_click=dlg.close).props("flat dense round")
+                ui.separator().classes("mb-2")
+                cats_container = ui.column().classes("w-full gap-1")
+
+                def _refresh_cats() -> None:
+                    cats_container.clear()
+                    _sku_cats = [c for c in get_sku_catalogos(_uid) if c.get("sku") == sku]
+                    with cats_container:
+                        if not _sku_cats:
+                            ui.label("Sin catálogos asociados").classes(
+                                "text-gray-400 text-sm italic py-1"
+                            )
+                        for _cat in _sku_cats:
+                            with ui.row().classes("w-full items-center gap-2 py-1"):
+                                ui.label(_cat["catalog_product_id"]).classes(
+                                    "font-mono text-sm flex-1 text-blue-700"
+                                )
+                                ui.label(_cat.get("catalog_name") or "").classes(
+                                    "text-sm text-gray-500 flex-1"
+                                )
+                                def _del(c=_cat):
+                                    delete_sku_catalogo(c["id"], _uid)
+                                    ui.notify(f"Eliminado {c['catalog_product_id']}", color="warning")
+                                    _refresh_cats()
+                                ui.button(icon="delete", on_click=_del).props(
+                                    "flat dense color=negative size=sm"
+                                )
+
+                _refresh_cats()
+                ui.separator().classes("my-2")
+                ui.label("Buscar catálogo").classes("font-semibold text-sm mb-1")
+                search_input = ui.input(
+                    placeholder="ID (MLA...), EAN o nombre..."
+                ).props("dense outlined").classes("w-full")
+                search_results = ui.column().classes("w-full mt-1")
+
+                async def _do_search() -> None:
+                    q = (search_input.value or "").strip()
+                    if not q:
+                        return
+                    search_results.clear()
+                    with search_results:
+                        ui.spinner(size="sm")
+                    results = await asyncio.to_thread(_search_catalogs_sync, access_token, q)
+                    search_results.clear()
+                    with search_results:
+                        if not results:
+                            ui.label("Sin resultados").classes("text-gray-400 text-sm")
+                        for _res in results:
+                            with ui.row().classes("w-full items-center gap-2 py-1"):
+                                ui.label(_res["id"]).classes("font-mono text-xs text-gray-500 w-28")
+                                ui.label(_res["name"][:50]).classes("text-sm flex-1")
+                                def _add(r=_res):
+                                    add_sku_catalogo(_uid, sku, r["id"], r["name"])
+                                    ui.notify(f"Agregado {r['id']}", color="positive")
+                                    _refresh_cats()
+                                ui.button("Agregar", on_click=_add).props(
+                                    "dense no-caps size=sm color=primary"
+                                )
+
+                with ui.row().classes("w-full gap-2 mt-2"):
+                    ui.button("Buscar", on_click=_do_search).props("dense no-caps color=primary")
+                search_input.on("keydown.enter", _do_search)
+        dlg.open()
+
+    def _open_competidores_popup(sku: str) -> None:
+        sku_cats = [
+            c for c in get_sku_catalogos(_uid)
+            if c.get("sku") == sku and c.get("activo")
+        ]
+        if not sku_cats:
+            ui.notify(
+                f"SKU {sku} sin catálogos activos. Usá 'Catálogos' para agregar.",
+                color="warning",
+            )
+            return
+        dlg = ui.dialog()
+        with dlg:
+            with ui.card().classes("w-[860px] max-w-[95vw] p-4"):
+                with ui.row().classes("w-full items-center justify-between mb-1"):
+                    ui.label(f"Competidores — {sku}").classes("text-lg font-bold")
+                    ui.button(icon="close", on_click=dlg.close).props("flat dense round")
+                ui.separator().classes("mb-2")
+                content_area = ui.column().classes("w-full")
+                with content_area:
+                    with ui.row().classes("items-center gap-2 py-2"):
+                        ui.spinner(size="sm")
+                        ui.label("Cargando competidores...").classes("text-sm text-gray-500")
+        dlg.open()
+
+        async def _load_comps() -> None:
+            _STALE_HOURS = 2
+            all_comps: List[Dict] = []
+            _item_ids_set = {str(r.get("id") or "") for r in items_loaded}
+
+            for cat in sku_cats:
+                cpid = cat["catalog_product_id"]
+                cached = get_catalogo_competidores(cpid)
+                stale = True
+                if cached:
+                    try:
+                        ts_str = (cached[0].get("updated_at") or "")[:19]
+                        if ts_str:
+                            ts = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
+                            stale = (datetime.utcnow() - ts).total_seconds() / 3600 > _STALE_HOURS
+                    except Exception:
+                        stale = True
+                if stale:
+                    fresh = await _sync_one_catalog(access_token, cpid)
+                    if fresh:
+                        upsert_catalogo_competidores(cpid, fresh)
+                        cached = get_catalogo_competidores(cpid)
+                for comp in cached:
+                    entry = dict(comp)
+                    entry["_cpid"] = cpid
+                    all_comps.append(entry)
+
+            all_comps.sort(key=lambda c: float(c.get("price") or 0))
+
+            _PALETA = ["#e3f2fd", "#f0fdf4", "#faf5ff", "#fff7ed", "#fdf2f8"]
+            _PALETA_TEXT = ["#1565c0", "#16a34a", "#6d28d9", "#c2410c", "#9d174d"]
+            _cat_ids_p = list(dict.fromkeys(c.get("_cpid", "") for c in all_comps))
+            _color_map = {v: _PALETA[i % len(_PALETA)] for i, v in enumerate(_cat_ids_p)}
+            _text_map  = {v: _PALETA_TEXT[i % len(_PALETA_TEXT)] for i, v in enumerate(_cat_ids_p)}
+            _TH_P = (
+                "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
+                "background:#1976d2;color:white;font-size:11px;position:sticky;top:0;z-index:1"
+            )
+            _TD_P = "padding:4px 8px;border:1px solid #e5e7eb;font-size:12px"
+            _ORIGEN_P = {
+                "internacional": (
+                    '<span style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;'
+                    'border-radius:12px;padding:2px 8px;font-size:11px">🌎 Internacional</span>'
+                ),
+                "local": (
+                    '<span style="background:#f9fafb;color:#6b7280;border:1px solid #e5e7eb;'
+                    'border-radius:12px;padding:2px 8px;font-size:11px">📦 Local</span>'
+                ),
+            }
+            _TIPO_P = {
+                "gold_special": '<span style="background:#f3f4f6;color:#374151;border:1px solid #d1d5db;border-radius:12px;padding:2px 8px;font-size:11px;font-weight:500">1x</span>',
+                "gold_pro":     '<span style="background:#dbeafe;color:#1d4ed8;border:1px solid #93c5fd;border-radius:12px;padding:2px 8px;font-size:11px;font-weight:500">cuotas</span>',
+                "gold_premium": '<span style="background:#ede9fe;color:#6d28d9;border:1px solid #c4b5fd;border-radius:12px;padding:2px 8px;font-size:11px;font-weight:500">premium</span>',
+            }
+            _LVL_P = {"5_green": "🟢 Platinum", "4_light_green": "🟡 Gold", "3_yellow": "⭐ Líder"}
+
+            content_area.clear()
+            with content_area:
+                if not all_comps:
+                    ui.label("Sin competidores disponibles").classes(
+                        "text-amber-600 text-sm italic py-2"
+                    )
+                else:
+                    with ui.element("div").style("max-height:500px;overflow-y:auto;width:100%"):
+                        with ui.element("table").style("width:100%;border-collapse:collapse"):
+                            with ui.element("thead"):
+                                with ui.element("tr"):
+                                    for _ch in ["#", "Catálogo ID", "Item", "Origen", "Vendedor", "Precio", "Tipo"]:
+                                        with ui.element("th").style(_TH_P):
+                                            ui.label(_ch)
+                            with ui.element("tbody"):
+                                for ci_p, comp_p in enumerate(all_comps, 1):
+                                    cpid_p = comp_p.get("_cpid", "")
+                                    is_ours_p = str(comp_p.get("item_id", "")) in _item_ids_set
+                                    with ui.element("tr").style(
+                                        f"background:{_color_map.get(cpid_p, '#ffffff')}"
+                                    ):
+                                        with ui.element("td").style(_TD_P + ";text-align:center;color:#9ca3af"):
+                                            ui.label(str(ci_p))
+                                        with ui.element("td").style(_TD_P + ";text-align:center"):
+                                            ui.label(cpid_p).classes("font-mono text-xs").style(
+                                                f"color:{_text_map.get(cpid_p, '#374151')}"
+                                            )
+                                        item_id_p = comp_p.get("item_id", "")
+                                        with ui.element("td").style(_TD_P + ";text-align:center"):
+                                            _link_s = "color:#15803d;font-weight:600" if is_ours_p else "color:#2563eb"
+                                            ui.html(
+                                                f'<a href="{_item_url(item_id_p)}" target="_blank" '
+                                                f'style="font-family:monospace;font-size:11px;'
+                                                f'{_link_s};text-decoration:underline">{item_id_p}</a>'
+                                            )
+                                        with ui.element("td").style(_TD_P + ";text-align:center"):
+                                            ui.html(_ORIGEN_P.get(comp_p.get("origen") or "local", _ORIGEN_P["local"]))
+                                        nick_p = comp_p.get("seller_nickname") or f"ID {comp_p.get('seller_id', '')}"
+                                        tv_p   = comp_p.get("seller_total_ventas")
+                                        lvl_p  = comp_p.get("seller_level_id") or ""
+                                        np_p   = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
+                                        rep_p  = _LVL_P.get(lvl_p, "") if lvl_p else ""
+                                        lbl_p  = f"{np_p}  {rep_p}".strip() if rep_p else np_p
+                                        with ui.element("td").style(
+                                            _TD_P + (";color:#15803d;font-weight:600" if is_ours_p else "")
+                                        ):
+                                            ui.label(lbl_p).style("font-size:11px")
+                                        with ui.element("td").style(
+                                            _TD_P + ";text-align:right;font-family:monospace;font-weight:600"
+                                        ):
+                                            price_p = comp_p.get("price")
+                                            try:
+                                                ps_p = "$" + f"{int(float(price_p)):,}".replace(",", ".") if price_p else "—"
+                                            except (TypeError, ValueError):
+                                                ps_p = "—"
+                                            ui.label(ps_p)
+                                        with ui.element("td").style(_TD_P + ";text-align:center"):
+                                            lt_p = comp_p.get("listing_type") or ""
+                                            if lt_p in _TIPO_P:
+                                                ui.html(_TIPO_P[lt_p])
+                                            else:
+                                                ui.label(lt_p or "—").style("font-size:11px")
+
+        background_tasks.create(_load_comps())
 
     def abrir_editar_precio(row: Dict[str, Any]) -> None:
         if row.get("tipo") not in ("Propia", "Prop Comb"):
@@ -2247,6 +2479,7 @@ def _mostrar_tabla_precios(
         {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Calidad", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
+        {"name": "n_catalogos", "label": "Catálogos", "field": "n_catalogos", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 55px"},
         {"name": "catalog_price_to_win", "label": "Precio Ganador", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
@@ -2300,16 +2533,35 @@ def _mostrar_tabla_precios(
                     _iva_val = row.get("tipo_iva") or 0.105
                     _iva_lbl = "21%" if abs(_iva_val - 0.21) < 0.001 else "10,5%"
                     ui.button(_iva_lbl, on_click=lambda r=row: abrir_editar_iva(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                elif col["name"] == "n_catalogos":
+                    _n = row.get("n_catalogos") or 0
+                    _sku_nc = row.get("seller_sku") or ""
+                    if _n > 0:
+                        ui.label(str(_n)).classes(
+                            "cursor-pointer underline text-blue-600 font-medium text-xs"
+                        ).on("click", lambda s=_sku_nc: _open_catalogo_popup(s))
+                    else:
+                        ui.label("+").classes(
+                            "cursor-pointer text-blue-400 text-base font-bold"
+                        ).on("click", lambda s=_sku_nc: _open_catalogo_popup(s))
                 elif col["name"] == "catalog_pos":
                     cs = row.get("catalog_status")
-                    if cs == "winning":
-                        ui.label("Ganando").style("color:#27500A;font-size:11px;font-weight:500")
-                    elif cs == "sharing_first_place":
-                        ui.label("Empatando").style("color:#0C447C;font-size:11px;font-weight:500")
-                    elif cs == "competing":
-                        ui.label("Perdiendo").style("color:#791F1F;font-size:11px;font-weight:500")
-                    elif cs == "listed":
-                        ui.label("Listed").style("color:var(--color-text-secondary);font-size:11px")
+                    _CAT_ICONS = {
+                        "winning":             ("🏆", "#27500A", "Ganando en ML"),
+                        "sharing_first_place": ("📋", "#0C447C", "Empatando"),
+                        "competing":           ("❌", "#791F1F", "Perdiendo"),
+                        "listed":              ("—",  "#9ca3af", "Listado sin competir"),
+                    }
+                    _sku_cp = row.get("seller_sku") or ""
+                    if cs and cs in _CAT_ICONS:
+                        _ico, _col_ico, _tip = _CAT_ICONS[cs]
+                        ui.label(_ico).style(
+                            f"cursor:pointer;font-size:14px;color:{_col_ico}"
+                        ).tooltip(_tip).on(
+                            "click", lambda s=_sku_cp: _open_competidores_popup(s)
+                        )
+                    else:
+                        ui.label("—").style("color:#9ca3af;font-size:11px")
                 elif col["name"] == "catalog_price_to_win":
                     ptw = row.get("catalog_price_to_win")
                     ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
