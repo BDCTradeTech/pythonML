@@ -561,6 +561,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
     n_red_init    = sum(1 for item in db_alerts if item[0] == _RED)
     n_yellow_init = sum(1 for item in db_alerts if item[0] == _YELLOW)
+    dyn_ref = {"red": 0, "yellow": 0}
     _susp_items_ref: Dict[str, Any] = {"val": []}
     desde_sql = desde_dt.strftime("%Y-%m-%d")
 
@@ -816,6 +817,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
         return
 
+    def _bump_counters(r: int = 0, y: int = 0) -> None:
+        dyn_ref["red"] += r
+        dyn_ref["yellow"] += y
+        red_count_lbl.set_text(str(n_red_init + dyn_ref["red"]))
+        yel_count_lbl.set_text(str(n_yellow_init + dyn_ref["yellow"]))
+
     async def _cargar_rep() -> None:
         try:
             profile  = await run.io_bound(ml_get_user_profile, access_token)
@@ -852,12 +859,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     _alert_row(alerts_col, color, msg,
                                on_nav=(lambda: navigate_to("Estadísticas")) if navigate_to else None)
 
-            n_red_total    = (sum(1 for item in db_alerts if item[0] == _RED)
-                              + sum(1 for c, _ in ra if c == _RED))
-            n_yellow_total = (sum(1 for item in db_alerts if item[0] == _YELLOW)
-                              + sum(1 for c, _ in ra if c == _YELLOW))
-            red_count_lbl.set_text(str(n_red_total))
-            yel_count_lbl.set_text(str(n_yellow_total))
+            _bump_counters(
+                sum(1 for c, _ in ra if c == _RED),
+                sum(1 for c, _ in ra if c == _YELLOW),
+            )
 
             if not db_alerts and not ra:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
@@ -963,10 +968,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 _alert_row(alerts_col, _RED,
                            f"{n} publicación{'es' if n != 1 else ''} con documentación pendiente en ML",
                            on_nav=(lambda: navigate_to("Cuotas")) if navigate_to else None)
+                _bump_counters(r=1)
             if ur_held:
                 n = len(ur_held)
                 _alert_row(alerts_col, _YELLOW,
                            f"{n} publicación{'es' if n != 1 else ''} retenida{'s' if n != 1 else ''} por ML")
+                _bump_counters(y=1)
 
             # ── Pausadas con stock ────────────────────────────────────────────
             susp_items = [
@@ -985,6 +992,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             if cnt_susp > 0:
                 _alert_row(alerts_col, _RED, f"Publicaciones pausadas: {cnt_susp}",
                            on_nav=(lambda: navigate_to("Productos")) if navigate_to else None)
+                _bump_counters(r=1)
             _pc = (_RED    if prod["sin_costo"] > 0 or cnt_susp > 0 or prod["gan_neg"] > 0
                    else _YELLOW if prod["sin_fob"] > 0
                    else _GREEN)
