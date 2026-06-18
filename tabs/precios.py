@@ -795,6 +795,22 @@ def _mostrar_tabla_precios(
                 r["catalog_reason"]       = d.get("reason")
                 r["catalog_competitors"]  = d.get("competitors")
 
+        _our_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
+        for r in items_loaded:
+            if r.get("catalog_status") != "competing":
+                continue
+            _cpid_r = str(r.get("catalog_product_id") or "")
+            if not _cpid_r:
+                continue
+            _comps_r = get_catalogo_competidores(_cpid_r)
+            if not _comps_r:
+                continue
+            _sorted_r = sorted(_comps_r, key=lambda c: float(c.get("price") or 0))
+            for _pos_r, _c_r in enumerate(_sorted_r, 1):
+                if str(_c_r.get("item_id") or "") in _our_ids_set:
+                    r["catalog_position"] = _pos_r
+                    break
+
     _cs_rows = [
         (r.get("catalog_status"), r.get("seller_sku"))
         for r in items_loaded
@@ -1152,8 +1168,15 @@ def _mostrar_tabla_precios(
                                                         None,
                                                     )
                                                     if _row_m:
+                                                        _row_aug = {
+                                                            **_row_m,
+                                                            "precio":   _row_m.get("precio") or _row_m.get("price"),
+                                                            "costo":    _row_m.get("costo") or _row_m.get("costo_usd"),
+                                                            "stock":    _row_m.get("stock") or _row_m.get("available_quantity"),
+                                                            "producto": _row_m.get("producto") or _row_m.get("title"),
+                                                        }
                                                         _show_item_detail_dialog(
-                                                            _row_m,
+                                                            _row_aug,
                                                             ml_comision=ml_comision_p, cuotas_3x=cuotas_3x_p, cuotas_6x=cuotas_6x_p,
                                                             cuotas_9x=cuotas_9x_p, cuotas_12x=cuotas_12x_p,
                                                             ml_debcre=ml_debcre_p, ml_iibb_per=ml_iibb_per_p,
@@ -2617,8 +2640,8 @@ def _mostrar_tabla_precios(
                     cs = row.get("catalog_status")
                     _CAT_HTML = {
                         "winning":             '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#27500a"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 ML</span>',
-                        "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 cat.</span>',
-                        "competing":           '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>Perdiendo</span>',
+                        "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 Cat.</span>',
+                        "competing":           f'<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>{"Per. #" + str(row.get("catalog_position")) if row.get("catalog_position") else "Perdiendo"}</span>',
                         "listed":              '<span style="font-size:12px;color:#888780">Listado</span>',
                     }
                     _sku_cp = row.get("seller_sku") or ""
