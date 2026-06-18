@@ -2589,22 +2589,19 @@ def _mostrar_tabla_precios(
                         ).on("click", lambda s=_sku_nc: _open_catalogo_popup(s))
                 elif col["name"] == "catalog_pos":
                     cs = row.get("catalog_status")
-                    _CAT_ICONS = {
-                        "winning":             ("🏆", "#27500A", "Ganando en ML"),
-                        "sharing_first_place": ("📋", "#0C447C", "Empatando"),
-                        "competing":           ("❌", "#791F1F", "Perdiendo"),
-                        "listed":              ("—",  "#9ca3af", "Listado sin competir"),
+                    _CAT_HTML = {
+                        "winning":             '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#27500a"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 ML</span>',
+                        "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 cat.</span>',
+                        "competing":           '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>Perdiendo</span>',
+                        "listed":              '<span style="font-size:12px;color:#888780">Listado</span>',
                     }
                     _sku_cp = row.get("seller_sku") or ""
-                    if cs and cs in _CAT_ICONS:
-                        _ico, _col_ico, _tip = _CAT_ICONS[cs]
-                        ui.label(_ico).style(
-                            f"cursor:pointer;font-size:14px;color:{_col_ico}"
-                        ).tooltip(_tip).on(
+                    if cs and cs in _CAT_HTML:
+                        ui.html(_CAT_HTML[cs]).style("cursor:pointer").on(
                             "click", lambda s=_sku_cp: _open_competidores_popup(s)
                         )
                     else:
-                        ui.label("—").style("color:#9ca3af;font-size:11px")
+                        ui.html('<span style="font-size:12px;color:#9ca3af">—</span>')
                 elif col["name"] == "catalog_price_to_win":
                     ptw = row.get("catalog_price_to_win")
                     ui.label(fmt_moneda(ptw) if ptw is not None else "—").classes("" if ptw is not None else "text-gray-400")
