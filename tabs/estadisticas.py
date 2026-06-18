@@ -23,6 +23,7 @@ from ml_api import (
     ml_get_unanswered_questions,
     ml_get_dispatch_schedule,
     ml_get_shipping_preferences,
+    _cuotas_desde_item,
 )
 from db import get_cotizador_param
 
@@ -664,6 +665,9 @@ def _pintar_home_inline(
                                 ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
+                        _items_map = {str(it.get("id") or ""): it
+                                      for it in (items_data or {}).get("results") or []
+                                      if it.get("id")}
                         total_unidades_mes_c = 0
                         for _ord in results:
                             _dt_s = (_ord.get("date_created") or _ord.get("date_closed")
@@ -681,10 +685,13 @@ def _pintar_home_inline(
                                          for it in _items_c if isinstance(it, dict))
                             if _uds_c == 0 and float(_ord.get("total_amount") or _ord.get("paid_amount") or 0) > 0:
                                 _uds_c = 1
-                            _pays = _ord.get("payments") or []
-                            _inst = int((_pays[0].get("installments")
-                                         if isinstance(_pays, list) and _pays else None) or 1)
-                            _inst_key = min(cuotas_dist.keys(), key=lambda k: abs(k - _inst))
+                            _first_item_c = next((it for it in _items_c if isinstance(it, dict)), {})
+                            _iid_c = str(_first_item_c.get("item_id") or _first_item_c.get("id") or "")
+                            _item_body_c = _items_map.get(_iid_c) or {}
+                            _cuotas_str_c = _cuotas_desde_item(_item_body_c)
+                            _inst_key = int(_cuotas_str_c.lstrip("x") or "1")
+                            if _inst_key not in cuotas_dist:
+                                _inst_key = 1
                             cuotas_dist[_inst_key] += _uds_c
                             total_unidades_mes_c += _uds_c
                         _base_c = total_unidades_mes_c or 1
