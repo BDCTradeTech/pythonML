@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from datetime import date as _date, datetime as _datetime
 from typing import Any, Dict, List, Optional, Set
 
 import requests
@@ -76,6 +77,39 @@ def _item_url(item_id: str) -> str:
     if match:
         return f"https://articulo.mercadolibre.com.ar/{match.group(1)}-{match.group(2)}"
     return "https://www.mercadolibre.com.ar"
+
+
+def _fmt_delivery(edt: Dict) -> str:
+    if not edt:
+        return "—"
+    dt_type = edt.get("type", "")
+    date_str = edt.get("date", "")
+    if not date_str:
+        return "—"
+    try:
+        today = _date.today()
+        dt_start = _datetime.fromisoformat(date_str).date()
+        if dt_type == "known":
+            diff = (dt_start - today).days
+            if diff == 0:
+                return "Hoy"
+            if diff == 1:
+                return "Mañana"
+            _DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+            return f"{_DIAS[dt_start.weekday()]} {dt_start.day}/{dt_start.month}"
+        if dt_type == "known_frame":
+            offset = edt.get("offset") or {}
+            end_str = offset.get("date", "")
+            _MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
+                      "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
+            mes = _MESES[dt_start.month - 1]
+            if end_str:
+                dt_end = _datetime.fromisoformat(end_str).date()
+                return f"{dt_start.day}-{dt_end.day} {mes}"
+            return f"{dt_start.day} {mes}"
+        return "—"
+    except Exception:
+        return "—"
 
 
 _ORIGEN_BADGE: Dict[str, str] = {
@@ -264,7 +298,7 @@ def build_tab_catalogos(container) -> None:
             return
 
         seller_id_ref: List[str] = [""]
-        state: Dict[str, Any] = {"syncing": False, "ptw_cache": {}}
+        state: Dict[str, Any] = {"syncing": False, "ptw_cache": {}, "delivery_cache": {}}
         sync_btn_ref: List[Any] = [None]
         spinner_ref: List[Any] = [None]
         counter_ref: List[Any] = [None]
@@ -273,9 +307,10 @@ def build_tab_catalogos(container) -> None:
         filter_state: Dict[str, Any] = {"ganando": "todos", "cats": "todos", "text": ""}
 
         # ── Header ─────────────────────────────────────────────────────────
-        with ui.row().classes("w-full items-center gap-3 mb-2"):
-            ui.label("CATÁLOGOS ML").classes("text-xl font-bold")
-            counter_lbl = ui.label("").classes("text-sm text-gray-400")
+        with ui.row().classes("w-full items-center bg-grey-2 q-pa-sm mb-3"):
+            ui.label("CATÁLOGOS ML").classes("text-sm font-semibold text-grey-8")
+            ui.separator().props("vertical").classes("mx-2")
+            counter_lbl = ui.label("").classes("text-sm text-grey-6")
             counter_ref[0] = counter_lbl
             ui.space()
             sp = ui.spinner(size="sm").classes("hidden")
@@ -322,6 +357,7 @@ def build_tab_catalogos(container) -> None:
                             if result:
                                 new_ptw[item_id] = result.get("status", "")
                     state["ptw_cache"] = new_ptw
+                    state["delivery_cache"] = {}
 
                     # Sincronizar competidores
                     all_cats_fresh = get_sku_catalogos(uid)
@@ -345,7 +381,7 @@ def build_tab_catalogos(container) -> None:
                 "Sincronizar Todo",
                 on_click=lambda: background_tasks.create(_do_sync_all(), name="sync_catalogos"),
                 color="primary",
-            ).props("no-caps")
+            ).props("no-caps dense")
             sync_btn_ref[0] = btn
 
         # ── Filtros ──────────────────────────────────────────────────────────
@@ -604,21 +640,21 @@ def build_tab_catalogos(container) -> None:
             sku_groups = _group_by_sku(cache_items)
             all_cats = get_sku_catalogos(uid)
 
+            ganando_map: Dict[str, str] = {
+                sku: _calc_ganando_v2(sku, set(grp["item_ids"]), all_cats, state["ptw_cache"])
+                for sku, grp in sku_groups.items()
+            }
+
             total_skus = len(sku_groups)
             total_cats = len([c for c in all_cats if c.get("activo")])
-            compitiendo = sum(
-                1 for sku in sku_groups
-                if any(
-                    bool(get_catalogo_competidores(c["catalog_product_id"]))
-                    for c in all_cats
-                    if c.get("sku") == sku and c.get("activo")
-                )
-            )
+            compitiendo = sum(1 for v in ganando_map.values() if v in ("ml", "catalogo"))
 
             if counter_ref[0]:
                 counter_ref[0].set_text(
                     f"{total_skus} SKUs · {total_cats} catálogos · {compitiendo} compitiendo"
                 )
+
+            zip_code = get_app_config("catalogos_zip_code") or "1405"
 
             with table_area:
                 if not cache_items:
@@ -633,7 +669,7 @@ def build_tab_catalogos(container) -> None:
                     item_ids_set: Set[str] = set(grp["item_ids"])
                     sku_cats = [c for c in all_cats if c.get("sku") == sku]
                     n_cats = len([c for c in sku_cats if c.get("activo")])
-                    ganando = _calc_ganando_v2(sku, item_ids_set, all_cats, state["ptw_cache"])
+                    ganando = ganando_map[sku]
                     rows.append({
                         "sku": sku,
                         "grp": grp,
@@ -732,7 +768,7 @@ def build_tab_catalogos(container) -> None:
                                 sku_cats = row["sku_cats"]
                                 n_cats = row["n_cats"]
                                 ganando = row["ganando"]
-                                titulo = (item.get("title") or "")[:40]
+                                titulo = item.get("title") or ""
                                 bg = "background:#f9fafb" if row_num % 2 == 0 else "background:#ffffff"
 
                                 with ui.element("tr").style(bg):
@@ -741,13 +777,15 @@ def build_tab_catalogos(container) -> None:
                                     ):
                                         ui.label(str(row_num))
                                     with ui.element("td").style(
-                                        _TD + ";font-family:monospace;font-size:12px;font-weight:600"
+                                        _TD + ";font-family:monospace;font-size:12px;font-weight:600;"
+                                        "max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                                     ):
                                         ui.label(sku)
                                     with ui.element("td").style(_TD + ";font-size:12px"):
                                         ui.label(item.get("marca") or "—")
                                     with ui.element("td").style(
-                                        _TD + ";font-size:12px;max-width:200px"
+                                        _TD + ";font-size:12px;min-width:200px;overflow:hidden;"
+                                        "text-overflow:ellipsis;white-space:nowrap"
                                     ):
                                         ui.label(titulo)
                                     with ui.element("td").style(_TD + ";font-size:12px"):
@@ -825,6 +863,8 @@ def build_tab_catalogos(container) -> None:
                                             all_comps.append(entry)
                                     all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
+                                    delivery_labels: Dict[str, Any] = {}
+
                                     with ui.element("tr"):
                                         with ui.element("td").props("colspan=11").style(
                                             "padding:0;border:none"
@@ -844,8 +884,8 @@ def build_tab_catalogos(container) -> None:
                                                         with ui.element("thead"):
                                                             with ui.element("tr"):
                                                                 for col in [
-                                                                    "#", "Catálogo ID", "Item", "Origen", "Vendedor",
-                                                                    "Precio", "Tipo",
+                                                                    "#", "Catálogo ID", "Item", "Origen",
+                                                                    "Entrega", "Vendedor", "Precio", "Tipo",
                                                                 ]:
                                                                     with ui.element("th").style(
                                                                         _TH + ";background:#e0f2fe;font-size:11px"
@@ -902,6 +942,19 @@ def build_tab_catalogos(container) -> None:
                                                                         _TD + ";text-align:center"
                                                                     ):
                                                                         ui.html(_ORIGEN_BADGE.get(origen_val, _ORIGEN_BADGE["local"]))
+                                                                    # ── Entrega (lazy) ──────────────────
+                                                                    with ui.element("td").style(
+                                                                        _TD + ";text-align:center;min-width:70px"
+                                                                    ):
+                                                                        cached_val = state["delivery_cache"].get(item_id_val)
+                                                                        if cached_val is not None:
+                                                                            ui.label(cached_val).style("font-size:11px")
+                                                                        else:
+                                                                            d_lbl = ui.label("...").style(
+                                                                                "font-size:11px;color:#9ca3af"
+                                                                            )
+                                                                            if item_id_val:
+                                                                                delivery_labels[item_id_val] = d_lbl
                                                                     nick = (
                                                                         comp.get("seller_nickname")
                                                                         or f"ID {comp.get('seller_id', '')}"
@@ -935,6 +988,53 @@ def build_tab_catalogos(container) -> None:
                                                                             ui.label(lt or "—").style(
                                                                                 "font-size:11px"
                                                                             )
+
+                                    if delivery_labels:
+                                        def _make_delivery_loader(labels_dict: Dict[str, Any], zip_c: str):
+                                            async def _load():
+                                                item_ids_to_fetch = list(labels_dict.keys())
+                                                req_headers = {
+                                                    "Authorization": f"Bearer {access_token}",
+                                                    "Accept": "application/json",
+                                                }
+
+                                                async def _fetch_one(iid: str):
+                                                    try:
+                                                        resp = await asyncio.to_thread(
+                                                            requests.get,
+                                                            f"https://api.mercadolibre.com/items/{iid}/shipping_options",
+                                                            params={"zip_code": zip_c},
+                                                            headers=req_headers,
+                                                            timeout=8,
+                                                        )
+                                                        if resp.status_code == 200:
+                                                            options = resp.json().get("options", [])
+                                                            if options:
+                                                                edt = options[0].get("estimated_delivery_time") or {}
+                                                                return iid, _fmt_delivery(edt)
+                                                        return iid, "—"
+                                                    except Exception:
+                                                        return iid, "—"
+
+                                                for i in range(0, len(item_ids_to_fetch), 5):
+                                                    batch = item_ids_to_fetch[i : i + 5]
+                                                    results = await asyncio.gather(
+                                                        *[_fetch_one(iid) for iid in batch]
+                                                    )
+                                                    for iid, text in results:
+                                                        state["delivery_cache"][iid] = text
+                                                        lbl = labels_dict.get(iid)
+                                                        if lbl:
+                                                            try:
+                                                                lbl.set_text(text)
+                                                            except Exception:
+                                                                pass
+                                            return _load
+
+                                        background_tasks.create(
+                                            _make_delivery_loader(delivery_labels, zip_code)(),
+                                            name=f"delivery_{sku}",
+                                        )
 
         # Carga inicial: obtener seller_id async antes de renderizar para no mostrar datos de otro usuario
         async def _init_and_rebuild():
