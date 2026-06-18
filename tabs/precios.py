@@ -1144,7 +1144,33 @@ def _mostrar_tabla_precios(
                                                 ps_p = "$" + f"{int(float(price_p)):,}".replace(",", ".") if price_p else "—"
                                             except (TypeError, ValueError):
                                                 ps_p = "—"
-                                            ui.label(ps_p)
+                                            if is_ours_p:
+                                                def _click_precio(_iid=str(item_id_p)) -> None:
+                                                    _row_m = next(
+                                                        (r for r in items_loaded
+                                                         if _iid in _grp_ids_map.get(str(r.get("id") or ""), [str(r.get("id") or "")])),
+                                                        None,
+                                                    )
+                                                    if _row_m:
+                                                        _show_item_detail_dialog(
+                                                            _row_m,
+                                                            ml_comision=ml_comision_p, cuotas_3x=cuotas_3x_p, cuotas_6x=cuotas_6x_p,
+                                                            cuotas_9x=cuotas_9x_p, cuotas_12x=cuotas_12x_p,
+                                                            ml_debcre=ml_debcre_p, ml_iibb_per=ml_iibb_per_p,
+                                                            ml_envios=ml_envios_p, ml_envios_gratuitos=ml_envios_grat_p,
+                                                            dolar_oficial=dolar_oficial, access_token=access_token,
+                                                            uid=_uid, items_loaded=items_loaded,
+                                                            on_saved=filtrar_y_pintar,
+                                                            on_row_saved=_actualizar_fila,
+                                                            revisiones_hoy=revisiones_hoy,
+                                                        )
+                                                    else:
+                                                        ui.notify("Producto no encontrado en la tabla", type="warning")
+                                                ui.label(ps_p).style(
+                                                    "color:#1565c0;text-decoration:underline;cursor:pointer;font-weight:600"
+                                                ).on("click", _click_precio)
+                                            else:
+                                                ui.label(ps_p)
                                         with ui.element("td").style(_TD_P + ";text-align:center"):
                                             lt_p = comp_p.get("listing_type") or ""
                                             if lt_p in _TIPO_P:
