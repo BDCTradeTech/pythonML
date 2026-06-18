@@ -788,7 +788,6 @@ def build_tab_catalogos(container) -> None:
                 "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
                 "background:#1976d2;color:white;font-size:11px;position:sticky;top:0;z-index:1"
             )
-            shown_cpid_set: Set[str] = set()
             delivery_labels: Dict[str, Any] = {}
 
             with container:
@@ -820,23 +819,17 @@ def build_tab_catalogos(container) -> None:
                                     bg_color = _PALETA[cat_idx % len(_PALETA)]
                                     text_color = _PALETA_TEXT[cat_idx % len(_PALETA_TEXT)]
                                     cbg = f"background:{bg_color}"
-                                    show_cpid_in_row = cpid not in shown_cpid_set
-                                    if show_cpid_in_row:
-                                        shown_cpid_set.add(cpid)
                                     with ui.element("tr").style(cbg):
                                         with ui.element("td").style(
                                             _TD + ";text-align:center;font-size:11px;color:#9ca3af"
                                         ):
                                             ui.label(str(ci))
                                         with ui.element("td").style(_TD + ";text-align:center"):
-                                            if show_cpid_in_row:
-                                                ui.label(cpid).classes(
-                                                    "font-mono cursor-pointer underline text-sm"
-                                                ).style(f"color:{text_color}").on(
-                                                    "click", _make_detail_handler(cpid)
-                                                )
-                                            else:
-                                                ui.label("").style("font-size:11px")
+                                            ui.label(cpid).classes(
+                                                "font-mono cursor-pointer underline text-sm"
+                                            ).style(f"color:{text_color}").on(
+                                                "click", _make_detail_handler(cpid)
+                                            )
                                         item_id_val = comp.get("item_id", "")
                                         item_url = _item_url(item_id_val)
                                         item_link_style = (
