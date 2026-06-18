@@ -491,8 +491,29 @@ def build_tab_catalogos(container) -> None:
                 if not detail:
                     ui.notify("No se pudo obtener detalle del catálogo", color="warning")
                     return
+
+                comps = get_catalogo_competidores(cpid)
+                prices = [float(c.get("price") or 0) for c in comps if c.get("price") is not None]
+                min_price = min(prices) if prices else None
+                max_price = max(prices) if prices else None
+                total_comps = len(comps)
+
+                my_item_ids = {
+                    str(it.get("id") or "")
+                    for it in _get_cache_items(seller_id_ref[0])
+                }
+                my_comps = [c for c in comps if str(c.get("item_id", "")) in my_item_ids]
+                our_price = float(my_comps[0].get("price") or 0) if my_comps else None
+
+                our_ptw: Optional[str] = None
+                for c in my_comps:
+                    iid = str(c.get("item_id", ""))
+                    if iid in state["ptw_cache"]:
+                        our_ptw = state["ptw_cache"][iid]
+                        break
+
                 with ui.dialog() as dlg:
-                    with ui.card().classes("w-96 p-4"):
+                    with ui.card().classes("w-[480px] p-4"):
                         ui.label(detail.get("name", cpid)).classes("text-lg font-bold")
                         ui.label(f"ID: {cpid}").classes("font-mono text-sm text-gray-500")
                         ui.separator().classes("my-2")
@@ -504,6 +525,44 @@ def build_tab_catalogos(container) -> None:
                             if detail.get("parent_id"):
                                 ui.label("Padre:").classes("text-gray-500")
                                 ui.label(str(detail.get("parent_id")))
+                        if comps:
+                            ui.separator().classes("my-2")
+                            ui.label("Competencia").classes("font-semibold text-sm mb-1")
+                            with ui.grid(columns=2).classes("gap-x-4 gap-y-1 text-sm w-full"):
+                                ui.label("Total competidores:").classes("text-gray-500")
+                                ui.label(str(total_comps))
+                                if min_price is not None:
+                                    ui.label("Precio mínimo:").classes("text-gray-500")
+                                    ui.label(_fmt_precio(min_price))
+                                if max_price is not None:
+                                    ui.label("Precio máximo:").classes("text-gray-500")
+                                    ui.label(_fmt_precio(max_price))
+                                if our_price is not None:
+                                    ui.label("Nuestro precio:").classes("text-gray-500 font-semibold")
+                                    ui.label(_fmt_precio(our_price)).classes(
+                                        "font-semibold text-green-700"
+                                    )
+                                if our_price is not None and min_price is not None:
+                                    diff = our_price - min_price
+                                    if abs(diff) < 0.01:
+                                        diff_fmt = "Igual al mínimo"
+                                        diff_cls = "font-semibold text-green-700"
+                                    elif diff > 0:
+                                        diff_fmt = (
+                                            "$" + f"{int(diff):,}".replace(",", ".") + " más caro"
+                                        )
+                                        diff_cls = "font-semibold text-red-600"
+                                    else:
+                                        diff_fmt = (
+                                            "$" + f"{int(-diff):,}".replace(",", ".") + " más barato"
+                                        )
+                                        diff_cls = "font-semibold text-green-700"
+                                    ui.label("Dif. vs mínimo:").classes("text-gray-500")
+                                    ui.label(diff_fmt).classes(diff_cls)
+                                if our_ptw:
+                                    ui.label("Price to win:").classes("text-gray-500")
+                                    ptw_label = "🏆 Ganando" if our_ptw == "winning" else our_ptw
+                                    ui.label(ptw_label).classes("font-semibold")
                         pickers = detail.get("pickers", [])
                         if pickers:
                             ui.label("Variantes:").classes("font-semibold mt-3 text-sm")
@@ -705,7 +764,8 @@ def build_tab_catalogos(container) -> None:
 
         # ── Render subtabla en un container ──────────────────────────────────
         def _render_subtable_content(
-            container, sku_cats: List[Dict], item_ids_set: Set[str]
+            container, sku_cats: List[Dict], item_ids_set: Set[str],
+            my_stock: Optional[Dict[str, int]] = None,
         ) -> Dict[str, Any]:
             active_cats = [c for c in sku_cats if c.get("activo")]
             all_comps: List[Dict] = []
@@ -716,6 +776,19 @@ def build_tab_catalogos(container) -> None:
                     all_comps.append(entry)
             all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
+            seen_cpids_ordered: Dict[str, int] = {}
+            for _c in all_comps:
+                _k = _c.get("_cpid", "")
+                if _k and _k not in seen_cpids_ordered:
+                    seen_cpids_ordered[_k] = len(seen_cpids_ordered)
+
+            _PALETA = ["#e3f2fd", "#f0fdf4", "#faf5ff", "#fff7ed", "#fdf2f8"]
+            _PALETA_TEXT = ["#1565c0", "#16a34a", "#6d28d9", "#c2410c", "#9d174d"]
+            _TH_SUB = (
+                "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
+                "background:#1976d2;color:white;font-size:11px;position:sticky;top:0;z-index:1"
+            )
+            shown_cpid_set: Set[str] = set()
             delivery_labels: Dict[str, Any] = {}
 
             with container:
@@ -727,7 +800,8 @@ def build_tab_catalogos(container) -> None:
                 else:
                     with ui.element("div").style(
                         "background:#f0f9ff;padding:8px 12px 12px 24px;"
-                        "border-bottom:1px solid #e5e7eb"
+                        "border-bottom:1px solid #e5e7eb;"
+                        "max-height:400px;overflow-y:auto"
                     ):
                         with ui.element("table").style("width:100%;border-collapse:collapse"):
                             with ui.element("thead"):
@@ -736,30 +810,33 @@ def build_tab_catalogos(container) -> None:
                                         "#", "Catálogo ID", "Item", "Origen",
                                         "Entrega", "Vendedor", "Precio", "Tipo",
                                     ]:
-                                        with ui.element("th").style(
-                                            _TH + ";background:#e0f2fe;font-size:11px"
-                                        ):
+                                        with ui.element("th").style(_TH_SUB):
                                             ui.label(col)
                             with ui.element("tbody"):
                                 for ci, comp in enumerate(all_comps, 1):
                                     is_ours = str(comp.get("item_id", "")) in item_ids_set
-                                    cbg = (
-                                        "background:#f0fdf4" if is_ours
-                                        else (
-                                            "background:#ffffff" if ci % 2 == 0
-                                            else "background:#f0f9ff"
-                                        )
-                                    )
                                     cpid = comp.get("_cpid", "")
+                                    cat_idx = seen_cpids_ordered.get(cpid, 0)
+                                    bg_color = _PALETA[cat_idx % len(_PALETA)]
+                                    text_color = _PALETA_TEXT[cat_idx % len(_PALETA_TEXT)]
+                                    cbg = f"background:{bg_color}"
+                                    show_cpid_in_row = cpid not in shown_cpid_set
+                                    if show_cpid_in_row:
+                                        shown_cpid_set.add(cpid)
                                     with ui.element("tr").style(cbg):
                                         with ui.element("td").style(
                                             _TD + ";text-align:center;font-size:11px;color:#9ca3af"
                                         ):
                                             ui.label(str(ci))
                                         with ui.element("td").style(_TD + ";text-align:center"):
-                                            ui.label(cpid).classes(
-                                                "font-mono cursor-pointer underline text-sm text-blue-600"
-                                            ).on("click", _make_detail_handler(cpid))
+                                            if show_cpid_in_row:
+                                                ui.label(cpid).classes(
+                                                    "font-mono cursor-pointer underline text-sm"
+                                                ).style(f"color:{text_color}").on(
+                                                    "click", _make_detail_handler(cpid)
+                                                )
+                                            else:
+                                                ui.label("").style("font-size:11px")
                                         item_id_val = comp.get("item_id", "")
                                         item_url = _item_url(item_id_val)
                                         item_link_style = (
@@ -809,6 +886,12 @@ def build_tab_catalogos(container) -> None:
                                                 f"{nick} ({int(tv):,} ventas)".replace(",", ".")
                                                 if tv is not None else nick
                                             )
+                                            if is_ours and my_stock:
+                                                _stock_qty = my_stock.get(str(item_id_val))
+                                                if _stock_qty is not None:
+                                                    nick_part = (
+                                                        f"{nick_part} — Stock: {_stock_qty} u."
+                                                    )
                                             rep_badge = _LVL.get(lvl, "") if lvl else ""
                                             ui.label(
                                                 f"{nick_part}  {rep_badge}".strip()
@@ -890,11 +973,20 @@ def build_tab_catalogos(container) -> None:
                 cache_items = _get_cache_items(seller_id_ref[0])
                 sku_groups = _group_by_sku(cache_items)
                 item_ids_set = set(sku_groups.get(sku, {}).get("item_ids", []))
+                my_stock: Dict[str, int] = {}
+                for _ci in cache_items:
+                    _iid = str(_ci.get("id") or "")
+                    if _iid in item_ids_set:
+                        _qty = _ci.get("available_quantity")
+                        if _qty is not None:
+                            my_stock[_iid] = int(_qty)
                 all_cats_fresh = get_sku_catalogos(uid)
                 sku_cats_fresh = [c for c in all_cats_fresh if c.get("sku") == sku]
                 zip_code = get_app_config("catalogos_zip_code") or "1405"
 
-                delivery_labels = _render_subtable_content(container, sku_cats_fresh, item_ids_set)
+                delivery_labels = _render_subtable_content(
+                    container, sku_cats_fresh, item_ids_set, my_stock
+                )
 
                 if delivery_labels:
                     background_tasks.create(
