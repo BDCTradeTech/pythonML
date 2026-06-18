@@ -16,7 +16,7 @@ from ml_api import (
     get_ml_access_token,
     ml_get_user_profile,
     ml_get_user_id,
-    ml_get_orders,
+    ml_get_orders_incremental,
     ml_get_shipments_today,
     ml_get_pending_labels,
     ml_get_my_items,
@@ -874,17 +874,12 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             items_data: Dict[str, Any] = {"results": []}
             shipments_today: Dict[str, int] = {"flex": 0, "me": 0}
             if seller_id:
-                limit_str = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
-                try:
-                    limit_ordenes = int(limit_str)
-                    if limit_ordenes not in (300, 500, 1000, 2000, 3000, 4000, 5000):
-                        limit_ordenes = 1000
-                except (ValueError, TypeError):
-                    limit_ordenes = 1000
-
                 t0 = time.perf_counter()
-                orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), limit_ordenes, 0)
-                logging.warning(f"[TIMING] ml_get_orders ({limit_ordenes}): {time.perf_counter()-t0:.2f}s")
+                orders_data = await run.io_bound(
+                    ml_get_orders_incremental, access_token, str(seller_id), user["id"])
+                logging.warning(
+                    f"[TIMING] ml_get_orders_incremental ({len(orders_data.get('results', []))}): "
+                    f"{time.perf_counter()-t0:.2f}s")
 
                 _tz_arg = timezone(timedelta(hours=-3))
                 _today_str = datetime.now(_tz_arg).strftime("%Y-%m-%d")

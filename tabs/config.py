@@ -16,8 +16,6 @@ from nicegui import app, ui
 from auth import update_user_password
 from db import (
     get_connection,
-    get_cotizador_param,
-    set_cotizador_param,
     get_ml_app_credentials,
     set_ml_app_credentials,
     get_qb_app_credentials,
@@ -334,23 +332,7 @@ def build_tab_config() -> None:
 
             # 3. Estadísticas, Contraseña, Base de datos — apiladas, mismo ancho que ML y QB
             with ui.column().classes("w-[420px] flex-shrink-0 gap-3"):
-                with ui.card().classes(_card_class):
-                    ui.label("Estadísticas").classes("text-sm font-semibold mb-1")
-                    ui.label("Ventas a cargar (órdenes)").classes("text-xs text-gray-600 mb-1")
-                    ui.label("Cantidad máxima de órdenes de MercadoLibre a traer en cada actualización. Más órdenes = datos más completos, pero la carga puede tardar más.").classes("text-xs text-gray-500 mb-1")
-                    limit_actual = get_cotizador_param("estadisticas_limit_ordenes", user["id"]) or "1000"
-                    opts_ventas = {"300": "300", "500": "500", "1000": "1000", "2000": "2000", "3000": "3000", "4000": "4000", "5000": "5000", "7500": "7500", "10000": "10000"}
-                    sel_ventas = ui.select(opts_ventas, value=limit_actual, label="").classes("w-full").props("dense")
-
-                    def guardar_limit_ventas() -> None:
-                        val = str(sel_ventas.value or "1000").strip()
-                        if val not in opts_ventas:
-                            val = "1000"
-                        set_cotizador_param("estadisticas_limit_ordenes", val, user["id"])
-                        ui.notify("Guardado", color="positive")
-                    ui.button("Guardar", on_click=guardar_limit_ventas, color="primary").classes("mt-1").props("dense no-caps")
-
-                # Cambiar contraseña (debajo de Estadísticas)
+                # Cambiar contraseña
                 with ui.card().classes(_card_class):
                     with ui.expansion("Cambiar contraseña", icon="lock").classes("w-full").props("expand-icon-toggle dense"):
                         inp_actual = ui.input("Contraseña actual").classes("w-full").props("type=password password-toggle dense")
