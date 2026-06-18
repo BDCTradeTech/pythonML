@@ -674,6 +674,8 @@ def _pintar_home_inline(
                                 continue
                             if not (primer_dia_mes <= _dt_c <= today_local):
                                 continue
+                            if _ord.get("status") not in ("paid", "payment_required", "confirmed"):
+                                continue
                             _items_c = _ord.get("order_items") or _ord.get("items") or []
                             _uds_c = sum(int(it.get("quantity") or it.get("qty") or 0)
                                          for it in _items_c if isinstance(it, dict))
