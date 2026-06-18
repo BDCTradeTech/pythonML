@@ -652,17 +652,17 @@ def _pintar_home_inline(
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("padding:12px 14px"):
-                        ui.label("STOCK PROPIAS").style(f"{_LBL};margin-bottom:6px")
+                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-bottom:6px")
                         with ui.row().classes("gap-2 w-full flex-nowrap mb-3"):
+                            with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
+                                ui.label("Marcas").style("font-size:9px;color:#6b7280")
+                                ui.label(str(marcas_distintas)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Publicaciones propias").style("font-size:8px;color:#6b7280")
                                 ui.label(str(publicaciones_propias_con_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                            with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                ui.label("Marcas").style("font-size:9px;color:#6b7280")
-                                ui.label(str(marcas_distintas)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                         ui.label(f"CUOTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
                         total_unidades_mes_c = 0
@@ -687,21 +687,32 @@ def _pintar_home_inline(
                             cuotas_dist[_inst_key] += _uds_c
                             total_unidades_mes_c += _uds_c
                         _base_c = total_unidades_mes_c or 1
-                        with ui.row().classes("items-center gap-1 mb-2"):
-                            ui.label("Total:").style("font-size:9px;color:#6b7280")
-                            ui.label(str(total_unidades_mes_c)).style(
-                                f"font-size:15px;font-weight:700;color:{_BLUE}")
-                            ui.label("unidades").style("font-size:9px;color:#6b7280")
-                        with ui.row().classes("gap-1 w-full flex-nowrap"):
-                            for _cx, _lx in [(1, "1x"), (3, "3x"), (6, "6x"), (9, "9x"), (12, "12x")]:
-                                _cu = cuotas_dist[_cx]
-                                _pct_c = _cu / _base_c * 100
-                                with ui.element("div").style(
-                                        "flex:1;text-align:center;padding:4px 2px;"
-                                        "background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                    ui.label(_lx).style("font-size:8px;color:#6b7280;font-weight:600")
-                                    ui.label(str(_cu)).style(f"font-size:13px;font-weight:700;color:{_BLUE}")
-                                    ui.label(f"{_pct_c:.1f}%").style("font-size:9px;color:#9ca3af")
+                        with ui.row().classes("w-full gap-3 items-start mt-1"):
+                            with ui.element("div").style("min-width:70px;text-align:center"):
+                                ui.label(str(total_unidades_mes_c)).style(
+                                    "font-size:28px;font-weight:700;color:#185fa5;line-height:1")
+                                ui.label("unidades").style("font-size:9px;color:#6b7280")
+                            with ui.element("div").style(
+                                    "flex:1;display:flex;flex-direction:column;gap:3px"):
+                                for _cx, _lx, _clr in [
+                                    (1, "1x", "#185fa5"),
+                                    (3, "3x", "#1d9e75"),
+                                    (6, "6x", "#1d9e75"),
+                                    (9, "9x", "#ef9f27"),
+                                    (12, "12x", "#ef9f27"),
+                                ]:
+                                    _cu = cuotas_dist[_cx]
+                                    _pct_c = _cu / _base_c * 100
+                                    with ui.row().classes("items-center gap-1 w-full flex-nowrap"):
+                                        ui.label(_lx).style(
+                                            "font-size:8px;color:#6b7280;min-width:20px;font-weight:600")
+                                        ui.html(
+                                            f'<div style="background:#e5e7eb;height:14px;border-radius:3px;'
+                                            f'overflow:hidden"><div style="width:{_pct_c:.1f}%;height:100%;'
+                                            f'background:{_clr};border-radius:3px"></div></div>'
+                                        ).style("flex:1")
+                                        ui.label(f"{_cu} · {_pct_c:.1f}%").style(
+                                            "font-size:8px;color:#6b7280;min-width:70px;text-align:right")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
