@@ -21,6 +21,7 @@ from db import (
     get_connection, get_cotizador_param, COTIZADOR_DEFAULTS,
     get_sku_catalogos, add_sku_catalogo, delete_sku_catalogo,
     get_catalogo_competidores, upsert_catalogo_competidores,
+    get_app_config,
 )
 from ml_api import (
     get_ml_access_token,
@@ -37,7 +38,7 @@ from ml_api import (
     ml_get_product_detail,
     ml_get_users_multiget,
 )
-from tabs.catalogos import _search_catalogs_sync, _sync_one_catalog, _item_url
+from tabs.catalogos import _search_catalogs_sync, _sync_one_catalog, _item_url, _fmt_delivery
 from tabs.cuotas import _cuotas_key
 
 
@@ -934,9 +935,8 @@ def _mostrar_tabla_precios(
 
     def _open_catalogo_popup(sku: str) -> None:
         dlg = ui.dialog()
-        dlg.props('style="width:90vw;max-width:90vw"')
         with dlg:
-            with ui.card().classes("p-4").style("width:90vw;max-width:1400px"):
+            with ui.card().classes("w-[600px] max-w-[95vw] p-4"):
                 with ui.row().classes("w-full items-center justify-between mb-1"):
                     ui.label(f"Catálogos — {sku}").classes("text-lg font-bold")
                     ui.button(icon="close", on_click=dlg.close).props("flat dense round")
@@ -1034,6 +1034,8 @@ def _mostrar_tabla_precios(
             _STALE_HOURS = 2
             all_comps: List[Dict] = []
             _item_ids_set = {str(r.get("id") or "") for r in items_loaded}
+            _my_qty: Dict[str, int] = {str(r.get("id") or ""): int(r.get("available_quantity") or 0) for r in items_loaded}
+            delivery_labels: Dict[str, Any] = {}
 
             for cat in sku_cats:
                 cpid = cat["catalog_product_id"]
@@ -1097,7 +1099,7 @@ def _mostrar_tabla_precios(
                         with ui.element("table").style("width:100%;border-collapse:collapse"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
-                                    for _ch in ["#", "Catálogo ID", "Item", "Origen", "Vendedor", "Precio", "Tipo"]:
+                                    for _ch in ["#", "Catálogo ID", "Item", "Origen", "Entrega", "Vendedor", "Precio", "Tipo"]:
                                         with ui.element("th").style(_TH_P):
                                             ui.label(_ch)
                             with ui.element("tbody"):
@@ -1123,14 +1125,21 @@ def _mostrar_tabla_precios(
                                             )
                                         with ui.element("td").style(_TD_P + ";text-align:center"):
                                             ui.html(_ORIGEN_P.get(comp_p.get("origen") or "local", _ORIGEN_P["local"]))
+                                        with ui.element("td").style(_TD_P + ";text-align:center;min-width:60px"):
+                                            _dlv_lbl = ui.label("...").style("font-size:11px;color:#6b7280")
+                                            delivery_labels[str(item_id_p)] = _dlv_lbl
                                         nick_p = comp_p.get("seller_nickname") or f"ID {comp_p.get('seller_id', '')}"
                                         tv_p   = comp_p.get("seller_total_ventas")
                                         lvl_p  = comp_p.get("seller_level_id") or ""
                                         np_p   = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
                                         rep_p  = _LVL_P.get(lvl_p, "") if lvl_p else ""
                                         lbl_p  = f"{np_p}  {rep_p}".strip() if rep_p else np_p
+                                        if is_ours_p:
+                                            _qty_p = _my_qty.get(str(item_id_p))
+                                            if _qty_p is not None:
+                                                lbl_p = f"{lbl_p} — Stock: {_qty_p} u."
                                         with ui.element("td").style(
-                                            _TD_P + (";color:#15803d;font-weight:600" if is_ours_p else "")
+                                            _TD_P + (";color:#1565c0;font-weight:600" if is_ours_p else "")
                                         ):
                                             ui.label(lbl_p).style("font-size:11px")
                                         with ui.element("td").style(
@@ -1148,6 +1157,44 @@ def _mostrar_tabla_precios(
                                                 ui.html(_TIPO_P[lt_p])
                                             else:
                                                 ui.label(lt_p or "—").style("font-size:11px")
+
+            if delivery_labels:
+                zip_code = get_app_config("catalogos_zip_code") or "1405"
+                req_hdrs_d = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+
+                async def _fetch_deliveries() -> None:
+                    iids = list(delivery_labels.keys())
+
+                    async def _fetch_one_d(iid: str):
+                        try:
+                            resp = await asyncio.to_thread(
+                                requests.get,
+                                f"https://api.mercadolibre.com/items/{iid}/shipping_options",
+                                params={"zip_code": zip_code},
+                                headers=req_hdrs_d,
+                                timeout=8,
+                            )
+                            if resp.status_code == 200:
+                                opts = resp.json().get("options", [])
+                                if opts:
+                                    edt = opts[0].get("estimated_delivery_time") or {}
+                                    return iid, _fmt_delivery(edt)
+                            return iid, "—"
+                        except Exception:
+                            return iid, "—"
+
+                    for i in range(0, len(iids), 5):
+                        batch = iids[i : i + 5]
+                        results = await asyncio.gather(*[_fetch_one_d(iid) for iid in batch])
+                        for iid, text in results:
+                            lbl = delivery_labels.get(iid)
+                            if lbl:
+                                try:
+                                    lbl.set_text(text)
+                                except Exception:
+                                    pass
+
+                background_tasks.create(_fetch_deliveries())
 
         background_tasks.create(_load_comps())
 
