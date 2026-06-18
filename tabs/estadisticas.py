@@ -663,7 +663,6 @@ def _pintar_home_inline(
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
                         total_unidades_mes_c = 0
                         for _ord in results:
@@ -687,32 +686,29 @@ def _pintar_home_inline(
                             cuotas_dist[_inst_key] += _uds_c
                             total_unidades_mes_c += _uds_c
                         _base_c = total_unidades_mes_c or 1
-                        with ui.row().classes("w-full gap-3 items-start mt-1"):
-                            with ui.element("div").style("min-width:70px;text-align:center"):
-                                ui.label(f"{total_unidades_mes_c:,}".replace(",", ".")).style(
-                                    "font-size:36px;font-weight:700;color:#185fa5;line-height:1")
-                                ui.label("unidades").style("font-size:9px;color:#6b7280")
-                            with ui.element("div").style(
-                                    "flex:1;display:flex;flex-direction:column;gap:8px"):
-                                for _cx, _lx, _clr in [
-                                    (1, "1x", "#185fa5"),
-                                    (3, "3x", "#1d9e75"),
-                                    (6, "6x", "#1d9e75"),
-                                    (9, "9x", "#ef9f27"),
-                                    (12, "12x", "#ef9f27"),
-                                ]:
-                                    _cu = cuotas_dist[_cx]
-                                    _pct_c = _cu / _base_c * 100
-                                    with ui.row().classes("items-center gap-1 w-full flex-nowrap"):
-                                        ui.label(_lx).style(
-                                            "font-size:8px;color:#6b7280;min-width:20px;font-weight:600")
-                                        ui.html(
-                                            f'<div style="background:#e5e7eb;height:22px;border-radius:3px;'
-                                            f'overflow:hidden"><div style="width:{_pct_c:.1f}%;height:100%;'
-                                            f'background:{_clr};border-radius:3px"></div></div>'
-                                        ).style("flex:1")
-                                        ui.label(f'{f"{_cu:,}".replace(",",".")} · {_pct_c:.1f}%').style(
-                                            "font-size:8px;color:#6b7280;min-width:70px;text-align:right")
+                        _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
+                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-bottom:6px")
+                        with ui.row().classes("w-full gap-2 flex-nowrap"):
+                            for _cx, _lx, _clr in [
+                                (1,  "1x",  "#185fa5"),
+                                (3,  "3x",  "#1d9e75"),
+                                (6,  "6x",  "#1d9e75"),
+                                (9,  "9x",  "#ef9f27"),
+                                (12, "12x", "#ef9f27"),
+                            ]:
+                                _cu     = cuotas_dist[_cx]
+                                _pct_c  = _cu / _base_c * 100
+                                _cu_str = f"{_cu:,}".replace(",", ".")
+                                ui.html(
+                                    f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
+                                    f'padding:10px 8px 0 8px;overflow:hidden;position:relative;text-align:center;'
+                                    f'width:100%;box-sizing:border-box">'
+                                    f'<div style="font-size:10px;color:#9ca3af;margin-bottom:4px">{_lx}</div>'
+                                    f'<div style="font-size:24px;font-weight:700;color:{_clr};line-height:1;margin-bottom:4px">{_cu_str}</div>'
+                                    f'<div style="font-size:13px;color:#6b7280;margin-bottom:8px">{_pct_c:.1f}%</div>'
+                                    f'<div style="position:absolute;bottom:0;left:0;height:4px;width:{_pct_c:.1f}%;background:{_clr}"></div>'
+                                    f'</div>'
+                                ).style("flex:1;min-width:0")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
