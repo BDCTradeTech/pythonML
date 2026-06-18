@@ -568,6 +568,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
         with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
 
             # ── BARRA DE RESUMEN ──────────────────────────────────────────
+            expanded_ref = {"val": False}
             with ui.card().classes("w-full p-3 bg-grey-2").style("border:1px solid #e0e0e0"):
                 with ui.row().classes("w-full items-center gap-4"):
                     with ui.row().classes("items-center gap-1"):
@@ -582,16 +583,27 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     ui.button("Actualizar", icon="refresh",
                               on_click=lambda: (container.clear(), build_tab_dashboard(container, navigate_to))
                               ).props("flat dense")
+                    arrow_btn = ui.button(icon="expand_more").props("flat dense round size=sm")
 
-            # ── ALERTAS (ocultas — refs usadas por async tasks) ──────────
-            with ui.element("div").classes("hidden"):
-                alerts_col = ui.grid(columns=3)
-                for color, msg, tab in db_alerts:
-                    _alert_row(alerts_col, color, msg,
-                               on_nav=(lambda t=tab: navigate_to(t)) if navigate_to else None)
-                rep_placeholder = ui.row()
-                with rep_placeholder:
-                    ui.spinner(size="xs")
+                detail_panel = ui.column().classes("w-full mt-2").style("display:none")
+                with detail_panel:
+                    alerts_col = ui.grid(columns=3)
+                    for color, msg, tab in db_alerts:
+                        _alert_row(alerts_col, color, msg,
+                                   on_nav=(lambda t=tab: navigate_to(t)) if navigate_to else None)
+                    rep_placeholder = ui.row()
+                    with rep_placeholder:
+                        ui.spinner(size="xs")
+
+                def _toggle_alerts():
+                    expanded_ref["val"] = not expanded_ref["val"]
+                    if expanded_ref["val"]:
+                        detail_panel.style("display:block")
+                        arrow_btn.props("icon=expand_less")
+                    else:
+                        detail_panel.style("display:none")
+                        arrow_btn.props("icon=expand_more")
+                arrow_btn.on_click(_toggle_alerts)
 
             # ── GRILLA PRINCIPAL: 3 columnas ──────────────────────────────
             # Fila 1: Productos | Ventas | Cuotas
