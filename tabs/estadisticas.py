@@ -670,7 +670,7 @@ def _pintar_home_inline(
                             _vd_rows = _vd_conn.execute(
                                 "SELECT order_id, cuotas FROM ventas_datos "
                                 "WHERE user_id=? AND order_date >= ? AND cuotas IS NOT NULL",
-                                (user["id"], primer_dia_mes.strftime("%Y-%m-%d")),
+                                (user_id, primer_dia_mes.strftime("%Y-%m-%d")),
                             ).fetchall()
                             _vd_conn.close()
                             for _r in _vd_rows:
