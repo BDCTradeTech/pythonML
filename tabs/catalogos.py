@@ -95,18 +95,20 @@ def _fmt_delivery(edt: Dict) -> str:
                 return "Hoy"
             if diff == 1:
                 return "Mañana"
-            _DIAS = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-            return f"{_DIAS[dt_start.weekday()]} {dt_start.day}/{dt_start.month}"
+            return f"{diff} días"
         if dt_type == "known_frame":
             offset = edt.get("offset") or {}
             end_str = offset.get("date", "")
-            _MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun",
-                      "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"]
-            mes = _MESES[dt_start.month - 1]
             if end_str:
                 dt_end = _datetime.fromisoformat(end_str).date()
-                return f"{dt_start.day}-{dt_end.day} {mes}"
-            return f"{dt_start.day} {mes}"
+                diff = (dt_end - today).days
+            else:
+                diff = (dt_start - today).days
+            if diff <= 0:
+                return "Hoy"
+            if diff == 1:
+                return "Mañana"
+            return f"{diff} días"
         return "—"
     except Exception:
         return "—"
@@ -828,25 +830,21 @@ def build_tab_catalogos(container) -> None:
                                             ";color:#15803d;font-weight:600" if is_ours else ""
                                         )
                                         with ui.element("td").style(nick_style):
-                                            ui.label(f"{nick} ✓" if is_ours else nick)
                                             lvl = rep.get("level_id", "")
                                             tv = rep.get("total_ventas")
-                                            if lvl or tv is not None:
-                                                _LVL = {
-                                                    "5_green": "🟢 Platinum",
-                                                    "4_light_green": "🟡 Gold",
-                                                    "3_yellow": "⭐ Líder",
-                                                }
-                                                parts = []
-                                                if lvl:
-                                                    parts.append(_LVL.get(lvl, lvl))
-                                                if tv is not None:
-                                                    parts.append(
-                                                        f"{tv:,} ventas".replace(",", ".")
-                                                    )
-                                                ui.label(" · ".join(parts)).style(
-                                                    "font-size:10px;color:#6b7280;display:block"
-                                                )
+                                            _LVL = {
+                                                "5_green": "🟢 Platinum",
+                                                "4_light_green": "🟡 Gold",
+                                                "3_yellow": "⭐ Líder",
+                                            }
+                                            nick_part = (
+                                                f"{nick} ({int(tv):,} ventas)".replace(",", ".")
+                                                if tv is not None else nick
+                                            )
+                                            rep_badge = _LVL.get(lvl, "") if lvl else ""
+                                            ui.label(
+                                                f"{nick_part}  {rep_badge}".strip()
+                                            ).style("font-size:12px")
                                         with ui.element("td").style(
                                             _TD + ";text-align:right;"
                                             "font-family:monospace;font-weight:600"
