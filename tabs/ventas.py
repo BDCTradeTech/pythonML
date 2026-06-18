@@ -864,9 +864,30 @@ def build_tab_ventas(container) -> None:
             header_card.clear()
             with header_card:
                 if is_mobile_ref.get("val"):
-                    with ui.row().classes("w-full items-center gap-3 px-2 py-2"):
-                        ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
-                        ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                    with ui.column().classes("w-full px-2 py-2 gap-2"):
+                        _meses_es_m = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                                       "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+                        _hoy_m = datetime.now().date()
+                        _oy_m, _om_m = _hoy_m.year, _hoy_m.month
+                        _opts_fecha_m = {
+                            "hoy": "Hoy", "dias_2": "Últimos 2 días", "dias_3": "Últimos 3 días",
+                            "dias_5": "Últimos 5 días", "dias_7": "Últimos 7 días",
+                            "dias_15": "Últimos 15 días", "dias_21": "Últimos 21 días",
+                            "dias_30": "Últimos 30 días", "mes_actual": "Mes actual",
+                        }
+                        for _i_m in range(1, 4):
+                            _om_m -= 1
+                            if _om_m == 0:
+                                _om_m = 12; _oy_m -= 1
+                            _opts_fecha_m[f"mes_{_i_m}"] = f"{_meses_es_m[_om_m - 1]} {_oy_m}"
+                        _sel_m = ui.select(_opts_fecha_m, value=filtro_fecha_ref.get("val", "hoy"), label="Fecha").classes("w-full").bind_value(filtro_fecha_ref, "val")
+                        _sel_m.on_value_change(lambda: _aplicar_filtro_fecha())
+                        _inp_m = ui.input(placeholder="Buscar producto...").props("outlined dense clearable").classes("w-full")
+                        _inp_m.bind_value(filtro_texto_ref, "val")
+                        _inp_m.on_value_change(lambda: _pintar_tabla())
+                        with ui.row().classes("w-full items-center gap-3"):
+                            ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
+                            ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
                 else:
                     with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
                         with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
