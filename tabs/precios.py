@@ -1033,8 +1033,14 @@ def _mostrar_tabla_precios(
         async def _load_comps() -> None:
             _STALE_HOURS = 2
             all_comps: List[Dict] = []
-            _item_ids_set = {str(r.get("id") or "") for r in items_loaded}
-            _my_qty: Dict[str, int] = {str(r.get("id") or ""): int(r.get("available_quantity") or 0) for r in items_loaded}
+            _item_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
+            _my_qty: Dict[str, int] = {}
+            for _r in items_loaded:
+                _pid = str(_r.get("id") or "")
+                _qty = int(_r.get("available_quantity") or 0)
+                for _iid in _grp_ids_map.get(_pid, [_pid]):
+                    if _iid:
+                        _my_qty[_iid] = _qty
             delivery_labels: Dict[str, Any] = {}
 
             for cat in sku_cats:
