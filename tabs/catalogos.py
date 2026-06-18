@@ -331,7 +331,16 @@ def build_tab_catalogos(container) -> None:
             return
 
         seller_id_ref: List[str] = [""]
-        state: Dict[str, Any] = {"syncing": False, "ptw_cache": {}, "delivery_cache": {}}
+        state: Dict[str, Any] = {
+            "syncing": False,
+            "ptw_cache": {},
+            "delivery_cache": {},
+            "synced_skus": {},    # sku → datetime del último sync API
+            "rep_cache": {},      # seller_id → {level_id, power_status, total_ventas}
+            "subtable_gen": {},   # sku → int (evita race conditions entre lazy loads)
+        }
+        subtable_containers: Dict[str, Any] = {}   # sku → ui.element td
+        toggle_btns: Dict[str, Any] = {}           # sku → ui.button
         sync_btn_ref: List[Any] = [None]
         spinner_ref: List[Any] = [None]
         counter_ref: List[Any] = [None]
@@ -395,11 +404,22 @@ def build_tab_catalogos(container) -> None:
                     # Sincronizar competidores
                     all_cats_fresh = get_sku_catalogos(uid)
                     active = [c for c in all_cats_fresh if c.get("activo")]
+                    _sync_now = _datetime.now()
                     for cat in active:
                         items = await _sync_one_catalog(access_token, cat["catalog_product_id"])
+                        for it in items:
+                            sid = str(it.get("seller_id", ""))
+                            state["rep_cache"][sid] = {
+                                "level_id": it.get("seller_level_id", ""),
+                                "power_status": it.get("seller_power_status", ""),
+                                "total_ventas": it.get("seller_total_ventas"),
+                            }
                         await asyncio.to_thread(
                             upsert_catalogo_competidores, cat["catalog_product_id"], items
                         )
+                    for c in all_cats_fresh:
+                        if c.get("activo"):
+                            state["synced_skus"][c.get("sku", "")] = _sync_now
                     _rebuild_table()
                     ui.notify(f"Sincronizados {len(active)} catálogo(s)", color="positive")
                 except Exception as ex:
@@ -411,10 +431,10 @@ def build_tab_catalogos(container) -> None:
                         sync_btn_ref[0].props(remove="disable")
 
             btn = ui.button(
-                "Sincronizar Todo",
+                "↺ Actualizar todo",
                 on_click=lambda: background_tasks.create(_do_sync_all(), name="sync_catalogos"),
-                color="primary",
-            ).props("no-caps dense")
+                color="grey-6",
+            ).props("no-caps dense flat")
             sync_btn_ref[0] = btn
 
         # ── Filtros ──────────────────────────────────────────────────────────
@@ -652,9 +672,17 @@ def build_tab_catalogos(container) -> None:
                 try:
                     for cat in active:
                         its = await _sync_one_catalog(access_token, cat["catalog_product_id"])
+                        for it in its:
+                            sid = str(it.get("seller_id", ""))
+                            state["rep_cache"][sid] = {
+                                "level_id": it.get("seller_level_id", ""),
+                                "power_status": it.get("seller_power_status", ""),
+                                "total_ventas": it.get("seller_total_ventas"),
+                            }
                         await asyncio.to_thread(
                             upsert_catalogo_competidores, cat["catalog_product_id"], its
                         )
+                    state["synced_skus"][s_sku] = _datetime.now()
                     _rebuild_table()
                     ui.notify(f"{s_sku}: sincronizado", color="positive")
                 except Exception as ex:
@@ -664,6 +692,276 @@ def build_tab_catalogos(container) -> None:
                 background_tasks.create(_do(), name=f"sync_sku_{s_sku}")
 
             return _click
+
+        # ── Delivery loader (accesible desde _load_sku_subtable) ─────────────
+        def _make_delivery_loader(labels_dict: Dict[str, Any], zip_c: str):
+            async def _load():
+                item_ids_to_fetch = list(labels_dict.keys())
+                req_headers = {
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                }
+
+                async def _fetch_one(iid: str):
+                    try:
+                        resp = await asyncio.to_thread(
+                            requests.get,
+                            f"https://api.mercadolibre.com/items/{iid}/shipping_options",
+                            params={"zip_code": zip_c},
+                            headers=req_headers,
+                            timeout=8,
+                        )
+                        if resp.status_code == 200:
+                            options = resp.json().get("options", [])
+                            if options:
+                                edt = options[0].get("estimated_delivery_time") or {}
+                                return iid, _fmt_delivery(edt)
+                        return iid, "—"
+                    except Exception:
+                        return iid, "—"
+
+                for i in range(0, len(item_ids_to_fetch), 5):
+                    batch = item_ids_to_fetch[i : i + 5]
+                    results = await asyncio.gather(*[_fetch_one(iid) for iid in batch])
+                    for iid, text in results:
+                        state["delivery_cache"][iid] = text
+                        lbl = labels_dict.get(iid)
+                        if lbl:
+                            try:
+                                lbl.set_text(text)
+                            except Exception:
+                                pass
+            return _load
+
+        # ── Render subtabla en un container ──────────────────────────────────
+        def _render_subtable_content(
+            container, sku_cats: List[Dict], item_ids_set: Set[str]
+        ) -> Dict[str, Any]:
+            active_cats = [c for c in sku_cats if c.get("activo")]
+            all_comps: List[Dict] = []
+            for cat in active_cats:
+                for comp in get_catalogo_competidores(cat["catalog_product_id"]):
+                    entry = dict(comp)
+                    entry["_cpid"] = cat["catalog_product_id"]
+                    all_comps.append(entry)
+            all_comps.sort(key=lambda c: float(c.get("price") or 0))
+
+            delivery_labels: Dict[str, Any] = {}
+
+            with container:
+                if not all_comps:
+                    with ui.element("div").style("padding:8px 24px"):
+                        ui.label("Sin datos — expandí para sincronizar").classes(
+                            "text-amber-600 text-sm italic py-2"
+                        )
+                else:
+                    with ui.element("div").style(
+                        "background:#f0f9ff;padding:8px 12px 12px 24px;"
+                        "border-bottom:1px solid #e5e7eb"
+                    ):
+                        with ui.element("table").style("width:100%;border-collapse:collapse"):
+                            with ui.element("thead"):
+                                with ui.element("tr"):
+                                    for col in [
+                                        "#", "Catálogo ID", "Item", "Origen",
+                                        "Entrega", "Vendedor", "Precio", "Tipo",
+                                    ]:
+                                        with ui.element("th").style(
+                                            _TH + ";background:#e0f2fe;font-size:11px"
+                                        ):
+                                            ui.label(col)
+                            with ui.element("tbody"):
+                                for ci, comp in enumerate(all_comps, 1):
+                                    is_ours = str(comp.get("item_id", "")) in item_ids_set
+                                    cbg = (
+                                        "background:#f0fdf4" if is_ours
+                                        else (
+                                            "background:#ffffff" if ci % 2 == 0
+                                            else "background:#f0f9ff"
+                                        )
+                                    )
+                                    cpid = comp.get("_cpid", "")
+                                    with ui.element("tr").style(cbg):
+                                        with ui.element("td").style(
+                                            _TD + ";text-align:center;font-size:11px;color:#9ca3af"
+                                        ):
+                                            ui.label(str(ci))
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            ui.label(cpid).classes(
+                                                "font-mono cursor-pointer underline text-sm text-blue-600"
+                                            ).on("click", _make_detail_handler(cpid))
+                                        item_id_val = comp.get("item_id", "")
+                                        item_url = _item_url(item_id_val)
+                                        item_link_style = (
+                                            "color:#15803d;font-weight:600"
+                                            if is_ours else "color:#2563eb"
+                                        )
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            ui.html(
+                                                f'<a href="{item_url}" target="_blank" '
+                                                f'style="font-family:monospace;font-size:11px;'
+                                                f'{item_link_style};text-decoration:underline">'
+                                                f'{item_id_val}</a>'
+                                            )
+                                        origen_val = comp.get("origen") or "local"
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            ui.html(_ORIGEN_BADGE.get(origen_val, _ORIGEN_BADGE["local"]))
+                                        with ui.element("td").style(
+                                            _TD + ";text-align:center;min-width:70px"
+                                        ):
+                                            cached_val = state["delivery_cache"].get(item_id_val)
+                                            if cached_val is not None:
+                                                ui.label(cached_val).style("font-size:11px")
+                                            else:
+                                                d_lbl = ui.label("...").style(
+                                                    "font-size:11px;color:#9ca3af"
+                                                )
+                                                if item_id_val:
+                                                    delivery_labels[item_id_val] = d_lbl
+                                        nick = (
+                                            comp.get("seller_nickname")
+                                            or f"ID {comp.get('seller_id', '')}"
+                                        )
+                                        sid = str(comp.get("seller_id", ""))
+                                        rep = state["rep_cache"].get(sid, {})
+                                        nick_style = _TD + (
+                                            ";color:#15803d;font-weight:600" if is_ours else ""
+                                        )
+                                        with ui.element("td").style(nick_style):
+                                            ui.label(f"{nick} ✓" if is_ours else nick)
+                                            lvl = rep.get("level_id", "")
+                                            tv = rep.get("total_ventas")
+                                            if lvl or tv is not None:
+                                                _LVL = {
+                                                    "5_green": "🟢 Platinum",
+                                                    "4_light_green": "🟡 Gold",
+                                                    "3_yellow": "⭐ Líder",
+                                                }
+                                                parts = []
+                                                if lvl:
+                                                    parts.append(_LVL.get(lvl, lvl))
+                                                if tv is not None:
+                                                    parts.append(
+                                                        f"{tv:,} ventas".replace(",", ".")
+                                                    )
+                                                ui.label(" · ".join(parts)).style(
+                                                    "font-size:10px;color:#6b7280;display:block"
+                                                )
+                                        with ui.element("td").style(
+                                            _TD + ";text-align:right;"
+                                            "font-family:monospace;font-weight:600"
+                                        ):
+                                            ui.label(_fmt_precio(comp.get("price")))
+                                        with ui.element("td").style(_TD + ";text-align:center"):
+                                            lt = comp.get("listing_type") or ""
+                                            badge = _TIPO_BADGE.get(lt)
+                                            if badge:
+                                                ui.html(badge)
+                                            else:
+                                                ui.label(lt or "—").style("font-size:11px")
+
+            return delivery_labels
+
+        # ── Lazy-load de subtabla por SKU ─────────────────────────────────────
+        async def _load_sku_subtable(sku: str, gen: int) -> None:
+            def _stale() -> bool:
+                return state["subtable_gen"].get(sku) != gen or sku not in expanded_skus
+
+            if _stale():
+                return
+
+            all_cats = get_sku_catalogos(uid)
+            sku_cats = [c for c in all_cats if c.get("sku") == sku]
+            active_cats = [c for c in sku_cats if c.get("activo")]
+
+            _TWO_HOURS = 7200
+            last_sync = state["synced_skus"].get(sku)
+            needs_fetch = (
+                last_sync is None
+                or (_datetime.now() - last_sync).total_seconds() > _TWO_HOURS
+            )
+
+            container = subtable_containers.get(sku)
+            if container is None or _stale():
+                return
+            container.clear()
+            with container:
+                with ui.element("div").style(
+                    "padding:10px 24px;display:flex;align-items:center;gap:8px"
+                ):
+                    ui.spinner(size="sm")
+                    ui.label(
+                        "Sincronizando desde ML..." if needs_fetch else "Cargando..."
+                    ).style("font-size:12px;color:#6b7280")
+
+            try:
+                if needs_fetch and active_cats:
+                    for cat in active_cats:
+                        if _stale():
+                            return
+                        items = await _sync_one_catalog(access_token, cat["catalog_product_id"])
+                        for it in items:
+                            sid = str(it.get("seller_id", ""))
+                            state["rep_cache"][sid] = {
+                                "level_id": it.get("seller_level_id", ""),
+                                "power_status": it.get("seller_power_status", ""),
+                                "total_ventas": it.get("seller_total_ventas"),
+                            }
+                        await asyncio.to_thread(
+                            upsert_catalogo_competidores, cat["catalog_product_id"], items
+                        )
+                    state["synced_skus"][sku] = _datetime.now()
+
+                if _stale():
+                    return
+
+                # Re-obtener container (puede haber sido reemplazado por _rebuild_table)
+                container = subtable_containers.get(sku)
+                if container is None:
+                    return
+                container.clear()
+
+                cache_items = _get_cache_items(seller_id_ref[0])
+                sku_groups = _group_by_sku(cache_items)
+                item_ids_set = set(sku_groups.get(sku, {}).get("item_ids", []))
+                all_cats_fresh = get_sku_catalogos(uid)
+                sku_cats_fresh = [c for c in all_cats_fresh if c.get("sku") == sku]
+                zip_code = get_app_config("catalogos_zip_code") or "1405"
+
+                delivery_labels = _render_subtable_content(container, sku_cats_fresh, item_ids_set)
+
+                if delivery_labels:
+                    background_tasks.create(
+                        _make_delivery_loader(delivery_labels, zip_code)(),
+                        name=f"delivery_{sku}_{gen}",
+                    )
+
+            except Exception as ex:
+                container = subtable_containers.get(sku)
+                if container and not _stale():
+                    container.clear()
+                    with container:
+                        ui.label(f"Error: {ex}").classes("text-red-500 text-sm p-3")
+
+        # ── Toggle sin rebuild completo ───────────────────────────────────────
+        def _toggle_sku(sku: str) -> None:
+            btn = toggle_btns.get(sku)
+            if sku in expanded_skus:
+                expanded_skus.discard(sku)
+                container = subtable_containers.get(sku)
+                if container:
+                    container.clear()
+                if btn:
+                    btn.set_text("▶")
+            else:
+                expanded_skus.add(sku)
+                if btn:
+                    btn.set_text("▼")
+                gen = state["subtable_gen"].get(sku, 0) + 1
+                state["subtable_gen"][sku] = gen
+                background_tasks.create(
+                    _load_sku_subtable(sku, gen), name=f"lazy_{sku}"
+                )
 
         # ── Rebuild principal ────────────────────────────────────────────────
         def _rebuild_table() -> None:
@@ -869,234 +1167,28 @@ def build_tab_catalogos(container) -> None:
                                         is_exp = sku in expanded_skus
 
                                         def _make_toggle(s=sku):
-                                            def _toggle():
-                                                if s in expanded_skus:
-                                                    expanded_skus.discard(s)
-                                                else:
-                                                    expanded_skus.add(s)
-                                                _rebuild_table()
-                                            return _toggle
+                                            return lambda: _toggle_sku(s)
 
-                                        ui.button(
+                                        tb = ui.button(
                                             "▼" if is_exp else "▶",
                                             on_click=_make_toggle(),
                                         ).props("flat dense size=sm no-caps").style(
                                             "color:#6b7280;font-size:12px"
                                         )
+                                        toggle_btns[sku] = tb
 
-                                if sku in expanded_skus:
-                                    active_cats = [c for c in sku_cats if c.get("activo")]
-                                    all_comps: List[Dict] = []
-                                    for cat in active_cats:
-                                        for comp in get_catalogo_competidores(
-                                            cat["catalog_product_id"]
-                                        ):
-                                            entry = dict(comp)
-                                            entry["_cpid"] = cat["catalog_product_id"]
-                                            all_comps.append(entry)
-                                    all_comps.sort(key=lambda c: float(c.get("price") or 0))
-
-                                    delivery_labels: Dict[str, Any] = {}
-
-                                    with ui.element("tr"):
-                                        with ui.element("td").props("colspan=11").style(
-                                            "padding:0;border:none"
-                                        ):
-                                            with ui.element("div").style(
-                                                "background:#f0f9ff;padding:8px 12px 12px 24px;"
-                                                "border-bottom:1px solid #e5e7eb"
-                                            ):
-                                                if not all_comps:
-                                                    ui.label(
-                                                        "Sin datos — presioná Sincronizar Todo"
-                                                    ).classes("text-amber-600 text-sm italic py-2")
-                                                else:
-                                                    with ui.element("table").style(
-                                                        "width:100%;border-collapse:collapse"
-                                                    ):
-                                                        with ui.element("thead"):
-                                                            with ui.element("tr"):
-                                                                for col in [
-                                                                    "#", "Catálogo ID", "Item", "Origen",
-                                                                    "Entrega", "Vendedor", "Precio", "Tipo",
-                                                                ]:
-                                                                    with ui.element("th").style(
-                                                                        _TH + ";background:#e0f2fe;font-size:11px"
-                                                                    ):
-                                                                        ui.label(col)
-                                                        with ui.element("tbody"):
-                                                            for ci, comp in enumerate(all_comps, 1):
-                                                                is_ours = (
-                                                                    str(comp.get("item_id", ""))
-                                                                    in item_ids_set
-                                                                )
-                                                                cbg = (
-                                                                    "background:#f0fdf4" if is_ours
-                                                                    else (
-                                                                        "background:#ffffff"
-                                                                        if ci % 2 == 0
-                                                                        else "background:#f0f9ff"
-                                                                    )
-                                                                )
-                                                                cpid = comp.get("_cpid", "")
-                                                                with ui.element("tr").style(cbg):
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center;"
-                                                                        "font-size:11px;color:#9ca3af"
-                                                                    ):
-                                                                        ui.label(str(ci))
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center"
-                                                                    ):
-                                                                        ui.label(cpid).classes(
-                                                                            "font-mono cursor-pointer "
-                                                                            "underline text-sm text-blue-600"
-                                                                        ).on(
-                                                                            "click",
-                                                                            _make_detail_handler(cpid),
-                                                                        )
-                                                                    item_id_val = comp.get("item_id", "")
-                                                                    item_url = _item_url(item_id_val)
-                                                                    item_link_style = (
-                                                                        "color:#15803d;font-weight:600"
-                                                                        if is_ours else "color:#2563eb"
-                                                                    )
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center"
-                                                                    ):
-                                                                        ui.html(
-                                                                            f'<a href="{item_url}" target="_blank" '
-                                                                            f'style="font-family:monospace;font-size:11px;'
-                                                                            f'{item_link_style};text-decoration:underline">'
-                                                                            f'{item_id_val}</a>'
-                                                                        )
-                                                                    origen_val = comp.get("origen") or "local"
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center"
-                                                                    ):
-                                                                        ui.html(_ORIGEN_BADGE.get(origen_val, _ORIGEN_BADGE["local"]))
-                                                                    # ── Entrega (lazy) ──────────────────
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center;min-width:70px"
-                                                                    ):
-                                                                        cached_val = state["delivery_cache"].get(item_id_val)
-                                                                        if cached_val is not None:
-                                                                            ui.label(cached_val).style("font-size:11px")
-                                                                        else:
-                                                                            d_lbl = ui.label("...").style(
-                                                                                "font-size:11px;color:#9ca3af"
-                                                                            )
-                                                                            if item_id_val:
-                                                                                delivery_labels[item_id_val] = d_lbl
-                                                                    nick = (
-                                                                        comp.get("seller_nickname")
-                                                                        or f"ID {comp.get('seller_id', '')}"
-                                                                    )
-                                                                    level_id = comp.get("seller_level_id") or ""
-                                                                    total_ventas = comp.get("seller_total_ventas")
-                                                                    with ui.element("td").style(
-                                                                        _TD
-                                                                        + (
-                                                                            ";color:#15803d;font-weight:600"
-                                                                            if is_ours
-                                                                            else ""
-                                                                        )
-                                                                    ):
-                                                                        ui.label(
-                                                                            f"{nick} ✓" if is_ours else nick
-                                                                        ).style("font-size:12px")
-                                                                        if level_id == "5_green":
-                                                                            ui.html(
-                                                                                '<span style="background:#dcfce7;color:#15803d;'
-                                                                                'border:1px solid #86efac;border-radius:10px;'
-                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
-                                                                                '🏆 ML Platinum</span>'
-                                                                            )
-                                                                        elif level_id == "4_light_green":
-                                                                            ui.html(
-                                                                                '<span style="background:#fef9c3;color:#854d0e;'
-                                                                                'border:1px solid #fde047;border-radius:10px;'
-                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
-                                                                                '⭐ ML Gold</span>'
-                                                                            )
-                                                                        elif level_id == "3_yellow":
-                                                                            ui.html(
-                                                                                '<span style="background:#fff7ed;color:#c2410c;'
-                                                                                'border:1px solid #fdba74;border-radius:10px;'
-                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
-                                                                                'ML</span>'
-                                                                            )
-                                                                        if total_ventas is not None:
-                                                                            try:
-                                                                                ui.label(
-                                                                                    f"({int(total_ventas):,} ventas)".replace(",", ".")
-                                                                                ).style("font-size:10px;color:#9ca3af;display:block")
-                                                                            except Exception:
-                                                                                pass
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:right;"
-                                                                        "font-family:monospace;font-weight:600"
-                                                                    ):
-                                                                        ui.label(
-                                                                            _fmt_precio(comp.get("price"))
-                                                                        )
-                                                                    with ui.element("td").style(
-                                                                        _TD + ";text-align:center"
-                                                                    ):
-                                                                        lt = comp.get("listing_type") or ""
-                                                                        badge = _TIPO_BADGE.get(lt)
-                                                                        if badge:
-                                                                            ui.html(badge)
-                                                                        else:
-                                                                            ui.label(lt or "—").style(
-                                                                                "font-size:11px"
-                                                                            )
-
-                                    if delivery_labels:
-                                        def _make_delivery_loader(labels_dict: Dict[str, Any], zip_c: str):
-                                            async def _load():
-                                                item_ids_to_fetch = list(labels_dict.keys())
-                                                req_headers = {
-                                                    "Authorization": f"Bearer {access_token}",
-                                                    "Accept": "application/json",
-                                                }
-
-                                                async def _fetch_one(iid: str):
-                                                    try:
-                                                        resp = await asyncio.to_thread(
-                                                            requests.get,
-                                                            f"https://api.mercadolibre.com/items/{iid}/shipping_options",
-                                                            params={"zip_code": zip_c},
-                                                            headers=req_headers,
-                                                            timeout=8,
-                                                        )
-                                                        if resp.status_code == 200:
-                                                            options = resp.json().get("options", [])
-                                                            if options:
-                                                                edt = options[0].get("estimated_delivery_time") or {}
-                                                                return iid, _fmt_delivery(edt)
-                                                        return iid, "—"
-                                                    except Exception:
-                                                        return iid, "—"
-
-                                                for i in range(0, len(item_ids_to_fetch), 5):
-                                                    batch = item_ids_to_fetch[i : i + 5]
-                                                    results = await asyncio.gather(
-                                                        *[_fetch_one(iid) for iid in batch]
-                                                    )
-                                                    for iid, text in results:
-                                                        state["delivery_cache"][iid] = text
-                                                        lbl = labels_dict.get(iid)
-                                                        if lbl:
-                                                            try:
-                                                                lbl.set_text(text)
-                                                            except Exception:
-                                                                pass
-                                            return _load
-
+                                # Fila contenedora de subtabla (siempre presente, vacía si colapsada)
+                                with ui.element("tr"):
+                                    sub_td = ui.element("td").props("colspan=11").style(
+                                        "padding:0;border:none"
+                                    )
+                                    subtable_containers[sku] = sub_td
+                                    if sku in expanded_skus:
+                                        gen = state["subtable_gen"].get(sku, 0) + 1
+                                        state["subtable_gen"][sku] = gen
                                         background_tasks.create(
-                                            _make_delivery_loader(delivery_labels, zip_code)(),
-                                            name=f"delivery_{sku}",
+                                            _load_sku_subtable(sku, gen),
+                                            name=f"lazy_rebuild_{sku}",
                                         )
 
         # Carga inicial: obtener seller_id async antes de renderizar para no mostrar datos de otro usuario
