@@ -498,6 +498,7 @@ def init_db() -> None:
             net_rcv       REAL,
             fetched_at    TEXT,
             pay_status    TEXT,
+            cuotas        TEXT,
             PRIMARY KEY (payment_id, user_id)
         )
         """
@@ -521,6 +522,8 @@ def init_db() -> None:
     vd_cols = [r[1] for r in cur.fetchall()]
     if "pay_status" not in vd_cols:
         cur.execute("ALTER TABLE ventas_datos ADD COLUMN pay_status TEXT")
+    if "cuotas" not in vd_cols:
+        cur.execute("ALTER TABLE ventas_datos ADD COLUMN cuotas TEXT")
 
     # Migración: agregar columna despachante a invoice_extra si no existe (tablas antiguas)
     cur.execute("PRAGMA table_info(invoice_extra)")
