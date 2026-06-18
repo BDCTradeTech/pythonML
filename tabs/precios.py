@@ -934,8 +934,9 @@ def _mostrar_tabla_precios(
 
     def _open_catalogo_popup(sku: str) -> None:
         dlg = ui.dialog()
+        dlg.props('style="width:90vw;max-width:90vw"')
         with dlg:
-            with ui.card().classes("w-[1100px] max-w-[95vw] p-4"):
+            with ui.card().classes("p-4").style("width:90vw;max-width:1400px"):
                 with ui.row().classes("w-full items-center justify-between mb-1"):
                     ui.label(f"Catálogos — {sku}").classes("text-lg font-bold")
                     ui.button(icon="close", on_click=dlg.close).props("flat dense round")
@@ -1015,8 +1016,9 @@ def _mostrar_tabla_precios(
             )
             return
         dlg = ui.dialog()
+        dlg.props('style="width:90vw;max-width:90vw"')
         with dlg:
-            with ui.card().classes("w-[1100px] max-w-[95vw] p-4"):
+            with ui.card().classes("p-4").style("width:90vw;max-width:1400px"):
                 with ui.row().classes("w-full items-center justify-between mb-1"):
                     ui.label(f"Competidores — {sku}").classes("text-lg font-bold")
                     ui.button(icon="close", on_click=dlg.close).props("flat dense round")
