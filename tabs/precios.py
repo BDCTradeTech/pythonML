@@ -1031,7 +1031,6 @@ def _mostrar_tabla_precios(
         dlg.open()
 
         async def _load_comps() -> None:
-            _STALE_HOURS = 2
             all_comps: List[Dict] = []
             _item_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
             _my_qty: Dict[str, int] = {}
@@ -1045,21 +1044,10 @@ def _mostrar_tabla_precios(
 
             for cat in sku_cats:
                 cpid = cat["catalog_product_id"]
+                fresh = await _sync_one_catalog(access_token, cpid)
+                if fresh:
+                    upsert_catalogo_competidores(cpid, fresh)
                 cached = get_catalogo_competidores(cpid)
-                stale = True
-                if cached:
-                    try:
-                        ts_str = (cached[0].get("updated_at") or "")[:19]
-                        if ts_str:
-                            ts = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
-                            stale = (datetime.utcnow() - ts).total_seconds() / 3600 > _STALE_HOURS
-                    except Exception:
-                        stale = True
-                if stale:
-                    fresh = await _sync_one_catalog(access_token, cpid)
-                    if fresh:
-                        upsert_catalogo_competidores(cpid, fresh)
-                        cached = get_catalogo_competidores(cpid)
                 for comp in cached:
                     entry = dict(comp)
                     entry["_cpid"] = cpid
