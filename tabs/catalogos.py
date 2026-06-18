@@ -663,38 +663,6 @@ def build_tab_catalogos(container) -> None:
                 dlg.open()
             return handler
 
-        # ── Factory: sync un SKU ─────────────────────────────────────────────
-        def _make_sync_sku_handler(s_sku: str, s_cats: List[Dict]):
-            async def _do():
-                active = [c for c in s_cats if c.get("activo")]
-                if not active:
-                    ui.notify("Sin catálogos activos", color="warning")
-                    return
-                ui.notify(f"Sincronizando {s_sku}...", color="info")
-                try:
-                    for cat in active:
-                        its = await _sync_one_catalog(access_token, cat["catalog_product_id"])
-                        for it in its:
-                            sid = str(it.get("seller_id", ""))
-                            state["rep_cache"][sid] = {
-                                "level_id": it.get("seller_level_id", ""),
-                                "power_status": it.get("seller_power_status", ""),
-                                "total_ventas": it.get("seller_total_ventas"),
-                            }
-                        await asyncio.to_thread(
-                            upsert_catalogo_competidores, cat["catalog_product_id"], its
-                        )
-                    state["synced_skus"][s_sku] = _datetime.now()
-                    _rebuild_table()
-                    ui.notify(f"{s_sku}: sincronizado", color="positive")
-                except Exception as ex:
-                    ui.notify(f"Error: {ex}", color="negative")
-
-            def _click():
-                background_tasks.create(_do(), name=f"sync_sku_{s_sku}")
-
-            return _click
-
         # ── Delivery loader (accesible desde _load_sku_subtable) ─────────────
         def _make_delivery_loader(labels_dict: Dict[str, Any], zip_c: str):
             async def _load():
@@ -1076,7 +1044,7 @@ def build_tab_catalogos(container) -> None:
                             with ui.element("tr"):
                                 for col_name in [
                                     "#", "SKU", "Marca", "Producto", "Color",
-                                    "Stock", "Precio", "Catálogos", "Ganando", "↺", "▶",
+                                    "Stock", "Precio", "Catálogos", "Ganando", "▶",
                                 ]:
                                     if col_name in _SORTABLE_COLS:
                                         is_active = sort_col_ref["col"] == col_name
@@ -1151,15 +1119,6 @@ def build_tab_catalogos(container) -> None:
                                             ui.html('<span style="color:#dc2626">✗</span>')
                                         else:
                                             ui.label("—").classes("text-gray-400")
-
-                                    with ui.element("td").style(_TD + ";text-align:center"):
-                                        if n_cats > 0:
-                                            ui.button(
-                                                "↺",
-                                                on_click=_make_sync_sku_handler(sku, sku_cats),
-                                            ).props("flat dense size=sm no-caps").style(
-                                                "color:#6b7280;font-size:13px"
-                                            )
 
                                     with ui.element("td").style(_TD + ";text-align:center"):
                                         is_exp = sku in expanded_skus
