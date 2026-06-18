@@ -711,6 +711,18 @@ def init_db() -> None:
         cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN origen TEXT DEFAULT 'local'")
     except sqlite3.OperationalError:
         pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_level_id TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_power_status TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_total_ventas INTEGER")
+    except sqlite3.OperationalError:
+        pass
 
     conn.commit()
     conn.close()
@@ -878,8 +890,9 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
             conn.execute(
                 """INSERT INTO catalogo_competidores
                    (catalog_product_id, item_id, seller_id, seller_nickname, price,
-                    listing_type, logistica, free_shipping, updated_at, origen)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    listing_type, logistica, free_shipping, updated_at, origen,
+                    seller_level_id, seller_power_status, seller_total_ventas)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     catalog_product_id,
                     it.get("item_id", ""),
@@ -891,6 +904,9 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                     1 if (isinstance(ship, dict) and ship.get("free_shipping")) else 0,
                     now,
                     origen,
+                    it.get("seller_level_id") or None,
+                    it.get("seller_power_status") or None,
+                    it.get("seller_total_ventas") if it.get("seller_total_ventas") is not None else None,
                 ),
             )
         conn.commit()

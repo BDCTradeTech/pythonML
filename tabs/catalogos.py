@@ -222,9 +222,42 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[
         batch = seller_ids[i : i + 20]
         batch_nicks = await asyncio.to_thread(ml_get_users_multiget, access_token, batch)
         nicknames.update(batch_nicks)
+
+    rep_cache: Dict[str, Dict] = {}
+
+    async def _fetch_seller_rep(sid: str):
+        try:
+            resp = await asyncio.to_thread(
+                requests.get,
+                f"https://api.mercadolibre.com/users/{sid}",
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                timeout=8,
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                rep = data.get("seller_reputation") or {}
+                return sid, {
+                    "level_id": rep.get("level_id") or "",
+                    "power_status": rep.get("power_seller_status") or "",
+                    "total_ventas": (rep.get("transactions") or {}).get("total"),
+                }
+        except Exception:
+            pass
+        return sid, {}
+
+    for i in range(0, len(seller_ids), 5):
+        batch = seller_ids[i : i + 5]
+        results = await asyncio.gather(*[_fetch_seller_rep(sid) for sid in batch])
+        for sid, rep_data in results:
+            rep_cache[sid] = rep_data
+
     for it in items:
         sid = str(it.get("seller_id", ""))
         it["seller_nickname"] = nicknames.get(sid, f"ID {sid}")
+        rep = rep_cache.get(sid, {})
+        it["seller_level_id"] = rep.get("level_id", "")
+        it["seller_power_status"] = rep.get("power_status", "")
+        it["seller_total_ventas"] = rep.get("total_ventas")
     return items
 
 
@@ -959,6 +992,8 @@ def build_tab_catalogos(container) -> None:
                                                                         comp.get("seller_nickname")
                                                                         or f"ID {comp.get('seller_id', '')}"
                                                                     )
+                                                                    level_id = comp.get("seller_level_id") or ""
+                                                                    total_ventas = comp.get("seller_total_ventas")
                                                                     with ui.element("td").style(
                                                                         _TD
                                                                         + (
@@ -969,7 +1004,35 @@ def build_tab_catalogos(container) -> None:
                                                                     ):
                                                                         ui.label(
                                                                             f"{nick} ✓" if is_ours else nick
-                                                                        )
+                                                                        ).style("font-size:12px")
+                                                                        if level_id == "5_green":
+                                                                            ui.html(
+                                                                                '<span style="background:#dcfce7;color:#15803d;'
+                                                                                'border:1px solid #86efac;border-radius:10px;'
+                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
+                                                                                '🏆 ML Platinum</span>'
+                                                                            )
+                                                                        elif level_id == "4_light_green":
+                                                                            ui.html(
+                                                                                '<span style="background:#fef9c3;color:#854d0e;'
+                                                                                'border:1px solid #fde047;border-radius:10px;'
+                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
+                                                                                '⭐ ML Gold</span>'
+                                                                            )
+                                                                        elif level_id == "3_yellow":
+                                                                            ui.html(
+                                                                                '<span style="background:#fff7ed;color:#c2410c;'
+                                                                                'border:1px solid #fdba74;border-radius:10px;'
+                                                                                'padding:1px 6px;font-size:10px;display:inline-block;margin-top:2px">'
+                                                                                'ML</span>'
+                                                                            )
+                                                                        if total_ventas is not None:
+                                                                            try:
+                                                                                ui.label(
+                                                                                    f"({int(total_ventas):,} ventas)".replace(",", ".")
+                                                                                ).style("font-size:10px;color:#9ca3af;display:block")
+                                                                            except Exception:
+                                                                                pass
                                                                     with ui.element("td").style(
                                                                         _TD + ";text-align:right;"
                                                                         "font-family:monospace;font-weight:600"
