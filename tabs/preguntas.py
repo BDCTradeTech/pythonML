@@ -418,6 +418,7 @@ def build_tab_preguntas(container) -> None:
                             ).props("flat dense no-caps icon=refresh").style(
                                 "font-size:13px;color:#1565c0"
                             )
+                    _build_frases_card([None], [None])
                 return
 
             with main_area:

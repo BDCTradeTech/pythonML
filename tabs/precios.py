@@ -2575,7 +2575,7 @@ def _mostrar_tabla_precios(
         {"name": "costo_usd", "label": "Costo u$ s/IVA", "field": "costo_usd", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 80px"},
         {"name": "tipo_iva",   "label": "IVA",  "field": "tipo_iva",      "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 40px"},
         {"name": "quality_score", "label": "Calidad", "field": "quality_score", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 38px"},
-        {"name": "n_catalogos", "label": "Catálogos", "field": "n_catalogos", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 45px"},
+        {"name": "n_catalogos", "label": "Cat.", "field": "n_catalogos", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 45px"},
         {"name": "catalog_pos", "label": "Ganando", "field": "catalog_status", "sortable": True, "align": "center", "headerStyle": header_style, "style": "min-width: 75px"},
         {"name": "catalog_price_to_win", "label": "Precio Ganador", "field": "catalog_price_to_win", "sortable": True, "align": "right",  "headerStyle": header_style, "style": "min-width: 70px"},
         {"name": "price", "label": "Precio", "field": "price", "sortable": True, "align": "right", "headerStyle": header_style, ":format": fmt_mon_js, ":classes": "(val, row) => { let c = (row && row.tipo === 'Propia') ? 'text-primary cursor-pointer font-medium' : ''; const hasPromo = row && row.sale_price != null && Math.abs(Number(row.sale_price) - Number(row.price || 0)) > 0.01; return hasPromo ? c + ' line-through' : c; }"},
