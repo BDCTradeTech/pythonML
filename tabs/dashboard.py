@@ -854,16 +854,14 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         _rep_stat_row(label, _rep_rate(metrics.get(key) or {}), maxv)
 
             rep_placeholder.delete()
-            if ra:
-                for color, msg in ra:
-                    _alert_row(alerts_col, color, msg,
-                               on_nav=(lambda: navigate_to("Estadísticas")) if navigate_to else None)
-
             _bump_counters(
                 sum(1 for c, _ in ra if c == _RED),
                 sum(1 for c, _ in ra if c == _YELLOW),
             )
-
+            if ra:
+                for color, msg in ra:
+                    _alert_row(alerts_col, color, msg,
+                               on_nav=(lambda: navigate_to("Estadísticas")) if navigate_to else None)
             if not db_alerts and not ra:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
 

@@ -663,40 +663,45 @@ def _pintar_home_inline(
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Marcas").style("font-size:9px;color:#6b7280")
                                 ui.label(str(marcas_distintas)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                        ui.label("ÚLTIMAS VENTAS").style(f"{_LBL};margin-bottom:4px")
-                        if ultimas_5_ventas:
-                            _tz_arg = timezone(timedelta(hours=-3))
-                            for v in ultimas_5_ventas:
-                                ds_raw = v.get("date_closed") or v.get("date_created") or v.get("date_last_updated") or ""
-                                try:
-                                    _s = re.sub(r'\.\d+', '', ds_raw)
-                                    if "T" in _s:
-                                        if re.search(r'[+-]\d{2}:\d{2}$', _s):
-                                            dt_v = datetime.fromisoformat(_s).astimezone(_tz_arg)
-                                        else:
-                                            dt_v = datetime.strptime(_s[:19], "%Y-%m-%dT%H:%M:%S")
-                                    elif " " in _s:
-                                        dt_v = datetime.strptime(_s[:16], "%Y-%m-%d %H:%M")
-                                    elif len(_s) >= 10:
-                                        dt_v = datetime.strptime(_s[:10], "%Y-%m-%d")
-                                    else:
-                                        dt_v = None
-                                    hora_fmt = f"{dt_v.hour:02d}:{dt_v.minute:02d}" if dt_v else ""
-                                except Exception:
-                                    hora_fmt = ""
-                                items_v = v.get("order_items") or v.get("items") or []
-                                uds = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_v if isinstance(it, dict))
-                                if uds == 0:
-                                    total = v.get("total_amount") or v.get("paid_amount") or 0
-                                    uds = 1 if float(total or 0) > 0 else 0
-                                primer_item = items_v[0] if items_v else {}
-                                obj = primer_item.get("item") or primer_item
-                                tit = (obj.get("title") if isinstance(obj, dict) else primer_item.get("title")) or "—"
-                                tit = (tit[:55] + "…") if len(str(tit)) > 55 else str(tit)
-                                with ui.row().classes("w-full items-center justify-between gap-2 py-0.5 flex-nowrap"):
-                                    ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1")
-                                    ui.label(f"{uds}u").style(f"font-size:11px;font-weight:700;color:{_BLUE};white-space:nowrap;flex-shrink:0")
-                                    ui.label(hora_fmt).style("font-size:11px;color:#6b7280;white-space:nowrap;flex-shrink:0")
+                        ui.label(f"CUOTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
+                        cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
+                        total_unidades_mes_c = 0
+                        for _ord in results:
+                            _dt_s = (_ord.get("date_created") or _ord.get("date_closed")
+                                     or _ord.get("date_last_updated") or "")
+                            try:
+                                _dt_c = datetime.strptime(_dt_s[:10], "%Y-%m-%d").date()
+                            except Exception:
+                                continue
+                            if not (primer_dia_mes <= _dt_c <= today_local):
+                                continue
+                            _items_c = _ord.get("order_items") or _ord.get("items") or []
+                            _uds_c = sum(int(it.get("quantity") or it.get("qty") or 0)
+                                         for it in _items_c if isinstance(it, dict))
+                            if _uds_c == 0 and float(_ord.get("total_amount") or _ord.get("paid_amount") or 0) > 0:
+                                _uds_c = 1
+                            _pays = _ord.get("payments") or []
+                            _inst = int((_pays[0].get("installments")
+                                         if isinstance(_pays, list) and _pays else None) or 1)
+                            _inst_key = min(cuotas_dist.keys(), key=lambda k: abs(k - _inst))
+                            cuotas_dist[_inst_key] += _uds_c
+                            total_unidades_mes_c += _uds_c
+                        _base_c = total_unidades_mes_c or 1
+                        with ui.row().classes("items-center gap-1 mb-2"):
+                            ui.label("Total:").style("font-size:9px;color:#6b7280")
+                            ui.label(str(total_unidades_mes_c)).style(
+                                f"font-size:15px;font-weight:700;color:{_BLUE}")
+                            ui.label("unidades").style("font-size:9px;color:#6b7280")
+                        with ui.row().classes("gap-1 w-full flex-nowrap"):
+                            for _cx, _lx in [(1, "1x"), (3, "3x"), (6, "6x"), (9, "9x"), (12, "12x")]:
+                                _cu = cuotas_dist[_cx]
+                                _pct_c = _cu / _base_c * 100
+                                with ui.element("div").style(
+                                        "flex:1;text-align:center;padding:4px 2px;"
+                                        "background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
+                                    ui.label(_lx).style("font-size:8px;color:#6b7280;font-weight:600")
+                                    ui.label(str(_cu)).style(f"font-size:13px;font-weight:700;color:{_BLUE}")
+                                    ui.label(f"{_pct_c:.1f}%").style("font-size:9px;color:#9ca3af")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
