@@ -664,6 +664,19 @@ def _pintar_home_inline(
                             with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                 ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
+                        _vd_cuotas_fee: Dict[int, float] = {}
+                        try:
+                            import sqlite3 as _sqlite3
+                            _vd_conn = _sqlite3.connect("app.db")
+                            _vd_rows = _vd_conn.execute(
+                                "SELECT order_id, SUM(cuotas_fee) FROM ventas_datos "
+                                "WHERE user_id=? AND order_date >= ? GROUP BY order_id",
+                                (user["id"], primer_dia_mes.strftime("%Y-%m-%d")),
+                            ).fetchall()
+                            _vd_conn.close()
+                            _vd_cuotas_fee = {int(r[0]): float(r[1] or 0) for r in _vd_rows}
+                        except Exception:
+                            pass
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
                         _items_map = {str(it.get("id") or ""): it
                                       for it in (items_data or {}).get("results") or []
@@ -685,13 +698,18 @@ def _pintar_home_inline(
                                          for it in _items_c if isinstance(it, dict))
                             if _uds_c == 0 and float(_ord.get("total_amount") or _ord.get("paid_amount") or 0) > 0:
                                 _uds_c = 1
-                            _first_item_c = next((it for it in _items_c if isinstance(it, dict)), {})
-                            _iid_c = str(_first_item_c.get("item_id") or _first_item_c.get("id") or "")
-                            _item_body_c = _items_map.get(_iid_c) or {}
-                            _cuotas_str_c = _cuotas_desde_item(_item_body_c)
-                            _inst_key = int(_cuotas_str_c.lstrip("x") or "1")
-                            if _inst_key not in cuotas_dist:
+                            _ord_id_c = int(_ord.get("order_id") or _ord.get("id") or 0)
+                            _fee_c = _vd_cuotas_fee.get(_ord_id_c, -1.0)
+                            if _fee_c <= 0:
                                 _inst_key = 1
+                            else:
+                                _first_item_c = next((it for it in _items_c if isinstance(it, dict)), {})
+                                _iid_c = str(_first_item_c.get("item_id") or _first_item_c.get("id") or "")
+                                _item_body_c = _items_map.get(_iid_c) or {}
+                                _cuotas_str_c = _cuotas_desde_item(_item_body_c)
+                                _inst_key = int(_cuotas_str_c.lstrip("x") or "1")
+                                if _inst_key not in cuotas_dist or _inst_key == 1:
+                                    _inst_key = 6
                             cuotas_dist[_inst_key] += _uds_c
                             total_unidades_mes_c += _uds_c
                         _base_c = total_unidades_mes_c or 1
