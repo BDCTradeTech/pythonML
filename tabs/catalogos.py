@@ -776,14 +776,11 @@ def build_tab_catalogos(container) -> None:
                     all_comps.append(entry)
             all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
-            seen_cpids_ordered: Dict[str, int] = {}
-            for _c in all_comps:
-                _k = _c.get("_cpid", "")
-                if _k and _k not in seen_cpids_ordered:
-                    seen_cpids_ordered[_k] = len(seen_cpids_ordered)
-
             _PALETA = ["#e3f2fd", "#f0fdf4", "#faf5ff", "#fff7ed", "#fdf2f8"]
             _PALETA_TEXT = ["#1565c0", "#16a34a", "#6d28d9", "#c2410c", "#9d174d"]
+            cat_ids = list(dict.fromkeys(c.get("_cpid", "") for c in all_comps))
+            cat_color_map = {cpid: _PALETA[i % len(_PALETA)] for i, cpid in enumerate(cat_ids)}
+            cat_text_map  = {cpid: _PALETA_TEXT[i % len(_PALETA_TEXT)] for i, cpid in enumerate(cat_ids)}
             _TH_SUB = (
                 "padding:5px 8px;border:1px solid #1565c0;white-space:nowrap;font-weight:500;"
                 "background:#1976d2;color:white;font-size:11px;position:sticky;top:0;z-index:1"
@@ -815,10 +812,9 @@ def build_tab_catalogos(container) -> None:
                                 for ci, comp in enumerate(all_comps, 1):
                                     is_ours = str(comp.get("item_id", "")) in item_ids_set
                                     cpid = comp.get("_cpid", "")
-                                    cat_idx = seen_cpids_ordered.get(cpid, 0)
-                                    bg_color = _PALETA[cat_idx % len(_PALETA)]
-                                    text_color = _PALETA_TEXT[cat_idx % len(_PALETA_TEXT)]
-                                    cbg = f"background:{bg_color}"
+                                    row_bg     = cat_color_map.get(cpid, "#ffffff")
+                                    text_color = cat_text_map.get(cpid, "#374151")
+                                    cbg        = f"background:{row_bg}"
                                     with ui.element("tr").style(cbg):
                                         with ui.element("td").style(
                                             _TD + ";text-align:center;font-size:11px;color:#9ca3af"
@@ -879,16 +875,13 @@ def build_tab_catalogos(container) -> None:
                                                 f"{nick} ({int(tv):,} ventas)".replace(",", ".")
                                                 if tv is not None else nick
                                             )
+                                            rep_badge = _LVL.get(lvl, "") if lvl else ""
+                                            _label = f"{nick_part}  {rep_badge}".strip() if rep_badge else nick_part
                                             if is_ours and my_stock:
                                                 _stock_qty = my_stock.get(str(item_id_val))
                                                 if _stock_qty is not None:
-                                                    nick_part = (
-                                                        f"{nick_part} — Stock: {_stock_qty} u."
-                                                    )
-                                            rep_badge = _LVL.get(lvl, "") if lvl else ""
-                                            ui.label(
-                                                f"{nick_part}  {rep_badge}".strip()
-                                            ).style("font-size:12px")
+                                                    _label = f"{_label} — Stock: {_stock_qty} u."
+                                            ui.label(_label).style("font-size:12px")
                                         with ui.element("td").style(
                                             _TD + ";text-align:right;"
                                             "font-family:monospace;font-weight:600"
