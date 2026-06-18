@@ -565,6 +565,16 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     _susp_items_ref: Dict[str, Any] = {"val": []}
     desde_sql = desde_dt.strftime("%Y-%m-%d")
 
+    is_mobile_ref: Dict[str, bool] = {"val": False}
+    # pre-declare para nonlocal en _render_cards
+    prod_color      = _GREEN
+    prod_header_row = None
+    _susp_dot       = None
+    _susp_lbl       = None
+    cuotas_card     = None
+    rep_card        = None
+    ml_pubs_card    = None
+
     with container:
         with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
 
@@ -606,216 +616,234 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         arrow_btn.props("icon=expand_more")
                 arrow_btn.on_click(_toggle_alerts)
 
-            # ── GRILLA PRINCIPAL: 3 columnas ──────────────────────────────
+            # ── GRILLA PRINCIPAL: responsive (3 col desktop / 2 col mobile) ─────
             # Fila 1: Productos | Ventas | Cuotas
             # Fila 2: Estadísticas ML | Publicaciones ML | ARCA
-            with ui.grid(columns=3).classes("w-full gap-4"):
+            cards_area = ui.column().classes("w-full")
 
-                # --- Fila 1, Col 1: Productos ---
-                prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
-                              else _YELLOW if prod["sin_fob"]   > 0
-                              else _GREEN)
-                with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                    prod_header_row = ui.row().classes("items-center gap-2 w-full mb-2")
+            async def _detect_mobile() -> None:
+                w = await ui.run_javascript("window.innerWidth")
+                is_mobile_ref["val"] = int(w or 9999) < 768
+                _render_cards()
+
+            ui.timer(0, _detect_mobile, once=True)
+
+            def _render_cards() -> None:
+                nonlocal prod_color, prod_header_row, _susp_dot, _susp_lbl
+                nonlocal cuotas_card, rep_card, ml_pubs_card
+                cols = 2 if is_mobile_ref["val"] else 3
+                gap  = "gap-2" if is_mobile_ref["val"] else "gap-4"
+                cards_area.clear()
+                with cards_area:
+                    with ui.grid(columns=cols).classes(f"w-full {gap}"):
+
+                        # --- Fila 1, Col 1: Productos ---
+                        prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
+                                      else _YELLOW if prod["sin_fob"]   > 0
+                                      else _GREEN)
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            prod_header_row = ui.row().classes("items-center gap-2 w-full mb-2")
+                            with prod_header_row:
+                                ui.spinner(size="sm")
+                                ui.label("Productos").classes("font-bold text-base text-gray-800")
+                            with ui.column().classes("w-full gap-2"):
+                                _stat_row_popup(
+                                    "Sin costo u$", str(prod["sin_costo"]),
+                                    _RED if prod["sin_costo"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Sin costo u$", _detail_sin_costo(uid),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Marca",    lambda r: r.get("marca")  or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—")]))
+                                with ui.row().classes("items-center gap-2 w-full"):
+                                    _susp_dot = ui.element("span").style(
+                                        "display:inline-block;width:10px;height:10px;border-radius:9999px;"
+                                        "background:#9ca3af;flex-shrink:0")
+                                    ui.label("Pausadas con stock").classes("text-xs text-gray-700 flex-1")
+                                    _susp_lbl = (ui.label("...").classes(
+                                        "text-xs font-semibold cursor-pointer hover:underline")
+                                        .style("color:#9ca3af"))
+                                    _susp_lbl.on("click", lambda: _open_popup_list(
+                                        "Pausadas con stock",
+                                        _susp_items_ref["val"],
+                                        [("SKU",    lambda r: r.get("seller_sku") or "—"),
+                                         ("ID ML",  lambda r: str(r.get("id")     or "—")),
+                                         ("Estado", lambda r: str(r.get("status") or "—"))]))
+                                _stat_row_popup(
+                                    "Sin FOB u$", str(prod["sin_fob"]),
+                                    _YELLOW if prod["sin_fob"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Sin FOB u$", _detail_sin_fob(uid),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Marca",    lambda r: r.get("marca")  or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—")]))
+                                _stat_row_popup(
+                                    "A pérdida", str(prod["gan_neg"]),
+                                    _RED if prod["gan_neg"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "A pérdida (Productos)", _detail_gan_neg_prod(uid),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—"),
+                                         ("Gan$",     lambda r: f"${r['gan']:,.0f}" if r.get("gan") is not None else "—")]))
+                                _stat_row_popup(
+                                    "Ganando", str(prod["cat_ganando"]),
+                                    _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Ganando en catálogo", _detail_cat_status(uid, ["winning"]),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Marca",    lambda r: r.get("marca")  or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—")]))
+                                _stat_row_popup(
+                                    "Empatando", str(prod["cat_empatando"]),
+                                    _YELLOW if prod["cat_empatando"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Empatando en catálogo", _detail_cat_status(uid, ["sharing_first_place"]),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Marca",    lambda r: r.get("marca")  or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—")]))
+                                _stat_row_popup(
+                                    "Perdiendo", str(prod["cat_perdiendo"]),
+                                    _RED if prod["cat_perdiendo"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Perdiendo en catálogo", _detail_cat_status(uid, ["competing", "listed"]),
+                                        [("SKU",      lambda r: r.get("sku")    or "—"),
+                                         ("Marca",    lambda r: r.get("marca")  or "—"),
+                                         ("Producto", lambda r: r.get("nombre") or "—")]))
+
+                        # --- Fila 1, Col 2: Ventas ---
+                        ven_color = (_RED    if ventas["gan_neg"]     > 0
+                                     else _YELLOW if ventas["sin_revisar"] > 0
+                                     else _GREEN)
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            _card_header("Ventas — últimos 30 días", ven_color)
+                            with ui.column().classes("w-full gap-2"):
+                                _vt = ventas.get("total", 0)
+                                _pct_neg = f" ({ventas['gan_neg']/_vt*100:.0f}%)" if _vt else ""
+                                _pct_sin = f" ({ventas['sin_revisar']/_vt*100:.0f}%)" if _vt else ""
+                                _stat_row_popup(
+                                    "A pérdida", f"{ventas['gan_neg']} / {_vt}{_pct_neg}",
+                                    _RED if ventas["gan_neg"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "A pérdida — Ventas",
+                                        _detail_gan_neg_ventas(uid, desde_sql),
+                                        [("Orden",  lambda r: str(r.get("order_id")   or "—")),
+                                         ("Pago",   lambda r: str(r.get("payment_id") or "—")),
+                                         ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—"),
+                                         ("Gan$",   lambda r: f"${r['gan_pesos']:,.0f}" if r.get("gan_pesos") is not None else "—")]))
+                                _stat_row_popup(
+                                    "Sin revisar", f"{ventas['sin_revisar']} / {_vt}{_pct_sin}",
+                                    _YELLOW if ventas["sin_revisar"] > 0 else _GREEN,
+                                    lambda: _open_popup_list(
+                                        "Ventas sin revisar",
+                                        _detail_sin_revisar(uid, desde_sql),
+                                        [("Orden",  lambda r: str(r.get("order_id")   or "—")),
+                                         ("Pago",   lambda r: str(r.get("payment_id") or "—")),
+                                         ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—")]))
+                            ui.label(f"Desde el {desde_fmt}").classes("text-xs text-gray-400 mt-2")
+
+                        # --- Fila 1, Col 3: Cuotas (placeholder async) ---
+                        cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        with cuotas_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Cuotas").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
+
+                        # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
+                        rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        with rep_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando reputación...").classes("text-xs text-gray-400")
+
+                        # --- Fila 2, Col 2: Publicaciones ML (placeholder async) ---
+                        ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        with ml_pubs_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando estado de publicaciones...").classes("text-xs text-gray-400")
+
+                        # --- Fila 2, Col 3: ARCA ---
+                        arca_ov = _GREEN
+                        for ac, _ in arca_al:
+                            if ac == _RED:    arca_ov = _RED;    break
+                            if ac == _YELLOW: arca_ov = _YELLOW
+
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            _card_header("ARCA — Resumen Fiscal", arca_ov)
+                            sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
+                            with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
+
+                                siper_v = sd.get("categoria_siper") or ""
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_siper(siper_v))
+                                        ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(siper_v or "Sin datos").classes("text-xs text-gray-800")
+
+                                tec_v = id_.get("saldo_tecnico", "")
+                                lib_v = id_.get("saldo_libre_disponibilidad", "")
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_iva(tec_v, lib_v))
+                                        ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-xs text-gray-800")
+                                    if lib_v:
+                                        ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
+
+                                deu_v   = dd.get("deuda_exigible", "")
+                                intim_v = dd.get("tiene_intimacion") == "true"
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_deuda(deu_v, intim_v))
+                                        ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-xs text-gray-800")
+                                    if intim_v:
+                                        ui.label("Intimación activa").classes("text-xs font-semibold").style("color:#374151")
+
+                                mc          = _color_multilateral(mr)
+                                total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(mc)
+                                        ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
+                                    if mr:
+                                        ui.label(f"{len(mr)} provincia(s)").classes("text-xs text-gray-800")
+                                        if total_pagar > 0:
+                                            ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style("color:#374151")
+                                        else:
+                                            ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
+                                    else:
+                                        ui.label("Sin datos").classes("text-xs text-gray-400")
+
+                if not access_token:
+                    rep_card.clear()
+                    with rep_card:
+                        _card_header("Estadísticas ML", "#6b7280")
+                        ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                    rep_placeholder.delete()
+                    cuotas_card.clear()
+                    with cuotas_card:
+                        _card_header("Cuotas", "#6b7280")
+                        ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                    ml_pubs_card.clear()
+                    with ml_pubs_card:
+                        _card_header("Publicaciones ML", "#6b7280")
+                        ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                    _susp_lbl.set_text("—")
+                    prod_header_row.clear()
                     with prod_header_row:
-                        ui.spinner(size="sm")
+                        _dot(prod_color)
                         ui.label("Productos").classes("font-bold text-base text-gray-800")
-                    with ui.column().classes("w-full gap-2"):
-                        _stat_row_popup(
-                            "Sin costo u$", str(prod["sin_costo"]),
-                            _RED if prod["sin_costo"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "Sin costo u$", _detail_sin_costo(uid),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—")]))
-                        with ui.row().classes("items-center gap-2 w-full"):
-                            _susp_dot = ui.element("span").style(
-                                "display:inline-block;width:10px;height:10px;border-radius:9999px;"
-                                "background:#9ca3af;flex-shrink:0")
-                            ui.label("Pausadas con stock").classes("text-xs text-gray-700 flex-1")
-                            _susp_lbl = (ui.label("...").classes(
-                                "text-xs font-semibold cursor-pointer hover:underline")
-                                .style("color:#9ca3af"))
-                            _susp_lbl.on("click", lambda: _open_popup_list(
-                                "Pausadas con stock",
-                                _susp_items_ref["val"],
-                                [("SKU",    lambda r: r.get("seller_sku") or "—"),
-                                 ("ID ML",  lambda r: str(r.get("id")     or "—")),
-                                 ("Estado", lambda r: str(r.get("status") or "—"))]))
-                        _stat_row_popup(
-                            "Sin FOB u$", str(prod["sin_fob"]),
-                            _YELLOW if prod["sin_fob"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "Sin FOB u$", _detail_sin_fob(uid),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—")]))
-                        _stat_row_popup(
-                            "A pérdida", str(prod["gan_neg"]),
-                            _RED if prod["gan_neg"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "A pérdida (Productos)", _detail_gan_neg_prod(uid),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—"),
-                                 ("Gan$",     lambda r: f"${r['gan']:,.0f}" if r.get("gan") is not None else "—")]))
-                        _stat_row_popup(
-                            "Ganando", str(prod["cat_ganando"]),
-                            _GREEN,
-                            lambda: _open_popup_list(
-                                "Ganando en catálogo", _detail_cat_status(uid, ["winning"]),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—")]))
-                        _stat_row_popup(
-                            "Empatando", str(prod["cat_empatando"]),
-                            _YELLOW if prod["cat_empatando"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "Empatando en catálogo", _detail_cat_status(uid, ["sharing_first_place"]),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—")]))
-                        _stat_row_popup(
-                            "Perdiendo", str(prod["cat_perdiendo"]),
-                            _RED if prod["cat_perdiendo"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "Perdiendo en catálogo", _detail_cat_status(uid, ["competing", "listed"]),
-                                [("SKU",      lambda r: r.get("sku")    or "—"),
-                                 ("Marca",    lambda r: r.get("marca")  or "—"),
-                                 ("Producto", lambda r: r.get("nombre") or "—")]))
-
-                # --- Fila 1, Col 2: Ventas ---
-                ven_color = (_RED    if ventas["gan_neg"]     > 0
-                             else _YELLOW if ventas["sin_revisar"] > 0
-                             else _GREEN)
-                with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                    _card_header("Ventas — últimos 30 días", ven_color)
-                    with ui.column().classes("w-full gap-2"):
-                        _vt = ventas.get("total", 0)
-                        _pct_neg = f" ({ventas['gan_neg']/_vt*100:.0f}%)" if _vt else ""
-                        _pct_sin = f" ({ventas['sin_revisar']/_vt*100:.0f}%)" if _vt else ""
-                        _stat_row_popup(
-                            "A pérdida", f"{ventas['gan_neg']} / {_vt}{_pct_neg}",
-                            _RED if ventas["gan_neg"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "A pérdida — Ventas",
-                                _detail_gan_neg_ventas(uid, desde_sql),
-                                [("Orden",  lambda r: str(r.get("order_id")   or "—")),
-                                 ("Pago",   lambda r: str(r.get("payment_id") or "—")),
-                                 ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—"),
-                                 ("Gan$",   lambda r: f"${r['gan_pesos']:,.0f}" if r.get("gan_pesos") is not None else "—")]))
-                        _stat_row_popup(
-                            "Sin revisar", f"{ventas['sin_revisar']} / {_vt}{_pct_sin}",
-                            _YELLOW if ventas["sin_revisar"] > 0 else _GREEN,
-                            lambda: _open_popup_list(
-                                "Ventas sin revisar",
-                                _detail_sin_revisar(uid, desde_sql),
-                                [("Orden",  lambda r: str(r.get("order_id")   or "—")),
-                                 ("Pago",   lambda r: str(r.get("payment_id") or "—")),
-                                 ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—")]))
-                    ui.label(f"Desde el {desde_fmt}").classes("text-xs text-gray-400 mt-2")
-
-                # --- Fila 1, Col 3: Cuotas (placeholder async) ---
-                cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                with cuotas_card:
-                    with ui.row().classes("items-center gap-2 mb-2"):
-                        ui.spinner(size="sm")
-                        ui.label("Cuotas").classes("font-bold text-base text-gray-800")
-                    ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
-
-                # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
-                rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                with rep_card:
-                    with ui.row().classes("items-center gap-2 mb-2"):
-                        ui.spinner(size="sm")
-                        ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
-                    ui.label("Cargando reputación...").classes("text-xs text-gray-400")
-
-                # --- Fila 2, Col 2: Publicaciones ML (placeholder async) ---
-                ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                with ml_pubs_card:
-                    with ui.row().classes("items-center gap-2 mb-2"):
-                        ui.spinner(size="sm")
-                        ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
-                    ui.label("Cargando estado de publicaciones...").classes("text-xs text-gray-400")
-
-                # --- Fila 2, Col 3: ARCA ---
-                arca_ov = _GREEN
-                for ac, _ in arca_al:
-                    if ac == _RED:    arca_ov = _RED;    break
-                    if ac == _YELLOW: arca_ov = _YELLOW
-
-                with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                    _card_header("ARCA — Resumen Fiscal", arca_ov)
-                    sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
-                    with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
-
-                        siper_v = sd.get("categoria_siper") or ""
-                        with ui.column().classes("gap-1"):
-                            with ui.row().classes("items-center gap-1 mb-1"):
-                                _dot(_color_siper(siper_v))
-                                ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
-                            ui.label(siper_v or "Sin datos").classes("text-xs text-gray-800")
-
-                        tec_v = id_.get("saldo_tecnico", "")
-                        lib_v = id_.get("saldo_libre_disponibilidad", "")
-                        with ui.column().classes("gap-1"):
-                            with ui.row().classes("items-center gap-1 mb-1"):
-                                _dot(_color_iva(tec_v, lib_v))
-                                ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
-                            ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-xs text-gray-800")
-                            if lib_v:
-                                ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
-
-                        deu_v   = dd.get("deuda_exigible", "")
-                        intim_v = dd.get("tiene_intimacion") == "true"
-                        with ui.column().classes("gap-1"):
-                            with ui.row().classes("items-center gap-1 mb-1"):
-                                _dot(_color_deuda(deu_v, intim_v))
-                                ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
-                            ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-xs text-gray-800")
-                            if intim_v:
-                                ui.label("Intimación activa").classes("text-xs font-semibold").style("color:#374151")
-
-                        mc          = _color_multilateral(mr)
-                        total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
-                        with ui.column().classes("gap-1"):
-                            with ui.row().classes("items-center gap-1 mb-1"):
-                                _dot(mc)
-                                ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
-                            if mr:
-                                ui.label(f"{len(mr)} provincia(s)").classes("text-xs text-gray-800")
-                                if total_pagar > 0:
-                                    ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style("color:#374151")
-                                else:
-                                    ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
-                            else:
-                                ui.label("Sin datos").classes("text-xs text-gray-400")
+                    if not db_alerts:
+                        _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
+                    return
+                background_tasks.create(_cargar_rep(),    name="dashboard_rep")
+                background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
 
     # ── Async tasks ───────────────────────────────────────────────────────────
-
-    if not access_token:
-        rep_card.clear()
-        with rep_card:
-            _card_header("Estadísticas ML", "#6b7280")
-            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
-        rep_placeholder.delete()
-        cuotas_card.clear()
-        with cuotas_card:
-            _card_header("Cuotas", "#6b7280")
-            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
-        ml_pubs_card.clear()
-        with ml_pubs_card:
-            _card_header("Publicaciones ML", "#6b7280")
-            ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
-        _susp_lbl.set_text("—")
-        prod_header_row.clear()
-        with prod_header_row:
-            _dot(prod_color)
-            ui.label("Productos").classes("font-bold text-base text-gray-800")
-        if not db_alerts:
-            _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
-        return
 
     def _bump_counters(r: int = 0, y: int = 0) -> None:
         dyn_ref["red"] += r
@@ -1075,5 +1103,3 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 _card_header("Cuotas", "#6b7280")
                 ui.label("Datos no disponibles").classes("text-xs text-gray-400")
 
-    background_tasks.create(_cargar_rep(),    name="dashboard_rep")
-    background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
