@@ -263,7 +263,7 @@ def _pintar_home_inline(
                             ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
-                            correo_lbl = f"CORREO HOY (antes {dispatch_deadline} hs)" if dispatch_deadline else "CORREO HOY"
+                            correo_lbl = f"CORREO ({dispatch_deadline} hs)" if dispatch_deadline else "CORREO"
                             ui.label(correo_lbl).style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
                             ui.label("órdenes").style("font-size:11px;color:#6b7280")
