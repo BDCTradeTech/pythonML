@@ -21,13 +21,17 @@ Analizá este documento de importación y extraé los siguientes datos en format
 Si el dato no existe en el documento ponelo como null.
 
 INSTRUCCIONES ESPECÍFICAS:
-- Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: buscar el valor en la columna llamada "Total $" o "Total" (no en columnas de precio unitario o descuento).
-- Para derechos_importacion, tasa_estadistica e iva_aduanero: buscar en el recuadro o tabla separada ubicada en la parte inferior izquierda del documento.
+- razon_social: nombre o razón social del proveedor o despachante que emite el documento.
+- Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: tomar el valor de la ÚLTIMA columna numérica del documento, que representa el importe en pesos argentinos ($). IGNORAR la primera columna que está en dólares (USD o u$s).
+- En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento, buscar en este orden de arriba hacia abajo:
+  1. Derechos de Importación → derechos_importacion
+  2. Tasa Estadística → tasa_estadistica
+  3. IVA Aduanero → iva_aduanero
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 
 {
-  "tipo_documento": "invoice" o "factura_despachante",
+  "razon_social": null,
   "nro_invoice": null,
   "nro_factura": null,
   "fecha": null,
@@ -53,7 +57,7 @@ Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
 _LABELS = {
-    "tipo_documento": "Tipo de documento",
+    "razon_social": "Razón social",
     "nro_invoice": "Nro. Invoice",
     "nro_factura": "Nro. Factura",
     "fecha": "Fecha",
