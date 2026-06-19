@@ -107,12 +107,13 @@ def build_tab_precios(container) -> None:
                     ui.spinner(size="xl")
                     ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
             await asyncio.sleep(0.1)
-            # Auto-agregar catálogos nuevos detectados
+            # Auto-agregar catálogos nuevos detectados y sincronizar sus competidores
             try:
                 _uid_ac = usr["id"]
                 _results_ac = data.get("results", [])
                 _existing_cats = get_sku_catalogos(_uid_ac)
                 _existing_pairs = {(c["sku"], c["catalog_product_id"]) for c in _existing_cats}
+                _cpids_nuevos: set = set()
                 _nuevos = 0
                 for _item_ac in _results_ac:
                     _item_sku = ((_item_ac.get("seller_custom_field") or _item_ac.get("seller_sku") or "")).strip()
@@ -120,9 +121,25 @@ def build_tab_precios(container) -> None:
                     if _item_sku and _cpid and (_item_sku, _cpid) not in _existing_pairs:
                         add_sku_catalogo(_uid_ac, _item_sku, _cpid, "")
                         _existing_pairs.add((_item_sku, _cpid))
+                        _cpids_nuevos.add(_cpid)
                         _nuevos += 1
                 if _nuevos > 0:
                     logging.warning(f"[CATALOGOS] Auto-agregados {_nuevos} catálogos nuevos para user {_uid_ac}")
+                if _cpids_nuevos:
+                    _sync_ok = 0
+                    for _cpid_s in _cpids_nuevos:
+                        try:
+                            _comp_items = await run.io_bound(ml_get_catalog_items, token, _cpid_s)
+                            if _comp_items:
+                                _sids = list({str(x.get("seller_id", "")) for x in _comp_items if x.get("seller_id")})
+                                _nicks = await run.io_bound(ml_get_users_multiget, token, _sids[:20])
+                                for _ci in _comp_items:
+                                    _ci["seller_nickname"] = _nicks.get(str(_ci.get("seller_id", "")), "")
+                                await run.io_bound(upsert_catalogo_competidores, _cpid_s, _comp_items)
+                                _sync_ok += 1
+                        except Exception as _e_sync:
+                            logging.error(f"[CATALOGOS] Error sync competidores {_cpid_s}: {_e_sync}")
+                    logging.warning(f"[CATALOGOS] Competidores sincronizados: {_sync_ok}/{len(_cpids_nuevos)} catálogos para user {_uid_ac}")
             except Exception as _e_ac:
                 logging.error(f"[CATALOGOS] Error auto-agregando catálogos: {_e_ac}")
             try:
