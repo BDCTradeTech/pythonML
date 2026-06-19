@@ -21,7 +21,18 @@ Analizá este documento de importación y extraé los siguientes datos en format
 Si el dato no existe en el documento ponelo como null.
 
 INSTRUCCIONES ESPECÍFICAS:
+
+IMPORTANTE — Hay DOS tipos de documentos distintos:
+1. INVOICE DEL PROVEEDOR EXTRANJERO: tiene un número de referencia propio del proveedor (ej: INV-2024-001, PO-123) → va en nro_invoice
+2. FACTURA DEL DESPACHANTE ARGENTINO: tiene número de factura argentina formato XXXX-XXXXXXXX → va en nro_factura
+NUNCA poner el mismo valor en ambos campos.
+Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, dejar el otro en null.
+
 - razon_social: nombre o razón social del proveedor o despachante que emite el documento.
+- pais_procedencia: país de procedencia según consta en el documento ARCA/aduana.
+- pos_arancelaria: posición arancelaria según el documento ARCA/aduana.
+- desc_mercaderia: descripción de mercadería según el documento ARCA/aduana.
+- fob_total: total en USD del proveedor extranjero (balance due del invoice, importe total en dólares).
 - Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: tomar el valor de la ÚLTIMA columna numérica del documento, que representa el importe en pesos argentinos ($). IGNORAR la primera columna que está en dólares (USD o u$s).
 - En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento, buscar en este orden de arriba hacia abajo:
   1. Derechos de Importación → derechos_importacion
@@ -35,6 +46,10 @@ INSTRUCCIONES ESPECÍFICAS:
   "nro_invoice": null,
   "nro_factura": null,
   "fecha": null,
+  "pais_procedencia": null,
+  "pos_arancelaria": null,
+  "desc_mercaderia": null,
+  "fob_total": null,
   "productos": [
     {"descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
   ],
@@ -50,7 +65,8 @@ INSTRUCCIONES ESPECÍFICAS:
   "servicios_honorarios": null,
   "iva_aduanero": null,
   "derechos_importacion": null,
-  "tasa_estadistica": null
+  "tasa_estadistica": null,
+  "pa": null
 }
 
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
@@ -61,6 +77,10 @@ _LABELS = {
     "nro_invoice": "Nro. Invoice",
     "nro_factura": "Nro. Factura",
     "fecha": "Fecha",
+    "pais_procedencia": "País de procedencia",
+    "pos_arancelaria": "Posición arancelaria",
+    "desc_mercaderia": "Desc. mercadería",
+    "fob_total": "FOB Total",
     "kgs": "Kgs",
     "tipo_cambio_1": "Tipo de cambio 1",
     "tipo_cambio_2": "Tipo de cambio 2",
@@ -74,15 +94,31 @@ _LABELS = {
     "iva_aduanero": "IVA aduanero",
     "derechos_importacion": "Derechos de importación",
     "tasa_estadistica": "Tasa estadística",
+    "pa": "PA",
 }
 
 _SCALAR_COLS = [
     "razon_social", "nro_invoice", "nro_factura", "fecha",
+    "pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total",
     "kgs", "tipo_cambio_1", "tipo_cambio_2", "tipo_cambio_3",
     "flete_aereo", "entrega_domicilio", "resolucion_3244",
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "iva_aduanero", "derechos_importacion", "tasa_estadistica",
+    "pa",
 ]
+
+_TABLE_HEADERS = [
+    "Courier", "Fecha", "Origen", "FOB Total", "Peso Total",
+    "Derechos", "Estadísticas", "IVA Aduanero", "Flete Aduanero",
+    "Almacenaje", "Total", "Valor Kg", "Dolar",
+    "Traida Total", "Costo s/IVA", "Total Traida %", "",
+]
+
+_TABLE_COLS = (
+    "1.5fr 0.7fr 0.8fr 0.8fr 0.7fr "
+    "0.9fr 0.9fr 0.9fr 0.9fr 0.8fr "
+    "0.8fr 0.7fr 0.7fr 0.9fr 0.8fr 0.9fr 36px"
+)
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -111,9 +147,18 @@ def _init_guias_db() -> None:
             iva_aduanero         TEXT,
             derechos_importacion TEXT,
             tasa_estadistica     TEXT,
+            pais_procedencia     TEXT,
+            pos_arancelaria      TEXT,
+            desc_mercaderia      TEXT,
+            fob_total            TEXT,
+            pa                   TEXT,
             created_at           DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
     conn.close()
 
@@ -134,25 +179,49 @@ def _save_guia(user_id: int, data: Dict[str, Any]) -> int:
     return row_id
 
 
+def _to_float(v: Any) -> float | None:
+    if v is None:
+        return None
+    try:
+        return float(str(v).replace(",", ".").replace(" ", "").replace("$", "").strip())
+    except (ValueError, TypeError):
+        return None
+
+
 def _list_guias(user_id: int) -> List[Dict[str, Any]]:
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, razon_social, nro_factura, nro_invoice, fecha, created_at "
+        "SELECT id, razon_social, fecha, pais_procedencia, fob_total, kgs, "
+        "derechos_importacion, tasa_estadistica, iva_aduanero, flete_aereo, "
+        "almacenaje, tipo_cambio_3, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
     conn.close()
-    return [
-        {
+    result = []
+    for r in rows:
+        flete = _to_float(r["flete_aereo"])
+        kgs = _to_float(r["kgs"])
+        tc3 = _to_float(r["tipo_cambio_3"])
+        valor_kg = ""
+        if flete and kgs and tc3 and kgs != 0 and tc3 != 0:
+            valor_kg = f"{flete / kgs / tc3:.2f}"
+        result.append({
             "id": r["id"],
             "razon_social": r["razon_social"] or "",
-            "nro_factura": r["nro_factura"] or "",
-            "nro_invoice": r["nro_invoice"] or "",
             "fecha": r["fecha"] or "",
-            "created_at": (r["created_at"] or "")[:16],
-        }
-        for r in rows
-    ]
+            "pais_procedencia": r["pais_procedencia"] or "",
+            "fob_total": r["fob_total"] or "",
+            "kgs": r["kgs"] or "",
+            "derechos_importacion": r["derechos_importacion"] or "",
+            "tasa_estadistica": r["tasa_estadistica"] or "",
+            "iva_aduanero": r["iva_aduanero"] or "",
+            "flete_aereo": r["flete_aereo"] or "",
+            "almacenaje": r["almacenaje"] or "",
+            "valor_kg": valor_kg,
+            "tipo_cambio_3": r["tipo_cambio_3"] or "",
+        })
+    return result
 
 
 def _get_guia(guia_id: int, user_id: int) -> Dict[str, Any] | None:
@@ -295,59 +364,58 @@ def _rebuild_tabla(
             )
             return
 
-        # encabezado
-        with ui.element("div").style(
-            "display:grid;"
-            "grid-template-columns:1.5fr 1fr 1fr 0.8fr 1.2fr 50px 50px;"
-            "gap:6px;padding:6px 10px;"
-            "background:#f1f5f9;border-radius:6px 6px 0 0;"
-            "border:0.5px solid #e2e8f0;"
-            "font-size:11px;font-weight:600;color:#6b7280"
-        ):
-            for h in ["Razón social", "Nro. Factura", "Nro. Invoice", "Fecha", "Guardado", "", ""]:
-                ui.label(h)
-
-        for r in rows:
-            rid = r["id"]
-
-            def _ver(rid=rid):
-                guia = _get_guia(rid, user_id)
-                if guia:
-                    parsed_ref[0] = guia
-                    filas_ref[0].clear()
-                    with filas_ref[0]:
-                        _render_campos(guia)
-                    ui.notify("Guía cargada en el panel", color="positive")
-
-            def _del(rid=rid):
-                _delete_guia(rid, user_id)
-                ui.notify("Guía eliminada", color="info")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref)
-
+        with ui.element("div").style("overflow-x:auto;width:100%"):
             with ui.element("div").style(
-                "display:grid;"
-                "grid-template-columns:1.5fr 1fr 1fr 0.8fr 1.2fr 50px 50px;"
-                "gap:6px;padding:5px 10px;"
-                "border:0.5px solid #e2e8f0;border-top:none;"
-                "font-size:12px;color:#374151;align-items:center"
+                f"display:grid;grid-template-columns:{_TABLE_COLS};"
+                "gap:4px;padding:6px 8px;"
+                "background:#f1f5f9;border-radius:6px 6px 0 0;"
+                "border:0.5px solid #e2e8f0;"
+                "font-size:10px;font-weight:600;color:#6b7280;"
+                "min-width:1500px"
             ):
-                ui.label(r["razon_social"]).style(
-                    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                )
-                ui.label(r["nro_factura"]).style(
-                    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                )
-                ui.label(r["nro_invoice"]).style(
-                    "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
-                )
-                ui.label(r["fecha"])
-                ui.label(r["created_at"]).style("font-size:11px;color:#9ca3af")
-                ui.button(icon="visibility", on_click=_ver).props("flat dense").style(
-                    "color:#1d4ed8;min-width:32px"
-                )
-                ui.button(icon="delete", on_click=_del).props("flat dense").style(
-                    "color:#dc2626;min-width:32px"
-                )
+                for h in _TABLE_HEADERS:
+                    ui.label(h)
+
+            for r in rows:
+                rid = r["id"]
+
+                def _del(rid=rid):
+                    _delete_guia(rid, user_id)
+                    ui.notify("Guía eliminada", color="info")
+                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref)
+
+                with ui.element("div").style(
+                    f"display:grid;grid-template-columns:{_TABLE_COLS};"
+                    "gap:4px;padding:3px 8px;"
+                    "border:0.5px solid #e2e8f0;border-top:none;"
+                    "font-size:11px;color:#374151;align-items:center;"
+                    "min-width:1500px"
+                ):
+                    ui.label(r["razon_social"]).style(
+                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    )
+                    ui.label(r["fecha"]).style("white-space:nowrap")
+                    ui.label(r["pais_procedencia"]).style(
+                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    )
+                    ui.label(r["fob_total"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["kgs"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["derechos_importacion"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["tasa_estadistica"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["iva_aduanero"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["flete_aereo"]).style("white-space:nowrap;text-align:right")
+                    ui.label(r["almacenaje"]).style("white-space:nowrap;text-align:right")
+                    ui.input().props("dense outlined").style("font-size:11px")
+                    ui.label(r["valor_kg"]).style(
+                        "white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600"
+                    )
+                    ui.label(r["tipo_cambio_3"]).style("white-space:nowrap;text-align:right")
+                    ui.input().props("dense outlined").style("font-size:11px")
+                    ui.input().props("dense outlined").style("font-size:11px")
+                    ui.input().props("dense outlined").style("font-size:11px")
+                    ui.button(icon="delete", on_click=_del).props("flat dense").style(
+                        "color:#dc2626;min-width:32px"
+                    )
 
 
 # ── Tab principal ─────────────────────────────────────────────────────────────
@@ -410,6 +478,15 @@ def build_tab_guias() -> None:
                 max_files=1,
             ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').classes("w-full")
 
+            ui.label("PA").style(
+                "font-size:12px;color:#6b7280;margin-top:12px;margin-bottom:4px"
+            )
+            pa_select = ui.select(
+                options=[100, 150, 200, 250, 300],
+                value=200,
+                label="PA",
+            ).props("dense outlined").classes("w-full")
+
             ui.separator().classes("my-4")
 
             async def _analizar(usar_gemini: bool) -> None:
@@ -463,10 +540,14 @@ def build_tab_guias() -> None:
                     raw = _clean_json(raw)
                     try:
                         parsed = json.loads(raw)
+                        parsed["pa"] = pa_select.value
                         parsed_ref[0] = parsed
                         with filas_ref[0]:
                             _render_campos(parsed)
                         guardar_btn_ref[0].enable()
+                        _save_guia(user_id, parsed)
+                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
+                        ui.notify("Guía guardada automáticamente", color="positive")
                     except json.JSONDecodeError:
                         resultado_ref[0].set_text(raw)
                 except Exception as exc:
@@ -491,12 +572,13 @@ def build_tab_guias() -> None:
                 if not parsed_ref[0]:
                     ui.notify("Primero analizá un documento", color="warning")
                     return
+                parsed_ref[0]["pa"] = pa_select.value
                 _save_guia(user_id, parsed_ref[0])
                 ui.notify("Guía guardada correctamente", color="positive")
                 _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
 
             guardar_btn = ui.button(
-                "💾 Guardar guía",
+                "💾 Guardar guía (manual)",
                 on_click=_guardar,
             ).props("flat").style("background:#f0fdf4;color:#166534;width:100%")
             guardar_btn.disable()
