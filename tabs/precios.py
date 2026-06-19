@@ -2161,7 +2161,7 @@ def _mostrar_tabla_precios(
         if not sku_ventas:
             return None
 
-        _EXCLUDE_WORDS = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion"}
+        _EXCLUDE_WORDS = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion", "golpe"}
 
         def _sku_excluido(s: str) -> bool:
             normalized = s.lower().replace(".", "").replace("_", "")
@@ -2323,7 +2323,7 @@ def _mostrar_tabla_precios(
         if not filtrados_actuales:
             return None
 
-        _EXCLUDE_WORDS_COT = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion"}
+        _EXCLUDE_WORDS_COT = {"caja", "cabierta", "cajaabierta", "abierto", "devolucion", "golpe"}
 
         def _sku_excluido_cot(s: str) -> bool:
             normalized = s.lower().replace(".", "").replace("_", "")
