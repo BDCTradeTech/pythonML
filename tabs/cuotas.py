@@ -94,7 +94,7 @@ def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dic
     return {"price_promo": amt_f, "regular_amount": reg_f, "meli_pct": None, "seller_pct": None}
 
 
-_REACOND_PATTERNS = re.compile(r'cajaabierta|c\.abierta|cabierta|reacondicionado|recond', re.IGNORECASE)
+_REACOND_PATTERNS = re.compile(r'cajaabierta|c\.abierta|cabierta|reacondicionado|recond|golpe', re.IGNORECASE)
 
 
 def _is_reacondicionado(row: dict) -> bool:
