@@ -107,6 +107,24 @@ def build_tab_precios(container) -> None:
                     ui.spinner(size="xl")
                     ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
             await asyncio.sleep(0.1)
+            # Auto-agregar catálogos nuevos detectados
+            try:
+                _uid_ac = usr["id"]
+                _results_ac = data.get("results", [])
+                _existing_cats = get_sku_catalogos(_uid_ac)
+                _existing_pairs = {(c["sku"], c["catalog_product_id"]) for c in _existing_cats}
+                _nuevos = 0
+                for _item_ac in _results_ac:
+                    _item_sku = ((_item_ac.get("seller_custom_field") or _item_ac.get("seller_sku") or "")).strip()
+                    _cpid = str(_item_ac.get("catalog_product_id") or "").strip()
+                    if _item_sku and _cpid and (_item_sku, _cpid) not in _existing_pairs:
+                        add_sku_catalogo(_uid_ac, _item_sku, _cpid, "")
+                        _existing_pairs.add((_item_sku, _cpid))
+                        _nuevos += 1
+                if _nuevos > 0:
+                    logging.warning(f"[CATALOGOS] Auto-agregados {_nuevos} catálogos nuevos para user {_uid_ac}")
+            except Exception as _e_ac:
+                logging.error(f"[CATALOGOS] Error auto-agregando catálogos: {_e_ac}")
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
