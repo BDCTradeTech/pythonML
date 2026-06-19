@@ -79,17 +79,17 @@ def build_tab_precios(container) -> None:
                 ui.spinner(size="xl")
                 ui.label("Cargando productos...").classes("text-xl text-gray-700")
 
-        def cargar_precios() -> None:
+        def cargar_precios(force_refresh: bool = False) -> None:
             result_area.clear()
             with result_area:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     ui.label("Cargando productos...").classes("text-xl text-gray-700")
-            background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
+            background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref, force_refresh=force_refresh), name="cargar_precios")
 
-        async def _cargar_precios_async(area, token, usr, on_actualizar, inc_paused_ref, f_stock_ref) -> None:
+        async def _cargar_precios_async(area, token, usr, on_actualizar, inc_paused_ref, f_stock_ref, force_refresh: bool = False) -> None:
             try:
-                data = await run.io_bound(ml_get_my_items, token, inc_paused_ref.get("val", False))
+                data = await run.io_bound(ml_get_my_items, token, inc_paused_ref.get("val", False), force_refresh)
             except requests.exceptions.HTTPError as e:
                 area.clear()
                 with area:
@@ -2935,7 +2935,7 @@ def _mostrar_tabla_precios(
                 lbl_marcas = ui.label("''").classes("text-sm font-bold text-primary")
             ui.space()
             if on_actualizar:
-                ui.button("Actualizar", on_click=lambda: on_actualizar()).props("unelevated dense no-caps icon=refresh").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
+                ui.button("Actualizar", on_click=lambda: on_actualizar(force_refresh=True)).props("unelevated dense no-caps icon=refresh").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
             ui.button("Limpiar día", on_click=_blanquear_revisiones).props("unelevated dense no-caps icon=event_busy").style("background:#993C1D;color:#FAECE7;").classes("text-xs").tooltip("Blanquear revisiones de hoy")
             ui.element("div").style("width:1px;height:24px;background:rgba(0,0,0,0.15);align-self:center;")
             ui.button("Stock", on_click=lambda: imprimir_tabla(include_ventas=False)).props("unelevated dense no-caps icon=inventory_2").style("background:#185FA5;color:#E6F1FB;").classes("text-xs")
