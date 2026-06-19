@@ -20,13 +20,24 @@ PROMPT_GUIA = """
 Analizá este documento de importación y extraé los siguientes datos en formato JSON.
 Si el dato no existe en el documento ponelo como null.
 
+INSTRUCCIONES ESPECÍFICAS:
+- Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: buscar el valor en la columna llamada "Total $" o "Total" (no en columnas de precio unitario o descuento).
+- Para derechos_importacion, tasa_estadistica e iva_aduanero: buscar en el recuadro o tabla separada ubicada en la parte inferior izquierda del documento.
+- Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
+- Para kgs: buscar el peso total en kilogramos.
+
 {
   "tipo_documento": "invoice" o "factura_despachante",
   "nro_invoice": null,
   "nro_factura": null,
+  "fecha": null,
   "productos": [
     {"descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
   ],
+  "kgs": null,
+  "tipo_cambio_1": null,
+  "tipo_cambio_2": null,
+  "tipo_cambio_3": null,
   "flete_aereo": null,
   "entrega_domicilio": null,
   "resolucion_3244": null,
@@ -45,6 +56,11 @@ _LABELS = {
     "tipo_documento": "Tipo de documento",
     "nro_invoice": "Nro. Invoice",
     "nro_factura": "Nro. Factura",
+    "fecha": "Fecha",
+    "kgs": "Kgs",
+    "tipo_cambio_1": "Tipo de cambio 1",
+    "tipo_cambio_2": "Tipo de cambio 2",
+    "tipo_cambio_3": "Tipo de cambio 3",
     "flete_aereo": "Flete aéreo",
     "entrega_domicilio": "Entrega a domicilio",
     "resolucion_3244": "Resolución 3244",
