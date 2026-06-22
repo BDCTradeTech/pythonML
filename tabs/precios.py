@@ -216,9 +216,7 @@ def _show_item_detail_dialog(
             async def _refrescar_highlights():
                 await asyncio.sleep(0.1)
                 with _cl_rev:
-                    if on_row_saved:
-                        on_row_saved(_sku_rev, row)
-                    elif on_saved:
+                    if on_saved:
                         on_saved()
 
             background_tasks.create(_refrescar_highlights())
