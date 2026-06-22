@@ -1083,6 +1083,18 @@ def _mostrar_tabla_precios(
                         ui.label("Cargando competidores...").classes("text-sm text-gray-500")
         dlg.open()
 
+        def _on_comp_close() -> None:
+            if sku not in revisiones_hoy:
+                revisiones_hoy[sku] = False
+            row_data = next(
+                (r for r in items_loaded
+                 if (str(r.get("seller_sku") or "").strip() or str(r.get("id") or "").strip()) == sku),
+                None,
+            )
+            if row_data is not None:
+                _actualizar_fila(sku, row_data)
+        dlg.on("hide", _on_comp_close)
+
         async def _load_comps() -> None:
             all_comps: List[Dict] = []
             _item_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
