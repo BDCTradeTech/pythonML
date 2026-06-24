@@ -1106,6 +1106,7 @@ def _build_courier_panel(
     parsed_ref: list,
     sort_state: list,
 ) -> None:
+    logger.warning("[DBG] _build_courier_panel START courier=%s", courier_key)
     archivo_data: list = [None]
     archivo_mime: list = [None]
     uploader_ref: list = [None]
@@ -1125,13 +1126,18 @@ def _build_courier_panel(
             "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:6px"
         ):
             def _on_upload(e):
-                archivo_data[0] = e.content.read()
-                ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
-                archivo_mime[0] = (
-                    "application/pdf" if ext == "pdf"
-                    else "image/jpeg" if ext in ("jpg", "jpeg")
-                    else "image/png"
-                )
+                logger.warning("[DBG] _on_upload courier=%s name=%s", courier_key, e.name)
+                try:
+                    archivo_data[0] = e.content.read()
+                    ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
+                    archivo_mime[0] = (
+                        "application/pdf" if ext == "pdf"
+                        else "image/jpeg" if ext in ("jpg", "jpeg")
+                        else "image/png"
+                    )
+                    logger.warning("[DBG] _on_upload OK courier=%s len=%d mime=%s", courier_key, len(archivo_data[0]), archivo_mime[0])
+                except Exception as _ue:
+                    logger.warning("[DBG] _on_upload ERROR courier=%s: %s\n%s", courier_key, _ue, traceback.format_exc())
 
             _uploader = ui.upload(
                 label="Subir PDF/IMG",
@@ -1153,14 +1159,14 @@ def _build_courier_panel(
             "display:flex;align-items:center;gap:6px;flex-wrap:wrap"
         ):
             async def _analizar(usar_gemini: bool) -> None:
-                print(f"[DBG] _analizar courier={courier_key} gemini={usar_gemini}")
+                logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
                 if not archivo_data[0]:
                     ui.notify("Primero subí un archivo", color="warning")
                     return
                 groq_key = get_app_config("groq_api_key")
                 gemini_key = get_app_config("gemini_api_key")
                 es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
-                print(f"[DBG] archivo len={len(archivo_data[0]) if archivo_data[0] else 0}, mime={archivo_mime[0]}")
+                logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
 
                 if usar_gemini and not gemini_key:
                     ui.notify(
@@ -1187,11 +1193,11 @@ def _build_courier_panel(
 
                 try:
                     if usar_gemini:
-                        print(f"[DBG] Llamando _gemini_vision...")
+                        logger.warning("[DBG] Llamando _gemini_vision courier=%s", courier_key)
                         raw = await run.io_bound(
                             _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
                         )
-                        print(f"[DBG] raw IA (500): {raw[:500] if raw else 'None'}")
+                        logger.warning("[DBG] raw IA (500): %s", raw[:500] if raw else "None")
                     else:
                         texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
                         if not texto_pdf.strip():
@@ -1201,19 +1207,19 @@ def _build_courier_panel(
                             )
                             return
                         full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
-                        print(f"[DBG] Llamando _groq_parse_doc...")
+                        logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
                         raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
-                        print(f"[DBG] raw Grok (500): {raw[:500] if raw else 'None'}")
+                        logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
 
                     raw = _clean_json(raw)
-                    print(f"[DBG] JSON limpio (500): {raw[:500] if raw else 'None'}")
+                    logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
                     try:
                         parsed = json.loads(raw)
-                        print(f"[DBG] parsed keys: {list(parsed.keys())}")
+                        logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
                         parsed["pa"] = pa_select.value
                         parsed["courier"] = courier_key
                         parsed_ref[0] = parsed
-                        print(f"[DBG] pa={parsed.get('pa')}, tc1={parsed.get('tipo_cambio_1')}, tc3={parsed.get('tipo_cambio_3')}, courier={parsed.get('courier')}")
+                        logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
                         nro_fac = (parsed.get("nro_factura") or "").strip()
                         if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
                             ui.notify(
@@ -1223,24 +1229,23 @@ def _build_courier_panel(
                             )
                         else:
                             filas_ref[0].clear()
-                            print(f"[DBG] Llamando _save_guia...")
+                            logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
                             _save_guia(user_id, parsed)
-                            print(f"[DBG] _save_guia OK")
-                            print(f"[DBG] Llamando _rebuild_tabla...")
+                            logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
+                            logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
                             _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
-                            print(f"[DBG] _rebuild_tabla OK")
+                            logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
                             ui.notify("Guía agregada automáticamente", color="positive")
                             archivo_data[0] = None
                             archivo_mime[0] = None
                             uploader_ref[0].reset()
                     except json.JSONDecodeError as jde:
-                        print(f"[DBG] JSONDecodeError: {jde}")
-                        print(traceback.format_exc())
+                        tb_str = traceback.format_exc()
+                        logger.warning("[DBG] JSONDecodeError courier=%s: %s\n%s", courier_key, jde, tb_str)
                         resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
                     tb_str = traceback.format_exc()
-                    print(f"[DBG] ERROR courier={courier_key}: {exc}")
-                    print(tb_str)
+                    logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
                     logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
                     ui.notify(f"Error: {exc}", color="negative")
                 finally:
@@ -1266,6 +1271,8 @@ def _build_courier_panel(
                 "font-size:12px;color:#16a34a;font-weight:500"
             )
             resultado_ref[0] = resultado_txt
+
+    logger.warning("[DBG] _build_courier_panel END courier=%s", courier_key)
 
 
 # ── Tab principal ─────────────────────────────────────────────────────────────
@@ -1294,21 +1301,26 @@ def build_tab_guias() -> None:
     parsed_ref: list = [None]
 
     # ── Panel superior: tres couriers side by side ────────────────────────────
+    logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
     with ui.element("div").style(
         "margin:16px 20px 0;display:flex;gap:12px;flex-wrap:wrap"
     ):
+        logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
         _build_courier_panel(
             "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
         )
+        logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
         _build_courier_panel(
             "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
         )
+        logger.warning("[DBG] build_tab_guias: panel LHS...")
         _build_courier_panel(
             "LHS", "LHS", PROMPT_GUIA_LHS,
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
         )
+    logger.warning("[DBG] build_tab_guias: paneles OK")
 
     # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
     filas_container = ui.element("div").style("display:none")
