@@ -117,14 +117,14 @@ _SCALAR_COLS = [
 ]
 
 _TABLE_HEADERS = [
-    "Courier", "HAWB", "PA", "Fecha", "Origen", "Invoice Nro",
+    "Courier", "Factura", "HAWB", "PA", "Fecha", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
     "Flete Aduanero", "Almacenaje", "Total Factura", "Valor Kg", "Dolar",
     "Traída u$s s/IVA", "Costo s/IVA", "Total Traída %", "",
 ]
 
 _TABLE_COLS = (
-    "1.4fr 0.8fr 0.5fr 0.7fr 0.8fr 0.9fr "
+    "1.4fr 0.9fr 0.8fr 0.5fr 0.7fr 0.8fr 0.9fr "
     "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
     "0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 64px"
 )
@@ -202,7 +202,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
     dolar_blue = get_setting("dolar_blue")
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, fob_total, kgs, "
+        "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_3, created_at "
@@ -227,7 +227,6 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             ("seguro_internacional", "Seguro internacional",    _to_float(r["seguro_internacional"])),
             ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
             ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
-            ("iva_21",               "IVA 21%",                 iva21_val),
             ("iva_aduanero",         "IVA aduanero",            _to_float(r["iva_aduanero"])),
             ("derechos_importacion", "Derechos de importación", _to_float(r["derechos_importacion"])),
             ("tasa_estadistica",     "Tasa estadística",        _to_float(r["tasa_estadistica"])),
@@ -242,18 +241,20 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             traida_usd = (
                 total_factura + (pa_val * dolar_blue)
                 - (iva_val or 0.0)
-                - (iva21_val or 0.0)
             ) / dolar_blue
 
         total_traida_pct = None
         if fob_val and fob_val != 0 and traida_usd is not None:
             total_traida_pct = traida_usd / fob_val
 
+        costo_sin_iva = None
+        if fob_val and fob_val != 0 and total_traida_pct is not None:
+            costo_sin_iva = fob_val * (1 + total_traida_pct)
+
         traida_breakdown = {
             "total_factura": total_factura,
             "pa_val": pa_val,
             "iva_val": iva_val or 0.0,
-            "iva21_val": iva21_val or 0.0,
             "dolar_blue": dolar_blue,
             "traida_usd": traida_usd,
         }
@@ -261,6 +262,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         result.append({
             "id": r["id"],
             "razon_social": r["razon_social"] or "",
+            "nro_factura": r["nro_factura"] or "",
             "hawb": r["hawb"] or "",
             "pa": r["pa"] or "",
             "fecha": r["fecha"] or "",
@@ -271,7 +273,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "derechos_importacion": r["derechos_importacion"] or "",
             "tasa_estadistica": r["tasa_estadistica"] or "",
             "iva_aduanero": r["iva_aduanero"] or "",
-            "iva_21": r["iva_21"] or "",
+            "iva_21_val": iva21_val,
             "flete_aereo": r["flete_aereo"] or "",
             "almacenaje": r["almacenaje"] or "",
             "valor_kg": valor_kg,
@@ -280,6 +282,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "tf_components": tf_components,
             "traida_usd": traida_usd,
             "total_traida_pct": total_traida_pct,
+            "costo_sin_iva": costo_sin_iva,
             "traida_breakdown": traida_breakdown,
         })
     return result
@@ -365,6 +368,16 @@ def _clean_json(raw: str) -> str:
 
 
 # ── Formato numérico ──────────────────────────────────────────────────────────
+
+def _fmt_num(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        n = round(float(v))
+        return f"{n:,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return "—"
+
 
 def _fmt_ars(v) -> str:
     if v is None:
@@ -471,9 +484,15 @@ def _rebuild_tabla(
                     rid = r["id"]
                     tf_comps = r["tf_components"]
                     traida_bd = r["traida_breakdown"]
+                    iv21 = r["iva_21_val"]
 
                     # Courier
                     ui.label(r["razon_social"]).style(
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    )
+                    # Factura
+                    nro_fac = r.get("nro_factura") or ""
+                    ui.label(nro_fac if nro_fac else "—").style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
                     # HAWB
@@ -520,7 +539,7 @@ def _rebuild_tabla(
                         f"{_ct};white-space:nowrap;text-align:right"
                     )
                     # Almacenaje
-                    ui.label(r["almacenaje"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    ui.label(_fmt_ars(r["almacenaje"])).style(f"{_ct};white-space:nowrap;text-align:right")
                     # Total Factura — clickeable sin subrayado
                     with ui.element("div").style(
                         f"display:flex;justify-content:flex-end;align-items:center;"
@@ -528,7 +547,7 @@ def _rebuild_tabla(
                     ):
                         ui.button(
                             _fmt_ars(r["total_factura"]),
-                            on_click=lambda tf=tf_comps: _show_total_factura_dialog(tf),
+                            on_click=lambda tf=tf_comps, iv=iv21: _show_total_factura_dialog(tf, iv),
                         ).props("flat dense").style(
                             "color:#1d4ed8;font-size:11px;white-space:nowrap;"
                             "padding:0 2px;min-height:0;text-decoration:none"
@@ -539,7 +558,7 @@ def _rebuild_tabla(
                         "color:#1d4ed8;font-weight:600"
                     )
                     # Dolar
-                    ui.label(r["tipo_cambio_3"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    ui.label(_fmt_num(r["tipo_cambio_3"])).style(f"{_ct};white-space:nowrap;text-align:right")
                     # Traída u$s s/IVA — clickeable sin subrayado
                     if r["traida_usd"] is not None:
                         with ui.element("div").style(
@@ -559,13 +578,13 @@ def _rebuild_tabla(
                         )
                     # Costo s/IVA
                     ui.label(
-                        _fmt_usd(r["traida_usd"]) if r["traida_usd"] is not None else "—"
+                        _fmt_usd(r["costo_sin_iva"]) if r["costo_sin_iva"] is not None else "—"
                     ).style(f"{_ct};white-space:nowrap;text-align:right")
                     # Total Traída %
                     pct = r["total_traida_pct"]
                     ui.label(
                         f"{pct * 100:.1f}%" if pct is not None else "—"
-                    ).style(f"{_ct};white-space:nowrap;text-align:right")
+                    ).style(f"{_ct};white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600")
                     # Acciones
                     with ui.row().classes("gap-0").style(
                         f"justify-content:center;{_sep};padding:3px 0"
@@ -652,7 +671,7 @@ def _show_del_dialog(
     d.open()
 
 
-def _show_total_factura_dialog(tf_components: list) -> None:
+def _show_total_factura_dialog(tf_components: list, iva21_val=None) -> None:
     with ui.dialog() as d, ui.card().style("padding:20px;min-width:340px"):
         ui.label("Detalle Total Factura").style(
             "font-size:14px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
@@ -665,6 +684,17 @@ def _show_total_factura_dialog(tf_components: list) -> None:
                 ui.label(label).style("font-size:13px;color:#6b7280")
                 ui.label(_fmt_ars(val) if val is not None else "—").style(
                     "font-size:13px;color:#374151"
+                )
+        if iva21_val:
+            with ui.element("div").style(
+                "display:flex;justify-content:space-between;align-items:center;"
+                "padding:4px 0;border-bottom:0.5px solid #f1f5f9;gap:16px"
+            ):
+                ui.label("IVA 21% (ya incluido)").style(
+                    "font-size:13px;color:#9ca3af;font-style:italic"
+                )
+                ui.label(_fmt_ars(iva21_val)).style(
+                    "font-size:13px;color:#9ca3af;font-style:italic"
                 )
         total = sum(v for _, _, v in tf_components if v is not None)
         with ui.element("div").style(
@@ -682,7 +712,6 @@ def _show_traida_dialog(breakdown: dict) -> None:
     tf = breakdown["total_factura"]
     pa_val = breakdown["pa_val"]
     iva_val = breakdown["iva_val"]
-    iva21_val = breakdown.get("iva21_val", 0.0)
     dolar_blue = breakdown["dolar_blue"]
     traida_usd = breakdown["traida_usd"]
 
@@ -706,7 +735,6 @@ def _show_traida_dialog(breakdown: dict) -> None:
         else:
             pa_str = "—"
         _fila("PA en ARS (pa × dólar blue)", pa_str)
-        _fila("IVA 21% restado (ARS)", _fmt_ars(iva21_val) if iva21_val else "—")
         _fila("IVA Aduanero restado (ARS)", _fmt_ars(iva_val) if iva_val else "—")
         _fila("Dólar blue usado", _fmt_ars(dolar_blue) if dolar_blue else "—")
 
@@ -716,9 +744,8 @@ def _show_traida_dialog(breakdown: dict) -> None:
         ):
             if traida_usd is not None and pa_val is not None and dolar_blue:
                 pa_ars = pa_val * dolar_blue
-                iva21_str = f" − {_fmt_ars(iva21_val)}" if iva21_val else ""
                 formula = (
-                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)}{iva21_str} − {_fmt_ars(iva_val)}) "
+                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)} − {_fmt_ars(iva_val)}) "
                     f"÷ {_fmt_ars(dolar_blue)}"
                 )
             else:
@@ -759,6 +786,7 @@ def build_tab_guias() -> None:
     resultado_ref: list = [None]
     filas_ref: list = [None]
     tabla_ref: list = [None]
+    uploader_ref: list = [None]
 
     # ── Panel superior compacto ───────────────────────────────────────────────
     with ui.element("div").style(
@@ -778,12 +806,13 @@ def build_tab_guias() -> None:
                     else "image/png"
                 )
 
-            ui.upload(
+            _uploader = ui.upload(
                 label="Subir PDF/IMG",
                 on_upload=on_upload,
                 auto_upload=True,
                 max_files=1,
             ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("font-size:12px")
+            uploader_ref[0] = _uploader
 
             pa_select = ui.select(
                 options=[0, 100, 150, 200, 250, 300],
@@ -853,8 +882,11 @@ def build_tab_guias() -> None:
                         filas_ref[0].clear()
                         _save_guia(user_id, parsed)
                         _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
-                        resultado_ref[0].set_text("✓ Guía guardada")
-                        ui.notify("Guía guardada automáticamente", color="positive")
+                        resultado_ref[0].set_text("✓ Guía agregada")
+                        ui.notify("Guía agregada automáticamente", color="positive")
+                        archivo_data[0] = None
+                        archivo_mime[0] = None
+                        uploader_ref[0].reset()
                     except json.JSONDecodeError:
                         resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
