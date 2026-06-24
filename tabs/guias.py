@@ -567,7 +567,7 @@ def _rebuild_tabla(
                             sort_state[0] = col
                             _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
                         _h_nowrap = ";white-space:nowrap" if h == "Almacenaje" else ""
-                    with ui.element("div").style(
+                        with ui.element("div").style(
                             _hs_base + f";color:{_hc};cursor:pointer;user-select:none{_h_nowrap}"
                         ).on("click", _sort_click):
                             ui.label(h + _arrow).style("pointer-events:none")
