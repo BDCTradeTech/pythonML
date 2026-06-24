@@ -671,7 +671,7 @@ def _rebuild_tabla(
                                     "padding:5px 6px;background:#E6F1FB;font-size:10px;"
                                     "font-weight:600;color:#1d4ed8;text-align:center"
                                 )
-                                for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Total"]:
+                                for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Costo Imp. u$s/IVA"]:
                                     ui.label(_h).style(_sh2)
                                 _sp2 = (
                                     "padding:4px 6px;font-size:11px;color:#374151;"
@@ -679,7 +679,12 @@ def _rebuild_tabla(
                                 )
                                 for prod in det_productos:
                                     pu_f = _to_float(prod.get("precio_unitario"))
-                                    pt_f = _to_float(prod.get("precio_total"))
+                                    traida_pct = r["total_traida_pct"]
+                                    costo_imp = (
+                                        pu_f * (1 + traida_pct)
+                                        if pu_f is not None and traida_pct is not None
+                                        else None
+                                    )
                                     ui.label(str(prod.get("sku") or "—")).style(
                                         f"{_sp2};text-align:center"
                                     )
@@ -691,7 +696,7 @@ def _rebuild_tabla(
                                         f"u$s {pu_f:.2f}" if pu_f is not None else "—"
                                     ).style(f"{_sp2};text-align:right")
                                     ui.label(
-                                        f"u$s {pt_f:.2f}" if pt_f is not None else "—"
+                                        f"u$s {costo_imp:.2f}" if costo_imp is not None else "—"
                                     ).style(f"{_sp2};text-align:right")
 
 
