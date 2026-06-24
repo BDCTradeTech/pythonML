@@ -37,11 +37,13 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 - En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento hay exactamente 3 valores en la columna "Importe", de arriba hacia abajo:
   1. derechos_importacion (primer valor, el más alto del recuadro)
   2. tasa_estadistica (segundo valor)
-  3. iva_aduanero (tercer valor, el más bajo del recuadro)
+  3. iva_aduanero (tercer valor, el más bajo del recuadro) — CAMPO OBLIGATORIO
   MÉTODO POSICIONAL: si ya encontraste iva_aduanero (ítem 3), entonces derechos_importacion es el valor que está DOS filas arriba de él en ese mismo recuadro, independientemente de cómo esté etiquetado. No uses solo la etiqueta para identificarlo.
   Etiquetas posibles como referencia (no como único criterio): "Derechos de Importación", "Der. Importación", "Derechos Imp.", "D. Importación", "Der. Imp.", "Dcho. Importación", "Derechos".
   IMPORTANTE: si iva_aduanero > 0 y derechos_importacion sigue siendo 0 o null, releer el recuadro usando la posición relativa descrita arriba.
+  CRÍTICO para iva_aduanero: este campo es OBLIGATORIO y siempre tiene valor en el documento. Su etiqueta en el documento es "IVA Aduanero" (sin ambigüedad). Es el tercer ítem del recuadro inferior izquierdo. Si no lo encontrás por etiqueta, buscarlo como el TERCER valor numérico de la columna "Importe" de ese recuadro (contando de arriba hacia abajo). NUNCA devolver 0 — si después de ambos métodos no lo encontrás, devolver null para indicar un error de lectura, no 0. derechos_importacion y tasa_estadistica SÍ pueden ser 0 o null si no están en el documento.
 - iva_21: valor en pesos argentinos que aparece con la etiqueta "IVA % 21", "IVA 21%", "I.V.A. 21%" u otras variantes de IVA al 21%. Está en la columna "Importe" del mismo recuadro de tributos.
+- total_real: gran total general de la factura/guía en ARS. Buscar la línea etiquetada exactamente como "TOTAL" en mayúsculas en el documento. Es el TOTAL final del documento (no un subtotal ni total parcial). Si no existe o no está claro, devolver null.
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 - hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
@@ -73,7 +75,8 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
   "iva_21": null,
   "derechos_importacion": null,
   "tasa_estadistica": null,
-  "pa": null
+  "pa": null,
+  "total_real": null
 }
 
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
@@ -104,6 +107,7 @@ _LABELS = {
     "derechos_importacion": "Derechos de importación",
     "tasa_estadistica": "Tasa estadística",
     "pa": "PA",
+    "total_real": "Total real",
 }
 
 _SCALAR_COLS = [
@@ -113,20 +117,20 @@ _SCALAR_COLS = [
     "flete_aereo", "entrega_domicilio", "resolucion_3244",
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
-    "pa",
+    "pa", "total_real",
 ]
 
 _TABLE_HEADERS = [
     "Courier", "Factura", "HAWB", "PA", "Fecha", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
-    "Flete Aduanero", "Almacenaje", "Total Factura", "Valor Kg", "Dolar",
+    "Flete Aduanero", "Almacenaje", "Total Factura", "Total real", "Valor Kg", "Dolar",
     "Traída u$s s/IVA", "Costo s/IVA", "Total Traída %", "",
 ]
 
 _TABLE_COLS = (
     "1.4fr 0.9fr 0.8fr 0.5fr 0.7fr 0.8fr 0.9fr "
     "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 64px"
+    "0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 64px"
 )
 
 
@@ -166,7 +170,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -205,7 +209,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
-        "almacenaje, tipo_cambio_3, created_at "
+        "almacenaje, tipo_cambio_3, total_real, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
@@ -284,6 +288,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "total_traida_pct": total_traida_pct,
             "costo_sin_iva": costo_sin_iva,
             "traida_breakdown": traida_breakdown,
+            "total_real": r["total_real"] or "",
         })
     return result
 
@@ -492,7 +497,11 @@ def _rebuild_tabla(
                     )
                     # Factura
                     nro_fac = r.get("nro_factura") or ""
-                    ui.label(nro_fac if nro_fac else "—").style(
+                    if nro_fac and "-" in nro_fac:
+                        nro_fac_disp = nro_fac.split("-", 1)[1]
+                    else:
+                        nro_fac_disp = nro_fac or "—"
+                    ui.label(nro_fac_disp).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
                     # HAWB
@@ -552,10 +561,13 @@ def _rebuild_tabla(
                             "color:#1d4ed8;font-size:11px;white-space:nowrap;"
                             "padding:0 2px;min-height:0;text-decoration:none"
                         )
+                    # Total real
+                    ui.label(_fmt_ars(r["total_real"])).style(
+                        f"{_ct};white-space:nowrap;text-align:right"
+                    )
                     # Valor Kg
                     ui.label(r["valor_kg"]).style(
-                        f"{_ct};white-space:nowrap;text-align:right;"
-                        "color:#1d4ed8;font-weight:600"
+                        f"{_ct};white-space:nowrap;text-align:right;color:#1d4ed8"
                     )
                     # Dolar
                     ui.label(_fmt_num(r["tipo_cambio_3"])).style(f"{_ct};white-space:nowrap;text-align:right")
@@ -569,7 +581,7 @@ def _rebuild_tabla(
                                 _fmt_usd(r["traida_usd"]),
                                 on_click=lambda bd=traida_bd: _show_traida_dialog(bd),
                             ).props("flat dense").style(
-                                "color:#1d4ed8;font-size:11px;white-space:nowrap;"
+                                "color:#374151;font-size:11px;white-space:nowrap;"
                                 "padding:0 2px;min-height:0;text-decoration:none"
                             )
                     else:
