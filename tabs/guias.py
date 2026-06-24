@@ -1158,7 +1158,7 @@ def _build_courier_panel(
             async def _analizar(usar_gemini: bool) -> None:
                 logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
                 if not archivo_data[0]:
-                    await client.run_javascript(
+                    client.run_javascript(
                         "Quasar.Notify.create({message:'Primero subí un archivo',"
                         "color:'warning',position:'bottom'})"
                     )
@@ -1169,19 +1169,19 @@ def _build_courier_panel(
                 logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
 
                 if usar_gemini and not gemini_key:
-                    await client.run_javascript(
+                    client.run_javascript(
                         "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
                         "color:'warning',position:'bottom'})"
                     )
                     return
                 if not usar_gemini and not groq_key:
-                    await client.run_javascript(
+                    client.run_javascript(
                         "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
                         "color:'warning',position:'bottom'})"
                     )
                     return
                 if not usar_gemini and es_imagen:
-                    await client.run_javascript(
+                    client.run_javascript(
                         "Quasar.Notify.create({message:'Grok solo procesa PDFs con texto. Usá Gemini para imágenes.',"
                         "color:'info',position:'bottom'})"
                     )
@@ -1201,7 +1201,7 @@ def _build_courier_panel(
                     else:
                         texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
                         if not texto_pdf.strip():
-                            await client.run_javascript(
+                            client.run_javascript(
                                 "Quasar.Notify.create({message:'No se pudo extraer texto del PDF. Probá con Gemini.',"
                                 "color:'warning',position:'bottom'})"
                             )
@@ -1223,7 +1223,7 @@ def _build_courier_panel(
                         nro_fac = (parsed.get("nro_factura") or "").strip()
                         if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
                             _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
-                            await client.run_javascript(
+                            client.run_javascript(
                                 f"Quasar.Notify.create({{message:{_msg_dup},"
                                 "color:'warning',icon:'warning',position:'bottom'})"
                             )
@@ -1235,7 +1235,7 @@ def _build_courier_panel(
                             logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
                             _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
                             logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
-                            await client.run_javascript(
+                            client.run_javascript(
                                 "Quasar.Notify.create({message:'Guía agregada automáticamente',"
                                 "color:'positive',position:'bottom'})"
                             )
@@ -1251,12 +1251,9 @@ def _build_courier_panel(
                     logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
                     logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
                     _msg_exc = json.dumps(f"Error: {exc}")
-                    try:
-                        await client.run_javascript(
-                            f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
-                        )
-                    except Exception:
-                        pass
+                    client.run_javascript(
+                        f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+                    )
                 finally:
                     spin_ref[0].set_visibility(False)
 
