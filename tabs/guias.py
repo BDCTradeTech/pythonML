@@ -1255,172 +1255,172 @@ def _build_courier_panel(
     uploader_ref: list = [None]
     spin_ref: list = [None]
     resultado_ref: list = [None]
+    pa_ref: list = [None]
+
+    def _on_upload(e):
+        try:
+            e.content.seek(0)
+            archivo_data[0] = e.content.read()
+            archivo_mime[0] = e.type
+            logger.warning("[DBG] _on_upload OK courier=%s len=%d mime=%s", courier_key, len(archivo_data[0]), e.type)
+        except Exception as _ue:
+            logger.warning("[DBG] _on_upload ERROR courier=%s: %s\n%s", courier_key, _ue, traceback.format_exc())
+
+    client = context.client
+
+    async def _analizar(usar_gemini: bool) -> None:
+        logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
+        if not archivo_data[0]:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Primero subí un archivo',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        groq_key = get_app_config("groq_api_key")
+        gemini_key = get_app_config("gemini_api_key")
+        es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
+        logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
+        if usar_gemini and not gemini_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not usar_gemini and not groq_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not usar_gemini and es_imagen:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Grok solo procesa PDFs con texto. Usá Gemini para imágenes.',"
+                "color:'info',position:'bottom'})"
+            )
+            return
+        spin_ref[0].set_visibility(True)
+        resultado_ref[0].set_text("")
+        filas_ref[0].clear()
+        try:
+            if usar_gemini:
+                logger.warning("[DBG] Llamando _gemini_vision courier=%s", courier_key)
+                raw = await run.io_bound(
+                    _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
+                )
+                logger.warning("[DBG] raw IA (500): %s", raw[:500] if raw else "None")
+            else:
+                texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
+                if not texto_pdf.strip():
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'No se pudo extraer texto del PDF. Probá con Gemini.',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
+                logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
+                raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+                logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
+            raw = _clean_json(raw)
+            logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
+            try:
+                parsed = json.loads(raw)
+                logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
+                parsed["pa"] = pa_ref[0].value
+                parsed["courier"] = courier_key
+                parsed_ref[0] = parsed
+                logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
+                nro_fac = (parsed.get("nro_factura") or "").strip()
+                if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
+                    _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
+                    client.run_javascript(
+                        f"Quasar.Notify.create({{message:{_msg_dup},"
+                        "color:'warning',icon:'warning',position:'bottom'})"
+                    )
+                else:
+                    filas_ref[0].clear()
+                    logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
+                    _save_guia(user_id, parsed)
+                    logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
+                    logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                    logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Guía agregada automáticamente',"
+                        "color:'positive',position:'bottom'})"
+                    )
+                    archivo_data[0] = None
+                    archivo_mime[0] = None
+                    uploader_ref[0].reset()
+            except json.JSONDecodeError as jde:
+                tb_str = traceback.format_exc()
+                logger.warning("[DBG] JSONDecodeError courier=%s: %s\n%s", courier_key, jde, tb_str)
+                resultado_ref[0].set_text("Error: JSON inválido")
+        except Exception as exc:
+            tb_str = traceback.format_exc()
+            logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
+            logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
+            _msg_exc = json.dumps(f"Error: {exc}")
+            client.run_javascript(
+                f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+            )
+        finally:
+            spin_ref[0].set_visibility(False)
+
+    def _click_grok():
+        background_tasks.create(_analizar(False), name=f"analizar_{courier_key}_grok")
+
+    def _click_gemini():
+        background_tasks.create(_analizar(True), name=f"analizar_{courier_key}_gemini")
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;"
-        "background:var(--color-background-secondary);"
         "border:0.5px solid var(--color-border-tertiary);"
-        "border-radius:6px;padding:8px"
+        "border-radius:8px;overflow:hidden"
     ):
-        ui.label(courier_name).style(
-            "font-size:11px;font-weight:500;color:var(--color-text-secondary);"
-            "margin-bottom:6px;display:block"
-        )
-
-        def _on_upload(e):
-            try:
-                e.content.seek(0)
-                archivo_data[0] = e.content.read()
-                archivo_mime[0] = e.type
-                logger.warning("[DBG] _on_upload OK courier=%s len=%d mime=%s", courier_key, len(archivo_data[0]), e.type)
-            except Exception as _ue:
-                logger.warning("[DBG] _on_upload ERROR courier=%s: %s\n%s", courier_key, _ue, traceback.format_exc())
-
-        _uploader = ui.upload(
-            label="Subir PDF/IMG",
-            on_upload=_on_upload,
-            auto_upload=True,
-            max_files=1,
-            max_file_size=20_000_000,
-        ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("width:100%")
-        uploader_ref[0] = _uploader
-
-        ui.element("div").style("flex:1")
-
-        ui.element("div").style(
-            "height:0.5px;background:var(--color-border-tertiary);margin:5px 0"
-        )
-
-        with ui.element("div").style("display:flex;justify-content:center;margin-bottom:6px"):
-            pa_select = ui.select(
-                options=[0, 100, 150, 200, 250, 300],
-                value=pa_default,
-                label="PA",
-            ).props("dense outlined").style("width:80px;font-size:12px")
-
-        client = context.client
-
-        async def _analizar(usar_gemini: bool) -> None:
-            logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
-            if not archivo_data[0]:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Primero subí un archivo',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            groq_key = get_app_config("groq_api_key")
-            gemini_key = get_app_config("gemini_api_key")
-            es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
-            logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
-            if usar_gemini and not gemini_key:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            if not usar_gemini and not groq_key:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            if not usar_gemini and es_imagen:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Grok solo procesa PDFs con texto. Usá Gemini para imágenes.',"
-                    "color:'info',position:'bottom'})"
-                )
-                return
-            spin_ref[0].set_visibility(True)
-            resultado_ref[0].set_text("")
-            filas_ref[0].clear()
-            try:
-                if usar_gemini:
-                    logger.warning("[DBG] Llamando _gemini_vision courier=%s", courier_key)
-                    raw = await run.io_bound(
-                        _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
-                    )
-                    logger.warning("[DBG] raw IA (500): %s", raw[:500] if raw else "None")
-                else:
-                    texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
-                    if not texto_pdf.strip():
-                        client.run_javascript(
-                            "Quasar.Notify.create({message:'No se pudo extraer texto del PDF. Probá con Gemini.',"
-                            "color:'warning',position:'bottom'})"
-                        )
-                        return
-                    full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
-                    logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
-                    raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
-                    logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
-                raw = _clean_json(raw)
-                logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
-                try:
-                    parsed = json.loads(raw)
-                    logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
-                    parsed["pa"] = pa_select.value
-                    parsed["courier"] = courier_key
-                    parsed_ref[0] = parsed
-                    logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
-                    nro_fac = (parsed.get("nro_factura") or "").strip()
-                    if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
-                        _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
-                        client.run_javascript(
-                            f"Quasar.Notify.create({{message:{_msg_dup},"
-                            "color:'warning',icon:'warning',position:'bottom'})"
-                        )
-                    else:
-                        filas_ref[0].clear()
-                        logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
-                        _save_guia(user_id, parsed)
-                        logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
-                        logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
-                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
-                        logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
-                        client.run_javascript(
-                            "Quasar.Notify.create({message:'Guía agregada automáticamente',"
-                            "color:'positive',position:'bottom'})"
-                        )
-                        archivo_data[0] = None
-                        archivo_mime[0] = None
-                        uploader_ref[0].reset()
-                except json.JSONDecodeError as jde:
-                    tb_str = traceback.format_exc()
-                    logger.warning("[DBG] JSONDecodeError courier=%s: %s\n%s", courier_key, jde, tb_str)
-                    resultado_ref[0].set_text("Error: JSON inválido")
-            except Exception as exc:
-                tb_str = traceback.format_exc()
-                logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
-                logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
-                _msg_exc = json.dumps(f"Error: {exc}")
-                client.run_javascript(
-                    f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
-                )
-            finally:
-                spin_ref[0].set_visibility(False)
-
-        def _click_grok():
-            background_tasks.create(_analizar(False), name=f"analizar_{courier_key}_grok")
-
-        def _click_gemini():
-            background_tasks.create(_analizar(True), name=f"analizar_{courier_key}_gemini")
-
         with ui.element("div").style(
-            "display:flex;justify-content:center;gap:4px;align-items:center;flex-wrap:wrap"
+            "background:var(--color-background-secondary);"
+            "border-bottom:0.5px solid var(--color-border-tertiary);"
+            "padding:6px 8px"
         ):
-            ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:11px"
+            ui.label(courier_name).style(
+                "font-size:11px;font-weight:500;color:var(--color-text-secondary)"
             )
-            ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:11px"
+        with ui.element("div").style("padding:8px;flex:1"):
+            _uploader = ui.upload(
+                label="Subir PDF/IMG",
+                on_upload=_on_upload,
+                auto_upload=True,
+                max_files=1,
+                max_file_size=20_000_000,
+            ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("width:100%")
+            uploader_ref[0] = _uploader
+        with ui.element("div").style(
+            "display:flex;flex-direction:column;"
+            "background:var(--color-background-secondary);"
+            "border-top:0.5px solid var(--color-border-tertiary)"
+        ):
+            with ui.element("div").style(
+                "display:flex;align-items:center;justify-content:center;gap:8px;padding:6px 8px"
+            ):
+                pa_ref[0] = ui.select(
+                    options=[0, 100, 150, 200, 250, 300],
+                    value=pa_default,
+                    label="PA",
+                ).props("dense outlined").style("width:80px;font-size:12px")
+                ui.label("|").style("color:var(--color-border-secondary);font-size:14px")
+                ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                    "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                )
+                ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
+                    "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                )
+                spin = ui.spinner(size="sm").classes("text-blue-500")
+                spin.set_visibility(False)
+                spin_ref[0] = spin
+            resultado_txt = ui.label("").style(
+                "font-size:11px;color:#dc2626;font-weight:500;text-align:center;padding:0 8px 4px"
             )
-            spin = ui.spinner(size="sm").classes("text-blue-500")
-            spin.set_visibility(False)
-            spin_ref[0] = spin
-
-        resultado_txt = ui.label("").style(
-            "font-size:12px;color:#16a34a;font-weight:500;text-align:center;margin-top:2px"
-        )
-        resultado_ref[0] = resultado_txt
+            resultado_ref[0] = resultado_txt
 
     logger.warning("[DBG] _build_courier_panel END courier=%s", courier_key)
 
@@ -1442,110 +1442,60 @@ def _build_lhs_panel(
     uploader_ref2: list = [None]
     spin_ref: list = [None]
     resultado_ref: list = [None]
+    pa_ref: list = [None]
 
-    with ui.element("div").style(
-        "display:flex;flex-direction:column;"
-        "background:var(--color-background-secondary);"
-        "border:0.5px solid var(--color-border-tertiary);"
-        "border-radius:6px;padding:8px"
-    ):
-        ui.label("LHS").style(
-            "font-size:11px;font-weight:500;color:var(--color-text-secondary);"
-            "margin-bottom:6px;display:block"
-        )
+    def _on_upload1(e):
+        try:
+            e.content.seek(0)
+            archivo_data_lhs1[0] = e.content.read()
+            archivo_mime_lhs1[0] = e.type
+        except Exception as _ue:
+            logger.error("_on_upload LHS Factura: %s", _ue)
 
-        def _on_upload1(e):
-            try:
-                e.content.seek(0)
-                archivo_data_lhs1[0] = e.content.read()
-                archivo_mime_lhs1[0] = e.type
-            except Exception as _ue:
-                logger.error("_on_upload LHS Factura: %s", _ue)
+    def _on_upload2(e):
+        try:
+            e.content.seek(0)
+            archivo_data_lhs2[0] = e.content.read()
+            archivo_mime_lhs2[0] = e.type
+        except Exception as _ue:
+            logger.error("_on_upload LHS Invoice: %s", _ue)
 
-        def _on_upload2(e):
-            try:
-                e.content.seek(0)
-                archivo_data_lhs2[0] = e.content.read()
-                archivo_mime_lhs2[0] = e.type
-            except Exception as _ue:
-                logger.error("_on_upload LHS Invoice: %s", _ue)
+    client = context.client
 
-        with ui.element("div").style("display:grid;grid-template-columns:1fr 1fr;gap:6px"):
-            with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
-                ui.label("Factura LHS").style(
-                    "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
-                )
-                _uploader1 = ui.upload(
-                    on_upload=_on_upload1,
-                    auto_upload=True,
-                    max_files=1,
-                    max_file_size=20_000_000,
-                ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
-                    "width:100%;--q-primary:#185FA5"
-                )
-                uploader_ref1[0] = _uploader1
+    async def _analizar_lhs(usar_gemini: bool) -> None:
+        if not archivo_data_lhs1[0]:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Falta subir la Factura LHS',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not archivo_data_lhs2[0]:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Falta subir el Invoice BDC',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        groq_key = get_app_config("groq_api_key")
+        gemini_key = get_app_config("gemini_api_key")
+        if usar_gemini and not gemini_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not usar_gemini and not groq_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
 
-            with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
-                ui.label("Invoice BDC").style(
-                    "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
-                )
-                _uploader2 = ui.upload(
-                    on_upload=_on_upload2,
-                    auto_upload=True,
-                    max_files=1,
-                    max_file_size=20_000_000,
-                ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
-                    "width:100%;--q-primary:#2176AE"
-                )
-                uploader_ref2[0] = _uploader2
+        spin_ref[0].set_visibility(True)
+        resultado_ref[0].set_text("")
+        filas_ref[0].clear()
 
-        ui.element("div").style("flex:1")
-
-        ui.element("div").style(
-            "height:0.5px;background:var(--color-border-tertiary);margin:5px 0"
-        )
-
-        with ui.element("div").style("display:flex;justify-content:center;margin-bottom:6px"):
-            pa_select = ui.select(
-                options=[0, 100, 150, 200, 250, 300],
-                value=200,
-                label="PA",
-            ).props("dense outlined").style("width:80px;font-size:12px")
-
-        client = context.client
-
-        async def _analizar_lhs(usar_gemini: bool) -> None:
-            if not archivo_data_lhs1[0]:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Falta subir la Factura LHS',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            if not archivo_data_lhs2[0]:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Falta subir el Invoice BDC',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            if not usar_gemini:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'LHS solo soporta análisis con Gemini (imágenes JPG/PNG)',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-            gemini_key = get_app_config("gemini_api_key")
-            if not gemini_key:
-                client.run_javascript(
-                    "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
-                    "color:'warning',position:'bottom'})"
-                )
-                return
-
-            spin_ref[0].set_visibility(True)
-            resultado_ref[0].set_text("")
-            filas_ref[0].clear()
-
-            try:
+        try:
+            if usar_gemini:
                 raw = await run.io_bound(
                     _gemini_vision_multi,
                     gemini_key,
@@ -1553,68 +1503,137 @@ def _build_lhs_panel(
                     archivo_data_lhs2[0], archivo_mime_lhs2[0],
                     PROMPT_GUIA_LHS,
                 )
-                raw = _clean_json(raw)
-                try:
-                    parsed = json.loads(raw)
-                    parsed["pa"] = pa_select.value
-                    parsed["courier"] = "LHS"
-                    parsed_ref[0] = parsed
-                    nro_fac = (parsed.get("nro_factura") or "").strip()
-                    if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
-                        _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
-                        client.run_javascript(
-                            f"Quasar.Notify.create({{message:{_msg_dup},"
-                            "color:'warning',icon:'warning',position:'bottom'})"
-                        )
-                    else:
-                        filas_ref[0].clear()
-                        _save_guia(user_id, parsed)
-                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
-                        client.run_javascript(
-                            "Quasar.Notify.create({message:'Guía agregada automáticamente',"
-                            "color:'positive',position:'bottom'})"
-                        )
-                        archivo_data_lhs1[0] = None
-                        archivo_mime_lhs1[0] = None
-                        archivo_data_lhs2[0] = None
-                        archivo_mime_lhs2[0] = None
-                        uploader_ref1[0].reset()
-                        uploader_ref2[0].reset()
-                except json.JSONDecodeError as jde:
-                    logger.error("JSONDecodeError LHS: %s\n%s", jde, traceback.format_exc())
-                    resultado_ref[0].set_text("Error: JSON inválido")
-            except Exception as exc:
-                logger.error("Error analizando guía LHS: %s\n%s", exc, traceback.format_exc())
-                _msg_exc = json.dumps(f"Error: {exc}")
-                client.run_javascript(
-                    f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
-                )
-            finally:
-                spin_ref[0].set_visibility(False)
+            else:
+                texto1 = await run.io_bound(_extract_pdf_text, archivo_data_lhs1[0])
+                texto2 = await run.io_bound(_extract_pdf_text, archivo_data_lhs2[0])
+                if not texto1.strip():
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'No se pudo extraer texto de la Factura LHS. Probá con Gemini.',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not texto2.strip():
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'No se pudo extraer texto del Invoice BDC. Probá con Gemini.',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                texto_completo = texto1 + "\n\n--- DOCUMENTO 2 (Invoice BDC) ---\n\n" + texto2
+                full_prompt = PROMPT_GUIA_LHS + "\n\nCONTENIDO DE LOS DOCUMENTOS:\n" + texto_completo
+                raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+            raw = _clean_json(raw)
+            try:
+                parsed = json.loads(raw)
+                parsed["pa"] = pa_ref[0].value
+                parsed["courier"] = "LHS"
+                parsed_ref[0] = parsed
+                nro_fac = (parsed.get("nro_factura") or "").strip()
+                if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
+                    _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
+                    client.run_javascript(
+                        f"Quasar.Notify.create({{message:{_msg_dup},"
+                        "color:'warning',icon:'warning',position:'bottom'})"
+                    )
+                else:
+                    filas_ref[0].clear()
+                    _save_guia(user_id, parsed)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Guía agregada automáticamente',"
+                        "color:'positive',position:'bottom'})"
+                    )
+                    archivo_data_lhs1[0] = None
+                    archivo_mime_lhs1[0] = None
+                    archivo_data_lhs2[0] = None
+                    archivo_mime_lhs2[0] = None
+                    uploader_ref1[0].reset()
+                    uploader_ref2[0].reset()
+            except json.JSONDecodeError as jde:
+                logger.error("JSONDecodeError LHS: %s\n%s", jde, traceback.format_exc())
+                resultado_ref[0].set_text("Error: JSON inválido")
+        except Exception as exc:
+            logger.error("Error analizando guía LHS: %s\n%s", exc, traceback.format_exc())
+            _msg_exc = json.dumps(f"Error: {exc}")
+            client.run_javascript(
+                f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+            )
+        finally:
+            spin_ref[0].set_visibility(False)
 
-        def _click_grok():
-            background_tasks.create(_analizar_lhs(False), name="analizar_LHS_grok")
+    def _click_grok():
+        background_tasks.create(_analizar_lhs(False), name="analizar_LHS_grok")
 
-        def _click_gemini():
-            background_tasks.create(_analizar_lhs(True), name="analizar_LHS_gemini")
+    def _click_gemini():
+        background_tasks.create(_analizar_lhs(True), name="analizar_LHS_gemini")
 
+    with ui.element("div").style(
+        "display:flex;flex-direction:column;"
+        "border:0.5px solid var(--color-border-tertiary);"
+        "border-radius:8px;overflow:hidden"
+    ):
         with ui.element("div").style(
-            "display:flex;justify-content:center;gap:4px;align-items:center;flex-wrap:wrap"
+            "background:var(--color-background-secondary);"
+            "border-bottom:0.5px solid var(--color-border-tertiary);"
+            "padding:6px 8px"
         ):
-            ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:11px"
+            ui.label("LHS").style(
+                "font-size:11px;font-weight:500;color:var(--color-text-secondary)"
             )
-            ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:11px"
+        with ui.element("div").style("padding:8px;flex:1"):
+            with ui.element("div").style("display:grid;grid-template-columns:1fr 1fr;gap:6px"):
+                with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+                    ui.label("Factura LHS").style(
+                        "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
+                    )
+                    _uploader1 = ui.upload(
+                        on_upload=_on_upload1,
+                        auto_upload=True,
+                        max_files=1,
+                        max_file_size=20_000_000,
+                    ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
+                        "width:100%;--q-primary:#185FA5"
+                    )
+                    uploader_ref1[0] = _uploader1
+                with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+                    ui.label("Invoice BDC").style(
+                        "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
+                    )
+                    _uploader2 = ui.upload(
+                        on_upload=_on_upload2,
+                        auto_upload=True,
+                        max_files=1,
+                        max_file_size=20_000_000,
+                    ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
+                        "width:100%;--q-primary:#2176AE"
+                    )
+                    uploader_ref2[0] = _uploader2
+        with ui.element("div").style(
+            "display:flex;flex-direction:column;"
+            "background:var(--color-background-secondary);"
+            "border-top:0.5px solid var(--color-border-tertiary)"
+        ):
+            with ui.element("div").style(
+                "display:flex;align-items:center;justify-content:center;gap:8px;padding:6px 8px"
+            ):
+                pa_ref[0] = ui.select(
+                    options=[0, 100, 150, 200, 250, 300],
+                    value=200,
+                    label="PA",
+                ).props("dense outlined").style("width:80px;font-size:12px")
+                ui.label("|").style("color:var(--color-border-secondary);font-size:14px")
+                ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                    "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                )
+                ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
+                    "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                )
+                spin = ui.spinner(size="sm").classes("text-blue-500")
+                spin.set_visibility(False)
+                spin_ref[0] = spin
+            resultado_txt = ui.label("").style(
+                "font-size:11px;color:#dc2626;font-weight:500;text-align:center;padding:0 8px 4px"
             )
-            spin = ui.spinner(size="sm").classes("text-blue-500")
-            spin.set_visibility(False)
-            spin_ref[0] = spin
-
-        resultado_txt = ui.label("").style(
-            "font-size:12px;color:#16a34a;font-weight:500;text-align:center;margin-top:2px"
-        )
-        resultado_ref[0] = resultado_txt
+            resultado_ref[0] = resultado_txt
 
 
 # ── Tab principal ─────────────────────────────────────────────────────────────
@@ -1645,7 +1664,7 @@ def build_tab_guias() -> None:
     # ── Panel superior: tres couriers side by side ────────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
     with ui.element("div").style(
-        "margin:16px 20px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px"
+        "margin:16px 20px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"
     ):
         logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
         _build_courier_panel(
