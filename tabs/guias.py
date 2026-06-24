@@ -11,7 +11,7 @@ import traceback
 from typing import Any, Dict, List
 
 import requests as _requests
-from nicegui import app, context, run, ui
+from nicegui import app, background_tasks, context, run, ui
 
 from db import get_app_config, get_connection, get_setting
 
@@ -1156,109 +1156,126 @@ def _build_courier_panel(
             client = context.client
 
             async def _analizar(usar_gemini: bool) -> None:
-                with client:
-                    logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
-                    if not archivo_data[0]:
-                        ui.notify("Primero subí un archivo", color="warning")
-                        return
-                    groq_key = get_app_config("groq_api_key")
-                    gemini_key = get_app_config("gemini_api_key")
-                    es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
-                    logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
+                logger.warning("[DBG] _analizar courier=%s gemini=%s", courier_key, usar_gemini)
+                if not archivo_data[0]:
+                    await client.run_javascript(
+                        "Quasar.Notify.create({message:'Primero subí un archivo',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                groq_key = get_app_config("groq_api_key")
+                gemini_key = get_app_config("gemini_api_key")
+                es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
+                logger.warning("[DBG] archivo len=%d mime=%s", len(archivo_data[0]) if archivo_data[0] else 0, archivo_mime[0])
 
-                    if usar_gemini and not gemini_key:
-                        ui.notify(
-                            "Configurá tu API key de Gemini en Config → IA/Sugerencias",
-                            color="warning",
-                        )
-                        return
-                    if not usar_gemini and not groq_key:
-                        ui.notify(
-                            "Configurá tu API key de Grok en Config → IA/Sugerencias",
-                            color="warning",
-                        )
-                        return
-                    if not usar_gemini and es_imagen:
-                        ui.notify(
-                            "Grok solo procesa PDFs con texto. Usá Gemini para imágenes.",
-                            color="info",
-                        )
-                        return
+                if usar_gemini and not gemini_key:
+                    await client.run_javascript(
+                        "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not usar_gemini and not groq_key:
+                    await client.run_javascript(
+                        "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not usar_gemini and es_imagen:
+                    await client.run_javascript(
+                        "Quasar.Notify.create({message:'Grok solo procesa PDFs con texto. Usá Gemini para imágenes.',"
+                        "color:'info',position:'bottom'})"
+                    )
+                    return
 
-                    spin_ref[0].set_visibility(True)
-                    resultado_ref[0].set_text("")
-                    filas_ref[0].clear()
+                spin_ref[0].set_visibility(True)
+                resultado_ref[0].set_text("")
+                filas_ref[0].clear()
 
-                    try:
-                        if usar_gemini:
-                            logger.warning("[DBG] Llamando _gemini_vision courier=%s", courier_key)
-                            raw = await run.io_bound(
-                                _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
+                try:
+                    if usar_gemini:
+                        logger.warning("[DBG] Llamando _gemini_vision courier=%s", courier_key)
+                        raw = await run.io_bound(
+                            _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
+                        )
+                        logger.warning("[DBG] raw IA (500): %s", raw[:500] if raw else "None")
+                    else:
+                        texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
+                        if not texto_pdf.strip():
+                            await client.run_javascript(
+                                "Quasar.Notify.create({message:'No se pudo extraer texto del PDF. Probá con Gemini.',"
+                                "color:'warning',position:'bottom'})"
                             )
-                            logger.warning("[DBG] raw IA (500): %s", raw[:500] if raw else "None")
-                        else:
-                            texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
-                            if not texto_pdf.strip():
-                                ui.notify(
-                                    "No se pudo extraer texto del PDF. Probá con Gemini.",
-                                    color="warning",
-                                )
-                                return
-                            full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
-                            logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
-                            raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
-                            logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
+                            return
+                        full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
+                        logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
+                        raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+                        logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
 
-                        raw = _clean_json(raw)
-                        logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
-                        try:
-                            parsed = json.loads(raw)
-                            logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
-                            parsed["pa"] = pa_select.value
-                            parsed["courier"] = courier_key
-                            parsed_ref[0] = parsed
-                            logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
-                            nro_fac = (parsed.get("nro_factura") or "").strip()
-                            if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
-                                ui.notify(
-                                    f"La factura {nro_fac} ya fue ingresada.",
-                                    color="warning",
-                                    icon="warning",
-                                )
-                            else:
-                                filas_ref[0].clear()
-                                logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
-                                _save_guia(user_id, parsed)
-                                logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
-                                logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
-                                _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
-                                logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
-                                ui.notify("Guía agregada automáticamente", color="positive")
-                                archivo_data[0] = None
-                                archivo_mime[0] = None
-                                uploader_ref[0].reset()
-                        except json.JSONDecodeError as jde:
-                            tb_str = traceback.format_exc()
-                            logger.warning("[DBG] JSONDecodeError courier=%s: %s\n%s", courier_key, jde, tb_str)
-                            resultado_ref[0].set_text("Error: JSON inválido")
-                    except Exception as exc:
+                    raw = _clean_json(raw)
+                    logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
+                    try:
+                        parsed = json.loads(raw)
+                        logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
+                        parsed["pa"] = pa_select.value
+                        parsed["courier"] = courier_key
+                        parsed_ref[0] = parsed
+                        logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
+                        nro_fac = (parsed.get("nro_factura") or "").strip()
+                        if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
+                            _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
+                            await client.run_javascript(
+                                f"Quasar.Notify.create({{message:{_msg_dup},"
+                                "color:'warning',icon:'warning',position:'bottom'})"
+                            )
+                        else:
+                            filas_ref[0].clear()
+                            logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
+                            _save_guia(user_id, parsed)
+                            logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
+                            logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
+                            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                            logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
+                            await client.run_javascript(
+                                "Quasar.Notify.create({message:'Guía agregada automáticamente',"
+                                "color:'positive',position:'bottom'})"
+                            )
+                            archivo_data[0] = None
+                            archivo_mime[0] = None
+                            uploader_ref[0].reset()
+                    except json.JSONDecodeError as jde:
                         tb_str = traceback.format_exc()
-                        logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
-                        logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
-                        ui.notify(f"Error: {exc}", color="negative")
-                    finally:
-                        spin_ref[0].set_visibility(False)
+                        logger.warning("[DBG] JSONDecodeError courier=%s: %s\n%s", courier_key, jde, tb_str)
+                        resultado_ref[0].set_text("Error: JSON inválido")
+                except Exception as exc:
+                    tb_str = traceback.format_exc()
+                    logger.warning("[DBG] ERROR courier=%s: %s\n%s", courier_key, exc, tb_str)
+                    logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
+                    _msg_exc = json.dumps(f"Error: {exc}")
+                    try:
+                        await client.run_javascript(
+                            f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+                        )
+                    except Exception:
+                        pass
+                finally:
+                    spin_ref[0].set_visibility(False)
+
+            def _click_grok():
+                background_tasks.create(_analizar(False), name=f"analizar_{courier_key}_grok")
+
+            def _click_gemini():
+                background_tasks.create(_analizar(True), name=f"analizar_{courier_key}_gemini")
 
             ui.button(
                 "Analizar con Grok",
                 icon="bolt",
-                on_click=lambda: _analizar(False),
+                on_click=_click_grok,
             ).props("flat dense").style("background:#fff7ed;color:#c2410c;font-size:12px")
 
             ui.button(
                 "Analizar con Gemini",
                 icon="auto_awesome",
-                on_click=lambda: _analizar(True),
+                on_click=_click_gemini,
             ).props("flat dense").style("background:#faf5ff;color:#7c3aed;font-size:12px")
 
             spin = ui.spinner(size="sm").classes("text-blue-500")
