@@ -524,6 +524,7 @@ def build_tab_guias() -> None:
     filas_ref: list = [None]
     guardar_btn_ref: list = [None]
     tabla_ref: list = [None]
+    nombre_lbl_ref: list = [None]
 
     # ── Barra de título ───────────────────────────────────────────────────────
     with ui.element("div").style(
@@ -533,21 +534,15 @@ def build_tab_guias() -> None:
             "font-size:15px;font-weight:600;color:#374151;letter-spacing:.05em"
         )
 
-    # ── Paneles superior: uploader + resultado ────────────────────────────────
+    # ── Panel superior compacto ───────────────────────────────────────────────
     with ui.element("div").style(
-        "display:flex;gap:24px;padding:20px;width:100%;"
-        "align-items:flex-start;flex-wrap:wrap"
+        "margin:16px 20px 0;background:#f8fafc;border:0.5px solid #e2e8f0;"
+        "border-radius:8px;font-size:13px"
     ):
-        # ── Izquierda: uploader + botones ─────────────────────────────────────
-        with ui.element("div").style("flex:0 0 320px;min-width:280px"):
-            ui.label("Subir documento").style(
-                "font-size:13px;font-weight:600;color:#374151;margin-bottom:8px"
-            )
-
-            nombre_lbl = ui.label("Ningún archivo seleccionado").style(
-                "font-size:12px;color:#9ca3af;font-style:italic;margin-bottom:8px"
-            )
-
+        # ── Fila 1: upload + nombre + PA ─────────────────────────────────────
+        with ui.element("div").style(
+            "display:flex;align-items:center;gap:12px;padding:8px 12px;flex-wrap:wrap"
+        ):
             def on_upload(e):
                 archivo_data[0] = e.content.read()
                 ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
@@ -556,26 +551,37 @@ def build_tab_guias() -> None:
                     else "image/jpeg" if ext in ("jpg", "jpeg")
                     else "image/png"
                 )
-                nombre_lbl.set_text(f"📄 {e.name}")
+                nombre_lbl_ref[0].set_text(f"✓ {e.name}")
+                nombre_lbl_ref[0].style(
+                    "font-size:12px;color:#16a34a;font-weight:500;"
+                    "font-style:normal;flex:1;min-width:0"
+                )
 
             ui.upload(
-                label="PDF / JPG / PNG",
+                label="Subir PDF/IMG",
                 on_upload=on_upload,
                 auto_upload=True,
                 max_files=1,
-            ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').classes("w-full")
+            ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("font-size:12px")
 
-            ui.label("PA").style(
-                "font-size:12px;color:#6b7280;margin-top:12px;margin-bottom:4px"
+            nombre_lbl = ui.label("Sin archivo").style(
+                "font-size:12px;color:#9ca3af;font-style:italic;flex:1;min-width:0"
             )
+            nombre_lbl_ref[0] = nombre_lbl
+
             pa_select = ui.select(
                 options=[0, 100, 150, 200, 250, 300],
                 value=200,
                 label="PA",
-            ).props("dense outlined").classes("w-full")
+            ).props("dense outlined").style("width:90px;font-size:12px")
 
-            ui.separator().classes("my-4")
+        # ── Divisor ───────────────────────────────────────────────────────────
+        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin:0 12px")
 
+        # ── Fila 2: botones + spinner + estado ────────────────────────────────
+        with ui.element("div").style(
+            "display:flex;align-items:center;gap:8px;padding:8px 12px;flex-wrap:wrap"
+        ):
             async def _analizar(usar_gemini: bool) -> None:
                 if not archivo_data[0]:
                     ui.notify("Primero subí un archivo", color="warning")
@@ -633,27 +639,27 @@ def build_tab_guias() -> None:
                         guardar_btn_ref[0].enable()
                         _save_guia(user_id, parsed)
                         _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
-                        resultado_ref[0].set_text("Guía guardada correctamente.")
+                        resultado_ref[0].set_text("✓ Guía guardada")
                         ui.notify("Guía guardada automáticamente", color="positive")
                     except json.JSONDecodeError:
-                        resultado_ref[0].set_text(raw)
+                        resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
                     logger.error("Error analizando guía: %s", exc)
                     ui.notify(f"Error: {exc}", color="negative")
                 finally:
                     spin_ref[0].set_visibility(False)
 
-            with ui.row().classes("gap-2 flex-wrap"):
-                ui.button(
-                    "💡 Analizar con Grok",
-                    on_click=lambda: _analizar(False),
-                ).props("flat").style("background:#fff7ed;color:#c2410c")
-                ui.button(
-                    "✨ Analizar con Gemini",
-                    on_click=lambda: _analizar(True),
-                ).props("flat").style("background:#eff6ff;color:#1d4ed8")
+            ui.button(
+                "Analizar con Grok",
+                icon="bolt",
+                on_click=lambda: _analizar(False),
+            ).props("flat dense").style("background:#fff7ed;color:#c2410c;font-size:12px")
 
-            ui.separator().classes("my-3")
+            ui.button(
+                "Analizar con Gemini",
+                icon="auto_awesome",
+                on_click=lambda: _analizar(True),
+            ).props("flat dense").style("background:#faf5ff;color:#7c3aed;font-size:12px")
 
             def _guardar():
                 if not parsed_ref[0]:
@@ -665,33 +671,28 @@ def build_tab_guias() -> None:
                 _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
 
             guardar_btn = ui.button(
-                "💾 Guardar guía (manual)",
+                "Guardar (manual)",
+                icon="save",
                 on_click=_guardar,
-            ).props("flat").style("background:#f0fdf4;color:#166534;width:100%")
+            ).props("flat dense").style("background:#f0fdf4;color:#166534;font-size:12px")
             guardar_btn.disable()
             guardar_btn_ref[0] = guardar_btn
 
-        # ── Derecha: resultado del análisis ───────────────────────────────────
-        with ui.element("div").style("flex:1;min-width:300px"):
-            ui.label("Resultado del análisis").style(
-                "font-size:13px;font-weight:600;color:#374151;margin-bottom:8px"
-            )
-
-            spin = ui.spinner(size="lg").classes("text-blue-500")
+            spin = ui.spinner(size="sm").classes("text-blue-500")
             spin.set_visibility(False)
             spin_ref[0] = spin
 
             resultado_txt = ui.label("").style(
-                "white-space:pre-wrap;font-family:monospace;font-size:13px;color:#374151"
+                "font-size:12px;color:#16a34a;font-weight:500;margin-left:auto"
             )
             resultado_ref[0] = resultado_txt
 
-            filas_container = ui.element("div").style("width:100%")
-            filas_ref[0] = filas_container
+    # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
+    filas_container = ui.element("div").style("display:none")
+    filas_ref[0] = filas_container
 
     # ── Tabla de guías guardadas ──────────────────────────────────────────────
-    ui.separator().classes("mx-4")
-    with ui.element("div").style("padding:0 20px 24px"):
+    with ui.element("div").style("padding:16px 20px 24px"):
         ui.label("Guías guardadas").style(
             "font-size:13px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
         )
