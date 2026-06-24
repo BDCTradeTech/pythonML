@@ -83,6 +83,10 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
+PROMPT_GUIA_NC     = PROMPT_GUIA
+PROMPT_GUIA_SIXTAR = PROMPT_GUIA
+PROMPT_GUIA_LHS    = PROMPT_GUIA
+
 _LABELS = {
     "razon_social": "Razón social",
     "nro_invoice": "Nro. Invoice",
@@ -118,7 +122,7 @@ _SCALAR_COLS = [
     "flete_aereo", "entrega_domicilio", "resolucion_3244",
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
-    "pa", "total_real",
+    "pa", "total_real", "courier",
 ]
 
 _TABLE_HEADERS = [
@@ -130,13 +134,13 @@ _TABLE_HEADERS = [
 
 _TABLE_COLS = (
     "0.7fr 1.4fr 0.9fr 0.8fr 0.5fr 0.8fr 0.9fr "
-    "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
+    "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr minmax(72px,0.7fr) "
     "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
 )
 
 _SORT_KEYS = {
     "Fecha":            lambda r: r["fecha"] or "",
-    "Courier":          lambda r: r["razon_social"] or "",
+    "Courier":          lambda r: r.get("courier") or r.get("razon_social") or "",
     "Factura":          lambda r: r["nro_factura"] or "",
     "HAWB":             lambda r: r["hawb"] or "",
     "PA":               lambda r: _to_float(r["pa"]) or 0,
@@ -196,7 +200,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -232,7 +236,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
     dolar_blue = get_setting("dolar_blue")
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
+        "SELECT id, razon_social, courier, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_3, total_real, productos, created_at "
@@ -298,6 +302,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         result.append({
             "id": r["id"],
             "razon_social": r["razon_social"] or "",
+            "courier": r["courier"] or r["razon_social"] or "",
             "nro_factura": r["nro_factura"] or "",
             "hawb": r["hawb"] or "",
             "pa": r["pa"] or "",
@@ -365,12 +370,18 @@ def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
     conn.close()
 
 
-def _exists_factura(user_id: int, nro_factura: str) -> bool:
+def _exists_factura(user_id: int, nro_factura: str, courier: str = "") -> bool:
     conn = get_connection()
-    count = conn.execute(
-        "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=?",
-        (user_id, nro_factura),
-    ).fetchone()[0]
+    if courier:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=? AND courier=?",
+            (user_id, nro_factura, courier),
+        ).fetchone()[0]
+    else:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=?",
+            (user_id, nro_factura),
+        ).fetchone()[0]
     conn.close()
     return count > 0
 
@@ -391,15 +402,17 @@ def _groq_parse_doc(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def _gemini_vision(api_key: str, data: bytes, mime_type: str) -> str:
+def _gemini_vision(api_key: str, data: bytes, mime_type: str, prompt: str | None = None) -> str:
     from google import genai
     from google.genai import types
+    if prompt is None:
+        prompt = PROMPT_GUIA
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=data, mime_type=mime_type),
-            PROMPT_GUIA,
+            prompt,
         ],
     )
     return response.text
@@ -553,8 +566,9 @@ def _rebuild_tabla(
                             sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
                             sort_state[0] = col
                             _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
-                        with ui.element("div").style(
-                            _hs_base + f";color:{_hc};cursor:pointer;user-select:none"
+                        _h_nowrap = ";white-space:nowrap" if h == "Almacenaje" else ""
+                    with ui.element("div").style(
+                            _hs_base + f";color:{_hc};cursor:pointer;user-select:none{_h_nowrap}"
                         ).on("click", _sort_click):
                             ui.label(h + _arrow).style("pointer-events:none")
                     else:
@@ -594,7 +608,8 @@ def _rebuild_tabla(
                     # Fecha
                     ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Courier
-                    ui.label(r["razon_social"]).style(
+                    _courier_disp = r.get("courier") or r.get("razon_social") or ""
+                    ui.label(_courier_disp).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
                     # Factura
@@ -982,46 +997,37 @@ def _show_edit_pa_dialog(
     d.open()
 
 
-# ── Tab principal ─────────────────────────────────────────────────────────────
+# ── Courier panel builder ─────────────────────────────────────────────────────
 
-def build_tab_guias() -> None:
-    user = app.storage.user.get("user")
-    if not user:
-        ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
-        return
-
-    user_id = user["id"]
-    ui.add_css("""
-.pa-chip {
-    background:#E6F1FB;border:1px solid #85B7EB;color:#0C447C;
-    border-radius:4px;padding:2px 7px;cursor:pointer;
-    display:inline-flex;align-items:center;gap:3px;
-    transition:background 0.15s;user-select:none;
-}
-.pa-chip:hover { background:#B5D4F4 !important; }
-""")
-    _init_guias_db()
-
+def _build_courier_panel(
+    courier_name: str,
+    courier_key: str,
+    prompt_str: str,
+    user_id: int,
+    tabla_ref: list,
+    filas_ref: list,
+    parsed_ref: list,
+    sort_state: list,
+) -> None:
     archivo_data: list = [None]
     archivo_mime: list = [None]
-    parsed_ref: list = [None]
+    uploader_ref: list = [None]
     spin_ref: list = [None]
     resultado_ref: list = [None]
-    filas_ref: list = [None]
-    tabla_ref: list = [None]
-    uploader_ref: list = [None]
-    sort_state: list = [None, "asc"]
 
-    # ── Panel superior compacto ───────────────────────────────────────────────
     with ui.element("div").style(
-        "margin:16px 20px 0;background:#f8fafc;border:0.5px solid #e2e8f0;"
-        "border-radius:8px;font-size:13px"
+        "flex:1;min-width:240px;background:#f8fafc;border:0.5px solid #e2e8f0;"
+        "border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:0"
     ):
-        # ── Fila 1: upload + nombre + PA ─────────────────────────────────────
+        ui.label(courier_name).style(
+            "font-weight:500;font-size:12px;color:#6b7280;margin-bottom:6px;display:block"
+        )
+        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin-bottom:6px")
+
         with ui.element("div").style(
-            "display:flex;align-items:center;gap:12px;padding:8px 12px;flex-wrap:wrap"
+            "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:6px"
         ):
-            def on_upload(e):
+            def _on_upload(e):
                 archivo_data[0] = e.content.read()
                 ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
                 archivo_mime[0] = (
@@ -1032,7 +1038,7 @@ def build_tab_guias() -> None:
 
             _uploader = ui.upload(
                 label="Subir PDF/IMG",
-                on_upload=on_upload,
+                on_upload=_on_upload,
                 auto_upload=True,
                 max_files=1,
             ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("font-size:12px")
@@ -1042,14 +1048,12 @@ def build_tab_guias() -> None:
                 options=[0, 100, 150, 200, 250, 300],
                 value=200,
                 label="PA",
-            ).props("dense outlined").style("width:90px;font-size:12px")
+            ).props("dense outlined").style("width:80px;font-size:12px")
 
-        # ── Divisor ───────────────────────────────────────────────────────────
-        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin:0 12px")
+        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin-bottom:6px")
 
-        # ── Fila 2: botones + spinner + estado ────────────────────────────────
         with ui.element("div").style(
-            "display:flex;align-items:center;gap:8px;padding:8px 12px;flex-wrap:wrap"
+            "display:flex;align-items:center;gap:6px;flex-wrap:wrap"
         ):
             async def _analizar(usar_gemini: bool) -> None:
                 if not archivo_data[0]:
@@ -1085,7 +1089,7 @@ def build_tab_guias() -> None:
                 try:
                     if usar_gemini:
                         raw = await run.io_bound(
-                            _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0]
+                            _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
                         )
                     else:
                         texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
@@ -1095,16 +1099,17 @@ def build_tab_guias() -> None:
                                 color="warning",
                             )
                             return
-                        full_prompt = PROMPT_GUIA + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
+                        full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
                         raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
 
                     raw = _clean_json(raw)
                     try:
                         parsed = json.loads(raw)
                         parsed["pa"] = pa_select.value
+                        parsed["courier"] = courier_key
                         parsed_ref[0] = parsed
                         nro_fac = (parsed.get("nro_factura") or "").strip()
-                        if nro_fac and _exists_factura(user_id, nro_fac):
+                        if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
                             ui.notify(
                                 f"La factura {nro_fac} ya fue ingresada.",
                                 color="warning",
@@ -1121,7 +1126,7 @@ def build_tab_guias() -> None:
                     except json.JSONDecodeError:
                         resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
-                    logger.error("Error analizando guía: %s", exc)
+                    logger.error("Error analizando guía (%s): %s", courier_key, exc)
                     ui.notify(f"Error: {exc}", color="negative")
                 finally:
                     spin_ref[0].set_visibility(False)
@@ -1143,9 +1148,52 @@ def build_tab_guias() -> None:
             spin_ref[0] = spin
 
             resultado_txt = ui.label("").style(
-                "font-size:12px;color:#16a34a;font-weight:500;margin-left:auto"
+                "font-size:12px;color:#16a34a;font-weight:500"
             )
             resultado_ref[0] = resultado_txt
+
+
+# ── Tab principal ─────────────────────────────────────────────────────────────
+
+def build_tab_guias() -> None:
+    user = app.storage.user.get("user")
+    if not user:
+        ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
+        return
+
+    user_id = user["id"]
+    ui.add_css("""
+.pa-chip {
+    background:#E6F1FB;border:1px solid #85B7EB;color:#0C447C;
+    border-radius:4px;padding:2px 7px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:3px;
+    transition:background 0.15s;user-select:none;
+}
+.pa-chip:hover { background:#B5D4F4 !important; }
+""")
+    _init_guias_db()
+
+    filas_ref: list = [None]
+    tabla_ref: list = [None]
+    sort_state: list = [None, "asc"]
+    parsed_ref: list = [None]
+
+    # ── Panel superior: tres couriers side by side ────────────────────────────
+    with ui.element("div").style(
+        "margin:16px 20px 0;display:flex;gap:12px;flex-wrap:wrap"
+    ):
+        _build_courier_panel(
+            "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
+            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+        )
+        _build_courier_panel(
+            "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
+            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+        )
+        _build_courier_panel(
+            "LHS", "LHS", PROMPT_GUIA_LHS,
+            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+        )
 
     # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
     filas_container = ui.element("div").style("display:none")
