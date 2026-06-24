@@ -41,6 +41,7 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
   MÉTODO POSICIONAL: si ya encontraste iva_aduanero (ítem 3), entonces derechos_importacion es el valor que está DOS filas arriba de él en ese mismo recuadro, independientemente de cómo esté etiquetado. No uses solo la etiqueta para identificarlo.
   Etiquetas posibles como referencia (no como único criterio): "Derechos de Importación", "Der. Importación", "Derechos Imp.", "D. Importación", "Der. Imp.", "Dcho. Importación", "Derechos".
   IMPORTANTE: si iva_aduanero > 0 y derechos_importacion sigue siendo 0 o null, releer el recuadro usando la posición relativa descrita arriba.
+- iva_21: valor en pesos argentinos que aparece con la etiqueta "IVA % 21", "IVA 21%", "I.V.A. 21%" u otras variantes de IVA al 21%. Está en la columna "Importe" del mismo recuadro de tributos.
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 - hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
@@ -69,6 +70,7 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
   "almacenaje": null,
   "servicios_honorarios": null,
   "iva_aduanero": null,
+  "iva_21": null,
   "derechos_importacion": null,
   "tasa_estadistica": null,
   "pa": null
@@ -98,6 +100,7 @@ _LABELS = {
     "almacenaje": "Almacenaje",
     "servicios_honorarios": "Servicios / Honorarios",
     "iva_aduanero": "IVA aduanero",
+    "iva_21": "IVA 21%",
     "derechos_importacion": "Derechos de importación",
     "tasa_estadistica": "Tasa estadística",
     "pa": "PA",
@@ -109,7 +112,7 @@ _SCALAR_COLS = [
     "kgs", "tipo_cambio_1", "tipo_cambio_2", "tipo_cambio_3",
     "flete_aereo", "entrega_domicilio", "resolucion_3244",
     "seguro_internacional", "almacenaje", "servicios_honorarios",
-    "iva_aduanero", "derechos_importacion", "tasa_estadistica",
+    "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
     "pa",
 ]
 
@@ -163,7 +166,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -200,7 +203,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, fob_total, kgs, "
-        "derechos_importacion, tasa_estadistica, iva_aduanero, flete_aereo, "
+        "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_3, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
@@ -216,6 +219,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         if flete and kgs and tc3 and kgs != 0 and tc3 != 0:
             valor_kg = f"{flete / kgs / tc3:.2f}"
 
+        iva21_val = _to_float(r["iva_21"])
         tf_components = [
             ("flete_aereo",          "Flete aéreo",             _to_float(r["flete_aereo"])),
             ("entrega_domicilio",    "Entrega a domicilio",     _to_float(r["entrega_domicilio"])),
@@ -223,6 +227,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             ("seguro_internacional", "Seguro internacional",    _to_float(r["seguro_internacional"])),
             ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
             ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
+            ("iva_21",               "IVA 21%",                 iva21_val),
             ("iva_aduanero",         "IVA aduanero",            _to_float(r["iva_aduanero"])),
             ("derechos_importacion", "Derechos de importación", _to_float(r["derechos_importacion"])),
             ("tasa_estadistica",     "Tasa estadística",        _to_float(r["tasa_estadistica"])),
@@ -234,7 +239,11 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         fob_val = _to_float(r["fob_total"])
         traida_usd = None
         if dolar_blue and dolar_blue != 0 and pa_val is not None:
-            traida_usd = (total_factura + (pa_val * dolar_blue) - (iva_val or 0.0)) / dolar_blue
+            traida_usd = (
+                total_factura + (pa_val * dolar_blue)
+                - (iva_val or 0.0)
+                - (iva21_val or 0.0)
+            ) / dolar_blue
 
         total_traida_pct = None
         if fob_val and fob_val != 0 and traida_usd is not None:
@@ -244,6 +253,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "total_factura": total_factura,
             "pa_val": pa_val,
             "iva_val": iva_val or 0.0,
+            "iva21_val": iva21_val or 0.0,
             "dolar_blue": dolar_blue,
             "traida_usd": traida_usd,
         }
@@ -261,6 +271,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "derechos_importacion": r["derechos_importacion"] or "",
             "tasa_estadistica": r["tasa_estadistica"] or "",
             "iva_aduanero": r["iva_aduanero"] or "",
+            "iva_21": r["iva_21"] or "",
             "flete_aereo": r["flete_aereo"] or "",
             "almacenaje": r["almacenaje"] or "",
             "valor_kg": valor_kg,
@@ -437,99 +448,128 @@ def _rebuild_tabla(
             return
 
         with ui.element("div").style("overflow-x:auto;width:100%"):
-            # CAMBIO 5: min-height doble para que textos largos quepan en 2 líneas
+            # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
-                "gap:4px;padding:6px 8px;"
-                "background:#f1f5f9;border-radius:6px 6px 0 0;"
-                "border:0.5px solid #e2e8f0;"
-                "font-size:10px;font-weight:600;color:#6b7280;"
-                "align-items:center;min-width:1700px;min-height:44px"
+                "column-gap:4px;min-width:1700px;align-items:center"
             ):
+                # ── Cabecera ──────────────────────────────────────────────────
+                _hs = (
+                    "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
+                    "font-size:10px;font-weight:600;color:#6b7280;"
+                    "white-space:normal;word-break:break-word;line-height:1.3;"
+                    "min-height:44px;display:flex;align-items:center"
+                )
                 for h in _TABLE_HEADERS:
-                    ui.label(h).style(
-                        "white-space:normal;word-break:break-word;line-height:1.3"
-                    )
+                    ui.label(h).style(_hs)
 
-            for r in rows:
-                rid = r["id"]
-                tf_comps = r["tf_components"]
-                traida_bd = r["traida_breakdown"]
+                # ── Filas de datos ─────────────────────────────────────────────
+                _sep = "border-bottom:0.5px solid #f1f5f9"
+                _ct = f"padding:3px 4px;font-size:11px;color:#374151;{_sep}"
 
-                with ui.element("div").style(
-                    f"display:grid;grid-template-columns:{_TABLE_COLS};"
-                    "gap:4px;padding:3px 8px;"
-                    "border:0.5px solid #e2e8f0;border-top:none;"
-                    "font-size:11px;color:#374151;align-items:center;"
-                    "min-width:1700px"
-                ):
+                for r in rows:
+                    rid = r["id"]
+                    tf_comps = r["tf_components"]
+                    traida_bd = r["traida_breakdown"]
+
+                    # Courier
                     ui.label(r["razon_social"]).style(
-                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
+                    # HAWB
                     ui.label(r["hawb"]).style(
-                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
-                    # CAMBIO 6: PA con formato u$s
-                    ui.label(_fmt_usd(r["pa"])).style("white-space:nowrap;text-align:center")
-                    ui.label(r["fecha"]).style("white-space:nowrap")
-                    ui.label(r["pais_procedencia"]).style(
-                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    # PA
+                    ui.label(_fmt_usd(r["pa"])).style(
+                        f"{_ct};white-space:nowrap;text-align:center"
                     )
+                    # Fecha
+                    ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap")
+                    # Origen — ESTADOS UNIDOS → USA
+                    _origen = r["pais_procedencia"]
+                    if _origen and "estados uni" in _origen.lower():
+                        _origen = "USA"
+                    ui.label(_origen).style(
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                    )
+                    # Invoice Nro
                     ui.label(r["nro_invoice"]).style(
-                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
-                    # CAMBIO 6: FOB Total con formato u$s
-                    ui.label(_fmt_usd(r["fob_total"])).style("white-space:nowrap;text-align:right")
-                    ui.label(r["kgs"]).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 7: columnas ARS
+                    # FOB Total
+                    ui.label(_fmt_usd(r["fob_total"])).style(
+                        f"{_ct};white-space:nowrap;text-align:right"
+                    )
+                    # Peso Total
+                    ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Derechos
                     ui.label(_fmt_ars(r["derechos_importacion"])).style(
-                        "white-space:nowrap;text-align:right"
+                        f"{_ct};white-space:nowrap;text-align:right"
                     )
+                    # Estadística
                     ui.label(_fmt_ars(r["tasa_estadistica"])).style(
-                        "white-space:nowrap;text-align:right"
+                        f"{_ct};white-space:nowrap;text-align:right"
                     )
+                    # IVA Aduanero
                     ui.label(_fmt_ars(r["iva_aduanero"])).style(
-                        "white-space:nowrap;text-align:right"
+                        f"{_ct};white-space:nowrap;text-align:right"
                     )
+                    # Flete Aduanero
                     ui.label(_fmt_ars(r["flete_aereo"])).style(
-                        "white-space:nowrap;text-align:right"
+                        f"{_ct};white-space:nowrap;text-align:right"
                     )
-                    ui.label(r["almacenaje"]).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 2: Total Factura como hipervínculo clickeable
-                    with ui.element("div").style("display:flex;justify-content:flex-end"):
+                    # Almacenaje
+                    ui.label(r["almacenaje"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Total Factura — clickeable sin subrayado
+                    with ui.element("div").style(
+                        f"display:flex;justify-content:flex-end;align-items:center;"
+                        f"padding:3px 4px;{_sep}"
+                    ):
                         ui.button(
                             _fmt_ars(r["total_factura"]),
                             on_click=lambda tf=tf_comps: _show_total_factura_dialog(tf),
                         ).props("flat dense").style(
                             "color:#1d4ed8;font-size:11px;white-space:nowrap;"
-                            "padding:0 2px;min-height:0;text-decoration:underline"
+                            "padding:0 2px;min-height:0;text-decoration:none"
                         )
+                    # Valor Kg
                     ui.label(r["valor_kg"]).style(
-                        "white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600"
+                        f"{_ct};white-space:nowrap;text-align:right;"
+                        "color:#1d4ed8;font-weight:600"
                     )
-                    ui.label(r["tipo_cambio_3"]).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 3: Traída u$s s/IVA como hipervínculo clickeable
+                    # Dolar
+                    ui.label(r["tipo_cambio_3"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Traída u$s s/IVA — clickeable sin subrayado
                     if r["traida_usd"] is not None:
-                        with ui.element("div").style("display:flex;justify-content:flex-end"):
+                        with ui.element("div").style(
+                            f"display:flex;justify-content:flex-end;align-items:center;"
+                            f"padding:3px 4px;{_sep}"
+                        ):
                             ui.button(
                                 _fmt_usd(r["traida_usd"]),
                                 on_click=lambda bd=traida_bd: _show_traida_dialog(bd),
                             ).props("flat dense").style(
                                 "color:#1d4ed8;font-size:11px;white-space:nowrap;"
-                                "padding:0 2px;min-height:0;text-decoration:underline"
+                                "padding:0 2px;min-height:0;text-decoration:none"
                             )
                     else:
-                        ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
-                    # CAMBIO 5: Costo s/IVA = traida_usd (matemáticamente equivalente)
+                        ui.label("—").style(
+                            f"{_ct};white-space:nowrap;text-align:right;color:#9ca3af"
+                        )
+                    # Costo s/IVA
                     ui.label(
                         _fmt_usd(r["traida_usd"]) if r["traida_usd"] is not None else "—"
-                    ).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 4: Total Traída %
+                    ).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Total Traída %
                     pct = r["total_traida_pct"]
                     ui.label(
                         f"{pct * 100:.1f}%" if pct is not None else "—"
-                    ).style("white-space:nowrap;text-align:right")
-                    with ui.row().classes("gap-0").style("justify-content:center"):
+                    ).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Acciones
+                    with ui.row().classes("gap-0").style(
+                        f"justify-content:center;{_sep};padding:3px 0"
+                    ):
                         ui.button(
                             icon="visibility",
                             on_click=lambda rid=rid: _show_ver_dialog(rid, user_id),
@@ -642,6 +682,7 @@ def _show_traida_dialog(breakdown: dict) -> None:
     tf = breakdown["total_factura"]
     pa_val = breakdown["pa_val"]
     iva_val = breakdown["iva_val"]
+    iva21_val = breakdown.get("iva21_val", 0.0)
     dolar_blue = breakdown["dolar_blue"]
     traida_usd = breakdown["traida_usd"]
 
@@ -665,6 +706,7 @@ def _show_traida_dialog(breakdown: dict) -> None:
         else:
             pa_str = "—"
         _fila("PA en ARS (pa × dólar blue)", pa_str)
+        _fila("IVA 21% restado (ARS)", _fmt_ars(iva21_val) if iva21_val else "—")
         _fila("IVA Aduanero restado (ARS)", _fmt_ars(iva_val) if iva_val else "—")
         _fila("Dólar blue usado", _fmt_ars(dolar_blue) if dolar_blue else "—")
 
@@ -674,8 +716,9 @@ def _show_traida_dialog(breakdown: dict) -> None:
         ):
             if traida_usd is not None and pa_val is not None and dolar_blue:
                 pa_ars = pa_val * dolar_blue
+                iva21_str = f" − {_fmt_ars(iva21_val)}" if iva21_val else ""
                 formula = (
-                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)} − {_fmt_ars(iva_val)}) "
+                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)}{iva21_str} − {_fmt_ars(iva_val)}) "
                     f"÷ {_fmt_ars(dolar_blue)}"
                 )
             else:
@@ -716,15 +759,6 @@ def build_tab_guias() -> None:
     resultado_ref: list = [None]
     filas_ref: list = [None]
     tabla_ref: list = [None]
-    nombre_lbl_ref: list = [None]
-
-    # ── Barra de título ───────────────────────────────────────────────────────
-    with ui.element("div").style(
-        "background:#f1f5f9;border-bottom:0.5px solid #e0e2e7;padding:10px 20px"
-    ):
-        ui.label("GUÍAS DE IMPORTACIÓN").style(
-            "font-size:15px;font-weight:600;color:#374151;letter-spacing:.05em"
-        )
 
     # ── Panel superior compacto ───────────────────────────────────────────────
     with ui.element("div").style(
@@ -743,11 +777,6 @@ def build_tab_guias() -> None:
                     else "image/jpeg" if ext in ("jpg", "jpeg")
                     else "image/png"
                 )
-                nombre_lbl_ref[0].set_text(f"✓ {e.name}")
-                nombre_lbl_ref[0].style(
-                    "font-size:12px;color:#16a34a;font-weight:500;"
-                    "font-style:normal;flex:1;min-width:0"
-                )
 
             ui.upload(
                 label="Subir PDF/IMG",
@@ -755,11 +784,6 @@ def build_tab_guias() -> None:
                 auto_upload=True,
                 max_files=1,
             ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("font-size:12px")
-
-            nombre_lbl = ui.label("Sin archivo").style(
-                "font-size:12px;color:#9ca3af;font-style:italic;flex:1;min-width:0"
-            )
-            nombre_lbl_ref[0] = nombre_lbl
 
             pa_select = ui.select(
                 options=[0, 100, 150, 200, 250, 300],
@@ -865,9 +889,10 @@ def build_tab_guias() -> None:
     filas_ref[0] = filas_container
 
     # ── Tabla de guías guardadas ──────────────────────────────────────────────
-    with ui.element("div").style("padding:16px 20px 24px"):
+    with ui.element("div").style("padding:16px 0 24px"):
         ui.label("Guías guardadas").style(
-            "font-size:13px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
+            "font-size:13px;font-weight:600;color:#374151;margin-bottom:12px;"
+            "display:block;padding-left:20px"
         )
         tabla_container = ui.element("div").style("width:100%")
         tabla_ref[0] = tabla_container
