@@ -355,6 +355,16 @@ def _delete_guia(guia_id: int, user_id: int) -> None:
     conn.close()
 
 
+def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET pa=? WHERE id=? AND user_id=?",
+        (str(new_pa), guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 # ── AI helpers ────────────────────────────────────────────────────────────────
 
 def _groq_parse_doc(api_key: str, prompt: str) -> str:
@@ -590,10 +600,17 @@ def _rebuild_tabla(
                     ui.label(r["hawb"]).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
-                    # PA
-                    ui.label(_fmt_usd(r["pa"])).style(
-                        f"{_ct};white-space:nowrap;text-align:center"
-                    )
+                    # PA — chip clickeable para editar
+                    with ui.element("div").style(
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                    ):
+                        def _pa_click(rid=rid, hawb=r["hawb"], pa=r["pa"]):
+                            _show_edit_pa_dialog(
+                                rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                            )
+                        with ui.element("div").classes("pa-chip").on("click", _pa_click):
+                            ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:11px;color:#0C447C")
+                            ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>')
                     # Origen — ESTADOS UNIDOS → USA
                     _origen = r["pais_procedencia"]
                     if _origen and "estados uni" in _origen.lower():
@@ -920,6 +937,41 @@ def _show_traida_dialog(breakdown: dict) -> None:
     d.open()
 
 
+def _show_edit_pa_dialog(
+    rid: int, hawb: str, pa_current: str, user_id: int,
+    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+) -> None:
+    pa_val = _to_float(pa_current) or 0.0
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
+        with ui.row().classes("items-center gap-2").style("margin-bottom:16px"):
+            ui.html('<i class="ti ti-adjustments-horizontal" style="color:#185FA5;font-size:18px"></i>')
+            ui.label(f"Editar PA — {hawb}").style(
+                "font-size:14px;font-weight:600;color:#374151"
+            )
+        ui.label("Valor PA (u$s)").style(
+            "font-size:12px;color:#6b7280;margin-bottom:4px;display:block"
+        )
+        pa_input = ui.number(value=pa_val, min=0).props("dense outlined").style("width:100%")
+        ui.label(
+            "Recalcula: Traída u$s, Total Traída %, Costo s/IVA y Costo Imp. por producto."
+        ).style("font-size:11px;color:#9ca3af;margin-top:6px;display:block")
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+            def _guardar(d=d):
+                new_val = pa_input.value
+                if new_val is None or new_val < 0:
+                    ui.notify("Ingresá un valor válido >= 0", color="warning")
+                    return
+                _update_pa(rid, user_id, new_val)
+                d.close()
+                ui.notify("PA actualizado", color="positive")
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+            ui.button("Guardar y recalcular", on_click=_guardar).props("flat").style(
+                "color:#185FA5;font-weight:600"
+            )
+    d.open()
+
+
 # ── Tab principal ─────────────────────────────────────────────────────────────
 
 def build_tab_guias() -> None:
@@ -929,6 +981,15 @@ def build_tab_guias() -> None:
         return
 
     user_id = user["id"]
+    ui.add_css("""
+.pa-chip {
+    background:#E6F1FB;border:1px solid #85B7EB;color:#0C447C;
+    border-radius:4px;padding:2px 7px;cursor:pointer;
+    display:inline-flex;align-items:center;gap:3px;
+    transition:background 0.15s;user-select:none;
+}
+.pa-chip:hover { background:#B5D4F4 !important; }
+""")
     _init_guias_db()
 
     archivo_data: list = [None]
