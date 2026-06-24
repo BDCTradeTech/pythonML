@@ -365,6 +365,16 @@ def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
     conn.close()
 
 
+def _exists_factura(user_id: int, nro_factura: str) -> bool:
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=?",
+        (user_id, nro_factura),
+    ).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
 # ── AI helpers ────────────────────────────────────────────────────────────────
 
 def _groq_parse_doc(api_key: str, prompt: str) -> str:
@@ -1093,13 +1103,21 @@ def build_tab_guias() -> None:
                         parsed = json.loads(raw)
                         parsed["pa"] = pa_select.value
                         parsed_ref[0] = parsed
-                        filas_ref[0].clear()
-                        _save_guia(user_id, parsed)
-                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
-                        ui.notify("Guía agregada automáticamente", color="positive")
-                        archivo_data[0] = None
-                        archivo_mime[0] = None
-                        uploader_ref[0].reset()
+                        nro_fac = (parsed.get("nro_factura") or "").strip()
+                        if nro_fac and _exists_factura(user_id, nro_fac):
+                            ui.notify(
+                                f"La factura {nro_fac} ya fue ingresada.",
+                                color="warning",
+                                icon="warning",
+                            )
+                        else:
+                            filas_ref[0].clear()
+                            _save_guia(user_id, parsed)
+                            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                            ui.notify("Guía agregada automáticamente", color="positive")
+                            archivo_data[0] = None
+                            archivo_mime[0] = None
+                            uploader_ref[0].reset()
                     except json.JSONDecodeError:
                         resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
