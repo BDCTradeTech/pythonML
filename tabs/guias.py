@@ -85,7 +85,80 @@ Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
 PROMPT_GUIA_NC  = PROMPT_GUIA
-PROMPT_GUIA_LHS = PROMPT_GUIA
+
+PROMPT_GUIA_LHS = """
+La primera imagen es la factura del courier LHS (imagen JPG).
+La segunda imagen es el invoice del proveedor de BDC Trade Tech LLC (imagen JPG).
+
+De la primera imagen (factura LHS) extraer:
+- nro_factura: número de factura argentina formato XXXX-XXXXXXXX
+- hawb: número HAWB en la parte superior
+- kgs: peso total en kilogramos
+- tipo_cambio_1 y tipo_cambio_3: tipos de cambio que aparecen en el documento
+- iva_aduanero: OBLIGATORIO, nunca null ni 0. Su etiqueta es "IVA Aduanero". Es el tercer valor
+    del recuadro de tributos. Si no encontrás por etiqueta, buscarlo posicionalmente. NUNCA 0.
+- flete_aereo: flete internacional en ARS
+- almacenaje: almacenaje en ARS
+- derechos_importacion: puede ser 0. Buscar posicionalmente: 2 filas arriba de iva_aduanero
+    en el recuadro de tributos.
+- tasa_estadistica: puede ser 0
+- iva_21: valor IVA % 21 en ARS
+- total_real: valor "TOTAL" en mayúsculas en ARS
+- razon_social: razón social del emisor del documento
+- pais_procedencia: buscar "País Origen" o "Pais Origen" en la sección ARCA del documento.
+    Si el valor contiene "212" o "ESTADOS UNIDOS" (en cualquier formato) → devolver "USA".
+    Devolver null si no aparece.
+- fecha: fecha del documento
+
+De la segunda imagen (invoice de BDC Trade Tech LLC) extraer:
+- nro_invoice: valor después de "Invoice #" o "Invoice No"
+- fob_total: total en USD del invoice
+- productos: array con sku (código del proveedor, "" si no figura), descripcion,
+    cantidad, precio_unitario, precio_total
+
+Campos que LHS no tiene — dejar SIEMPRE null:
+  entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios,
+  gastos_administrativos, honorarios, handling, tipo_cambio_2,
+  pos_arancelaria, desc_mercaderia
+
+pa: no viene del documento, se inyecta desde la UI. Devolver null.
+
+{
+  "razon_social": null,
+  "nro_invoice": null,
+  "nro_factura": null,
+  "hawb": null,
+  "fecha": null,
+  "pais_procedencia": null,
+  "pos_arancelaria": null,
+  "desc_mercaderia": null,
+  "fob_total": null,
+  "productos": [
+    {"sku": "", "descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
+  ],
+  "kgs": null,
+  "tipo_cambio_1": null,
+  "tipo_cambio_2": null,
+  "tipo_cambio_3": null,
+  "flete_aereo": null,
+  "entrega_domicilio": null,
+  "resolucion_3244": null,
+  "seguro_internacional": null,
+  "almacenaje": null,
+  "servicios_honorarios": null,
+  "gastos_administrativos": null,
+  "honorarios": null,
+  "handling": null,
+  "iva_aduanero": null,
+  "iva_21": null,
+  "derechos_importacion": null,
+  "tasa_estadistica": null,
+  "pa": null,
+  "total_real": null
+}
+
+Respondé SOLO con el JSON, sin texto adicional ni backticks.
+"""
 
 PROMPT_GUIA_SIXTAR = """
 Analizá este documento de importación de SIXTAR y extraé los siguientes datos en formato JSON.
@@ -558,6 +631,26 @@ def _gemini_vision(api_key: str, data: bytes, mime_type: str, prompt: str | None
         model="gemini-2.5-flash",
         contents=[
             types.Part.from_bytes(data=data, mime_type=mime_type),
+            prompt,
+        ],
+    )
+    return response.text
+
+
+def _gemini_vision_multi(
+    api_key: str,
+    data1: bytes, mime1: str,
+    data2: bytes, mime2: str,
+    prompt: str,
+) -> str:
+    from google import genai
+    from google.genai import types
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            types.Part.from_bytes(data=data1, mime_type=mime1),
+            types.Part.from_bytes(data=data2, mime_type=mime2),
             prompt,
         ],
     )
@@ -1337,6 +1430,189 @@ def _build_courier_panel(
     logger.warning("[DBG] _build_courier_panel END courier=%s", courier_key)
 
 
+# ── LHS panel (dos uploaders: Factura LHS + Invoice BDC) ─────────────────────
+
+def _build_lhs_panel(
+    user_id: int,
+    tabla_ref: list,
+    filas_ref: list,
+    parsed_ref: list,
+    sort_state: list,
+) -> None:
+    archivo_data_lhs1: list = [None]
+    archivo_mime_lhs1: list = [None]
+    archivo_data_lhs2: list = [None]
+    archivo_mime_lhs2: list = [None]
+    uploader_ref1: list = [None]
+    uploader_ref2: list = [None]
+    spin_ref: list = [None]
+    resultado_ref: list = [None]
+
+    with ui.element("div").style(
+        "flex:1;min-width:240px;background:#f8fafc;border:0.5px solid #e2e8f0;"
+        "border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:0"
+    ):
+        ui.label("LHS").style(
+            "font-weight:500;font-size:12px;color:#6b7280;margin-bottom:6px;display:block"
+        )
+        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin-bottom:6px")
+
+        with ui.element("div").style(
+            "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:6px"
+        ):
+            def _on_upload1(e):
+                try:
+                    e.content.seek(0)
+                    archivo_data_lhs1[0] = e.content.read()
+                    archivo_mime_lhs1[0] = e.type
+                except Exception as _ue:
+                    logger.error("_on_upload LHS Factura: %s", _ue)
+
+            def _on_upload2(e):
+                try:
+                    e.content.seek(0)
+                    archivo_data_lhs2[0] = e.content.read()
+                    archivo_mime_lhs2[0] = e.type
+                except Exception as _ue:
+                    logger.error("_on_upload LHS Invoice: %s", _ue)
+
+            _uploader1 = ui.upload(
+                label="Factura LHS",
+                on_upload=_on_upload1,
+                auto_upload=True,
+                max_files=1,
+                max_file_size=20_000_000,
+            ).props('accept=".jpg,.jpeg,.png" flat bordered').style("font-size:12px")
+            uploader_ref1[0] = _uploader1
+
+            _uploader2 = ui.upload(
+                label="Invoice BDC",
+                on_upload=_on_upload2,
+                auto_upload=True,
+                max_files=1,
+                max_file_size=20_000_000,
+            ).props('accept=".jpg,.jpeg,.png" flat bordered').style("font-size:12px")
+            uploader_ref2[0] = _uploader2
+
+            pa_select = ui.select(
+                options=[0, 100, 150, 200, 250, 300],
+                value=200,
+                label="PA",
+            ).props("dense outlined").style("width:80px;font-size:12px")
+
+        ui.element("div").style("border-top:0.5px solid #e2e8f0;margin-bottom:6px")
+
+        with ui.element("div").style(
+            "display:flex;align-items:center;gap:6px;flex-wrap:wrap"
+        ):
+            client = context.client
+
+            async def _analizar_lhs(usar_gemini: bool) -> None:
+                if not archivo_data_lhs1[0]:
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Falta subir la Factura LHS',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not archivo_data_lhs2[0]:
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Falta subir el Invoice BDC',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not usar_gemini:
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'LHS solo soporta análisis con Gemini (imágenes JPG/PNG)',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                gemini_key = get_app_config("gemini_api_key")
+                if not gemini_key:
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+
+                spin_ref[0].set_visibility(True)
+                resultado_ref[0].set_text("")
+                filas_ref[0].clear()
+
+                try:
+                    raw = await run.io_bound(
+                        _gemini_vision_multi,
+                        gemini_key,
+                        archivo_data_lhs1[0], archivo_mime_lhs1[0],
+                        archivo_data_lhs2[0], archivo_mime_lhs2[0],
+                        PROMPT_GUIA_LHS,
+                    )
+                    raw = _clean_json(raw)
+                    try:
+                        parsed = json.loads(raw)
+                        parsed["pa"] = pa_select.value
+                        parsed["courier"] = "LHS"
+                        parsed_ref[0] = parsed
+                        nro_fac = (parsed.get("nro_factura") or "").strip()
+                        if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
+                            _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
+                            client.run_javascript(
+                                f"Quasar.Notify.create({{message:{_msg_dup},"
+                                "color:'warning',icon:'warning',position:'bottom'})"
+                            )
+                        else:
+                            filas_ref[0].clear()
+                            _save_guia(user_id, parsed)
+                            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                            client.run_javascript(
+                                "Quasar.Notify.create({message:'Guía agregada automáticamente',"
+                                "color:'positive',position:'bottom'})"
+                            )
+                            archivo_data_lhs1[0] = None
+                            archivo_mime_lhs1[0] = None
+                            archivo_data_lhs2[0] = None
+                            archivo_mime_lhs2[0] = None
+                            uploader_ref1[0].reset()
+                            uploader_ref2[0].reset()
+                    except json.JSONDecodeError as jde:
+                        logger.error("JSONDecodeError LHS: %s\n%s", jde, traceback.format_exc())
+                        resultado_ref[0].set_text("Error: JSON inválido")
+                except Exception as exc:
+                    logger.error("Error analizando guía LHS: %s\n%s", exc, traceback.format_exc())
+                    _msg_exc = json.dumps(f"Error: {exc}")
+                    client.run_javascript(
+                        f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+                    )
+                finally:
+                    spin_ref[0].set_visibility(False)
+
+            def _click_grok():
+                background_tasks.create(_analizar_lhs(False), name="analizar_LHS_grok")
+
+            def _click_gemini():
+                background_tasks.create(_analizar_lhs(True), name="analizar_LHS_gemini")
+
+            ui.button(
+                "Analizar con Grok",
+                icon="bolt",
+                on_click=_click_grok,
+            ).props("flat dense").style("background:#fff7ed;color:#c2410c;font-size:12px")
+
+            ui.button(
+                "Analizar con Gemini",
+                icon="auto_awesome",
+                on_click=_click_gemini,
+            ).props("flat dense").style("background:#faf5ff;color:#7c3aed;font-size:12px")
+
+            spin = ui.spinner(size="sm").classes("text-blue-500")
+            spin.set_visibility(False)
+            spin_ref[0] = spin
+
+            resultado_txt = ui.label("").style(
+                "font-size:12px;color:#16a34a;font-weight:500"
+            )
+            resultado_ref[0] = resultado_txt
+
+
 # ── Tab principal ─────────────────────────────────────────────────────────────
 
 def build_tab_guias() -> None:
@@ -1380,8 +1656,7 @@ def build_tab_guias() -> None:
             pa_default=150,
         )
         logger.warning("[DBG] build_tab_guias: panel LHS...")
-        _build_courier_panel(
-            "LHS", "LHS", PROMPT_GUIA_LHS,
+        _build_lhs_panel(
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
         )
     logger.warning("[DBG] build_tab_guias: paneles OK")
