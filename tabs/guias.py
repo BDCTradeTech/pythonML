@@ -83,9 +83,103 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
-PROMPT_GUIA_NC     = PROMPT_GUIA
-PROMPT_GUIA_SIXTAR = PROMPT_GUIA
-PROMPT_GUIA_LHS    = PROMPT_GUIA
+PROMPT_GUIA_NC  = PROMPT_GUIA
+PROMPT_GUIA_LHS = PROMPT_GUIA
+
+PROMPT_GUIA_SIXTAR = """
+Analizá este documento de importación de SIXTAR y extraé los siguientes datos en formato JSON.
+Si el dato no existe en el documento, ponelo como null.
+
+ESTRUCTURA DEL DOCUMENTO SIXTAR:
+- Página 1: factura del courier SIXTAR (datos aduaneros y costos en ARS).
+- Página con "Invoice" y "BDC": invoice del proveedor extranjero (en USD, con productos).
+
+razon_social: razón social del courier emisor del documento, en Página 1.
+
+nro_factura: número de factura argentina en Página 1, etiquetado "Factura NRO." o similar.
+  Formato XXXX-XXXXXXXX. NUNCA poner el mismo valor en nro_invoice.
+
+nro_invoice: número de referencia del proveedor, en la página "Invoice / BDC".
+  NUNCA poner el mismo valor en nro_factura.
+
+hawb: en Página 1, parte superior, etiquetado "HAWB" o similar.
+  Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
+
+fecha: fecha del documento en Página 1.
+
+kgs: peso total en kilogramos, etiquetado "Kgs" o similar en Página 1.
+
+tipo_cambio_1: primer tipo de cambio en Página 1, etiquetado "T/Cambio" o "T/C".
+tipo_cambio_2: SIEMPRE null — SIXTAR no tiene segundo tipo de cambio independiente.
+tipo_cambio_3: segundo tipo de cambio en Página 1 (el que aparece junto al primero, si lo hay).
+
+flete_aereo: en Página 1, etiquetado "Flete Internacional". Valor en ARS.
+
+almacenaje: en Página 1, etiquetado "Almacenaje". Valor en ARS.
+
+derechos_importacion: en Página 1, etiquetado "Derechos" o "Derechos de Importación". Valor en ARS.
+  Buscar posicionalmente: es el primer valor del grupo de tributos, dos filas arriba de iva_aduanero.
+  Puede ser 0 si no aplica.
+
+tasa_estadistica: en Página 1, etiquetado "Estadística" o "Tasa Estadística". Valor en ARS.
+  Puede ser 0 si no aplica.
+
+iva_aduanero: en Página 1, etiquetado "IVA % 21" o "IVA Aduanero". Valor en ARS.
+  CAMPO OBLIGATORIO — nunca devolver 0 ni null. Si no encontrás el valor, devolver null
+  para indicar error de lectura, no 0.
+
+iva_21: en Página 1, etiquetado "IVA % 21". Valor en ARS.
+  Si iva_aduanero e iva_21 corresponden al mismo campo del documento, asignar el mismo valor a ambos.
+
+fob_total: total en USD del invoice del proveedor, en la página Invoice/BDC.
+
+productos: array de ítems de la página Invoice/BDC.
+  Campos: sku (código del proveedor, "" si no figura), descripcion, cantidad,
+  precio_unitario, precio_total.
+
+total_real: valor etiquetado "TOTAL" en mayúsculas en Página 1. Gran total en ARS.
+
+pais_procedencia: NO buscar en el documento — proviene de ARCA. Devolver null.
+pos_arancelaria: NO buscar en el documento. Devolver null.
+desc_mercaderia: NO buscar en el documento. Devolver null.
+pa: NO viene del documento — se inyecta desde la UI. Devolver null.
+
+Campos que SIXTAR no incluye — dejar SIEMPRE null:
+  entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, tipo_cambio_2.
+
+{
+  "razon_social": null,
+  "nro_invoice": null,
+  "nro_factura": null,
+  "hawb": null,
+  "fecha": null,
+  "pais_procedencia": null,
+  "pos_arancelaria": null,
+  "desc_mercaderia": null,
+  "fob_total": null,
+  "productos": [
+    {"sku": "", "descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
+  ],
+  "kgs": null,
+  "tipo_cambio_1": null,
+  "tipo_cambio_2": null,
+  "tipo_cambio_3": null,
+  "flete_aereo": null,
+  "entrega_domicilio": null,
+  "resolucion_3244": null,
+  "seguro_internacional": null,
+  "almacenaje": null,
+  "servicios_honorarios": null,
+  "iva_aduanero": null,
+  "iva_21": null,
+  "derechos_importacion": null,
+  "tasa_estadistica": null,
+  "pa": null,
+  "total_real": null
+}
+
+Respondé SOLO con el JSON, sin texto adicional ni backticks.
+"""
 
 _LABELS = {
     "razon_social": "Razón social",
@@ -239,7 +333,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         "SELECT id, razon_social, courier, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
-        "almacenaje, tipo_cambio_3, total_real, productos, created_at "
+        "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
@@ -247,11 +341,13 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
     result = []
     for r in rows:
         flete = _to_float(r["flete_aereo"])
-        kgs = _to_float(r["kgs"])
-        tc3 = _to_float(r["tipo_cambio_3"])
+        kgs   = _to_float(r["kgs"])
+        tc3   = _to_float(r["tipo_cambio_3"])
+        tc1   = _to_float(r["tipo_cambio_1"])
+        tc_for_kg = tc3 if tc3 else tc1
         valor_kg = ""
-        if flete and kgs and tc3 and kgs != 0 and tc3 != 0:
-            valor_kg = f"{flete / kgs / tc3:.2f}"
+        if flete and kgs and tc_for_kg and kgs != 0 and tc_for_kg != 0:
+            valor_kg = f"{flete / kgs / tc_for_kg:.2f}"
 
         iva21_val = _to_float(r["iva_21"])
         almacenaje_float = _to_float(r["almacenaje"])
