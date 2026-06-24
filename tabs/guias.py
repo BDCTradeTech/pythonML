@@ -100,7 +100,9 @@ razon_social: razón social del courier emisor del documento, en Página 1.
 nro_factura: número de factura argentina en Página 1, etiquetado "Factura NRO." o similar.
   Formato XXXX-XXXXXXXX. NUNCA poner el mismo valor en nro_invoice.
 
-nro_invoice: número de referencia del proveedor, en la página "Invoice / BDC".
+nro_invoice: en la página del documento que dice "BDC Trade Tech LLC", buscar la etiqueta
+  "Invoice #" o "Invoice No" seguida del número. Extraer solo el valor numérico/alfanumérico
+  después del # o los dos puntos. Ejemplo: "Invoice # 7493" → nro_invoice = "7493".
   NUNCA poner el mismo valor en nro_factura.
 
 hawb: en Página 1, parte superior, etiquetado "HAWB" o similar.
@@ -116,7 +118,21 @@ tipo_cambio_3: segundo tipo de cambio en Página 1 (el que aparece junto al prim
 
 flete_aereo: en Página 1, etiquetado "Flete Internacional". Valor en ARS.
 
+resolucion_3244: en Página 1, etiquetado "Resolución 3244" o similar. Valor en ARS.
+  Devolver null si no aparece.
+
 almacenaje: en Página 1, etiquetado "Almacenaje". Valor en ARS.
+
+servicios_honorarios: en Página 1, etiquetado "Servicios / Honorarios" o similar. Valor en ARS.
+  Devolver null si no aparece.
+
+gastos_administrativos: en Página 1, etiquetado "Gastos Administrativos" o "Gs. Administrativos".
+  Valor en ARS. Devolver null si no aparece.
+
+honorarios: en Página 1, etiquetado "Honorarios". Valor en ARS. Devolver null si no aparece.
+  IMPORTANTE: este campo es distinto de servicios_honorarios.
+
+handling: en Página 1, etiquetado "Handling". Valor en ARS. Devolver null si no aparece.
 
 derechos_importacion: en Página 1, etiquetado "Derechos" o "Derechos de Importación". Valor en ARS.
   Buscar posicionalmente: es el primer valor del grupo de tributos, dos filas arriba de iva_aduanero.
@@ -146,7 +162,7 @@ desc_mercaderia: NO buscar en el documento. Devolver null.
 pa: NO viene del documento — se inyecta desde la UI. Devolver null.
 
 Campos que SIXTAR no incluye — dejar SIEMPRE null:
-  entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, tipo_cambio_2.
+  entrega_domicilio, seguro_internacional, tipo_cambio_2.
 
 {
   "razon_social": null,
@@ -171,6 +187,9 @@ Campos que SIXTAR no incluye — dejar SIEMPRE null:
   "seguro_internacional": null,
   "almacenaje": null,
   "servicios_honorarios": null,
+  "gastos_administrativos": null,
+  "honorarios": null,
+  "handling": null,
   "iva_aduanero": null,
   "iva_21": null,
   "derechos_importacion": null,
@@ -202,6 +221,9 @@ _LABELS = {
     "seguro_internacional": "Seguro internacional",
     "almacenaje": "Almacenaje",
     "servicios_honorarios": "Servicios / Honorarios",
+    "gastos_administrativos": "Gastos administrativos",
+    "honorarios": "Honorarios",
+    "handling": "Handling",
     "iva_aduanero": "IVA aduanero",
     "iva_21": "IVA 21%",
     "derechos_importacion": "Derechos de importación",
@@ -216,6 +238,7 @@ _SCALAR_COLS = [
     "kgs", "tipo_cambio_1", "tipo_cambio_2", "tipo_cambio_3",
     "flete_aereo", "entrega_domicilio", "resolucion_3244",
     "seguro_internacional", "almacenaje", "servicios_honorarios",
+    "gastos_administrativos", "honorarios", "handling",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
     "pa", "total_real", "courier",
 ]
@@ -295,7 +318,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -303,6 +326,13 @@ def _init_guias_db() -> None:
 
 
 def _save_guia(user_id: int, data: Dict[str, Any]) -> int:
+    raw_courier = (data.get("courier") or "").strip()
+    if "nc supplies" in raw_courier.lower():
+        data = {**data, "courier": "NC Supplies"}
+    elif "sixtar" in raw_courier.lower():
+        data = {**data, "courier": "Sixtar"}
+    elif "lhs" in raw_courier.lower():
+        data = {**data, "courier": "LHS"}
     productos_json = json.dumps(data.get("productos") or [], ensure_ascii=False)
     vals = [str(data.get(c)) if data.get(c) is not None else None for c in _SCALAR_COLS]
     col_str = "user_id, productos, " + ", ".join(_SCALAR_COLS)
@@ -334,7 +364,8 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         "SELECT id, razon_social, courier, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
-        "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at "
+        "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
+        "gastos_administrativos, honorarios, handling "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
@@ -355,17 +386,33 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         almacenaje_kg = None
         if almacenaje_float and dolar_blue and dolar_blue != 0 and kgs and kgs != 0:
             almacenaje_kg = almacenaje_float / dolar_blue / kgs
-        tf_components = [
-            ("flete_aereo",          "Flete aéreo",             _to_float(r["flete_aereo"])),
-            ("entrega_domicilio",    "Entrega a domicilio",     _to_float(r["entrega_domicilio"])),
-            ("resolucion_3244",      "Resolución 3244",         _to_float(r["resolucion_3244"])),
-            ("seguro_internacional", "Seguro internacional",    _to_float(r["seguro_internacional"])),
-            ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
-            ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
-            ("iva_aduanero",         "IVA aduanero",            _to_float(r["iva_aduanero"])),
-            ("derechos_importacion", "Derechos de importación", _to_float(r["derechos_importacion"])),
-            ("tasa_estadistica",     "Tasa estadística",        _to_float(r["tasa_estadistica"])),
-        ]
+        courier_str = (r["courier"] or r["razon_social"] or "").lower()
+        is_sixtar = "sixtar" in courier_str
+        if is_sixtar:
+            tf_components = [
+                ("flete_aereo",            "Flete Internacional",     _to_float(r["flete_aereo"])),
+                ("resolucion_3244",        "Resolución 3244",         _to_float(r["resolucion_3244"])),
+                ("almacenaje",             "Almacenaje",              _to_float(r["almacenaje"])),
+                ("servicios_honorarios",   "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
+                ("gastos_administrativos", "Gastos Administrativos",  _to_float(r["gastos_administrativos"])),
+                ("honorarios",             "Honorarios",              _to_float(r["honorarios"])),
+                ("handling",               "Handling",                _to_float(r["handling"])),
+                ("derechos_importacion",   "Derechos de Importación", _to_float(r["derechos_importacion"])),
+                ("tasa_estadistica",       "Tasa Estadística",        _to_float(r["tasa_estadistica"])),
+                ("iva_aduanero",           "IVA Aduanero",            _to_float(r["iva_aduanero"])),
+            ]
+        else:
+            tf_components = [
+                ("flete_aereo",          "Flete aéreo",             _to_float(r["flete_aereo"])),
+                ("entrega_domicilio",    "Entrega a domicilio",     _to_float(r["entrega_domicilio"])),
+                ("resolucion_3244",      "Resolución 3244",         _to_float(r["resolucion_3244"])),
+                ("seguro_internacional", "Seguro internacional",    _to_float(r["seguro_internacional"])),
+                ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
+                ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
+                ("iva_aduanero",         "IVA aduanero",            _to_float(r["iva_aduanero"])),
+                ("derechos_importacion", "Derechos de importación", _to_float(r["derechos_importacion"])),
+                ("tasa_estadistica",     "Tasa estadística",        _to_float(r["tasa_estadistica"])),
+            ]
         total_factura = sum(v for _, _, v in tf_components if v is not None)
 
         pa_val = _to_float(r["pa"])
