@@ -112,9 +112,9 @@ fecha: fecha del documento en Página 1.
 
 kgs: peso total en kilogramos, etiquetado "Kgs" o similar en Página 1.
 
-tipo_cambio_1: primer tipo de cambio en Página 1, etiquetado "T/Cambio" o "T/C".
+tipo_cambio_3: primer tipo de cambio en Página 1, etiquetado "T/Cambio" o "T/C".
 tipo_cambio_2: SIEMPRE null — SIXTAR no tiene segundo tipo de cambio independiente.
-tipo_cambio_3: segundo tipo de cambio en Página 1 (el que aparece junto al primero, si lo hay).
+tipo_cambio_1: segundo tipo de cambio en Página 1 (el que aparece junto al primero, si lo hay).
 
 flete_aereo: en Página 1, etiquetado "Flete Internacional". Valor en ARS.
 
@@ -156,7 +156,10 @@ productos: array de ítems de la página Invoice/BDC.
 
 total_real: valor etiquetado "TOTAL" en mayúsculas en Página 1. Gran total en ARS.
 
-pais_procedencia: NO buscar en el documento — proviene de ARCA. Devolver null.
+pais_procedencia: en la página de ARCA, buscar el campo "País Origen" o "Pais Origen".
+  Si el valor contiene "212" o "ESTADOS UNIDOS" (en cualquier formato, ej: "212-ESTADOS UNIDOS",
+  "212 - ESTADOS UNIDOS", "ESTADOS UNIDOS DE AMERICA") → devolver "USA".
+  Devolver null si no aparece.
 pos_arancelaria: NO buscar en el documento. Devolver null.
 desc_mercaderia: NO buscar en el documento. Devolver null.
 pa: NO viene del documento — se inyecta desde la UI. Devolver null.
@@ -393,7 +396,6 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
                 ("flete_aereo",            "Flete Internacional",     _to_float(r["flete_aereo"])),
                 ("resolucion_3244",        "Resolución 3244",         _to_float(r["resolucion_3244"])),
                 ("almacenaje",             "Almacenaje",              _to_float(r["almacenaje"])),
-                ("servicios_honorarios",   "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
                 ("gastos_administrativos", "Gastos Administrativos",  _to_float(r["gastos_administrativos"])),
                 ("honorarios",             "Honorarios",              _to_float(r["honorarios"])),
                 ("handling",               "Handling",                _to_float(r["handling"])),
@@ -780,9 +782,9 @@ def _rebuild_tabla(
                         with ui.element("div").classes("pa-chip").on("click", _pa_click):
                             ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:11px;color:#0C447C")
                             ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>')
-                    # Origen — ESTADOS UNIDOS → USA
+                    # Origen — ESTADOS UNIDOS / 212 → USA
                     _origen = r["pais_procedencia"]
-                    if _origen and "estados uni" in _origen.lower():
+                    if _origen and ("estados uni" in _origen.lower() or "212" in _origen):
                         _origen = "USA"
                     ui.label(_origen).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
@@ -1152,6 +1154,7 @@ def _build_courier_panel(
     filas_ref: list,
     parsed_ref: list,
     sort_state: list,
+    pa_default: int = 200,
 ) -> None:
     logger.warning("[DBG] _build_courier_panel START courier=%s", courier_key)
     archivo_data: list = [None]
@@ -1191,7 +1194,7 @@ def _build_courier_panel(
 
             pa_select = ui.select(
                 options=[0, 100, 150, 200, 250, 300],
-                value=200,
+                value=pa_default,
                 label="PA",
             ).props("dense outlined").style("width:80px;font-size:12px")
 
@@ -1368,11 +1371,13 @@ def build_tab_guias() -> None:
         _build_courier_panel(
             "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+            pa_default=250,
         )
         logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
         _build_courier_panel(
             "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
             user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+            pa_default=150,
         )
         logger.warning("[DBG] build_tab_guias: panel LHS...")
         _build_courier_panel(
