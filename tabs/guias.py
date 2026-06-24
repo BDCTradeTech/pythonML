@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 import requests as _requests
 from nicegui import app, run, ui
 
-from db import get_app_config, get_connection
+from db import get_app_config, get_connection, get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +35,10 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 - fob_total: total en USD del proveedor extranjero (balance due del invoice, importe total en dólares).
 - Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: tomar el valor de la ÚLTIMA columna numérica del documento, que representa el importe en pesos argentinos ($). IGNORAR la primera columna que está en dólares (USD o u$s).
 - En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento, buscar en este orden de arriba hacia abajo:
-  1. Derechos de Importación → derechos_importacion
+  1. Derechos de Importación → derechos_importacion (etiquetas posibles: "Derechos de Importación", "Der. Importación", "Derechos Imp.", "D. Importación")
   2. Tasa Estadística → tasa_estadistica
   3. IVA Aduanero → iva_aduanero
+  IMPORTANTE: estos tres campos siempre aparecen juntos en ese recuadro. Si tasa_estadistica e iva_aduanero tienen valor > 0, derechos_importacion también debería tener un valor — releer el recuadro antes de devolver 0 o null.
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 - hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
@@ -112,9 +113,9 @@ _SCALAR_COLS = [
 
 _TABLE_HEADERS = [
     "Courier", "HAWB", "PA", "Fecha", "Origen", "Invoice Nro",
-    "FOB Total", "Peso Total", "Derechos", "Estadísticas", "IVA Aduanero",
-    "Flete Aduanero", "Almacenaje", "Total", "Valor Kg", "Dolar",
-    "Traida Total", "Costo s/IVA", "Total Traida %", "",
+    "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
+    "Flete Aduanero", "Almacenaje", "Total Factura", "Valor Kg", "Dolar",
+    "Traída u$s s/IVA", "Costo s/IVA", "Total Traída %", "",
 ]
 
 _TABLE_COLS = (
@@ -193,10 +194,12 @@ def _to_float(v: Any) -> float | None:
 
 
 def _list_guias(user_id: int) -> List[Dict[str, Any]]:
+    dolar_blue = get_setting("dolar_blue")
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, flete_aereo, "
+        "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_3, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
@@ -210,6 +213,26 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         valor_kg = ""
         if flete and kgs and tc3 and kgs != 0 and tc3 != 0:
             valor_kg = f"{flete / kgs / tc3:.2f}"
+
+        tf_components = [
+            ("flete_aereo",          "Flete aéreo",             _to_float(r["flete_aereo"])),
+            ("entrega_domicilio",    "Entrega a domicilio",     _to_float(r["entrega_domicilio"])),
+            ("resolucion_3244",      "Resolución 3244",         _to_float(r["resolucion_3244"])),
+            ("seguro_internacional", "Seguro internacional",    _to_float(r["seguro_internacional"])),
+            ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
+            ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
+            ("iva_aduanero",         "IVA aduanero",            _to_float(r["iva_aduanero"])),
+            ("derechos_importacion", "Derechos de importación", _to_float(r["derechos_importacion"])),
+            ("tasa_estadistica",     "Tasa estadística",        _to_float(r["tasa_estadistica"])),
+        ]
+        total_factura = sum(v for _, _, v in tf_components if v is not None)
+
+        pa_val = _to_float(r["pa"])
+        iva_val = _to_float(r["iva_aduanero"])
+        traida_usd = None
+        if dolar_blue and dolar_blue != 0 and pa_val is not None:
+            traida_usd = (total_factura + (pa_val * dolar_blue) - (iva_val or 0.0)) / dolar_blue
+
         result.append({
             "id": r["id"],
             "razon_social": r["razon_social"] or "",
@@ -227,6 +250,9 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "almacenaje": r["almacenaje"] or "",
             "valor_kg": valor_kg,
             "tipo_cambio_3": r["tipo_cambio_3"] or "",
+            "total_factura": total_factura,
+            "tf_components": tf_components,
+            "traida_usd": traida_usd,
         })
     return result
 
@@ -310,6 +336,28 @@ def _clean_json(raw: str) -> str:
     return raw.strip()
 
 
+# ── Formato numérico ──────────────────────────────────────────────────────────
+
+def _fmt_ars(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        n = round(float(v))
+        return "$" + f"{n:,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return "—"
+
+
+def _fmt_usd(v) -> str:
+    if v is None:
+        return "—"
+    try:
+        n = round(float(v))
+        return "u$s " + f"{n:,}".replace(",", ".")
+    except (ValueError, TypeError):
+        return "—"
+
+
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
 def _render_campos(data: Dict[str, Any]) -> None:
@@ -372,19 +420,23 @@ def _rebuild_tabla(
             return
 
         with ui.element("div").style("overflow-x:auto;width:100%"):
+            # CAMBIO 5: min-height doble para que textos largos quepan en 2 líneas
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
                 "gap:4px;padding:6px 8px;"
                 "background:#f1f5f9;border-radius:6px 6px 0 0;"
                 "border:0.5px solid #e2e8f0;"
                 "font-size:10px;font-weight:600;color:#6b7280;"
-                "align-items:center;min-width:1700px"
+                "align-items:center;min-width:1700px;min-height:44px"
             ):
                 for h in _TABLE_HEADERS:
-                    ui.label(h)
+                    ui.label(h).style(
+                        "white-space:normal;word-break:break-word;line-height:1.3"
+                    )
 
             for r in rows:
                 rid = r["id"]
+                tf_comps = r["tf_components"]
 
                 with ui.element("div").style(
                     f"display:grid;grid-template-columns:{_TABLE_COLS};"
@@ -399,7 +451,8 @@ def _rebuild_tabla(
                     ui.label(r["hawb"]).style(
                         "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
-                    ui.label(r["pa"]).style("white-space:nowrap;text-align:center")
+                    # CAMBIO 6: PA con formato u$s
+                    ui.label(_fmt_usd(r["pa"])).style("white-space:nowrap;text-align:center")
                     ui.label(r["fecha"]).style("white-space:nowrap")
                     ui.label(r["pais_procedencia"]).style(
                         "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -407,21 +460,44 @@ def _rebuild_tabla(
                     ui.label(r["nro_invoice"]).style(
                         "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     )
-                    ui.label(r["fob_total"]).style("white-space:nowrap;text-align:right")
+                    # CAMBIO 6: FOB Total con formato u$s
+                    ui.label(_fmt_usd(r["fob_total"])).style("white-space:nowrap;text-align:right")
                     ui.label(r["kgs"]).style("white-space:nowrap;text-align:right")
-                    ui.label(r["derechos_importacion"]).style("white-space:nowrap;text-align:right")
-                    ui.label(r["tasa_estadistica"]).style("white-space:nowrap;text-align:right")
-                    ui.label(r["iva_aduanero"]).style("white-space:nowrap;text-align:right")
-                    ui.label(r["flete_aereo"]).style("white-space:nowrap;text-align:right")
+                    # CAMBIO 7: columnas ARS
+                    ui.label(_fmt_ars(r["derechos_importacion"])).style(
+                        "white-space:nowrap;text-align:right"
+                    )
+                    ui.label(_fmt_ars(r["tasa_estadistica"])).style(
+                        "white-space:nowrap;text-align:right"
+                    )
+                    ui.label(_fmt_ars(r["iva_aduanero"])).style(
+                        "white-space:nowrap;text-align:right"
+                    )
+                    ui.label(_fmt_ars(r["flete_aereo"])).style(
+                        "white-space:nowrap;text-align:right"
+                    )
                     ui.label(r["almacenaje"]).style("white-space:nowrap;text-align:right")
-                    ui.label("-").style("white-space:nowrap;text-align:right;color:#9ca3af")
+                    # CAMBIO 3: Total Factura calculado + botón ℹ con detalle por fila
+                    with ui.element("div").style(
+                        "display:flex;align-items:center;justify-content:flex-end;gap:2px"
+                    ):
+                        ui.label(_fmt_ars(r["total_factura"])).style("white-space:nowrap")
+                        ui.button(
+                            icon="info_outline",
+                            on_click=lambda tf=tf_comps: _show_total_factura_dialog(tf),
+                        ).props("flat dense round").style(
+                            "color:#9ca3af;width:18px;height:18px;min-width:18px;font-size:10px"
+                        )
                     ui.label(r["valor_kg"]).style(
                         "white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600"
                     )
                     ui.label(r["tipo_cambio_3"]).style("white-space:nowrap;text-align:right")
-                    ui.label("-").style("white-space:nowrap;text-align:right;color:#9ca3af")
-                    ui.label("-").style("white-space:nowrap;text-align:right;color:#9ca3af")
-                    ui.label("-").style("white-space:nowrap;text-align:right;color:#9ca3af")
+                    # CAMBIO 4: Traída u$s s/IVA calculada
+                    ui.label(
+                        _fmt_usd(r["traida_usd"]) if r["traida_usd"] is not None else "—"
+                    ).style("white-space:nowrap;text-align:right")
+                    ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
+                    ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
                     with ui.row().classes("gap-0").style("justify-content:center"):
                         ui.button(
                             icon="visibility",
@@ -505,6 +581,32 @@ def _show_del_dialog(
     d.open()
 
 
+def _show_total_factura_dialog(tf_components: list) -> None:
+    with ui.dialog() as d, ui.card().style("padding:20px;min-width:340px"):
+        ui.label("Detalle Total Factura").style(
+            "font-size:14px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
+        )
+        for _, label, val in tf_components:
+            with ui.element("div").style(
+                "display:flex;justify-content:space-between;align-items:center;"
+                "padding:4px 0;border-bottom:0.5px solid #f1f5f9;gap:16px"
+            ):
+                ui.label(label).style("font-size:13px;color:#6b7280")
+                ui.label(_fmt_ars(val) if val is not None else "—").style(
+                    "font-size:13px;color:#374151"
+                )
+        total = sum(v for _, _, v in tf_components if v is not None)
+        with ui.element("div").style(
+            "display:flex;justify-content:space-between;padding:6px 0;margin-top:4px"
+        ):
+            ui.label("Total").style("font-size:13px;font-weight:600;color:#374151")
+            ui.label(_fmt_ars(total)).style("font-size:13px;font-weight:600;color:#374151")
+        ui.button("Cerrar", on_click=d.close).props("flat").style(
+            "margin-top:8px;color:#374151"
+        )
+    d.open()
+
+
 # ── Tab principal ─────────────────────────────────────────────────────────────
 
 def build_tab_guias() -> None:
@@ -522,7 +624,6 @@ def build_tab_guias() -> None:
     spin_ref: list = [None]
     resultado_ref: list = [None]
     filas_ref: list = [None]
-    guardar_btn_ref: list = [None]
     tabla_ref: list = [None]
     nombre_lbl_ref: list = [None]
 
@@ -612,7 +713,6 @@ def build_tab_guias() -> None:
                 spin_ref[0].set_visibility(True)
                 resultado_ref[0].set_text("")
                 filas_ref[0].clear()
-                guardar_btn_ref[0].disable()
 
                 try:
                     if usar_gemini:
@@ -636,7 +736,6 @@ def build_tab_guias() -> None:
                         parsed["pa"] = pa_select.value
                         parsed_ref[0] = parsed
                         filas_ref[0].clear()
-                        guardar_btn_ref[0].enable()
                         _save_guia(user_id, parsed)
                         _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
                         resultado_ref[0].set_text("✓ Guía guardada")
@@ -660,23 +759,6 @@ def build_tab_guias() -> None:
                 icon="auto_awesome",
                 on_click=lambda: _analizar(True),
             ).props("flat dense").style("background:#faf5ff;color:#7c3aed;font-size:12px")
-
-            def _guardar():
-                if not parsed_ref[0]:
-                    ui.notify("Primero analizá un documento", color="warning")
-                    return
-                parsed_ref[0]["pa"] = pa_select.value
-                _save_guia(user_id, parsed_ref[0])
-                ui.notify("Guía guardada correctamente", color="positive")
-                _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
-
-            guardar_btn = ui.button(
-                "Guardar (manual)",
-                icon="save",
-                on_click=_guardar,
-            ).props("flat dense").style("background:#f0fdf4;color:#166534;font-size:12px")
-            guardar_btn.disable()
-            guardar_btn_ref[0] = guardar_btn
 
             spin = ui.spinner(size="sm").classes("text-blue-500")
             spin.set_visibility(False)
