@@ -34,11 +34,13 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 - desc_mercaderia: descripción de mercadería según el documento ARCA/aduana.
 - fob_total: total en USD del proveedor extranjero (balance due del invoice, importe total en dólares).
 - Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y servicios_honorarios: tomar el valor de la ÚLTIMA columna numérica del documento, que representa el importe en pesos argentinos ($). IGNORAR la primera columna que está en dólares (USD o u$s).
-- En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento, buscar en este orden de arriba hacia abajo:
-  1. Derechos de Importación → derechos_importacion (etiquetas posibles: "Derechos de Importación", "Der. Importación", "Derechos Imp.", "D. Importación")
-  2. Tasa Estadística → tasa_estadistica
-  3. IVA Aduanero → iva_aduanero
-  IMPORTANTE: estos tres campos siempre aparecen juntos en ese recuadro. Si tasa_estadistica e iva_aduanero tienen valor > 0, derechos_importacion también debería tener un valor — releer el recuadro antes de devolver 0 o null.
+- En el recuadro o tabla separada ubicada en la parte INFERIOR IZQUIERDA del documento hay exactamente 3 valores en la columna "Importe", de arriba hacia abajo:
+  1. derechos_importacion (primer valor, el más alto del recuadro)
+  2. tasa_estadistica (segundo valor)
+  3. iva_aduanero (tercer valor, el más bajo del recuadro)
+  MÉTODO POSICIONAL: si ya encontraste iva_aduanero (ítem 3), entonces derechos_importacion es el valor que está DOS filas arriba de él en ese mismo recuadro, independientemente de cómo esté etiquetado. No uses solo la etiqueta para identificarlo.
+  Etiquetas posibles como referencia (no como único criterio): "Derechos de Importación", "Der. Importación", "Derechos Imp.", "D. Importación", "Der. Imp.", "Dcho. Importación", "Derechos".
+  IMPORTANTE: si iva_aduanero > 0 y derechos_importacion sigue siendo 0 o null, releer el recuadro usando la posición relativa descrita arriba.
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 - hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
@@ -229,9 +231,22 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
 
         pa_val = _to_float(r["pa"])
         iva_val = _to_float(r["iva_aduanero"])
+        fob_val = _to_float(r["fob_total"])
         traida_usd = None
         if dolar_blue and dolar_blue != 0 and pa_val is not None:
             traida_usd = (total_factura + (pa_val * dolar_blue) - (iva_val or 0.0)) / dolar_blue
+
+        total_traida_pct = None
+        if fob_val and fob_val != 0 and traida_usd is not None:
+            total_traida_pct = traida_usd / fob_val
+
+        traida_breakdown = {
+            "total_factura": total_factura,
+            "pa_val": pa_val,
+            "iva_val": iva_val or 0.0,
+            "dolar_blue": dolar_blue,
+            "traida_usd": traida_usd,
+        }
 
         result.append({
             "id": r["id"],
@@ -253,6 +268,8 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "total_factura": total_factura,
             "tf_components": tf_components,
             "traida_usd": traida_usd,
+            "total_traida_pct": total_traida_pct,
+            "traida_breakdown": traida_breakdown,
         })
     return result
 
@@ -437,6 +454,7 @@ def _rebuild_tabla(
             for r in rows:
                 rid = r["id"]
                 tf_comps = r["tf_components"]
+                traida_bd = r["traida_breakdown"]
 
                 with ui.element("div").style(
                     f"display:grid;grid-template-columns:{_TABLE_COLS};"
@@ -477,27 +495,40 @@ def _rebuild_tabla(
                         "white-space:nowrap;text-align:right"
                     )
                     ui.label(r["almacenaje"]).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 3: Total Factura calculado + botón ℹ con detalle por fila
-                    with ui.element("div").style(
-                        "display:flex;align-items:center;justify-content:flex-end;gap:2px"
-                    ):
-                        ui.label(_fmt_ars(r["total_factura"])).style("white-space:nowrap")
+                    # CAMBIO 2: Total Factura como hipervínculo clickeable
+                    with ui.element("div").style("display:flex;justify-content:flex-end"):
                         ui.button(
-                            icon="info_outline",
+                            _fmt_ars(r["total_factura"]),
                             on_click=lambda tf=tf_comps: _show_total_factura_dialog(tf),
-                        ).props("flat dense round").style(
-                            "color:#9ca3af;width:18px;height:18px;min-width:18px;font-size:10px"
+                        ).props("flat dense").style(
+                            "color:#1d4ed8;font-size:11px;white-space:nowrap;"
+                            "padding:0 2px;min-height:0;text-decoration:underline"
                         )
                     ui.label(r["valor_kg"]).style(
                         "white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600"
                     )
                     ui.label(r["tipo_cambio_3"]).style("white-space:nowrap;text-align:right")
-                    # CAMBIO 4: Traída u$s s/IVA calculada
+                    # CAMBIO 3: Traída u$s s/IVA como hipervínculo clickeable
+                    if r["traida_usd"] is not None:
+                        with ui.element("div").style("display:flex;justify-content:flex-end"):
+                            ui.button(
+                                _fmt_usd(r["traida_usd"]),
+                                on_click=lambda bd=traida_bd: _show_traida_dialog(bd),
+                            ).props("flat dense").style(
+                                "color:#1d4ed8;font-size:11px;white-space:nowrap;"
+                                "padding:0 2px;min-height:0;text-decoration:underline"
+                            )
+                    else:
+                        ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
+                    # CAMBIO 5: Costo s/IVA = traida_usd (matemáticamente equivalente)
                     ui.label(
                         _fmt_usd(r["traida_usd"]) if r["traida_usd"] is not None else "—"
                     ).style("white-space:nowrap;text-align:right")
-                    ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
-                    ui.label("—").style("white-space:nowrap;text-align:right;color:#9ca3af")
+                    # CAMBIO 4: Total Traída %
+                    pct = r["total_traida_pct"]
+                    ui.label(
+                        f"{pct * 100:.1f}%" if pct is not None else "—"
+                    ).style("white-space:nowrap;text-align:right")
                     with ui.row().classes("gap-0").style("justify-content:center"):
                         ui.button(
                             icon="visibility",
@@ -603,6 +634,66 @@ def _show_total_factura_dialog(tf_components: list) -> None:
             ui.label(_fmt_ars(total)).style("font-size:13px;font-weight:600;color:#374151")
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:8px;color:#374151"
+        )
+    d.open()
+
+
+def _show_traida_dialog(breakdown: dict) -> None:
+    tf = breakdown["total_factura"]
+    pa_val = breakdown["pa_val"]
+    iva_val = breakdown["iva_val"]
+    dolar_blue = breakdown["dolar_blue"]
+    traida_usd = breakdown["traida_usd"]
+
+    with ui.dialog() as d, ui.card().style("padding:20px;min-width:380px"):
+        ui.label("Detalle Traída u$s s/IVA").style(
+            "font-size:14px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
+        )
+
+        def _fila(label: str, val_str: str) -> None:
+            with ui.element("div").style(
+                "display:flex;justify-content:space-between;align-items:center;"
+                "padding:4px 0;border-bottom:0.5px solid #f1f5f9;gap:16px"
+            ):
+                ui.label(label).style("font-size:13px;color:#6b7280;flex-shrink:0")
+                ui.label(val_str).style("font-size:13px;color:#374151;text-align:right")
+
+        _fila("Total Factura (ARS)", _fmt_ars(tf))
+        if pa_val is not None and dolar_blue:
+            pa_ars = pa_val * dolar_blue
+            pa_str = f"{_fmt_usd(pa_val)} × {_fmt_ars(dolar_blue)} = {_fmt_ars(pa_ars)}"
+        else:
+            pa_str = "—"
+        _fila("PA en ARS (pa × dólar blue)", pa_str)
+        _fila("IVA Aduanero restado (ARS)", _fmt_ars(iva_val) if iva_val else "—")
+        _fila("Dólar blue usado", _fmt_ars(dolar_blue) if dolar_blue else "—")
+
+        with ui.element("div").style(
+            "display:flex;justify-content:space-between;align-items:center;"
+            "border-top:1px solid #e2e8f0;padding-top:8px;margin-top:6px"
+        ):
+            if traida_usd is not None and pa_val is not None and dolar_blue:
+                pa_ars = pa_val * dolar_blue
+                formula = (
+                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)} − {_fmt_ars(iva_val)}) "
+                    f"÷ {_fmt_ars(dolar_blue)}"
+                )
+            else:
+                formula = ""
+            with ui.element("div"):
+                ui.label("Traída u$s s/IVA").style(
+                    "font-size:13px;font-weight:600;color:#374151;display:block"
+                )
+                if formula:
+                    ui.label(formula).style(
+                        "font-size:10px;color:#9ca3af;word-break:break-word;display:block"
+                    )
+            ui.label(_fmt_usd(traida_usd) if traida_usd is not None else "—").style(
+                "font-size:13px;font-weight:600;color:#374151;white-space:nowrap"
+            )
+
+        ui.button("Cerrar", on_click=d.close).props("flat").style(
+            "margin-top:10px;color:#374151"
         )
     d.open()
 
