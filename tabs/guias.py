@@ -483,7 +483,7 @@ def _rebuild_tabla(
                     "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
                     "font-size:10px;font-weight:600;color:#6b7280;"
                     "white-space:normal;word-break:break-word;line-height:1.3;"
-                    "min-height:44px;display:flex;align-items:center"
+                    "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center"
                 )
                 for h in _TABLE_HEADERS:
                     ui.label(h).style(_hs)
@@ -509,35 +509,35 @@ def _rebuild_tabla(
                     else:
                         nro_fac_disp = nro_fac or "—"
                     ui.label(nro_fac_disp).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
                     # HAWB
                     ui.label(r["hawb"]).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
                     # PA
                     ui.label(_fmt_usd(r["pa"])).style(
                         f"{_ct};white-space:nowrap;text-align:center"
                     )
                     # Fecha
-                    ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap")
+                    ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Origen — ESTADOS UNIDOS → USA
                     _origen = r["pais_procedencia"]
                     if _origen and "estados uni" in _origen.lower():
                         _origen = "USA"
                     ui.label(_origen).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
                     # Invoice Nro
                     ui.label(r["nro_invoice"]).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
                     # FOB Total
                     ui.label(_fmt_usd(r["fob_total"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
                     )
                     # Peso Total
-                    ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:right")
+                    ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Derechos
                     ui.label(_fmt_ars(r["derechos_importacion"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
@@ -575,11 +575,11 @@ def _rebuild_tabla(
                     # Almacenaje / KG
                     alm_kg = r.get("almacenaje_kg")
                     ui.label(f"u$s {alm_kg:.2f}" if alm_kg is not None else "—").style(
-                        f"{_ct};white-space:nowrap;text-align:right;color:#1d4ed8"
+                        f"{_ct};white-space:nowrap;text-align:center;color:#1d4ed8"
                     )
                     # Valor Kg
                     ui.label(f"u$s {r['valor_kg']}" if r["valor_kg"] else "—").style(
-                        f"{_ct};white-space:nowrap;text-align:right;color:#1d4ed8"
+                        f"{_ct};white-space:nowrap;text-align:center;color:#1d4ed8"
                     )
                     # Dolar
                     ui.label(_fmt_ars(r["tipo_cambio_3"])).style(f"{_ct};white-space:nowrap;text-align:right")
@@ -607,8 +607,8 @@ def _rebuild_tabla(
                     # Total Traída %
                     pct = r["total_traida_pct"]
                     ui.label(
-                        f"{pct * 100:.1f}%" if pct is not None else "—"
-                    ).style(f"{_ct};white-space:nowrap;text-align:right;color:#1d4ed8;font-weight:600")
+                        f"{pct * 100:.2f}%" if pct is not None else "—"
+                    ).style(f"{_ct};white-space:nowrap;text-align:center;color:#1d4ed8;font-weight:600")
                     # Acciones
                     with ui.row().classes("gap-0").style(
                         f"justify-content:center;{_sep};padding:3px 0"
@@ -908,7 +908,6 @@ def build_tab_guias() -> None:
                         filas_ref[0].clear()
                         _save_guia(user_id, parsed)
                         _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
-                        resultado_ref[0].set_text("✓ Guía agregada")
                         ui.notify("Guía agregada automáticamente", color="positive")
                         archivo_data[0] = None
                         archivo_mime[0] = None
