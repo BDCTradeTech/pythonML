@@ -47,6 +47,7 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 - Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
 - Para kgs: buscar el peso total en kilogramos.
 - hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico, sin los dos puntos ni espacios.
+- Para el array `productos`: el campo `sku` es el código o referencia del artículo según el invoice del proveedor (puede aparecer como SKU, Part No, Part Number, Item Code, Ref., P/N, Model, etc.). Si no figura en el documento, usar string vacío "".
 
 {
   "razon_social": null,
@@ -59,7 +60,7 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
   "desc_mercaderia": null,
   "fob_total": null,
   "productos": [
-    {"descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
+    {"sku": "", "descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
   ],
   "kgs": null,
   "tipo_cambio_1": null,
@@ -130,7 +131,7 @@ _TABLE_HEADERS = [
 _TABLE_COLS = (
     "1.4fr 0.9fr 0.8fr 0.5fr 0.7fr 0.8fr 0.9fr "
     "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 64px"
+    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
 )
 
 
@@ -209,7 +210,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         "SELECT id, razon_social, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
-        "almacenaje, tipo_cambio_3, total_real, created_at "
+        "almacenaje, tipo_cambio_3, total_real, productos, created_at "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
@@ -296,6 +297,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             "traida_breakdown": traida_breakdown,
             "total_real": r["total_real"] or "",
             "almacenaje_kg": almacenaje_kg,
+            "productos": json.loads(r["productos"] or "[]") if r["productos"] else [],
         })
     return result
 
@@ -498,6 +500,27 @@ def _rebuild_tabla(
                     traida_bd = r["traida_breakdown"]
                     iv21 = r["iva_21_val"]
 
+                    det_id = f"guia-det-{rid}"
+                    ico_id = f"guia-ico-{rid}"
+
+                    def _toggle_row(did=det_id, iid=ico_id):
+                        ui.run_javascript(f"""
+                            (function() {{
+                                var det = document.querySelector('.{did}');
+                                var icoEl = document.querySelector('.{iid}');
+                                if (!det) return;
+                                var isOpen = det.style.display !== 'none' && det.style.display !== '';
+                                det.style.display = isOpen ? 'none' : 'block';
+                                if (icoEl) {{
+                                    var qIcon = icoEl.querySelector('.q-icon');
+                                    if (qIcon) {{
+                                        qIcon.style.transition = 'transform 0.2s';
+                                        qIcon.style.transform = isOpen ? '' : 'rotate(90deg)';
+                                    }}
+                                }}
+                            }})();
+                        """)
+
                     # Courier
                     ui.label(r["razon_social"]).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -613,6 +636,11 @@ def _rebuild_tabla(
                     with ui.row().classes("gap-0").style(
                         f"justify-content:center;{_sep};padding:3px 0"
                     ):
+                        with ui.element("div").classes(ico_id).style("display:inline-flex"):
+                            ui.button(
+                                icon="chevron_right",
+                                on_click=_toggle_row,
+                            ).props("flat dense").style("color:#6b7280;min-width:28px")
                         ui.button(
                             icon="visibility",
                             on_click=lambda rid=rid: _show_ver_dialog(rid, user_id),
@@ -623,6 +651,48 @@ def _rebuild_tabla(
                                 rid, user_id, tabla_container, filas_ref, parsed_ref
                             ),
                         ).props("flat dense").style("color:#dc2626;min-width:28px")
+                    # Fila expandible — abarca todas las columnas del grid
+                    det_productos = r.get("productos") or []
+                    with ui.element("div").classes(det_id).style(
+                        "grid-column:1/-1;display:none;padding:4px 12px 8px 32px"
+                    ):
+                        if not det_productos:
+                            ui.label("Sin productos registrados").style(
+                                "font-size:11px;color:#9ca3af;font-style:italic;padding:4px 0"
+                            )
+                        else:
+                            _sub_cols = "0.8fr 3fr 0.5fr 1fr 1fr"
+                            with ui.element("div").style(
+                                f"display:grid;grid-template-columns:{_sub_cols};"
+                                "column-gap:4px;border:1px solid #bfdbfe;"
+                                "border-radius:6px;overflow:hidden"
+                            ):
+                                _sh2 = (
+                                    "padding:5px 6px;background:#E6F1FB;font-size:10px;"
+                                    "font-weight:600;color:#1d4ed8;text-align:center"
+                                )
+                                for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Total"]:
+                                    ui.label(_h).style(_sh2)
+                                _sp2 = (
+                                    "padding:4px 6px;font-size:11px;color:#374151;"
+                                    "border-top:0.5px solid #e0edff"
+                                )
+                                for prod in det_productos:
+                                    pu_f = _to_float(prod.get("precio_unitario"))
+                                    pt_f = _to_float(prod.get("precio_total"))
+                                    ui.label(str(prod.get("sku") or "—")).style(
+                                        f"{_sp2};text-align:center"
+                                    )
+                                    ui.label(str(prod.get("descripcion") or "—")).style(_sp2)
+                                    ui.label(str(prod.get("cantidad") or "—")).style(
+                                        f"{_sp2};text-align:center"
+                                    )
+                                    ui.label(
+                                        f"u$s {pu_f:.2f}" if pu_f is not None else "—"
+                                    ).style(f"{_sp2};text-align:right")
+                                    ui.label(
+                                        f"u$s {pt_f:.2f}" if pt_f is not None else "—"
+                                    ).style(f"{_sp2};text-align:right")
 
 
 # ── Dialog helpers ────────────────────────────────────────────────────────────
