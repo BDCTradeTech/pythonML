@@ -122,17 +122,42 @@ _SCALAR_COLS = [
 ]
 
 _TABLE_HEADERS = [
-    "Courier", "Factura", "HAWB", "PA", "Fecha", "Origen", "Invoice Nro",
+    "Fecha", "Courier", "Factura", "HAWB", "PA", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
     "Flete Aduanero", "Almacenaje", "Total Factura", "Total real", "Alm/KG", "Valor Kg", "Dolar",
     "Traída u$ s/IVA", "Costo s/IVA", "Total Traída %", "",
 ]
 
 _TABLE_COLS = (
-    "1.4fr 0.9fr 0.8fr 0.5fr 0.7fr 0.8fr 0.9fr "
+    "0.7fr 1.4fr 0.9fr 0.8fr 0.5fr 0.8fr 0.9fr "
     "0.7fr 0.7fr 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
     "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
 )
+
+_SORT_KEYS = {
+    "Fecha":            lambda r: r["fecha"] or "",
+    "Courier":          lambda r: r["razon_social"] or "",
+    "Factura":          lambda r: r["nro_factura"] or "",
+    "HAWB":             lambda r: r["hawb"] or "",
+    "PA":               lambda r: _to_float(r["pa"]) or 0,
+    "Origen":           lambda r: r["pais_procedencia"] or "",
+    "Invoice Nro":      lambda r: r["nro_invoice"] or "",
+    "FOB Total":        lambda r: _to_float(r["fob_total"]) or 0,
+    "Peso Total":       lambda r: _to_float(r["kgs"]) or 0,
+    "Derechos":         lambda r: _to_float(r["derechos_importacion"]) or 0,
+    "Estadística":      lambda r: _to_float(r["tasa_estadistica"]) or 0,
+    "IVA Aduanero":     lambda r: _to_float(r["iva_aduanero"]) or 0,
+    "Flete Aduanero":   lambda r: _to_float(r["flete_aereo"]) or 0,
+    "Almacenaje":       lambda r: _to_float(r["almacenaje"]) or 0,
+    "Total Factura":    lambda r: r["total_factura"] or 0,
+    "Total real":       lambda r: _to_float(r["total_real"]) or 0,
+    "Alm/KG":           lambda r: r.get("almacenaje_kg") or 0,
+    "Valor Kg":         lambda r: _to_float(r["valor_kg"]) or 0,
+    "Dolar":            lambda r: _to_float(r["tipo_cambio_3"]) or 0,
+    "Traída u$ s/IVA":  lambda r: r["traida_usd"] or 0,
+    "Costo s/IVA":      lambda r: r["costo_sin_iva"] or 0,
+    "Total Traída %":   lambda r: r["total_traida_pct"] or 0,
+}
 
 
 # ── DB helpers ────────────────────────────────────────────────────────────────
@@ -413,6 +438,13 @@ def _fmt_usd(v) -> str:
         return "—"
 
 
+def _fmt_ars_zero(v) -> str:
+    v_str = str(v).strip() if v is not None else ""
+    if not v_str or v_str in ("-", "—"):
+        return "$0"
+    return _fmt_ars(v)
+
+
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
 def _render_campos(data: Dict[str, Any]) -> None:
@@ -464,9 +496,13 @@ def _rebuild_tabla(
     tabla_container,
     filas_ref: list,
     parsed_ref: list,
+    sort_state: list,
 ) -> None:
     tabla_container.clear()
     rows = _list_guias(user_id)
+    sort_col, sort_dir = sort_state
+    if sort_col and sort_col in _SORT_KEYS:
+        rows.sort(key=_SORT_KEYS[sort_col], reverse=(sort_dir == "desc"))
     with tabla_container:
         if not rows:
             ui.label("No hay guías guardadas.").style(
@@ -481,14 +517,28 @@ def _rebuild_tabla(
                 "column-gap:4px;min-width:1700px;align-items:center"
             ):
                 # ── Cabecera ──────────────────────────────────────────────────
-                _hs = (
+                _hs_base = (
                     "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
-                    "font-size:10px;font-weight:600;color:#6b7280;"
+                    "font-size:10px;font-weight:600;"
                     "white-space:normal;word-break:break-word;line-height:1.3;"
                     "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center"
                 )
+                _hs = _hs_base + ";color:#6b7280"
                 for h in _TABLE_HEADERS:
-                    ui.label(h).style(_hs)
+                    if h and h in _SORT_KEYS:
+                        _active = sort_state[0] == h
+                        _arrow = (" ↑" if sort_state[1] == "asc" else " ↓") if _active else ""
+                        _hc = "#185FA5" if _active else "#6b7280"
+                        def _sort_click(col=h):
+                            sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
+                            sort_state[0] = col
+                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                        with ui.element("div").style(
+                            _hs_base + f";color:{_hc};cursor:pointer;user-select:none"
+                        ).on("click", _sort_click):
+                            ui.label(h + _arrow).style("pointer-events:none")
+                    else:
+                        ui.label(h).style(_hs)
 
                 # ── Filas de datos ─────────────────────────────────────────────
                 _sep = "border-bottom:0.5px solid #f1f5f9"
@@ -521,6 +571,8 @@ def _rebuild_tabla(
                             }})();
                         """)
 
+                    # Fecha
+                    ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Courier
                     ui.label(r["razon_social"]).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
@@ -542,8 +594,6 @@ def _rebuild_tabla(
                     ui.label(_fmt_usd(r["pa"])).style(
                         f"{_ct};white-space:nowrap;text-align:center"
                     )
-                    # Fecha
-                    ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Origen — ESTADOS UNIDOS → USA
                     _origen = r["pais_procedencia"]
                     if _origen and "estados uni" in _origen.lower():
@@ -562,11 +612,11 @@ def _rebuild_tabla(
                     # Peso Total
                     ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Derechos
-                    ui.label(_fmt_ars(r["derechos_importacion"])).style(
+                    ui.label(_fmt_ars_zero(r["derechos_importacion"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
                     )
                     # Estadística
-                    ui.label(_fmt_ars(r["tasa_estadistica"])).style(
+                    ui.label(_fmt_ars_zero(r["tasa_estadistica"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
                     )
                     # IVA Aduanero
@@ -648,7 +698,7 @@ def _rebuild_tabla(
                         ui.button(
                             icon="delete",
                             on_click=lambda rid=rid: _show_del_dialog(
-                                rid, user_id, tabla_container, filas_ref, parsed_ref
+                                rid, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                             ),
                         ).props("flat dense").style("color:#dc2626;min-width:28px")
                     # Fila expandible — abarca todas las columnas del grid
@@ -672,7 +722,8 @@ def _rebuild_tabla(
                                     "font-weight:600;color:#1d4ed8;text-align:center"
                                 )
                                 for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Costo Imp. u$s/IVA"]:
-                                    ui.label(_h).style(_sh2)
+                                    _h_extra = ";color:#185FA5;font-weight:500" if _h == "Costo Imp. u$s/IVA" else ""
+                                    ui.label(_h).style(_sh2 + _h_extra)
                                 _sp2 = (
                                     "padding:4px 6px;font-size:11px;color:#374151;"
                                     "border-top:0.5px solid #e0edff"
@@ -697,7 +748,7 @@ def _rebuild_tabla(
                                     ).style(f"{_sp2};text-align:right")
                                     ui.label(
                                         f"u$s {costo_imp:.2f}" if costo_imp is not None else "—"
-                                    ).style(f"{_sp2};text-align:right")
+                                    ).style(f"{_sp2};text-align:right;color:#185FA5;font-weight:500")
 
 
 # ── Dialog helpers ────────────────────────────────────────────────────────────
@@ -753,7 +804,7 @@ def _show_ver_dialog(guia_id: int, user_id: int) -> None:
 
 
 def _show_del_dialog(
-    rid: int, user_id: int, tabla_container, filas_ref: list, parsed_ref: list
+    rid: int, user_id: int, tabla_container, filas_ref: list, parsed_ref: list, sort_state: list
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:280px"):
         ui.label("¿Eliminar esta guía?").style(
@@ -765,7 +816,7 @@ def _show_del_dialog(
                 d.close()
                 _delete_guia(rid, user_id)
                 ui.notify("Guía eliminada", color="info")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref)
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
             ui.button("Eliminar", on_click=_confirm).props("flat").style("color:#dc2626")
     d.open()
 
@@ -888,6 +939,7 @@ def build_tab_guias() -> None:
     filas_ref: list = [None]
     tabla_ref: list = [None]
     uploader_ref: list = [None]
+    sort_state: list = [None, "asc"]
 
     # ── Panel superior compacto ───────────────────────────────────────────────
     with ui.element("div").style(
@@ -982,7 +1034,7 @@ def build_tab_guias() -> None:
                         parsed_ref[0] = parsed
                         filas_ref[0].clear()
                         _save_guia(user_id, parsed)
-                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref)
+                        _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
                         ui.notify("Guía agregada automáticamente", color="positive")
                         archivo_data[0] = None
                         archivo_mime[0] = None
@@ -1028,4 +1080,4 @@ def build_tab_guias() -> None:
         )
         tabla_container = ui.element("div").style("width:100%")
         tabla_ref[0] = tabla_container
-        _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref)
+        _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
