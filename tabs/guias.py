@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import traceback
 from typing import Any, Dict, List
 
 import requests as _requests
@@ -1152,12 +1153,14 @@ def _build_courier_panel(
             "display:flex;align-items:center;gap:6px;flex-wrap:wrap"
         ):
             async def _analizar(usar_gemini: bool) -> None:
+                print(f"[DBG] _analizar courier={courier_key} gemini={usar_gemini}")
                 if not archivo_data[0]:
                     ui.notify("Primero subí un archivo", color="warning")
                     return
                 groq_key = get_app_config("groq_api_key")
                 gemini_key = get_app_config("gemini_api_key")
                 es_imagen = archivo_mime[0] and archivo_mime[0].startswith("image/")
+                print(f"[DBG] archivo len={len(archivo_data[0]) if archivo_data[0] else 0}, mime={archivo_mime[0]}")
 
                 if usar_gemini and not gemini_key:
                     ui.notify(
@@ -1184,9 +1187,11 @@ def _build_courier_panel(
 
                 try:
                     if usar_gemini:
+                        print(f"[DBG] Llamando _gemini_vision...")
                         raw = await run.io_bound(
                             _gemini_vision, gemini_key, archivo_data[0], archivo_mime[0], prompt_str
                         )
+                        print(f"[DBG] raw IA (500): {raw[:500] if raw else 'None'}")
                     else:
                         texto_pdf = await run.io_bound(_extract_pdf_text, archivo_data[0])
                         if not texto_pdf.strip():
@@ -1196,14 +1201,19 @@ def _build_courier_panel(
                             )
                             return
                         full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
+                        print(f"[DBG] Llamando _groq_parse_doc...")
                         raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+                        print(f"[DBG] raw Grok (500): {raw[:500] if raw else 'None'}")
 
                     raw = _clean_json(raw)
+                    print(f"[DBG] JSON limpio (500): {raw[:500] if raw else 'None'}")
                     try:
                         parsed = json.loads(raw)
+                        print(f"[DBG] parsed keys: {list(parsed.keys())}")
                         parsed["pa"] = pa_select.value
                         parsed["courier"] = courier_key
                         parsed_ref[0] = parsed
+                        print(f"[DBG] pa={parsed.get('pa')}, tc1={parsed.get('tipo_cambio_1')}, tc3={parsed.get('tipo_cambio_3')}, courier={parsed.get('courier')}")
                         nro_fac = (parsed.get("nro_factura") or "").strip()
                         if nro_fac and _exists_factura(user_id, nro_fac, courier_key):
                             ui.notify(
@@ -1213,16 +1223,25 @@ def _build_courier_panel(
                             )
                         else:
                             filas_ref[0].clear()
+                            print(f"[DBG] Llamando _save_guia...")
                             _save_guia(user_id, parsed)
+                            print(f"[DBG] _save_guia OK")
+                            print(f"[DBG] Llamando _rebuild_tabla...")
                             _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                            print(f"[DBG] _rebuild_tabla OK")
                             ui.notify("Guía agregada automáticamente", color="positive")
                             archivo_data[0] = None
                             archivo_mime[0] = None
                             uploader_ref[0].reset()
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as jde:
+                        print(f"[DBG] JSONDecodeError: {jde}")
+                        print(traceback.format_exc())
                         resultado_ref[0].set_text("Error: JSON inválido")
                 except Exception as exc:
-                    logger.error("Error analizando guía (%s): %s", courier_key, exc)
+                    tb_str = traceback.format_exc()
+                    print(f"[DBG] ERROR courier={courier_key}: {exc}")
+                    print(tb_str)
+                    logger.error("Error analizando guía (%s): %s\n%s", courier_key, exc, tb_str)
                     ui.notify(f"Error: {exc}", color="negative")
                 finally:
                     spin_ref[0].set_visibility(False)
