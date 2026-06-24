@@ -1126,16 +1126,13 @@ def _build_courier_panel(
             "display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding-bottom:6px"
         ):
             def _on_upload(e):
-                logger.warning("[DBG] _on_upload courier=%s name=%s", courier_key, e.name)
                 try:
-                    archivo_data[0] = e.content.read()
-                    ext = e.name.rsplit(".", 1)[-1].lower() if "." in e.name else ""
-                    archivo_mime[0] = (
-                        "application/pdf" if ext == "pdf"
-                        else "image/jpeg" if ext in ("jpg", "jpeg")
-                        else "image/png"
-                    )
-                    logger.warning("[DBG] _on_upload OK courier=%s len=%d mime=%s", courier_key, len(archivo_data[0]), archivo_mime[0])
+                    logger.warning("[DBG] _on_upload start courier=%s name=%s type=%s", courier_key, e.name, e.type)
+                    content = e.content.read()
+                    logger.warning("[DBG] _on_upload read OK courier=%s len=%d", courier_key, len(content))
+                    archivo_data[0] = content
+                    archivo_mime[0] = e.type
+                    logger.warning("[DBG] _on_upload assigned OK courier=%s mime=%s", courier_key, e.type)
                 except Exception as _ue:
                     logger.warning("[DBG] _on_upload ERROR courier=%s: %s\n%s", courier_key, _ue, traceback.format_exc())
 
