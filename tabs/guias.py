@@ -13,7 +13,7 @@ from typing import Any, Dict, List
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, get_connection, get_setting
+from db import get_app_config, get_connection, get_cotizador_param, get_setting
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +123,8 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Si no aparece en el documento, devolver null.
 - resolucion_3244: etiquetado "RES. 3244 SERV.EXTRAORDINARIOS" o similar. Valor en ARS.
     Si no aparece en el documento, devolver null.
+- perc_iibb: etiquetado "Perc.IB", "Perc. IB", "Percepción IIBB" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
 - tasa_estadistica: puede ser 0
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
@@ -171,6 +173,7 @@ pa: no viene del documento, se inyecta desde la UI. Devolver null.
   "iva_21": null,
   "derechos_importacion": null,
   "tasa_estadistica": null,
+  "perc_iibb": null,
   "pa": null,
   "total_real": null
 }
@@ -334,7 +337,7 @@ _SCALAR_COLS = [
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "gastos_administrativos", "honorarios", "handling",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
-    "pa", "total_real", "courier",
+    "pa", "total_real", "courier", "perc_iibb",
 ]
 
 _TABLE_HEADERS = [
@@ -412,7 +415,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -452,14 +455,15 @@ def _to_float(v: Any) -> float | None:
 
 
 def _list_guias(user_id: int) -> List[Dict[str, Any]]:
-    dolar_blue = get_setting("dolar_blue")
+    raw = get_cotizador_param("dolar_blue", user_id)
+    dolar_blue = float(raw) if raw else None
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, razon_social, courier, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
-        "gastos_administrativos, honorarios, handling "
+        "gastos_administrativos, honorarios, handling, perc_iibb "
         "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
         (user_id,),
     ).fetchall()
@@ -507,6 +511,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
                 ("derechos_importacion", "Derechos de Importación", _to_float(r["derechos_importacion"])),
                 ("tasa_estadistica",     "Tasa Estadística",        _to_float(r["tasa_estadistica"])),
                 ("iva_21",               "IVA 21%",                 _to_float(r["iva_21"])),
+                ("perc_iibb",            "Percepción IIBB",         _to_float(r["perc_iibb"])),
             ]
         else:
             tf_components = [
@@ -1518,7 +1523,7 @@ def _build_courier_panel(
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;height:100%;"
-        "border:1px solid var(--color-border-tertiary);"
+        "border:1.5px solid #B0C4D8;"
         "border-radius:8px;overflow:hidden;"
         "background:var(--color-background-primary);"
         "box-shadow:0 1px 4px rgba(0,0,0,0.06)"
@@ -1563,13 +1568,13 @@ def _build_courier_panel(
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=pa_default,
-                ).props("dense outlined").style("width:72px;height:32px;font-size:11px")
+                ).props("dense outlined").style("width:72px;height:34px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
@@ -1728,7 +1733,7 @@ def _build_lhs_panel(
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;height:100%;"
-        "border:1px solid var(--color-border-tertiary);"
+        "border:1.5px solid #B0C4D8;"
         "border-radius:8px;overflow:hidden;"
         "background:var(--color-background-primary);"
         "box-shadow:0 1px 4px rgba(0,0,0,0.06)"
@@ -1792,13 +1797,13 @@ def _build_lhs_panel(
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=200,
-                ).props("dense outlined").style("width:72px;height:32px;font-size:11px")
+                ).props("dense outlined").style("width:72px;height:34px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
