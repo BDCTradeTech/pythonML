@@ -744,6 +744,13 @@ def init_db() -> None:
         """
     )
 
+    # Migración: habilitar permiso "guias" para user_id=1 (admin) si aún no tiene registro
+    cur.execute("SELECT 1 FROM users WHERE id = 1")
+    if cur.fetchone():
+        cur.execute(
+            "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'guias', 1)"
+        )
+
     conn.commit()
     conn.close()
 
@@ -1165,9 +1172,10 @@ def get_user_tab_permissions(user_id: int) -> Dict[str, bool]:
         result: Dict[str, bool] = {}
         for r in rows:
             result[str(r["tab_key"])] = bool(r["can_access"])
+        _default_off = {"admin", "guias"}
         for tab_key, _ in TAB_KEYS:
             if tab_key not in result:
-                result[tab_key] = True if tab_key != "admin" else False
+                result[tab_key] = False if tab_key in _default_off else True
         return result
     finally:
         conn.close()
