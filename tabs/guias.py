@@ -84,7 +84,104 @@ Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, 
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
-PROMPT_GUIA_NC  = PROMPT_GUIA
+PROMPT_GUIA_NC = """
+Analizá este documento de importación y extraé los siguientes datos en formato JSON.
+Si el dato no existe en el documento ponelo como null.
+
+INSTRUCCIONES ESPECÍFICAS:
+
+IMPORTANTE — DOCUMENTO MULTI-PÁGINA: Este PDF contiene múltiples páginas con distintos
+documentos. Para los campos derechos_importacion, tasa_estadistica e iva_aduanero: leer
+EXCLUSIVAMENTE de la PRIMERA PÁGINA (factura argentina de NC SUPPLIES SRL). Ignorar
+completamente los valores de esos mismos conceptos en páginas posteriores (liquidaciones
+DGCA, ARCA, etc.).
+
+IMPORTANTE — Hay DOS tipos de documentos distintos:
+1. INVOICE DEL PROVEEDOR EXTRANJERO: tiene un número de referencia propio del proveedor
+   (ej: INV-2024-001, PO-123) → va en nro_invoice
+2. FACTURA DEL DESPACHANTE ARGENTINO: tiene número de factura argentina formato
+   XXXX-XXXXXXXX → va en nro_factura
+NUNCA poner el mismo valor en ambos campos.
+Si solo hay un documento, identificar de qué tipo es y usar el campo correcto, dejar el
+otro en null.
+
+- razon_social: nombre o razón social del proveedor o despachante que emite el documento.
+- pais_procedencia: país de procedencia según consta en el documento ARCA/aduana.
+- pos_arancelaria: posición arancelaria según el documento ARCA/aduana.
+- desc_mercaderia: descripción de mercadería según el documento ARCA/aduana.
+- fob_total: total en USD del proveedor extranjero (balance due del invoice, importe total
+  en dólares).
+- Para flete_aereo, entrega_domicilio, resolucion_3244, seguro_internacional, almacenaje y
+  servicios_honorarios: tomar el valor de la ÚLTIMA columna numérica del documento, que
+  representa el importe en pesos argentinos ($). IGNORAR la primera columna que está en
+  dólares (USD o u$s).
+- TRIBUTOS — leer EXCLUSIVAMENTE de la PRIMERA PÁGINA (factura NC SUPPLIES SRL):
+  Los siguientes tres campos se obtienen de la sección "Otros tributos/Gastos" de la
+  PRIMERA PÁGINA únicamente. Las páginas posteriores (DGCA, ARCA, liquidaciones aduaneras)
+  contienen los mismos conceptos con valores distintos — ignorar completamente esas páginas
+  para estos tres campos.
+  - derechos_importacion: buscar SOLO en la primera página como "Derechos de Importación"
+    en la columna "Importe". Si no aparece como línea separada en la primera página → 0.
+    NO confundir con "010-DERECHOS IMPORTACION" de páginas de liquidación aduanera.
+  - tasa_estadistica: buscar SOLO en la primera página como "Tasa Estadística" en la
+    columna "Importe". Si no aparece en la primera página → 0.
+    NO confundir con "011-TASA DE ESTADISTICA" de páginas de liquidación aduanera.
+  - iva_aduanero: buscar SOLO en la primera página como "Iva Aduanero" en la columna
+    "Importe". Ejemplo: "Iva Aduanero 0,00 0,00 451.484,10" → iva_aduanero = 451484.10.
+    Campo OBLIGATORIO — nunca devolver 0 ni null si aparece en la primera página.
+    NO confundir con "415-I.V.A." de páginas de liquidación aduanera (DGCA/ARCA).
+  Orden posicional en la primera página (de arriba hacia abajo): (1) derechos_importacion,
+  (2) tasa_estadistica, (3) iva_aduanero. Si iva_aduanero > 0 y derechos_importacion es 0
+  o null, releer la primera página usando posición relativa.
+- iva_21: valor en pesos argentinos que aparece con la etiqueta "IVA % 21", "IVA 21%",
+  "I.V.A. 21%" u otras variantes de IVA al 21%. Está en la columna "Importe" del mismo
+  recuadro de tributos.
+- total_real: gran total general de la factura/guía en ARS. Buscar la línea etiquetada
+  exactamente como "TOTAL" en mayúsculas en el documento. Es el TOTAL final del documento
+  (no un subtotal ni total parcial). Si no existe o no está claro, devolver null.
+- Para tipo_cambio: buscar un valor con formato X/Y/Z y separar en 3 campos individuales
+  (tipo_cambio_1, tipo_cambio_2, tipo_cambio_3).
+- Para kgs: buscar el peso total en kilogramos.
+- hawb: número de guía aérea. Se encuentra en la primera página, en la parte superior del
+  documento, en una línea que dice "HAWB: XXXXXXX". Extraer solo el valor alfanumérico,
+  sin los dos puntos ni espacios.
+- Para el array `productos`: el campo `sku` es el código o referencia del artículo según
+  el invoice del proveedor (puede aparecer como SKU, Part No, Part Number, Item Code,
+  Ref., P/N, Model, etc.). Si no figura en el documento, usar string vacío "".
+
+{
+  "razon_social": null,
+  "nro_invoice": null,
+  "nro_factura": null,
+  "hawb": null,
+  "fecha": null,
+  "pais_procedencia": null,
+  "pos_arancelaria": null,
+  "desc_mercaderia": null,
+  "fob_total": null,
+  "productos": [
+    {"sku": "", "descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
+  ],
+  "kgs": null,
+  "tipo_cambio_1": null,
+  "tipo_cambio_2": null,
+  "tipo_cambio_3": null,
+  "flete_aereo": null,
+  "entrega_domicilio": null,
+  "resolucion_3244": null,
+  "seguro_internacional": null,
+  "almacenaje": null,
+  "servicios_honorarios": null,
+  "iva_aduanero": null,
+  "iva_21": null,
+  "derechos_importacion": null,
+  "tasa_estadistica": null,
+  "pa": null,
+  "total_real": null
+}
+
+Respondé SOLO con el JSON, sin texto adicional ni backticks.
+"""
 
 PROMPT_GUIA_LHS = """
 La primera imagen es la factura del courier LHS (imagen JPG).
