@@ -706,13 +706,14 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         pa_val = _to_float(r["pa"])
         iva_val = _to_float(r["iva_aduanero"])
         fob_val = _to_float(r["fob_total"])
+        tc3 = _to_float(r["tipo_cambio_3"])
         traida_usd = None
-        if dolar_blue and dolar_blue != 0 and pa_val is not None:
+        if dolar_blue and dolar_blue != 0 and pa_val is not None and tc3 and tc3 != 0:
             traida_usd = (
                 total_factura + (pa_val * dolar_blue)
                 - (iva_val or 0.0)
                 - (iva21_val or 0.0)
-            ) / dolar_blue
+            ) / tc3
 
         total_traida_pct = None
         if fob_val and fob_val != 0 and traida_usd is not None:
@@ -728,6 +729,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "iva_val": iva_val or 0.0,
             "iva21_val": iva21_val or 0.0,
             "dolar_blue": dolar_blue,
+            "tc3": tc3,
             "traida_usd": traida_usd,
         }
 
@@ -1447,9 +1449,10 @@ def _show_traida_dialog(breakdown: dict) -> None:
     iva_val = breakdown["iva_val"]
     iva21_val = breakdown.get("iva21_val", 0.0)
     dolar_blue = breakdown["dolar_blue"]
+    tc3 = breakdown.get("tc3")
     traida_usd = breakdown["traida_usd"]
 
-    with ui.dialog() as d, ui.card().style("padding:20px;min-width:380px"):
+    with ui.dialog() as d, ui.card().style("padding:20px;min-width:400px"):
         ui.label("Detalle Traída u$ s/IVA").style(
             "font-size:14px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
         )
@@ -1462,41 +1465,33 @@ def _show_traida_dialog(breakdown: dict) -> None:
                 ui.label(label).style("font-size:13px;color:#6b7280;flex-shrink:0")
                 ui.label(val_str).style("font-size:13px;color:#374151;text-align:right")
 
+        def _divider() -> None:
+            ui.element("div").style("border-top:1px solid #e2e8f0;margin:6px 0")
+
+        pa_ars = (pa_val * dolar_blue) if (pa_val is not None and dolar_blue) else None
+        pa_blue_label = (
+            f"PA en ARS (u$s{_fmt_usd(pa_val)} × dólar blue {_fmt_ars(dolar_blue)})"
+            if (pa_val is not None and dolar_blue) else "PA en ARS"
+        )
         _fila("Total Factura (ARS)", _fmt_ars(tf))
-        if pa_val is not None and dolar_blue:
-            pa_ars = pa_val * dolar_blue
-            pa_str = f"{_fmt_usd(pa_val)} × {_fmt_ars(dolar_blue)} = {_fmt_ars(pa_ars)}"
-        else:
-            pa_str = "—"
-        _fila("PA en ARS (pa × dólar blue)", pa_str)
+        _fila(pa_blue_label, _fmt_ars(pa_ars) if pa_ars is not None else "—")
         _fila("IVA Aduanero restado (ARS)", _fmt_ars(iva_val) if iva_val else "—")
         _fila("IVA 21% restado (ARS)", _fmt_ars(iva21_val) if iva21_val else "—")
-        _fila("Dólar blue usado", _fmt_ars(dolar_blue) if dolar_blue else "—")
-
+        _divider()
+        _fila("Dólar blue usado (PA)", _fmt_ars(dolar_blue) if dolar_blue else "—")
+        _fila("Dólar oficial usado (tc3)", _fmt_ars(tc3) if tc3 else "—")
+        _divider()
+        ui.label(
+            "Fórmula: (Total Factura + PA×dólar_blue − IVA Aduanero − IVA 21%) ÷ tc3"
+        ).style("font-size:10px;color:#9ca3af;word-break:break-word;display:block;margin:4px 0")
         with ui.element("div").style(
             "display:flex;justify-content:space-between;align-items:center;"
-            "border-top:1px solid #e2e8f0;padding-top:8px;margin-top:6px"
+            "border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px"
         ):
-            if traida_usd is not None and pa_val is not None and dolar_blue:
-                pa_ars = pa_val * dolar_blue
-                formula = (
-                    f"({_fmt_ars(tf)} + {_fmt_ars(pa_ars)} − {_fmt_ars(iva_val)} − {_fmt_ars(iva21_val)}) "
-                    f"÷ {_fmt_ars(dolar_blue)}"
-                )
-            else:
-                formula = ""
-            with ui.element("div"):
-                ui.label("Traída u$ s/IVA").style(
-                    "font-size:13px;font-weight:600;color:#374151;display:block"
-                )
-                if formula:
-                    ui.label(formula).style(
-                        "font-size:10px;color:#9ca3af;word-break:break-word;display:block"
-                    )
+            ui.label("Resultado").style("font-size:13px;font-weight:600;color:#374151")
             ui.label(_fmt_usd(traida_usd) if traida_usd is not None else "—").style(
                 "font-size:13px;font-weight:600;color:#374151;white-space:nowrap"
             )
-
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:10px;color:#374151"
         )
