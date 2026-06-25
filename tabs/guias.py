@@ -799,7 +799,7 @@ def _extract_pdf_text(data: bytes) -> str:
                     import pytesseract
                     from pdf2image import convert_from_bytes
                     logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
-                    images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1)
+                    images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path="/usr/bin")
                     if images:
                         text = pytesseract.image_to_string(images[0], lang='spa+eng')
                         logging.warning(f"[OCR] página {i+1}: {len(text)} chars extraídos")
