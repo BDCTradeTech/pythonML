@@ -1488,46 +1488,58 @@ def _build_courier_panel(
         background_tasks.create(_analizar(True), name=f"analizar_{courier_key}_gemini")
 
     with ui.element("div").style(
-        "display:flex;flex-direction:column;"
-        "border:0.5px solid var(--color-border-tertiary);"
-        "border-radius:8px;overflow:hidden"
+        "display:flex;flex-direction:column;height:100%;"
+        "border:1px solid var(--color-border-tertiary);"
+        "border-radius:8px;overflow:hidden;"
+        "background:var(--color-background-primary);"
+        "box-shadow:0 1px 4px rgba(0,0,0,0.06)"
     ):
+        # HEADER
         with ui.element("div").style(
-            "background:var(--color-background-secondary);"
-            "border-bottom:0.5px solid var(--color-border-tertiary);"
-            "padding:6px 8px"
+            "background:#EEF6FD;border-bottom:1px solid #D0E8F8;padding:7px 10px"
         ):
             ui.label(courier_name).style(
-                "font-size:11px;font-weight:500;color:var(--color-text-secondary)"
+                "font-size:11px;font-weight:600;color:#185FA5"
             )
-        with ui.element("div").style("padding:8px;flex:1"):
+        # BODY
+        with ui.element("div").style(
+            "flex:1;padding:8px 10px;display:flex;flex-direction:column;gap:5px"
+        ):
+            ui.label("PDF completo").style(
+                "font-size:9px;color:var(--color-text-tertiary);"
+                "background:var(--color-background-secondary);"
+                "border:0.5px solid var(--color-border-tertiary);"
+                "border-radius:3px;padding:1px 5px;align-self:flex-start"
+            )
             _uploader = ui.upload(
                 label="Subir PDF/IMG",
                 on_upload=_on_upload,
                 auto_upload=True,
                 max_files=1,
                 max_file_size=20_000_000,
-            ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style("width:100%")
+            ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
+                "width:100%;min-height:72px"
+            )
             uploader_ref[0] = _uploader
+            ui.element("div").style("flex:1")
+        # FOOTER
         with ui.element("div").style(
-            "display:flex;flex-direction:column;"
             "background:var(--color-background-secondary);"
             "border-top:0.5px solid var(--color-border-tertiary)"
         ):
             with ui.element("div").style(
-                "display:flex;align-items:center;justify-content:center;gap:8px;padding:6px 8px"
+                "padding:6px 10px;display:flex;align-items:center;gap:6px"
             ):
+                ui.label("PA").style("font-size:11px;color:var(--color-text-secondary)")
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=pa_default,
-                    label="PA",
-                ).props("dense outlined").style("width:80px;font-size:12px")
-                ui.label("|").style("color:var(--color-border-secondary);font-size:14px")
+                ).props("dense outlined").style("width:52px;height:26px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                    "height:26px;border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                    "height:26px;border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
                 spin.set_visibility(False)
@@ -1682,23 +1694,32 @@ def _build_lhs_panel(
         background_tasks.create(_analizar_lhs(True), name="analizar_LHS_gemini")
 
     with ui.element("div").style(
-        "display:flex;flex-direction:column;"
-        "border:0.5px solid var(--color-border-tertiary);"
-        "border-radius:8px;overflow:hidden"
+        "display:flex;flex-direction:column;height:100%;"
+        "border:1px solid var(--color-border-tertiary);"
+        "border-radius:8px;overflow:hidden;"
+        "background:var(--color-background-primary);"
+        "box-shadow:0 1px 4px rgba(0,0,0,0.06)"
     ):
+        # HEADER
         with ui.element("div").style(
-            "background:var(--color-background-secondary);"
-            "border-bottom:0.5px solid var(--color-border-tertiary);"
-            "padding:6px 8px"
+            "background:#EEF6FD;border-bottom:1px solid #D0E8F8;padding:7px 10px"
         ):
             ui.label("LHS").style(
-                "font-size:11px;font-weight:500;color:var(--color-text-secondary)"
+                "font-size:11px;font-weight:600;color:#185FA5"
             )
-        with ui.element("div").style("padding:8px;flex:1"):
-            with ui.element("div").style("display:grid;grid-template-columns:1fr 1fr;gap:6px"):
+        # BODY
+        with ui.element("div").style(
+            "flex:1;padding:8px 10px;display:flex;flex-direction:column;gap:5px"
+        ):
+            with ui.element("div").style(
+                "display:grid;grid-template-columns:1fr 1fr;gap:5px;min-height:72px"
+            ):
                 with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
                     ui.label("Factura LHS").style(
-                        "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
+                        "font-size:9px;color:var(--color-text-tertiary);"
+                        "background:var(--color-background-secondary);"
+                        "border:0.5px solid var(--color-border-tertiary);"
+                        "border-radius:3px;padding:1px 5px;align-self:flex-start"
                     )
                     _uploader1 = ui.upload(
                         on_upload=_on_upload1,
@@ -1711,7 +1732,10 @@ def _build_lhs_panel(
                     uploader_ref1[0] = _uploader1
                 with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
                     ui.label("Invoice BDC").style(
-                        "font-size:9px;color:var(--color-text-tertiary);font-weight:500"
+                        "font-size:9px;color:var(--color-text-tertiary);"
+                        "background:var(--color-background-secondary);"
+                        "border:0.5px solid var(--color-border-tertiary);"
+                        "border-radius:3px;padding:1px 5px;align-self:flex-start"
                     )
                     _uploader2 = ui.upload(
                         on_upload=_on_upload2,
@@ -1722,25 +1746,25 @@ def _build_lhs_panel(
                         "width:100%;--q-primary:#2176AE"
                     )
                     uploader_ref2[0] = _uploader2
+            ui.element("div").style("flex:1")
+        # FOOTER
         with ui.element("div").style(
-            "display:flex;flex-direction:column;"
             "background:var(--color-background-secondary);"
             "border-top:0.5px solid var(--color-border-tertiary)"
         ):
             with ui.element("div").style(
-                "display:flex;align-items:center;justify-content:center;gap:8px;padding:6px 8px"
+                "padding:6px 10px;display:flex;align-items:center;gap:6px"
             ):
+                ui.label("PA").style("font-size:11px;color:var(--color-text-secondary)")
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=200,
-                    label="PA",
-                ).props("dense outlined").style("width:80px;font-size:12px")
-                ui.label("|").style("color:var(--color-border-secondary);font-size:14px")
+                ).props("dense outlined").style("width:52px;height:26px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                    "height:26px;border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                    "height:26px;border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
                 spin.set_visibility(False)
@@ -1779,7 +1803,7 @@ def build_tab_guias() -> None:
     # ── Panel superior: tres couriers side by side ────────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
     with ui.element("div").style(
-        "margin:16px 20px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px"
+        "margin:16px 20px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch"
     ):
         logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
         _build_courier_panel(
