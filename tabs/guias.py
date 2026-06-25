@@ -337,18 +337,18 @@ _SCALAR_COLS = [
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "gastos_administrativos", "honorarios", "handling",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
-    "pa", "total_real", "courier", "perc_iibb",
+    "pa", "total_real", "courier", "perc_iibb", "ia_usada",
 ]
 
 _TABLE_HEADERS = [
-    "Fecha", "Courier", "Factura", "HAWB", "PA", "Origen", "Invoice Nro",
+    "IA", "Fecha", "Courier", "Factura", "HAWB", "PA", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
     "Flete Aduanero", "Almacenaje", "Total Factura", "Total real", "Alm/KG", "Valor Kg", "Dolar",
     "Traída u$ s/IVA", "Costo s/IVA", "Total Traída %", "",
 ]
 
 _TABLE_COLS = (
-    "0.7fr 1.4fr 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr 0.9fr "
+    "90px 0.7fr 1.4fr 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr 0.9fr "
     "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
     "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
 )
@@ -415,7 +415,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -492,7 +492,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
-        "gastos_administrativos, honorarios, handling, perc_iibb "
+        "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada "
         f"FROM guias_importacion WHERE {where_sql} "
         "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
         params,
@@ -614,6 +614,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "total_real": r["total_real"] or "",
             "almacenaje_kg": almacenaje_kg,
             "productos": json.loads(r["productos"] or "[]") if r["productos"] else [],
+            "ia_usada": r["ia_usada"] or "",
         })
     return result
 
@@ -746,13 +747,23 @@ def _gemini_vision_multi(
 
 def _extract_pdf_text(data: bytes) -> str:
     import pdfplumber
-    parts = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                parts.append(t)
-    return "\n".join(parts)
+        parts = [p.extract_text() for p in pdf.pages if p.extract_text()]
+    text = "\n".join(parts).strip()
+
+    if len(text) < 50:
+        try:
+            import pytesseract
+            from pdf2image import convert_from_bytes
+            logging.warning("[OCR] pdfplumber vacío, usando OCR...")
+            images = convert_from_bytes(data, dpi=200)
+            ocr_parts = [pytesseract.image_to_string(img, lang='spa') for img in images]
+            text = "\n".join(ocr_parts).strip()
+            logging.warning("[OCR] texto extraído con OCR: %d chars", len(text))
+        except Exception as e:
+            logging.warning("[OCR] error: %s", e)
+
+    return text
 
 
 def _clean_json(raw: str) -> str:
@@ -933,6 +944,27 @@ def _rebuild_tabla(
                             }})();
                         """)
 
+                    # IA
+                    _ia_val = r.get("ia_usada") or ""
+                    with ui.element("div").style(
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                    ):
+                        if _ia_val == "Grok":
+                            ui.html(
+                                '<span style="display:inline-flex;align-items:center;gap:4px;width:80px;'
+                                'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
+                                'border-radius:4px;padding:2px 7px;font-size:10px;font-weight:500;white-space:nowrap">'
+                                '<i class="ti ti-bolt"></i> Grok</span>'
+                            )
+                        elif _ia_val == "Gemini":
+                            ui.html(
+                                '<span style="display:inline-flex;align-items:center;gap:4px;width:80px;'
+                                'background:#EAF3DE;border:0.5px solid #3B6D11;color:#173404;'
+                                'border-radius:4px;padding:2px 7px;font-size:10px;font-weight:500;white-space:nowrap">'
+                                '<i class="ti ti-sparkles"></i> Gemini</span>'
+                            )
+                        else:
+                            ui.label("—").style("font-size:11px;color:#9ca3af")
                     # Fecha
                     ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Courier
@@ -1497,8 +1529,6 @@ def _build_courier_panel(
                         "color:'warning',position:'bottom'})"
                     )
                     return
-                logger.warning("[SIXTAR-GROK] texto extraído (primeros 3000 chars):\n%s", texto_pdf[:3000])
-                logger.warning("[SIXTAR-GROK] texto extraído (chars 3000-6000):\n%s", texto_pdf[3000:6000])
                 full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
                 logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
                 raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
@@ -1510,6 +1540,7 @@ def _build_courier_panel(
                 logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = courier_key
+                parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
                 parsed_ref[0] = parsed
                 logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
                 nro_fac = (parsed.get("nro_factura") or "").strip()
@@ -1723,6 +1754,7 @@ def _build_lhs_panel(
                 parsed = json.loads(raw)
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = "LHS"
+                parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
                 parsed_ref[0] = parsed
