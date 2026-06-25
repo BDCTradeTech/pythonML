@@ -115,6 +115,14 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Si no existe esa fila, devolver null.
 - flete_aereo: flete internacional en ARS
 - almacenaje: almacenaje en ARS
+- entrega_domicilio: etiquetado "ENVIOS A DOMICILIO INTERN." o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- servicios_honorarios: etiquetado "GASTOS OPERATIVOS" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- seguro_internacional: etiquetado "SEGURO" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- resolucion_3244: etiquetado "RES. 3244 SERV.EXTRAORDINARIOS" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
 - tasa_estadistica: puede ser 0
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
@@ -128,7 +136,6 @@ De la segunda imagen (invoice de BDC Trade Tech LLC) extraer:
     cantidad, precio_unitario, precio_total
 
 Campos que LHS no tiene — dejar SIEMPRE null:
-  entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios,
   gastos_administrativos, honorarios, handling, tipo_cambio_1, tipo_cambio_2,
   pos_arancelaria, desc_mercaderia, pais_procedencia, kgs
 
@@ -475,6 +482,7 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
             almacenaje_kg = almacenaje_float / dolar_blue / kgs
         courier_str = (r["courier"] or r["razon_social"] or "").lower()
         is_sixtar = "sixtar" in courier_str
+        is_lhs = "lhs" in courier_str
         if is_sixtar:
             tf_components = [
                 ("flete_aereo",            "Flete Internacional",     _to_float(r["flete_aereo"])),
@@ -486,6 +494,19 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
                 ("derechos_importacion",   "Derechos de Importación", _to_float(r["derechos_importacion"])),
                 ("tasa_estadistica",       "Tasa Estadística",        _to_float(r["tasa_estadistica"])),
                 ("iva_aduanero",           "IVA Aduanero",            _to_float(r["iva_aduanero"])),
+            ]
+        elif is_lhs:
+            tf_components = [
+                ("flete_aereo",          "Flete Aéreo",             _to_float(r["flete_aereo"])),
+                ("entrega_domicilio",    "Entrega a Domicilio",     _to_float(r["entrega_domicilio"])),
+                ("seguro_internacional", "Seguro Internacional",    _to_float(r["seguro_internacional"])),
+                ("resolucion_3244",      "Resolución 3244",         _to_float(r["resolucion_3244"])),
+                ("servicios_honorarios", "Servicios / Honorarios",  _to_float(r["servicios_honorarios"])),
+                ("almacenaje",           "Almacenaje",              _to_float(r["almacenaje"])),
+                ("iva_aduanero",         "IVA Aduanero",            _to_float(r["iva_aduanero"])),
+                ("derechos_importacion", "Derechos de Importación", _to_float(r["derechos_importacion"])),
+                ("tasa_estadistica",     "Tasa Estadística",        _to_float(r["tasa_estadistica"])),
+                ("iva_21",               "IVA 21%",                 _to_float(r["iva_21"])),
             ]
         else:
             tf_components = [
@@ -982,7 +1003,7 @@ def _rebuild_tabla(
                     ):
                         ui.button(
                             _fmt_ars(r["total_factura"]),
-                            on_click=lambda tf=tf_comps, iv=iv21: _show_total_factura_dialog(tf, iv),
+                            on_click=lambda tf=tf_comps, iv=iv21, is_lhs=_is_lhs: _show_total_factura_dialog(tf, None if is_lhs else iv),
                         ).props("flat dense").style(
                             "color:#1d4ed8;font-size:11px;white-space:nowrap;"
                             "padding:0 2px;min-height:0;text-decoration:none"
@@ -1663,6 +1684,8 @@ def _build_lhs_panel(
                 parsed = json.loads(raw)
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = "LHS"
+                if not (parsed.get("pais_procedencia") or "").strip():
+                    parsed["pais_procedencia"] = "USA"
                 parsed_ref[0] = parsed
                 nro_fac = (parsed.get("nro_factura") or "").strip()
                 if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
