@@ -454,9 +454,38 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
-def _list_guias(user_id: int) -> List[Dict[str, Any]]:
+def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any]]:
     raw = get_cotizador_param("dolar_blue", user_id)
     dolar_blue = float(raw) if raw else None
+    where_parts = ["user_id = ?"]
+    params: list = [user_id]
+    if filtros:
+        if filtros.get("courier") and filtros["courier"] != "Todos":
+            where_parts.append("courier = ?")
+            params.append(filtros["courier"])
+        if filtros.get("origen") and filtros["origen"] != "Todos":
+            origen_val = filtros["origen"]
+            if origen_val == "USA":
+                where_parts.append(
+                    "(pais_procedencia = 'USA' OR LOWER(pais_procedencia) LIKE '%estados%' OR pais_procedencia LIKE '%212%')"
+                )
+            elif origen_val == "China":
+                where_parts.append("LOWER(pais_procedencia) LIKE '%china%'")
+            else:
+                where_parts.append("pais_procedencia = ?")
+                params.append(origen_val)
+        fecha_f = filtros.get("fecha", "Todas")
+        if fecha_f == "Hoy":
+            where_parts.append("DATE(created_at) = DATE('now')")
+        elif fecha_f == "Esta semana":
+            where_parts.append("created_at >= DATE('now', '-7 days')")
+        elif fecha_f == "Este mes":
+            where_parts.append("strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')")
+        busqueda = (filtros.get("busqueda") or "").strip()
+        if busqueda:
+            where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ?)")
+            params.extend([f"%{busqueda.lower()}%", f"%{busqueda.lower()}%"])
+    where_sql = " AND ".join(where_parts)
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, razon_social, courier, hawb, pa, fecha, pais_procedencia, nro_invoice, nro_factura, fob_total, kgs, "
@@ -464,8 +493,9 @@ def _list_guias(user_id: int) -> List[Dict[str, Any]]:
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
         "gastos_administrativos, honorarios, handling, perc_iibb "
-        "FROM guias_importacion WHERE user_id = ? ORDER BY created_at DESC",
-        (user_id,),
+        f"FROM guias_importacion WHERE {where_sql} "
+        "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
+        params,
     ).fetchall()
     conn.close()
     result = []
@@ -826,9 +856,10 @@ def _rebuild_tabla(
     filas_ref: list,
     parsed_ref: list,
     sort_state: list,
+    filtros: dict | None = None,
 ) -> None:
     tabla_container.clear()
-    rows = _list_guias(user_id)
+    rows = _list_guias(user_id, filtros)
     sort_col, sort_dir = sort_state
     if sort_col and sort_col in _SORT_KEYS:
         rows.sort(key=_SORT_KEYS[sort_col], reverse=(sort_dir == "desc"))
@@ -850,7 +881,8 @@ def _rebuild_tabla(
                     "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
                     "font-size:10px;font-weight:600;"
                     "white-space:normal;word-break:break-word;line-height:1.3;"
-                    "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center"
+                    "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center;"
+                    "position:sticky;top:0;z-index:10"
                 )
                 _hs = _hs_base + ";color:#6b7280"
                 for h in _TABLE_HEADERS:
@@ -861,7 +893,7 @@ def _rebuild_tabla(
                         def _sort_click(col=h):
                             sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
                             sort_state[0] = col
-                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros)
                         _h_nowrap = ";white-space:nowrap" if h == "Almacenaje" else ""
                         with ui.element("div").style(
                             _hs_base + f";color:{_hc};cursor:pointer;user-select:none{_h_nowrap}"
@@ -1841,29 +1873,92 @@ def build_tab_guias() -> None:
     tabla_ref: list = [None]
     sort_state: list = [None, "asc"]
     parsed_ref: list = [None]
+    _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Todas", "busqueda": ""}
 
-    # ── Panel superior: tres couriers side by side ────────────────────────────
+    def _filter_change(key: str, val: str) -> None:
+        _filtros[key] = val
+        if tabla_ref[0] is not None:
+            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros)
+
+    # ── Panel superior: couriers colapsable ───────────────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
-    with ui.element("div").style(
-        "margin:16px 20px 0;display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch"
-    ):
-        logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
-        _build_courier_panel(
-            "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
-            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
-            pa_default=250,
+
+    _couriers_open: list = [True]
+    _chevron_ref: list = [None]
+    _couriers_body_ref: list = [None]
+
+    def _toggle_couriers():
+        _couriers_open[0] = not _couriers_open[0]
+        _couriers_body_ref[0].set_visibility(_couriers_open[0])
+        icon_cls = "ti-chevron-down" if _couriers_open[0] else "ti-chevron-right"
+        _chevron_ref[0].set_content(f'<i class="ti {icon_cls}" style="font-size:13px"></i>')
+
+    with ui.element("div").style("margin:16px 20px 0"):
+        with ui.element("div").style(
+            "background:var(--color-background-secondary);border-radius:6px;"
+            "padding:6px 10px;font-size:12px;font-weight:500;cursor:pointer;"
+            "display:flex;align-items:center;gap:6px;margin-bottom:8px"
+        ).on("click", _toggle_couriers):
+            _chevron_ref[0] = ui.html('<i class="ti ti-chevron-down" style="font-size:13px"></i>')
+            ui.label("Subir documento")
+        _couriers_body = ui.element("div").style(
+            "display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch"
         )
-        logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
-        _build_courier_panel(
-            "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
-            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
-            pa_default=150,
-        )
-        logger.warning("[DBG] build_tab_guias: panel LHS...")
-        _build_lhs_panel(
-            user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
-        )
+        _couriers_body_ref[0] = _couriers_body
+        with _couriers_body:
+            logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
+            _build_courier_panel(
+                "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+                pa_default=250,
+            )
+            logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
+            _build_courier_panel(
+                "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+                pa_default=150,
+            )
+            logger.warning("[DBG] build_tab_guias: panel LHS...")
+            _build_lhs_panel(
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+            )
     logger.warning("[DBG] build_tab_guias: paneles OK")
+
+    # ── Barra de filtros ──────────────────────────────────────────────────────
+    with ui.element("div").style(
+        "padding:12px 20px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"
+    ):
+        ui.label("Courier").style("font-size:10px;color:var(--color-text-secondary)")
+        ui.select(
+            options=["Todos", "NC Supplies", "Sixtar", "LHS"],
+            value="Todos",
+            on_change=lambda e: _filter_change("courier", e.value),
+        ).props("dense outlined").style(
+            "font-size:11px;height:28px;border-radius:4px;min-width:100px"
+        )
+        ui.label("Origen").style("font-size:10px;color:var(--color-text-secondary)")
+        ui.select(
+            options=["Todos", "USA", "China"],
+            value="Todos",
+            on_change=lambda e: _filter_change("origen", e.value),
+        ).props("dense outlined").style(
+            "font-size:11px;height:28px;border-radius:4px;min-width:80px"
+        )
+        ui.label("Fecha").style("font-size:10px;color:var(--color-text-secondary)")
+        ui.select(
+            options=["Todas", "Hoy", "Esta semana", "Este mes"],
+            value="Todas",
+            on_change=lambda e: _filter_change("fecha", e.value),
+        ).props("dense outlined").style(
+            "font-size:11px;height:28px;border-radius:4px;min-width:100px"
+        )
+        ui.label("Invoice / Factura").style("font-size:10px;color:var(--color-text-secondary)")
+        ui.input(
+            placeholder="Buscar invoice/factura...",
+            on_change=lambda e: _filter_change("busqueda", e.value or ""),
+        ).props("dense outlined").style(
+            "font-size:11px;height:28px;width:160px;border-radius:4px"
+        )
 
     # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
     filas_container = ui.element("div").style("display:none")
@@ -1871,10 +1966,6 @@ def build_tab_guias() -> None:
 
     # ── Tabla de guías guardadas ──────────────────────────────────────────────
     with ui.element("div").style("padding:16px 0 24px"):
-        ui.label("Guías guardadas").style(
-            "font-size:13px;font-weight:600;color:#374151;margin-bottom:12px;"
-            "display:block;padding-left:20px"
-        )
         tabla_container = ui.element("div").style("width:100%")
         tabla_ref[0] = tabla_container
         _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
