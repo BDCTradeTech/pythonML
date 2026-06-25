@@ -97,17 +97,25 @@ De la primera imagen (factura LHS) extraer:
 - tipo_cambio_3: buscar la línea "Cotización del dólar 1 U$S =" y tomar el valor numérico
     a la derecha. Asignarlo a tipo_cambio_3.
 - tipo_cambio_1: LHS tiene un solo tipo de cambio — devolver null.
-- iva_aduanero: CAMPO OBLIGATORIO — nunca devolver 0 ni null. Se encuentra en la parte inferior
-    central del documento, en una columna llamada "I.V.A." con el valor "10,5%" en la fila
-    correspondiente. Tomar el importe (valor en ARS) de esa celda, NO el porcentaje ni el valor
-    "Valor A.N.A. Bienes de Capital". NO confundir con otros importes del documento.
+La tabla inferior tiene una columna "I.V.A." con DOS filas:
+  Fila 1: porcentaje 10,50% → importe (ej: 449.604,18) → este es iva_aduanero
+  Fila 2: porcentaje 21,00% → importe (ej: 21.649,55) → este es iva_21
+  NUNCA leer "Derechos Bienes de Capital" como iva_aduanero.
+  Ejemplo CORRECTO:   iva_aduanero = 449604.18 (fila 10,50% columna I.V.A.)
+  Ejemplo INCORRECTO: iva_aduanero = [valor de Derechos Bienes de Capital]
+
+- iva_aduanero: CAMPO OBLIGATORIO — nunca devolver 0 ni null.
+    Tomar el importe de la fila con porcentaje 10,50% en la columna "I.V.A.".
+    NUNCA tomar "Derechos Bienes de Capital" ni ningún valor de la columna de derechos.
     Si no lo encontrás, devolver null (no 0) para indicar error de lectura.
+- derechos_importacion: en LHS se llama "Derechos Bienes de Capital" o similar.
+    Es un valor separado del IVA. Buscarlo en la sección de derechos/tributos, NO en la
+    columna I.V.A. Puede ser 0 si no aplica.
+- iva_21: tomar el importe de la fila con porcentaje 21,00% en la columna "I.V.A.".
+    Si no existe esa fila, devolver null.
 - flete_aereo: flete internacional en ARS
 - almacenaje: almacenaje en ARS
-- derechos_importacion: puede ser 0. Buscar posicionalmente: 2 filas arriba de iva_aduanero
-    en el recuadro de tributos.
 - tasa_estadistica: puede ser 0
-- iva_21: valor IVA % 21 en ARS
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
 - pais_procedencia: LHS no incluye este dato en el documento — devolver null.
@@ -1303,7 +1311,7 @@ def _show_edit_origen_dialog(
         )
         origen_input = ui.select(
             options=["USA", "China"],
-            value=origen_current if origen_current in ("USA", "China") else None,
+            value=origen_current if origen_current in ("USA", "China") else "USA",
             label="País de origen",
         ).props("dense outlined").style("width:100%")
         with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
@@ -1534,12 +1542,14 @@ def _build_courier_panel(
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=pa_default,
-                ).props("dense outlined").style("width:52px;height:26px;font-size:11px")
+                ).props("dense outlined").style("width:72px;height:32px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "height:26px;border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "height:26px;border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
                 spin.set_visibility(False)
@@ -1759,12 +1769,14 @@ def _build_lhs_panel(
                 pa_ref[0] = ui.select(
                     options=[0, 100, 150, 200, 250, 300],
                     value=200,
-                ).props("dense outlined").style("width:52px;height:26px;font-size:11px")
+                ).props("dense outlined").style("width:72px;height:32px;font-size:11px")
                 ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
-                    "height:26px;border:1px solid #BA7517;color:#633806;background:#FAEEDA;font-size:10px"
+                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
-                    "height:26px;border:1px solid #534AB7;color:#26215C;background:#EEEDFE;font-size:10px"
+                    "height:32px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
                 spin = ui.spinner(size="sm").classes("text-blue-500")
                 spin.set_visibility(False)
