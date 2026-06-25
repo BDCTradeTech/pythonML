@@ -1481,17 +1481,14 @@ def _show_traida_dialog(breakdown: dict) -> None:
         _fila("Dólar blue usado (PA)", _fmt_ars(dolar_blue) if dolar_blue else "—")
         _fila("Dólar oficial usado (tc3)", _fmt_ars(tc3) if tc3 else "—")
         _divider()
-        ui.label(
-            "Fórmula: (Total Factura + PA×dólar_blue − IVA Aduanero − IVA 21%) ÷ tc3"
-        ).style("font-size:10px;color:#9ca3af;word-break:break-word;display:block;margin:4px 0")
         with ui.element("div").style(
             "display:flex;justify-content:space-between;align-items:center;"
             "border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px"
         ):
-            ui.label("Resultado").style("font-size:13px;font-weight:600;color:#374151")
-            ui.label(_fmt_usd(traida_usd) if traida_usd is not None else "—").style(
-                "font-size:13px;font-weight:600;color:#374151;white-space:nowrap"
-            )
+            ui.label("Traída u$ s/IVA").style("font-size:13px;font-weight:600;color:#374151")
+            ui.label(
+                f"u$s {_fmt_usd(traida_usd)}" if traida_usd is not None else "—"
+            ).style("font-size:13px;font-weight:600;color:#374151;white-space:nowrap")
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:10px;color:#374151"
         )
