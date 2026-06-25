@@ -185,18 +185,28 @@ PROMPT_GUIA_SIXTAR = """
 Analizá este documento de importación de SIXTAR y extraé los siguientes datos en formato JSON.
 Si el dato no existe en el documento, ponelo como null.
 
+IMPORTANTE — ESTE PDF TIENE MÚLTIPLES PÁGINAS Y DOCUMENTOS:
+Revisá TODAS las páginas antes de responder. No te detengas en la primera página.
+La factura del courier argentino está en las primeras páginas.
+La Invoice de BDC Trade Tech LLC está en una página posterior — buscala explícitamente
+antes de devolver null en nro_invoice o productos.
+
 ESTRUCTURA DEL DOCUMENTO SIXTAR:
 - Página 1: factura del courier SIXTAR (datos aduaneros y costos en ARS).
-- Página con "Invoice" y "BDC": invoice del proveedor extranjero (en USD, con productos).
+- Páginas intermedias: DSI ARCA (destinación simplificada de importación), Airbill.
+- Página posterior: Invoice de BDC TRADE TECH LLC (en USD, con productos detallados).
+  Esta página tiene el encabezado "BDC TRADE TECH LLC" y la palabra "INVOICE" en grande.
 
 razon_social: razón social del courier emisor del documento, en Página 1.
 
 nro_factura: número de factura argentina en Página 1, etiquetado "Factura NRO." o similar.
   Formato XXXX-XXXXXXXX. NUNCA poner el mismo valor en nro_invoice.
 
-nro_invoice: en la página del documento que dice "BDC Trade Tech LLC", buscar la etiqueta
-  "Invoice #" o "Invoice No" seguida del número. Extraer solo el valor numérico/alfanumérico
-  después del # o los dos puntos. Ejemplo: "Invoice # 7493" → nro_invoice = "7493".
+nro_invoice: buscar en TODO el documento la página con el encabezado "BDC TRADE TECH LLC"
+  y la palabra "INVOICE". En esa página, el número de invoice está a la derecha del encabezado
+  con la etiqueta "INVOICE #" o "INVOICE NO". Extraer solo el número.
+  Ejemplo: "INVOICE # 7495" → nro_invoice = "7495".
+  NUNCA devolver null si existe una página con "BDC TRADE TECH LLC" en el documento.
   NUNCA poner el mismo valor en nro_factura.
 
 hawb: en Página 1, parte superior, etiquetado "HAWB" o similar.
@@ -242,9 +252,17 @@ iva_aduanero: en Página 1, etiquetado "IVA % 21" o "IVA Aduanero". Valor en ARS
 iva_21: en Página 1, etiquetado "IVA % 21". Valor en ARS.
   Si iva_aduanero e iva_21 corresponden al mismo campo del documento, asignar el mismo valor a ambos.
 
-fob_total: total en USD del invoice del proveedor, en la página Invoice/BDC.
+fob_total: total en USD de la página BDC Invoice. Buscar "BALANCE DUE" seguido del monto en USD.
+  Ejemplo: "BALANCE DUE USD 2,958.50" → fob_total = 2958.50.
+  Alternativamente buscar "TOTAL" en la página BDC Invoice.
 
-productos: array de ítems de la página Invoice/BDC.
+productos: array de ítems de la página BDC Invoice.
+  En esa página hay una tabla con columnas: SKU | DESCRIPTION | QTY | UNIT PRICE | AMOUNT
+  (el encabezado puede aparecer con fondo oscuro/negro en el PDF escaneado).
+  Extraer cada fila como objeto con: sku, descripcion, cantidad, precio_unitario, precio_total.
+  Ejemplo de fila: JBLT520BTBLKAM | JBL Tune 520 BT Headphone Bluetooth On Ear Black | 122 | 24.25 | 2958.50
+  Si hay múltiples filas de productos, extraerlas todas.
+  NUNCA devolver array vacío si existe la página de BDC Invoice en el documento.
   Campos: sku (código del proveedor, "" si no figura), descripcion, cantidad,
   precio_unitario, precio_total.
 
