@@ -1465,6 +1465,8 @@ def _build_courier_panel(
                         "color:'warning',position:'bottom'})"
                     )
                     return
+                logger.warning("[SIXTAR-GROK] texto extraído (primeros 3000 chars):\n%s", texto_pdf[:3000])
+                logger.warning("[SIXTAR-GROK] texto extraído (chars 3000-6000):\n%s", texto_pdf[3000:6000])
                 full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
                 logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
                 raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
