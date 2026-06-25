@@ -93,10 +93,15 @@ La segunda imagen es el invoice del proveedor de BDC Trade Tech LLC (imagen JPG)
 De la primera imagen (factura LHS) extraer:
 - nro_factura: número de factura argentina formato XXXX-XXXXXXXX
 - hawb: número HAWB en la parte superior
-- kgs: peso total en kilogramos
-- tipo_cambio_1 y tipo_cambio_3: tipos de cambio que aparecen en el documento
-- iva_aduanero: OBLIGATORIO, nunca null ni 0. Su etiqueta es "IVA Aduanero". Es el tercer valor
-    del recuadro de tributos. Si no encontrás por etiqueta, buscarlo posicionalmente. NUNCA 0.
+- kgs: LHS no incluye peso total en el documento — devolver null.
+- tipo_cambio_3: buscar la línea "Cotización del dólar 1 U$S =" y tomar el valor numérico
+    a la derecha. Asignarlo a tipo_cambio_3.
+- tipo_cambio_1: LHS tiene un solo tipo de cambio — devolver null.
+- iva_aduanero: CAMPO OBLIGATORIO — nunca devolver 0 ni null. Se encuentra en la parte inferior
+    central del documento, en una columna llamada "I.V.A." con el valor "10,5%" en la fila
+    correspondiente. Tomar el importe (valor en ARS) de esa celda, NO el porcentaje ni el valor
+    "Valor A.N.A. Bienes de Capital". NO confundir con otros importes del documento.
+    Si no lo encontrás, devolver null (no 0) para indicar error de lectura.
 - flete_aereo: flete internacional en ARS
 - almacenaje: almacenaje en ARS
 - derechos_importacion: puede ser 0. Buscar posicionalmente: 2 filas arriba de iva_aduanero
@@ -105,9 +110,7 @@ De la primera imagen (factura LHS) extraer:
 - iva_21: valor IVA % 21 en ARS
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
-- pais_procedencia: buscar "País Origen" o "Pais Origen" en la sección ARCA del documento.
-    Si el valor contiene "212" o "ESTADOS UNIDOS" (en cualquier formato) → devolver "USA".
-    Devolver null si no aparece.
+- pais_procedencia: LHS no incluye este dato en el documento — devolver null.
 - fecha: fecha del documento
 
 De la segunda imagen (invoice de BDC Trade Tech LLC) extraer:
@@ -118,8 +121,8 @@ De la segunda imagen (invoice de BDC Trade Tech LLC) extraer:
 
 Campos que LHS no tiene — dejar SIEMPRE null:
   entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios,
-  gastos_administrativos, honorarios, handling, tipo_cambio_2,
-  pos_arancelaria, desc_mercaderia
+  gastos_administrativos, honorarios, handling, tipo_cambio_1, tipo_cambio_2,
+  pos_arancelaria, desc_mercaderia, pais_procedencia, kgs
 
 pa: no viene del documento, se inyecta desde la UI. Devolver null.
 
@@ -589,6 +592,26 @@ def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
     conn.close()
 
 
+def _update_origen(guia_id: int, user_id: int, new_origen: str | None) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET pais_procedencia=? WHERE id=? AND user_id=?",
+        (new_origen, guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _update_kgs(guia_id: int, user_id: int, new_kgs: float | None) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET kgs=? WHERE id=? AND user_id=?",
+        (str(new_kgs) if new_kgs is not None else None, guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _exists_factura(user_id: int, nro_factura: str, courier: str = "") -> bool:
     conn = get_connection()
     if courier:
@@ -875,13 +898,30 @@ def _rebuild_tabla(
                         with ui.element("div").classes("pa-chip").on("click", _pa_click):
                             ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:11px;color:#0C447C")
                             ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>')
-                    # Origen — ESTADOS UNIDOS / 212 → USA
-                    _origen = r["pais_procedencia"]
-                    if _origen and ("estados uni" in _origen.lower() or "212" in _origen):
-                        _origen = "USA"
-                    ui.label(_origen).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
-                    )
+                    # Origen — chip editable para LHS, label estático para NC/Sixtar
+                    _origen_raw = r["pais_procedencia"]
+                    if _origen_raw and ("estados uni" in _origen_raw.lower() or "212" in _origen_raw):
+                        _origen_raw = "USA"
+                    _is_lhs = (r.get("courier") or "").upper() == "LHS"
+                    if _is_lhs:
+                        with ui.element("div").style(
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                        ):
+                            def _origen_click(rid=rid, hawb=r["hawb"], origen=r["pais_procedencia"]):
+                                _show_edit_origen_dialog(
+                                    rid, hawb, origen, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                )
+                            with ui.element("div").classes("pa-chip").on("click", _origen_click):
+                                ui.label(_origen_raw or "—").style(
+                                    "pointer-events:none;font-size:11px;color:#0C447C"
+                                )
+                                ui.html(
+                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>'
+                                )
+                    else:
+                        ui.label(_origen_raw).style(
+                            f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
+                        )
                     # Invoice Nro
                     ui.label(r["nro_invoice"]).style(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
@@ -890,8 +930,25 @@ def _rebuild_tabla(
                     ui.label(_fmt_usd(r["fob_total"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
                     )
-                    # Peso Total
-                    ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:center")
+                    # Peso Total — chip editable para LHS, label estático para NC/Sixtar
+                    if _is_lhs:
+                        with ui.element("div").style(
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                        ):
+                            _kgs_disp = f"{r['kgs']} kg" if r["kgs"] else "—"
+                            def _kgs_click(rid=rid, hawb=r["hawb"], kgs=r["kgs"]):
+                                _show_edit_kgs_dialog(
+                                    rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                )
+                            with ui.element("div").classes("pa-chip").on("click", _kgs_click):
+                                ui.label(_kgs_disp).style(
+                                    "pointer-events:none;font-size:11px;color:#0C447C"
+                                )
+                                ui.html(
+                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>'
+                                )
+                    else:
+                        ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Derechos
                     ui.label(_fmt_ars_zero(r["derechos_importacion"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
@@ -1231,6 +1288,64 @@ def _show_edit_pa_dialog(
                 ui.notify("PA actualizado", color="positive")
                 _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
             ui.button("Guardar y recalcular", on_click=_guardar).props("flat").style(
+                "color:#185FA5;font-weight:600"
+            )
+    d.open()
+
+
+def _show_edit_origen_dialog(
+    rid: int, hawb: str, origen_current: str, user_id: int,
+    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+) -> None:
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
+        ui.label(f"Editar Origen — {hawb}").style(
+            "font-size:14px;font-weight:600;color:#374151;margin-bottom:16px;display:block"
+        )
+        origen_input = ui.select(
+            options=["USA", "China"],
+            value=origen_current if origen_current in ("USA", "China") else None,
+            label="País de origen",
+        ).props("dense outlined").style("width:100%")
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+            def _guardar(d=d):
+                new_val = origen_input.value
+                if not new_val:
+                    ui.notify("Seleccioná un origen", color="warning")
+                    return
+                _update_origen(rid, user_id, new_val)
+                d.close()
+                ui.notify("Origen actualizado", color="positive")
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+            ui.button("Guardar", on_click=_guardar).props("flat").style(
+                "color:#185FA5;font-weight:600"
+            )
+    d.open()
+
+
+def _show_edit_kgs_dialog(
+    rid: int, hawb: str, kgs_current: str, user_id: int,
+    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+) -> None:
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
+        ui.label(f"Editar Peso Total — {hawb}").style(
+            "font-size:14px;font-weight:600;color:#374151;margin-bottom:16px;display:block"
+        )
+        kgs_input = ui.number(
+            value=_to_float(kgs_current), min=0, max=100, step=0.01,
+        ).props("dense outlined").style("width:100%")
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+            def _guardar(d=d):
+                new_val = kgs_input.value
+                if new_val is None or new_val < 0:
+                    ui.notify("Ingresá un valor válido >= 0", color="warning")
+                    return
+                _update_kgs(rid, user_id, new_val)
+                d.close()
+                ui.notify("Peso Total actualizado", color="positive")
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+            ui.button("Guardar", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
     d.open()
