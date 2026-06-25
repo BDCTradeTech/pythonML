@@ -348,9 +348,9 @@ _TABLE_HEADERS = [
 ]
 
 _TABLE_COLS = (
-    "minmax(90px,0.7fr) minmax(100px,1.4fr) minmax(90px,0.9fr) minmax(90px,0.8fr) minmax(90px,0.5fr) minmax(80px,0.8fr) minmax(90px,0.9fr) "
-    "minmax(90px,0.7fr) minmax(90px,0.7fr) minmax(90px,0.8fr) minmax(90px,0.8fr) minmax(100px,0.8fr) minmax(100px,0.8fr) minmax(90px,0.7fr) "
-    "minmax(100px,0.7fr) minmax(90px,0.7fr) minmax(80px,0.7fr) minmax(80px,0.7fr) minmax(80px,0.6fr) minmax(110px,0.8fr) minmax(90px,0.8fr) minmax(100px,0.8fr) 96px"
+    "0.7fr 1.4fr 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr 0.9fr "
+    "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
+    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
 )
 
 _SORT_KEYS = {
@@ -843,13 +843,13 @@ def _rebuild_tabla(
             # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
-                "column-gap:4px;min-width:2200px;align-items:center"
+                "column-gap:4px;min-width:1700px;align-items:center"
             ):
                 # ── Cabecera ──────────────────────────────────────────────────
                 _hs_base = (
                     "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
                     "font-size:10px;font-weight:600;"
-                    "white-space:nowrap;"
+                    "white-space:normal;word-break:break-word;line-height:1.3;"
                     "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center"
                 )
                 _hs = _hs_base + ";color:#6b7280"
@@ -929,7 +929,7 @@ def _rebuild_tabla(
                             _show_edit_pa_dialog(
                                 rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                             )
-                        with ui.element("div").classes("pa-chip").style("min-width:75px").on("click", _pa_click):
+                        with ui.element("div").classes("pa-chip").style("min-width:90px").on("click", _pa_click):
                             ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:11px;color:#0C447C;white-space:nowrap")
                             ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>')
                     # Origen — chip editable para LHS, label estático para NC/Sixtar
@@ -974,7 +974,7 @@ def _rebuild_tabla(
                                 _show_edit_kgs_dialog(
                                     rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                                 )
-                            with ui.element("div").classes("pa-chip").style("min-width:70px").on("click", _kgs_click):
+                            with ui.element("div").classes("pa-chip").style("min-width:90px").on("click", _kgs_click):
                                 ui.label(_kgs_disp).style(
                                     "pointer-events:none;font-size:11px;color:#0C447C;white-space:nowrap"
                                 )
