@@ -1519,10 +1519,6 @@ def _show_traida_dialog(breakdown: dict) -> None:
                 bold=True, val_color="#185FA5",
             )
 
-        _divider()
-        _fila("Dólar blue usado (PA)", _fmt_ars(dolar_blue) if dolar_blue else "—", "#185FA5")
-        _fila("Dólar oficial (tc3)", _fmt_ars(tc3) if tc3 else "—", "#185FA5")
-
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:10px;color:#374151"
         )
