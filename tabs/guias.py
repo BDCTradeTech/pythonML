@@ -731,6 +731,8 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "dolar_blue": dolar_blue,
             "tc3": tc3,
             "traida_usd": traida_usd,
+            "hawb": r["hawb"] or "",
+            "courier": r["courier"] or r["razon_social"] or "",
         }
 
         result.append({
@@ -1450,45 +1452,77 @@ def _show_traida_dialog(breakdown: dict) -> None:
     iva21_val = breakdown.get("iva21_val", 0.0)
     dolar_blue = breakdown["dolar_blue"]
     tc3 = breakdown.get("tc3")
-    traida_usd = breakdown["traida_usd"]
+    traida_usd = breakdown.get("traida_usd")
+    hawb = breakdown.get("hawb", "")
+    courier = breakdown.get("courier", "")
 
-    with ui.dialog() as d, ui.card().style("padding:20px;min-width:400px"):
+    pa_ars = (pa_val * dolar_blue) if (pa_val is not None and dolar_blue) else None
+    subtotal_ars = (
+        (tf or 0.0) + (pa_ars or 0.0) - (iva_val or 0.0) - (iva21_val or 0.0)
+    )
+
+    with ui.dialog() as d, ui.card().style("padding:20px;min-width:440px"):
         ui.label("Detalle Traída u$ s/IVA").style(
-            "font-size:14px;font-weight:600;color:#374151;margin-bottom:12px;display:block"
+            "font-size:14px;font-weight:600;color:#374151;display:block"
         )
+        subtitulo = " — ".join(x for x in [hawb, courier] if x)
+        if subtitulo:
+            ui.label(subtitulo).style(
+                "font-size:12px;color:#6b7280;display:block;margin-bottom:12px"
+            )
 
-        def _fila(label: str, val_str: str) -> None:
+        def _fila(label: str, val_str: str, val_color: str = "#374151") -> None:
             with ui.element("div").style(
                 "display:flex;justify-content:space-between;align-items:center;"
                 "padding:4px 0;border-bottom:0.5px solid #f1f5f9;gap:16px"
             ):
                 ui.label(label).style("font-size:13px;color:#6b7280;flex-shrink:0")
-                ui.label(val_str).style("font-size:13px;color:#374151;text-align:right")
+                ui.label(val_str).style(
+                    f"font-size:13px;color:{val_color};text-align:right;white-space:nowrap"
+                )
 
         def _divider() -> None:
-            ui.element("div").style("border-top:1px solid #e2e8f0;margin:6px 0")
+            ui.element("div").style("border-top:1px solid #e2e8f0;margin:8px 0")
 
-        pa_ars = (pa_val * dolar_blue) if (pa_val is not None and dolar_blue) else None
-        pa_blue_label = (
-            f"PA en ARS (u$s{_fmt_usd(pa_val)} × dólar blue {_fmt_ars(dolar_blue)})"
-            if (pa_val is not None and dolar_blue) else "PA en ARS"
+        pa_num = f"{round(pa_val):,}".replace(",", ".") if pa_val is not None else "?"
+        pa_label = (
+            f"+ PA (u$s {pa_num} × dólar blue {_fmt_ars(dolar_blue)})"
+            if (pa_val is not None and dolar_blue) else "+ PA"
         )
-        _fila("Total Factura (ARS)", _fmt_ars(tf))
-        _fila(pa_blue_label, _fmt_ars(pa_ars) if pa_ars is not None else "—")
-        _fila("IVA Aduanero restado (ARS)", _fmt_ars(iva_val) if iva_val else "—")
-        _fila("IVA 21% restado (ARS)", _fmt_ars(iva21_val) if iva21_val else "—")
+
+        _fila("Total Factura", _fmt_ars(tf))
+        _fila(pa_label, f"+ {_fmt_ars(pa_ars)}" if pa_ars is not None else "—")
+        _fila("− IVA Aduanero", f"− {_fmt_ars(iva_val)}")
+        _fila("− IVA % 21", f"− {_fmt_ars(iva21_val)}")
         _divider()
-        _fila("Dólar blue usado (PA)", _fmt_ars(dolar_blue) if dolar_blue else "—")
-        _fila("Dólar oficial usado (tc3)", _fmt_ars(tc3) if tc3 else "—")
-        _divider()
+
         with ui.element("div").style(
-            "display:flex;justify-content:space-between;align-items:center;"
-            "border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px"
+            "background:#f8fafc;border-radius:6px;padding:10px"
         ):
-            ui.label("Traída u$ s/IVA").style("font-size:13px;font-weight:600;color:#374151")
-            ui.label(
-                f"u$s {_fmt_usd(traida_usd)}" if traida_usd is not None else "—"
-            ).style("font-size:13px;font-weight:600;color:#374151;white-space:nowrap")
+            def _fila_b(label: str, val_str: str, bold: bool = False, val_color: str = "#374151") -> None:
+                with ui.element("div").style(
+                    "display:flex;justify-content:space-between;align-items:center;"
+                    "padding:3px 0;gap:16px"
+                ):
+                    ui.label(label).style("font-size:13px;color:#6b7280;flex-shrink:0")
+                    ui.label(val_str).style(
+                        f"font-size:13px;font-weight:{'700' if bold else '400'};"
+                        f"color:{val_color};text-align:right;white-space:nowrap"
+                    )
+
+            _fila_b("Subtotal ARS", _fmt_ars(subtotal_ars))
+            _fila_b("÷ Dólar oficial (tc3)", _fmt_ars(tc3) if tc3 else "—")
+            ui.element("div").style("border-top:1px solid #cbd5e1;margin:6px 0")
+            _fila_b(
+                "Traída u$ s/IVA",
+                _fmt_usd(traida_usd) if (tc3 and traida_usd is not None) else "—",
+                bold=True, val_color="#185FA5",
+            )
+
+        _divider()
+        _fila("Dólar blue usado (PA)", _fmt_ars(dolar_blue) if dolar_blue else "—", "#185FA5")
+        _fila("Dólar oficial (tc3)", _fmt_ars(tc3) if tc3 else "—", "#185FA5")
+
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:10px;color:#374151"
         )
