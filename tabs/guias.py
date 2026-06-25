@@ -242,16 +242,22 @@ honorarios: en Página 1, etiquetado "Honorarios". Valor en ARS. Devolver null s
 
 handling: en Página 1, etiquetado "Handling". Valor en ARS. Devolver null si no aparece.
 
-derechos_importacion: en Página 1, etiquetado "Derechos" o "Derechos de Importación". Valor en ARS.
-  Buscar posicionalmente: es el primer valor del grupo de tributos, dos filas arriba de iva_aduanero.
-  Puede ser 0 si no aplica.
+derechos_importacion: BUSCAR SOLO EN LA PRIMERA PÁGINA (factura de SIXSTAR COURIER SA).
+  Etiquetado "Derechos de Importación" en la lista de artículos, con su importe en la columna TOTAL $.
+  NO leer de otras páginas (DSI ARCA, airbill, Invoice BDC, etc.).
+  Puede ser 0 si no aplica (ej: "Derechos de Importación $ 0.00" → derechos_importacion = 0.0).
 
-tasa_estadistica: en Página 1, etiquetado "Estadística" o "Tasa Estadística". Valor en ARS.
-  Puede ser 0 si no aplica.
+tasa_estadistica: BUSCAR SOLO EN LA PRIMERA PÁGINA (factura de SIXSTAR COURIER SA).
+  Etiquetado "Tasa Estadística" en la lista de artículos, con su importe en la columna TOTAL $.
+  NO leer de otras páginas (DSI ARCA, airbill, Invoice BDC, etc.).
+  Puede ser 0 si no aplica (ej: "Tasa Estadística $ 0.00" → tasa_estadistica = 0.0).
 
-iva_aduanero: en Página 1, etiquetado "IVA % 21" o "IVA Aduanero". Valor en ARS.
-  CAMPO OBLIGATORIO — nunca devolver 0 ni null. Si no encontrás el valor, devolver null
-  para indicar error de lectura, no 0.
+iva_aduanero: BUSCAR SOLO EN LA PRIMERA PÁGINA (factura de SIXSTAR COURIER SA).
+  Etiquetado "Iva Aduanero" en la lista de artículos, con su importe en la columna TOTAL $.
+  NO leer de otras páginas. NO confundir con la columna "415-I.V.A." de la página DSI ARCA.
+  Ejemplo: "Iva Aduanero $ 468974.16" → iva_aduanero = 468974.16.
+  CAMPO OBLIGATORIO — nunca devolver 0 ni null si aparece en Página 1.
+  Si no lo encontrás en Página 1, devolver null para indicar error de lectura.
 
 iva_21: en Página 1, etiquetado "IVA % 21". Valor en ARS.
   Si iva_aduanero e iva_21 corresponden al mismo campo del documento, asignar el mismo valor a ambos.
