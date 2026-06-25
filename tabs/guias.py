@@ -203,9 +203,13 @@ nro_factura: número de factura argentina en Página 1, etiquetado "Factura NRO.
   Formato XXXX-XXXXXXXX. NUNCA poner el mismo valor en nro_invoice.
 
 nro_invoice: buscar en TODO el documento la página con el encabezado "BDC TRADE TECH LLC"
-  y la palabra "INVOICE". En esa página, el número de invoice está a la derecha del encabezado
-  con la etiqueta "INVOICE #" o "INVOICE NO". Extraer solo el número.
-  Ejemplo: "INVOICE # 7495" → nro_invoice = "7495".
+  y la palabra "INVOICE". En esa página:
+  - El número de invoice está a la DERECHA del texto "INVOICE #" o "INVOICE NO".
+  - Formato típico: "INVOICE # 7495" → nro_invoice = "7495".
+  - También puede aparecer en el bloque superior derecho de esa página junto a los campos
+    "DATE", "DUE DATE" y "TERMS" — buscar el número que sigue a "INVOICE #" en ese bloque.
+  - Si encontrás los productos (SKU, descripción, qty) pero NO encontrás el Invoice #,
+    buscarlo nuevamente en el bloque superior derecho de esa misma página.
   NUNCA devolver null si existe una página con "BDC TRADE TECH LLC" en el documento.
   NUNCA poner el mismo valor en nro_factura.
 
