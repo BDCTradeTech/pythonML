@@ -472,6 +472,27 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+def _normalizar_fecha(fecha_str: str) -> str:
+    if not fecha_str:
+        return ""
+    import re
+    s = fecha_str.strip()
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        y, m, d = s.split("-")
+        return f"{d}/{m}/{y}"
+    if re.match(r'^\d{2}/\d{2}/\d{2}$', s):
+        d, m, y = s.split("/")
+        return f"{d}/{m}/20{y}"
+    if re.match(r'^\d{2}/\d{2}/\d{4}$', s):
+        return s
+    try:
+        from dateutil import parser as dparser
+        dt = dparser.parse(s, dayfirst=True)
+        return dt.strftime("%d/%m/%Y")
+    except Exception:
+        return s
+
+
 def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any]]:
     raw = get_cotizador_param("dolar_blue", user_id)
     dolar_blue = float(raw) if raw else None
@@ -610,7 +631,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "nro_factura": r["nro_factura"] or "",
             "hawb": r["hawb"] or "",
             "pa": r["pa"] or "",
-            "fecha": r["fecha"] or "",
+            "fecha": _normalizar_fecha(r["fecha"] or ""),
             "pais_procedencia": r["pais_procedencia"] or "",
             "nro_invoice": r["nro_invoice"] or "",
             "fob_total": r["fob_total"] or "",
@@ -765,23 +786,23 @@ def _gemini_vision_multi(
 
 def _extract_pdf_text(data: bytes) -> str:
     import pdfplumber
+    parts = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
-        parts = [p.extract_text() for p in pdf.pages if p.extract_text()]
-    text = "\n".join(parts).strip()
-
-    if len(text) < 50:
-        try:
-            import pytesseract
-            from pdf2image import convert_from_bytes
-            logging.warning("[OCR] pdfplumber vacío, usando OCR...")
-            images = convert_from_bytes(data, dpi=200)
-            ocr_parts = [pytesseract.image_to_string(img, lang='spa') for img in images]
-            text = "\n".join(ocr_parts).strip()
-            logging.warning("[OCR] texto extraído con OCR: %d chars", len(text))
-        except Exception as e:
-            logging.warning("[OCR] error: %s", e)
-
-    return text
+        for i, page in enumerate(pdf.pages):
+            text = page.extract_text() or ""
+            if len(text.strip()) < 30:
+                try:
+                    import pytesseract
+                    from pdf2image import convert_from_bytes
+                    logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
+                    images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1)
+                    if images:
+                        text = pytesseract.image_to_string(images[0], lang='spa+eng')
+                        logging.warning(f"[OCR] página {i+1}: {len(text)} chars extraídos")
+                except Exception as e:
+                    logging.warning(f"[OCR] error en página {i+1}: {e}")
+            parts.append(text)
+    return "\n\n--- PÁGINA {} ---\n".join([""] + parts).strip() if parts else ""
 
 
 def _clean_json(raw: str) -> str:
