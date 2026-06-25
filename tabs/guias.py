@@ -2138,6 +2138,19 @@ def build_tab_guias() -> None:
         ).props("dense outlined").style(
             "font-size:11px;height:28px;width:160px;border-radius:4px"
         )
+        with ui.element("button").on(
+            "click",
+            lambda: _rebuild_tabla(
+                user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros
+            ),
+        ).style(
+            "height:28px;font-size:11px;"
+            "border:0.5px solid var(--color-border-secondary);"
+            "border-radius:4px;background:var(--color-background-primary);"
+            "padding:0 10px;cursor:pointer;display:inline-flex;"
+            "align-items:center;gap:4px;color:var(--color-text-primary)"
+        ):
+            ui.html('<i class="ti ti-refresh" style="font-size:13px"></i> Actualizar')
 
     # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
     filas_container = ui.element("div").style("display:none")
