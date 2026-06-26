@@ -911,8 +911,16 @@ def _extract_pdf_text(data: bytes) -> str:
                     logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
                     images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path='/usr/bin')
                     if images:
-                        text = pytesseract.image_to_string(images[0], lang='spa+eng')
-                        logging.warning(f"[OCR] página {i+1}: {len(text)} chars — muestra: {repr(text[:300])}")
+                        for ocr_lang in ['eng', 'spa+eng', 'spa']:
+                            text = pytesseract.image_to_string(images[0], lang=ocr_lang)
+                            text = text.strip()
+                            if len(text) > 10:
+                                logging.warning(f"[OCR] página {i+1}: {len(text)} chars con lang={ocr_lang} — muestra: {repr(text[:300])}")
+                                break
+                            else:
+                                logging.warning(f"[OCR] página {i+1}: 0 chars con lang={ocr_lang}, probando siguiente...")
+                        if len(text) == 0:
+                            logging.warning(f"[OCR] página {i+1}: sin texto con ningún idioma")
                 except Exception as e:
                     logging.warning(f"[OCR] error en página {i+1}: {e}")
             parts.append(text)
