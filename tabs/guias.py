@@ -476,9 +476,9 @@ _TABLE_HEADERS = [
 ]
 
 _TABLE_COLS = (
-    "70px 0.7fr minmax(80px,0.9fr) 0.9fr 0.8fr minmax(70px,0.5fr) minmax(65px,0.8fr) minmax(80px,0.8fr) "
-    "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 95px"
+    "13fr 15fr 15fr 15fr 14fr 13fr 12fr 14fr "
+    "14fr 14fr 14fr 13fr 15fr 15fr 15fr 16fr 15fr 12fr 13fr 12fr "
+    "15fr 14fr 13fr 19fr"
 )
 
 _SORT_KEYS = {
@@ -1126,20 +1126,20 @@ def _rebuild_tabla(
             )
             return
 
-        with ui.element("div").style("overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 280px);width:100%"):
+        with ui.element("div").style("overflow-x:hidden;overflow-y:auto;max-height:calc(100vh - 280px);width:100%"):
             # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
-                "column-gap:4px;min-width:1700px;align-items:center"
+                "column-gap:2px;width:100%;align-items:center"
             ):
                 # ── Cabecera ──────────────────────────────────────────────────
                 _hs_base = (
-                    "padding:6px 4px;background:#2A7AC7;border-bottom:1px solid rgba(255,255,255,0.2);"
+                    "padding:3px 5px;background:#2A7AC7;border-bottom:1px solid rgba(255,255,255,0.2);"
                     "border-right:0.5px solid rgba(255,255,255,0.15);"
                     "font-size:10px;font-weight:500;color:#FFFFFF;"
                     "white-space:normal;word-break:break-word;line-height:1.3;"
-                    "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center;"
-                    "position:sticky;top:0;z-index:10"
+                    "min-height:28px;display:flex;align-items:center;justify-content:center;text-align:center;"
+                    "position:sticky;top:0;z-index:10;overflow:hidden"
                 )
                 _hs = _hs_base
                 for h in _TABLE_HEADERS:
@@ -1161,7 +1161,7 @@ def _rebuild_tabla(
 
                 # ── Filas de datos ─────────────────────────────────────────────
                 _sep = "border-bottom:0.5px solid #f1f5f9"
-                _ct = f"padding:3px 4px;font-size:11px;color:#374151;{_sep}"
+                _ct = f"padding:3px 5px;font-size:10px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;{_sep}"
 
                 for r in rows:
                     rid = r["id"]
@@ -1193,24 +1193,24 @@ def _rebuild_tabla(
                     # IA
                     _ia_val = r.get("ia_usada") or ""
                     with ui.element("div").style(
-                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
                     ):
                         if _ia_val == "Grok":
                             ui.html(
-                                '<span style="display:inline-flex;align-items:center;gap:3px;width:65px;'
+                                '<span style="display:inline-flex;align-items:center;gap:3px;max-width:65px;'
                                 'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
                                 'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
                                 '<i class="ti ti-bolt"></i> Grok</span>'
                             )
                         elif _ia_val == "Gemini":
                             ui.html(
-                                '<span style="display:inline-flex;align-items:center;gap:3px;width:65px;'
+                                '<span style="display:inline-flex;align-items:center;gap:3px;max-width:65px;'
                                 'background:#EAF3DE;border:0.5px solid #3B6D11;color:#173404;'
                                 'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
                                 '<i class="ti ti-sparkles"></i> Gemini</span>'
                             )
                         else:
-                            ui.label("—").style("font-size:11px;color:#9ca3af")
+                            ui.label("—").style("font-size:10px;color:#9ca3af")
                     # Fecha
                     ui.label(r["fecha"]).style(f"{_ct};white-space:nowrap;text-align:center")
                     # Courier
@@ -1233,7 +1233,7 @@ def _rebuild_tabla(
                     )
                     # PA — chip clickeable para editar
                     with ui.element("div").style(
-                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
                     ):
                         def _pa_click(rid=rid, hawb=r["hawb"], pa=r["pa"]):
                             _show_edit_pa_dialog(
@@ -1249,7 +1249,7 @@ def _rebuild_tabla(
                     _is_lhs = (r.get("courier") or "").upper() == "LHS"
                     if _is_lhs:
                         with ui.element("div").style(
-                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
                         ):
                             def _origen_click(rid=rid, hawb=r["hawb"], origen=r["pais_procedencia"]):
                                 _show_edit_origen_dialog(
@@ -1277,7 +1277,7 @@ def _rebuild_tabla(
                     # Peso Total — chip editable para LHS, label estático para NC/Sixtar
                     if _is_lhs:
                         with ui.element("div").style(
-                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
                         ):
                             _kgs_val = _to_float(r["kgs"])
                             _kgs_disp = f"{_kgs_val:.1f} kg" if _kgs_val is not None else "—"
@@ -1285,12 +1285,12 @@ def _rebuild_tabla(
                                 _show_edit_kgs_dialog(
                                     rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                                 )
-                            with ui.element("div").classes("pa-chip").style("min-width:90px").on("click", _kgs_click):
+                            with ui.element("div").classes("pa-chip").style("min-width:55px").on("click", _kgs_click):
                                 ui.label(_kgs_disp).style(
-                                    "pointer-events:none;font-size:11px;color:#0C447C;white-space:nowrap"
+                                    "pointer-events:none;font-size:9px;color:#0C447C;white-space:nowrap"
                                 )
                                 ui.html(
-                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>'
+                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:9px;opacity:0.7;color:#0C447C"></i>'
                                 )
                     else:
                         _kgs_nc = _to_float(r["kgs"])
@@ -1373,7 +1373,7 @@ def _rebuild_tabla(
                     _r_fac = r.get("nro_factura") or ""
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
-                        f"gap:3px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:4px 4px;min-width:95px"
+                        f"gap:3px;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;{_sep};padding:4px 4px"
                     ):
                         with ui.element("div").classes(ico_id).style("display:inline-flex"):
                             ui.button(
