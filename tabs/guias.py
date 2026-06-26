@@ -897,11 +897,16 @@ def _gemini_vision_multi(
     return response.text
 
 
-def _extract_pdf_text(data: bytes) -> str:
+def _extract_pdf_text(data: bytes, max_pages: int = 4) -> str:
     import pdfplumber, io
     parts = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
-        for i, page in enumerate(pdf.pages):
+        total_pages = len(pdf.pages)
+        pages_to_process = min(total_pages, max_pages)
+        if total_pages > max_pages:
+            logging.warning(f"[EXTRACT] PDF tiene {total_pages} páginas, procesando solo {max_pages}")
+        for i in range(pages_to_process):
+            page = pdf.pages[i]
             text = page.extract_text() or ""
             if len(text.strip()) < 30:
                 try:
