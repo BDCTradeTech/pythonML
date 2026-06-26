@@ -901,6 +901,8 @@ def _extract_pdf_text(data: bytes) -> str:
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages):
             text = page.extract_text() or ""
+            if i == 3:
+                logging.warning(f"[P4-TEXT] pdfplumber extrajo {len(text)} chars: {repr(text[:500])}")
             if len(text.strip()) < 30:
                 try:
                     import pytesseract
