@@ -145,7 +145,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.26.24"
+VERSION = "3.26.06.26.25"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -191,7 +191,7 @@ def _check_gemini_status() -> str:
             return "red"
         from google import genai as _genai
         client = _genai.Client(api_key=key)
-        client.models.generate_content(model="gemini-1.5-flash", contents=".")
+        client.models.generate_content(model="gemini-2.5-flash", contents=".")
         return "green"
     except Exception:
         return "red"
