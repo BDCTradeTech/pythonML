@@ -857,6 +857,9 @@ def _groq_parse_doc(api_key: str, prompt: str) -> str:
         "temperature": 0.2,
     }
     resp = _requests.post(url, headers=headers, json=payload, timeout=30)
+    if resp.status_code == 429:
+        logging.warning(f"[GROQ-429] headers: { {k: v for k, v in resp.headers.items() if 'ratelimit' in k.lower() or k.lower() == 'retry-after'} }")
+        logging.warning(f"[GROQ-429] body: {resp.text[:500]}")
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
