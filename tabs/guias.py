@@ -476,9 +476,9 @@ _TABLE_HEADERS = [
 ]
 
 _TABLE_COLS = (
-    "70px 0.7fr minmax(80px,0.9fr) 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr minmax(80px,0.8fr) "
+    "70px 0.7fr minmax(80px,0.9fr) 0.9fr 0.8fr minmax(70px,0.5fr) minmax(65px,0.8fr) minmax(80px,0.8fr) "
     "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 100px"
+    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 95px"
 )
 
 _SORT_KEYS = {
@@ -1239,9 +1239,9 @@ def _rebuild_tabla(
                             _show_edit_pa_dialog(
                                 rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                             )
-                        with ui.element("div").classes("pa-chip").style("min-width:90px").on("click", _pa_click):
-                            ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:11px;color:#0C447C;white-space:nowrap")
-                            ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>')
+                        with ui.element("div").classes("pa-chip").style("min-width:60px").on("click", _pa_click):
+                            ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:10px;color:#0C447C;white-space:nowrap")
+                            ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:9px;opacity:0.7;color:#0C447C"></i>')
                     # Origen — chip editable para LHS, label estático para NC/Sixtar
                     _origen_raw = r["pais_procedencia"]
                     if _origen_raw and ("estados uni" in _origen_raw.lower() or "212" in _origen_raw):
@@ -1255,12 +1255,12 @@ def _rebuild_tabla(
                                 _show_edit_origen_dialog(
                                     rid, hawb, origen, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                                 )
-                            with ui.element("div").classes("pa-chip").on("click", _origen_click):
+                            with ui.element("div").classes("pa-chip").style("min-width:50px").on("click", _origen_click):
                                 ui.label(_origen_raw or "—").style(
-                                    "pointer-events:none;font-size:11px;color:#0C447C"
+                                    "pointer-events:none;font-size:10px;color:#0C447C"
                                 )
                                 ui.html(
-                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>'
+                                    '<i class="ti ti-pencil" style="pointer-events:none;font-size:9px;opacity:0.7;color:#0C447C"></i>'
                                 )
                     else:
                         ui.label(_origen_raw).style(
@@ -1373,17 +1373,17 @@ def _rebuild_tabla(
                     _r_fac = r.get("nro_factura") or ""
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
-                        f"gap:4px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:4px 6px"
+                        f"gap:3px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:4px 4px;min-width:95px"
                     ):
                         with ui.element("div").classes(ico_id).style("display:inline-flex"):
                             ui.button(
                                 icon="chevron_right",
                                 on_click=_toggle_row,
-                            ).props("flat dense").style("color:#6b7280;min-width:28px")
+                            ).props("flat dense").style("color:#6b7280;min-width:20px")
                         ui.button(
                             icon="visibility",
                             on_click=lambda rid=rid: _show_ver_dialog(rid, user_id),
-                        ).props("flat dense").style("color:#1d4ed8;min-width:28px")
+                        ).props("flat dense").style("color:#1d4ed8;min-width:20px")
                         if _r_pdf:
                             with ui.element("button").on(
                                 "click",
@@ -1391,10 +1391,10 @@ def _rebuild_tabla(
                                     _download_pdf_handler(p, p2, c, fac),
                             ).style(
                                 "background:none;border:none;cursor:pointer;color:#2A7AC7;"
-                                "padding:4px;min-width:28px;display:inline-flex;"
+                                "padding:2px;min-width:20px;display:inline-flex;"
                                 "align-items:center;justify-content:center"
                             ).tooltip("Descargar PDF"):
-                                ui.html('<i class="ti ti-file-type-pdf" style="font-size:13px;pointer-events:none"></i>')
+                                ui.html('<i class="ti ti-file-type-pdf" style="font-size:12px;pointer-events:none"></i>')
                         else:
                             with ui.element("button").on(
                                 "click",
@@ -1406,16 +1406,16 @@ def _rebuild_tabla(
                             ).style(
                                 "background:none;border:0.5px dashed var(--color-border-secondary);"
                                 "cursor:pointer;color:var(--color-text-tertiary);"
-                                "padding:1px 3px;border-radius:3px;min-width:28px;"
+                                "padding:1px 2px;border-radius:3px;min-width:20px;"
                                 "display:inline-flex;align-items:center;justify-content:center"
                             ).tooltip("Subir PDF"):
-                                ui.html('<i class="ti ti-file-upload" style="font-size:13px;pointer-events:none"></i>')
+                                ui.html('<i class="ti ti-file-upload" style="font-size:12px;pointer-events:none"></i>')
                         ui.button(
                             icon="delete",
                             on_click=lambda rid=rid: _show_del_dialog(
                                 rid, user_id, tabla_container, filas_ref, parsed_ref, sort_state
                             ),
-                        ).props("flat dense").style("color:#dc2626;min-width:28px")
+                        ).props("flat dense").style("color:#dc2626;min-width:20px")
                     # Fila expandible — abarca todas las columnas del grid
                     det_productos = r.get("productos") or []
                     with ui.element("div").classes(det_id).style(
@@ -2304,7 +2304,7 @@ def build_tab_guias() -> None:
     ui.add_css("""
 .pa-chip {
     background:#E6F1FB;border:1px solid #85B7EB;color:#0C447C;
-    border-radius:4px;padding:2px 7px;cursor:pointer;
+    border-radius:4px;padding:1px 5px;cursor:pointer;
     display:inline-flex;align-items:center;justify-content:center;gap:3px;
     transition:background 0.15s;user-select:none;
 }
