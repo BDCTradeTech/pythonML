@@ -633,8 +633,8 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             where_parts.append("strftime('%Y', created_at) = strftime('%Y', 'now')")
         busqueda = (filtros.get("busqueda") or "").strip()
         if busqueda:
-            where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ?)")
-            params.extend([f"%{busqueda.lower()}%", f"%{busqueda.lower()}%"])
+            where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ? OR LOWER(hawb) LIKE ?)")
+            params.extend([f"%{busqueda.lower()}%", f"%{busqueda.lower()}%", f"%{busqueda.lower()}%"])
     where_sql = " AND ".join(where_parts)
     conn = get_connection()
     rows = conn.execute(
@@ -2196,7 +2196,7 @@ def build_tab_guias() -> None:
         )
         ui.label("Invoice / Factura").style("font-size:10px;color:var(--color-text-secondary)")
         ui.input(
-            placeholder="Buscar invoice/factura...",
+            placeholder="Buscar invoice / factura / HAWB...",
             on_change=lambda e: _filter_change("busqueda", e.value or ""),
         ).props("dense outlined").style(
             "font-size:11px;height:28px;width:160px;border-radius:4px"
@@ -2207,13 +2207,13 @@ def build_tab_guias() -> None:
                 user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros
             ),
         ).style(
-            "height:28px;font-size:11px;"
-            "border:0.5px solid var(--color-border-secondary);"
-            "border-radius:4px;background:var(--color-background-primary);"
-            "padding:0 10px;cursor:pointer;display:inline-flex;"
-            "align-items:center;gap:4px;color:var(--color-text-primary)"
+            "height:32px;font-size:12px;font-weight:500;"
+            "border:1px solid #185FA5;"
+            "border-radius:4px;background:#185FA5;"
+            "padding:0 14px;cursor:pointer;display:inline-flex;"
+            "align-items:center;gap:6px;color:#FFFFFF"
         ):
-            ui.html('<i class="ti ti-refresh" style="font-size:13px"></i> Actualizar')
+            ui.html('<i class="ti ti-refresh" style="font-size:14px"></i> Actualizar')
 
     # Container oculto para mantener filas_ref activo (usado por _rebuild_tabla)
     filas_container = ui.element("div").style("display:none")
