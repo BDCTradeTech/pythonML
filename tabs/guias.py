@@ -624,13 +624,17 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
                 params.append(origen_val)
         fecha_f = filtros.get("fecha", "Todas")
         if fecha_f == "Hoy":
-            where_parts.append("DATE(created_at) = DATE('now')")
+            where_parts.append("fecha = strftime('%d/%m/%Y', 'now', 'localtime')")
         elif fecha_f == "Esta semana":
-            where_parts.append("created_at >= DATE('now', '-7 days')")
+            where_parts.append(
+                "SUBSTR(fecha,7,4)||'-'||SUBSTR(fecha,4,2)||'-'||SUBSTR(fecha,1,2) >= DATE('now', 'localtime', '-6 days')"
+            )
         elif fecha_f == "Este mes":
-            where_parts.append("strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')")
+            where_parts.append(
+                "SUBSTR(fecha,4,2) = strftime('%m', 'now', 'localtime') AND SUBSTR(fecha,7,4) = strftime('%Y', 'now', 'localtime')"
+            )
         elif fecha_f == "Este año":
-            where_parts.append("strftime('%Y', created_at) = strftime('%Y', 'now')")
+            where_parts.append("SUBSTR(fecha,7,4) = strftime('%Y', 'now', 'localtime')")
         busqueda = (filtros.get("busqueda") or "").strip()
         if busqueda:
             where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ? OR LOWER(hawb) LIKE ?)")
@@ -1081,18 +1085,19 @@ def _rebuild_tabla(
             ):
                 # ── Cabecera ──────────────────────────────────────────────────
                 _hs_base = (
-                    "padding:6px 4px;background:#f1f5f9;border-bottom:1px solid #e2e8f0;"
-                    "font-size:10px;font-weight:600;"
+                    "padding:6px 4px;background:#2A7AC7;border-bottom:1px solid rgba(255,255,255,0.2);"
+                    "border-right:0.5px solid rgba(255,255,255,0.15);"
+                    "font-size:10px;font-weight:500;color:#FFFFFF;"
                     "white-space:normal;word-break:break-word;line-height:1.3;"
                     "min-height:44px;display:flex;align-items:center;justify-content:center;text-align:center;"
                     "position:sticky;top:0;z-index:10"
                 )
-                _hs = _hs_base + ";color:#6b7280"
+                _hs = _hs_base
                 for h in _TABLE_HEADERS:
                     if h and h in _SORT_KEYS:
                         _active = sort_state[0] == h
                         _arrow = (" ↑" if sort_state[1] == "asc" else " ↓") if _active else ""
-                        _hc = "#185FA5" if _active else "#6b7280"
+                        _hc = "#FFFFFF" if _active else "rgba(255,255,255,0.85)"
                         def _sort_click(col=h):
                             sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
                             sort_state[0] = col
@@ -2104,7 +2109,7 @@ def build_tab_guias() -> None:
 .pa-chip {
     background:#E6F1FB;border:1px solid #85B7EB;color:#0C447C;
     border-radius:4px;padding:2px 7px;cursor:pointer;
-    display:inline-flex;align-items:center;gap:3px;
+    display:inline-flex;align-items:center;justify-content:center;gap:3px;
     transition:background 0.15s;user-select:none;
 }
 .pa-chip:hover { background:#B5D4F4 !important; }
@@ -2168,48 +2173,52 @@ def build_tab_guias() -> None:
 
     # ── Barra de filtros ──────────────────────────────────────────────────────
     with ui.element("div").style(
-        "padding:12px 20px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap"
+        "padding:12px 20px 0;display:flex;gap:8px;align-items:flex-end;flex-wrap:nowrap"
     ):
-        ui.label("Courier").style("font-size:10px;color:var(--color-text-secondary)")
-        ui.select(
-            options=["Todos", "NC Supplies", "Sixtar", "LHS"],
-            value="Todos",
-            on_change=lambda e: _filter_change("courier", e.value),
-        ).props("dense outlined").style(
-            "font-size:11px;height:28px;border-radius:4px;min-width:100px"
-        )
-        ui.label("Origen").style("font-size:10px;color:var(--color-text-secondary)")
-        ui.select(
-            options=["Todos", "USA", "China"],
-            value="Todos",
-            on_change=lambda e: _filter_change("origen", e.value),
-        ).props("dense outlined").style(
-            "font-size:11px;height:28px;border-radius:4px;min-width:80px"
-        )
-        ui.label("Fecha").style("font-size:10px;color:var(--color-text-secondary)")
-        ui.select(
-            options=["Todas", "Hoy", "Esta semana", "Este mes", "Este año"],
-            value="Este mes",
-            on_change=lambda e: _filter_change("fecha", e.value),
-        ).props("dense outlined").style(
-            "font-size:11px;height:28px;border-radius:4px;min-width:100px"
-        )
-        ui.label("Invoice / Factura").style("font-size:10px;color:var(--color-text-secondary)")
-        ui.input(
-            placeholder="Buscar invoice / factura / HAWB...",
-            on_change=lambda e: _filter_change("busqueda", e.value or ""),
-        ).props("dense outlined").style(
-            "font-size:11px;height:28px;width:160px;border-radius:4px"
-        )
+        with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+            ui.label("Courier").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.select(
+                options=["Todos", "NC Supplies", "Sixtar", "LHS"],
+                value="Todos",
+                on_change=lambda e: _filter_change("courier", e.value),
+            ).props("dense outlined").style(
+                "font-size:12px;height:34px;border-radius:4px;width:115px"
+            )
+        with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+            ui.label("Origen").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.select(
+                options=["Todos", "USA", "China"],
+                value="Todos",
+                on_change=lambda e: _filter_change("origen", e.value),
+            ).props("dense outlined").style(
+                "font-size:12px;height:34px;border-radius:4px;width:95px"
+            )
+        with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+            ui.label("Fecha").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.select(
+                options=["Todas", "Hoy", "Esta semana", "Este mes", "Este año"],
+                value="Este mes",
+                on_change=lambda e: _filter_change("fecha", e.value),
+            ).props("dense outlined").style(
+                "font-size:12px;height:34px;border-radius:4px;width:110px"
+            )
+        with ui.element("div").style("display:flex;flex-direction:column;gap:3px;flex:1"):
+            ui.label("Invoice / Factura / HAWB").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.input(
+                placeholder="Buscar invoice / factura / HAWB...",
+                on_change=lambda e: _filter_change("busqueda", e.value or ""),
+            ).props("dense outlined").style(
+                "font-size:12px;height:34px;border-radius:4px;width:100%"
+            )
         with ui.element("button").on(
             "click",
             lambda: _rebuild_tabla(
                 user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros
             ),
         ).style(
-            "height:32px;font-size:12px;font-weight:500;"
-            "border:1px solid #185FA5;"
-            "border-radius:4px;background:#185FA5;"
+            "height:34px;font-size:12px;font-weight:500;"
+            "border:1px solid #2A7AC7;"
+            "border-radius:4px;background:#2A7AC7;"
             "padding:0 14px;cursor:pointer;display:inline-flex;"
             "align-items:center;gap:6px;color:#FFFFFF"
         ):
