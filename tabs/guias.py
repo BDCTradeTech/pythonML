@@ -911,6 +911,22 @@ def _extract_pdf_text(data: bytes) -> str:
                     logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
                     images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path='/usr/bin')
                     if images:
+                        # Verificar si poppler generó imagen degenerada (1×1 pixel)
+                        if images[0].size[0] <= 2 or images[0].size[1] <= 2:
+                            logging.warning(f"[OCR] página {i+1}: poppler generó {images[0].size}, usando PyMuPDF fallback...")
+                            try:
+                                import fitz
+                                import io as _io
+                                from PIL import Image as _PILImage
+                                doc = fitz.open(stream=data, filetype="pdf")
+                                page_fitz = doc[i]
+                                mat = fitz.Matrix(300/72, 300/72)  # 300 DPI
+                                pix = page_fitz.get_pixmap(matrix=mat)
+                                images[0] = _PILImage.open(_io.BytesIO(pix.tobytes("png")))
+                                doc.close()
+                                logging.warning(f"[OCR] página {i+1}: PyMuPDF generó imagen {images[0].size}")
+                            except Exception as e2:
+                                logging.warning(f"[OCR] página {i+1}: PyMuPDF falló: {e2}")
                         text = pytesseract.image_to_string(images[0], lang='spa+eng')
                         logging.warning(f"[OCR] página {i+1}: {len(text)} chars — muestra: {repr(text[:300])}")
                 except Exception as e:
