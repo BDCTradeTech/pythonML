@@ -478,7 +478,7 @@ _TABLE_HEADERS = [
 _TABLE_COLS = (
     "70px 0.7fr minmax(80px,0.9fr) 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr minmax(80px,0.8fr) "
     "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 130px"
+    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 100px"
 )
 
 _SORT_KEYS = {
@@ -1373,7 +1373,7 @@ def _rebuild_tabla(
                     _r_fac = r.get("nro_factura") or ""
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
-                        f"gap:8px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:3px 0"
+                        f"gap:4px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:4px 6px"
                     ):
                         with ui.element("div").classes(ico_id).style("display:inline-flex"):
                             ui.button(
@@ -1394,7 +1394,7 @@ def _rebuild_tabla(
                                 "padding:4px;min-width:28px;display:inline-flex;"
                                 "align-items:center;justify-content:center"
                             ).tooltip("Descargar PDF"):
-                                ui.html('<i class="ti ti-file-type-pdf" style="font-size:14px;pointer-events:none"></i>')
+                                ui.html('<i class="ti ti-file-type-pdf" style="font-size:13px;pointer-events:none"></i>')
                         else:
                             with ui.element("button").on(
                                 "click",
@@ -1409,7 +1409,7 @@ def _rebuild_tabla(
                                 "padding:1px 3px;border-radius:3px;min-width:28px;"
                                 "display:inline-flex;align-items:center;justify-content:center"
                             ).tooltip("Subir PDF"):
-                                ui.html('<i class="ti ti-file-upload" style="font-size:14px;pointer-events:none"></i>')
+                                ui.html('<i class="ti ti-file-upload" style="font-size:13px;pointer-events:none"></i>')
                         ui.button(
                             icon="delete",
                             on_click=lambda rid=rid: _show_del_dialog(
