@@ -896,7 +896,7 @@ def _gemini_vision_multi(
 
 
 def _extract_pdf_text(data: bytes) -> str:
-    import pdfplumber
+    import pdfplumber, io
     parts = []
     with pdfplumber.open(io.BytesIO(data)) as pdf:
         for i, page in enumerate(pdf.pages):
@@ -905,21 +905,16 @@ def _extract_pdf_text(data: bytes) -> str:
                 try:
                     import pytesseract
                     from pdf2image import convert_from_bytes
+                    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
                     logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
-                    images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path="/usr/bin")
+                    images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path='/usr/bin')
                     if images:
-                        pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
-                        img_gray = images[0].convert('L')
-                        text = pytesseract.image_to_string(
-                            img_gray,
-                            lang='eng',
-                            config='--psm 6 --oem 3'
-                        )
+                        text = pytesseract.image_to_string(images[0], lang='spa+eng')
                         logging.warning(f"[OCR] página {i+1}: {len(text)} chars — muestra: {repr(text[:300])}")
                 except Exception as e:
                     logging.warning(f"[OCR] error en página {i+1}: {e}")
             parts.append(text)
-    return "\n\n--- PÁGINA {} ---\n".join([""] + parts).strip() if parts else ""
+    return "\n\n".join(parts).strip()
 
 
 def _clean_json(raw: str) -> str:
