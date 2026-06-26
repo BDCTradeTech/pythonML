@@ -911,6 +911,10 @@ def _extract_pdf_text(data: bytes) -> str:
                     logging.warning(f"[OCR] página {i+1} escaneada, aplicando OCR...")
                     images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path='/usr/bin')
                     if images:
+                        if i == 3:
+                            img_path = '/tmp/ocr_debug_p4.png'
+                            images[0].save(img_path)
+                            logging.warning(f"[OCR-DEBUG] imagen p4 guardada: size={images[0].size} mode={images[0].mode}")
                         for ocr_lang in ['eng', 'spa+eng', 'spa']:
                             text = pytesseract.image_to_string(images[0], lang=ocr_lang)
                             text = text.strip()
