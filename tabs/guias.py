@@ -909,8 +909,13 @@ def _extract_pdf_text(data: bytes) -> str:
                     images = convert_from_bytes(data, dpi=200, first_page=i+1, last_page=i+1, poppler_path="/usr/bin")
                     if images:
                         pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
-                        text = pytesseract.image_to_string(images[0], lang='spa+eng')
-                        logging.warning(f"[OCR] página {i+1}: {len(text)} chars extraídos")
+                        img_gray = images[0].convert('L')
+                        text = pytesseract.image_to_string(
+                            img_gray,
+                            lang='eng',
+                            config='--psm 6 --oem 3'
+                        )
+                        logging.warning(f"[OCR] página {i+1}: {len(text)} chars — muestra: {repr(text[:300])}")
                 except Exception as e:
                     logging.warning(f"[OCR] error en página {i+1}: {e}")
             parts.append(text)
