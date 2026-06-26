@@ -94,6 +94,7 @@ from db import (
     get_qb_app_credentials, set_qb_app_credentials,
     get_qb_tokens, get_user_qb_customer, set_user_qb_customer,
     get_setting, set_setting,
+    get_app_config,
     get_cotizador_param, set_cotizador_param, delete_cotizador_param,
     get_cotizador_tabla, set_cotizador_tabla,
     list_users_excluding, get_all_users,
@@ -144,7 +145,67 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.26.23"
+VERSION = "3.26.06.26.24"
+
+# ── IA & Server status cache ─────────────────────────────────────────────────
+_IA_CACHE: Dict[str, Dict[str, Any]] = {
+    "grok":   {"status": "red", "checked_at": 0.0},
+    "gemini": {"status": "red", "checked_at": 0.0},
+}
+_IA_CHECK_LOCK = threading.Lock()
+_IA_DOT_COLORS = {"green": "#22c55e", "amber": "#f59e0b", "red": "#ef4444"}
+
+
+def _server_stat_color(val: float) -> str:
+    if val < 60:
+        return "#3B6D11"
+    elif val < 85:
+        return "#E2A93B"
+    return "#A32D2D"
+
+
+def _check_grok_status() -> str:
+    try:
+        key = get_app_config("groq_api_key")
+        if not key:
+            return "red"
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return "green"
+        elif resp.status_code == 429:
+            return "amber"
+        return "red"
+    except Exception:
+        return "red"
+
+
+def _check_gemini_status() -> str:
+    try:
+        key = get_app_config("gemini_api_key")
+        if not key:
+            return "red"
+        from google import genai as _genai
+        client = _genai.Client(api_key=key)
+        client.models.generate_content(model="gemini-1.5-flash", contents=".")
+        return "green"
+    except Exception:
+        return "red"
+
+
+def _update_ia_cache() -> None:
+    now = time.time()
+    with _IA_CHECK_LOCK:
+        if now - _IA_CACHE["grok"]["checked_at"] > 3600:
+            _IA_CACHE["grok"]["status"] = _check_grok_status()
+            _IA_CACHE["grok"]["checked_at"] = time.time()
+        if now - _IA_CACHE["gemini"]["checked_at"] > 3600:
+            _IA_CACHE["gemini"]["status"] = _check_gemini_status()
+            _IA_CACHE["gemini"]["checked_at"] = time.time()
 
 
 # ==========================
@@ -552,13 +613,55 @@ def show_main_layout(container) -> None:
                                 if perms.get("actividad", False):
                                     ui.menu_item("ACTIVIDAD", _go("Actividad"))
             ui.space()
-            with ui.row().classes("items-center gap-3 flex-wrap"):
-                with ui.row().classes("items-center gap-2"):
-                    ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
-                    ui.label("ML").classes("text-xs text-gray-600")
-                with ui.row().classes("items-center gap-2"):
-                    ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if qb_linked else '#ef4444'}")
-                    ui.label("BDC").classes("text-xs text-gray-600")
+            _mini_card = (
+                "background:#f9fafb;padding:5px 12px;border-radius:6px;"
+                "border:0.5px solid #e5e7eb;"
+                "display:flex;flex-direction:column;align-items:center;gap:3px"
+            )
+            _grp_lbl = "font-size:10px;color:#6b7280;letter-spacing:0.06em;font-weight:600;text-transform:uppercase;line-height:1"
+            _dot_s = "width:8px;height:8px;border-radius:50%;display:inline-block"
+            _api_nm = "font-size:10px;color:#374151"
+            _srv_k = "font-size:9px;color:#9ca3af"
+            _srv_v = "font-size:11px;font-variant-numeric:tabular-nums;color:#374151"
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                # — APIs —
+                with ui.element("div").style(_mini_card):
+                    ui.label("APIs").style(_grp_lbl)
+                    with ui.row().classes("items-center gap-3"):
+                        with ui.row().classes("items-center gap-1"):
+                            ui.element("span").style(_dot_s + f";background:{'#22c55e' if ml_linked else '#ef4444'}")
+                            ui.label("ML").style(_api_nm)
+                        with ui.row().classes("items-center gap-1"):
+                            ui.element("span").style(_dot_s + f";background:{'#22c55e' if qb_linked else '#ef4444'}")
+                            ui.label("BDC").style(_api_nm)
+                # — IAs —
+                with ui.element("div").style(_mini_card):
+                    ui.label("IAs").style(_grp_lbl)
+                    with ui.row().classes("items-center gap-3"):
+                        with ui.row().classes("items-center gap-1"):
+                            _grok_dot = ui.element("span").style(
+                                _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['grok']['status']]}"
+                            )
+                            ui.label("Grok").style(_api_nm)
+                        with ui.row().classes("items-center gap-1"):
+                            _gemini_dot = ui.element("span").style(
+                                _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['gemini']['status']]}"
+                            )
+                            ui.label("Gemini").style(_api_nm)
+                # — Server —
+                with ui.element("div").style(_mini_card):
+                    ui.label("Server").style(_grp_lbl)
+                    with ui.row().classes("items-center gap-1"):
+                        ui.label("CPU").style(_srv_k)
+                        _cpu_lbl = ui.label("—%").style(_srv_v)
+                        ui.label("·").style(_srv_k)
+                        ui.label("Mem").style(_srv_k)
+                        _mem_lbl = ui.label("—%").style(_srv_v)
+                        ui.label("·").style(_srv_k)
+                        ui.label("Disco").style(_srv_k)
+                        _disk_lbl = ui.label("—%").style(_srv_v)
+                # — Divider + meta —
+                ui.element("div").style("width:1px;height:28px;background:#d1d5db;margin:0 2px")
                 ui.label(f"Ver {VERSION}").classes("text-sm text-gray-600")
                 ui.label(user["username"]).classes("text-sm font-medium")
                 def logout() -> None:
@@ -566,6 +669,32 @@ def show_main_layout(container) -> None:
                     ui.notify("Sesión cerrada", color="positive")
                     show_login_screen(container)
                 ui.button("Cerrar sesión", on_click=logout, color="negative").props("flat dense")
+
+                async def _refresh_server() -> None:
+                    try:
+                        import psutil
+                        cpu = psutil.cpu_percent(interval=0)
+                        mem = psutil.virtual_memory().percent
+                        disk = psutil.disk_usage('/').percent
+                        _b = "font-size:11px;font-variant-numeric:tabular-nums"
+                        _cpu_lbl.set_text(f"{cpu:.0f}%")
+                        _cpu_lbl.style(f"{_b};color:{_server_stat_color(cpu)}")
+                        _mem_lbl.set_text(f"{mem:.0f}%")
+                        _mem_lbl.style(f"{_b};color:{_server_stat_color(mem)}")
+                        _disk_lbl.set_text(f"{disk:.0f}%")
+                        _disk_lbl.style(f"{_b};color:{_server_stat_color(disk)}")
+                    except Exception:
+                        pass
+
+                async def _refresh_ia() -> None:
+                    await run.io_bound(_update_ia_cache)
+                    _grok_dot.style(f"{_dot_s};background:{_IA_DOT_COLORS[_IA_CACHE['grok']['status']]}")
+                    _gemini_dot.style(f"{_dot_s};background:{_IA_DOT_COLORS[_IA_CACHE['gemini']['status']]}")
+
+                ui.timer(30, _refresh_server)
+                ui.timer(3600, _refresh_ia)
+                ui.timer(0.5, _refresh_server, once=True)
+                ui.timer(1.0, _refresh_ia, once=True)
 
         # Breadcrumb
         _BREADCRUMB_MAP = {
