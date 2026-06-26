@@ -629,6 +629,8 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             where_parts.append("created_at >= DATE('now', '-7 days')")
         elif fecha_f == "Este mes":
             where_parts.append("strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')")
+        elif fecha_f == "Este año":
+            where_parts.append("strftime('%Y', created_at) = strftime('%Y', 'now')")
         busqueda = (filtros.get("busqueda") or "").strip()
         if busqueda:
             where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ?)")
@@ -856,10 +858,20 @@ def _groq_parse_doc(api_key: str, prompt: str) -> str:
         "max_tokens": 2000,
         "temperature": 0.2,
     }
+    import time as _time
     resp = _requests.post(url, headers=headers, json=payload, timeout=30)
     if resp.status_code == 429:
-        logging.warning(f"[GROQ-429] headers: { {k: v for k, v in resp.headers.items() if 'ratelimit' in k.lower() or k.lower() == 'retry-after'} }")
+        rl_headers = {k: v for k, v in resp.headers.items() if 'ratelimit' in k.lower() or k.lower() == 'retry-after'}
+        logging.warning(f"[GROQ-429] headers: {rl_headers}")
         logging.warning(f"[GROQ-429] body: {resp.text[:500]}")
+        retry_after = int(resp.headers.get('retry-after', 60))
+        wait = min(retry_after, 90)
+        logging.warning(f"[GROQ-429] esperando {wait}s antes de reintentar...")
+        _time.sleep(wait)
+        resp = _requests.post(url, headers=headers, json=payload, timeout=30)
+        if resp.status_code == 429:
+            reset = resp.headers.get('x-ratelimit-reset-tokens', 'desconocido')
+            raise Exception(f"Groq alcanzó su límite de uso. Probá con Gemini, o esperá unos minutos. (reset: {reset})")
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -2103,7 +2115,7 @@ def build_tab_guias() -> None:
     tabla_ref: list = [None]
     sort_state: list = [None, "asc"]
     parsed_ref: list = [None]
-    _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Todas", "busqueda": ""}
+    _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Este mes", "busqueda": ""}
 
     def _filter_change(key: str, val: str) -> None:
         _filtros[key] = val
@@ -2176,8 +2188,8 @@ def build_tab_guias() -> None:
         )
         ui.label("Fecha").style("font-size:10px;color:var(--color-text-secondary)")
         ui.select(
-            options=["Todas", "Hoy", "Esta semana", "Este mes"],
-            value="Todas",
+            options=["Todas", "Hoy", "Esta semana", "Este mes", "Este año"],
+            value="Este mes",
             on_change=lambda e: _filter_change("fecha", e.value),
         ).props("dense outlined").style(
             "font-size:11px;height:28px;border-radius:4px;min-width:100px"
