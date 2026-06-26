@@ -367,9 +367,11 @@ productos: array de ítems de la página BDC Invoice.
   En esa página hay una tabla con columnas: SKU | DESCRIPTION | QTY | UNIT PRICE | AMOUNT
   (el encabezado puede aparecer con fondo oscuro/negro en el PDF escaneado).
   Extraer cada fila como objeto con: sku, descripcion, cantidad, precio_unitario, precio_total.
-  Ejemplo de fila: JBLT520BTBLKAM | JBL Tune 520 BT Headphone Bluetooth On Ear Black | 122 | 24.25 | 2958.50
+  Ejemplo de fila: SKU-CODIGO | Descripción del producto | 10 | 19.99 | 199.90
   Si hay múltiples filas de productos, extraerlas todas.
-  NUNCA devolver array vacío si existe la página de BDC Invoice en el documento.
+  CRÍTICO: SOLO extraer datos que aparezcan TEXTUALMENTE en el documento.
+  Si la página BDC Invoice no tiene texto legible, devolver productos: [].
+  NUNCA inventar SKU, descripción ni precios que no estén en el texto.
   Campos: sku (código del proveedor, "" si no figura), descripcion, cantidad,
   precio_unitario, precio_total.
 
