@@ -476,7 +476,7 @@ _TABLE_HEADERS = [
 ]
 
 _TABLE_COLS = (
-    "90px 0.7fr minmax(90px,1fr) 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr minmax(80px,0.8fr) "
+    "70px 0.7fr minmax(80px,0.9fr) 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr minmax(80px,0.8fr) "
     "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
     "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 130px"
 )
@@ -1126,7 +1126,7 @@ def _rebuild_tabla(
             )
             return
 
-        with ui.element("div").style("overflow-x:auto;width:100%"):
+        with ui.element("div").style("overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 280px);width:100%"):
             # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
@@ -1197,16 +1197,16 @@ def _rebuild_tabla(
                     ):
                         if _ia_val == "Grok":
                             ui.html(
-                                '<span style="display:inline-flex;align-items:center;gap:4px;width:80px;'
+                                '<span style="display:inline-flex;align-items:center;gap:3px;width:65px;'
                                 'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
-                                'border-radius:4px;padding:2px 7px;font-size:10px;font-weight:500;white-space:nowrap">'
+                                'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
                                 '<i class="ti ti-bolt"></i> Grok</span>'
                             )
                         elif _ia_val == "Gemini":
                             ui.html(
-                                '<span style="display:inline-flex;align-items:center;gap:4px;width:80px;'
+                                '<span style="display:inline-flex;align-items:center;gap:3px;width:65px;'
                                 'background:#EAF3DE;border:0.5px solid #3B6D11;color:#173404;'
-                                'border-radius:4px;padding:2px 7px;font-size:10px;font-weight:500;white-space:nowrap">'
+                                'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
                                 '<i class="ti ti-sparkles"></i> Gemini</span>'
                             )
                         else:
@@ -1279,7 +1279,8 @@ def _rebuild_tabla(
                         with ui.element("div").style(
                             f"display:flex;justify-content:center;align-items:center;padding:3px 4px;{_sep}"
                         ):
-                            _kgs_disp = f"{r['kgs']} kg" if r["kgs"] else "—"
+                            _kgs_val = _to_float(r["kgs"])
+                            _kgs_disp = f"{_kgs_val:.1f} kg" if _kgs_val is not None else "—"
                             def _kgs_click(rid=rid, hawb=r["hawb"], kgs=r["kgs"]):
                                 _show_edit_kgs_dialog(
                                     rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state
@@ -1292,7 +1293,8 @@ def _rebuild_tabla(
                                     '<i class="ti ti-pencil" style="pointer-events:none;font-size:11px;opacity:0.7;color:#0C447C"></i>'
                                 )
                     else:
-                        ui.label(r["kgs"]).style(f"{_ct};white-space:nowrap;text-align:center")
+                        _kgs_nc = _to_float(r["kgs"])
+                        ui.label(f"{_kgs_nc:.1f} kg" if _kgs_nc is not None else "—").style(f"{_ct};white-space:nowrap;text-align:center")
                     # Derechos
                     ui.label(_fmt_ars_zero(r["derechos_importacion"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
@@ -1396,10 +1398,10 @@ def _rebuild_tabla(
                         else:
                             with ui.element("button").on(
                                 "click",
-                                lambda rid=rid, c=_r_courier, fac=_r_fac:
+                                lambda rid=rid, c=_r_courier, fac=_r_fac, f=filtros:
                                     _show_upload_pdf_dialog(
                                         rid, user_id, c, fac,
-                                        tabla_container, filas_ref, parsed_ref, sort_state
+                                        tabla_container, filas_ref, parsed_ref, sort_state, f
                                     ),
                             ).style(
                                 "background:none;border:0.5px dashed var(--color-border-secondary);"
@@ -1554,6 +1556,7 @@ def _download_pdf_handler(pdf_path: str, pdf_path_2: str, courier: str, nro_fact
 def _show_upload_pdf_dialog(
     rid: int, user_id: int, courier: str, nro_factura: str,
     tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    filtros: dict | None = None,
 ) -> None:
     from datetime import datetime as _dt
     is_lhs = courier.upper() == "LHS"
@@ -1617,7 +1620,7 @@ def _show_upload_pdf_dialog(
                     _update_pdf_path(rid, p1, p2)
                     d.close()
                     ui.notify("PDF guardado", color="positive")
-                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros)
                 except Exception as exc:
                     ui.notify(f"Error: {exc}", color="negative")
 
