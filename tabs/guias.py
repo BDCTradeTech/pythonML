@@ -833,7 +833,7 @@ def _exists_factura(user_id: int, nro_factura: str, courier: str = "") -> bool:
     conn = get_connection()
     if courier:
         count = conn.execute(
-            "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=? AND courier=?",
+            "SELECT COUNT(*) FROM guias_importacion WHERE user_id=? AND nro_factura=? AND courier=? COLLATE NOCASE",
             (user_id, nro_factura, courier),
         ).fetchone()[0]
     else:
