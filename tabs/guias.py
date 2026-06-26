@@ -472,13 +472,13 @@ _TABLE_HEADERS = [
     "IA", "Fecha", "Courier", "Factura", "HAWB", "PA", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
     "Flete Aduanero", "Almacenaje", "Total Factura", "Total real", "Alm/KG", "Valor Kg", "Dolar",
-    "Traída u$ s/IVA", "Costo s/IVA", "Total Traída %", "",
+    "Traída u$ s/IVA", "Costo s/IVA", "Total Traída %", "Acciones",
 ]
 
 _TABLE_COLS = (
-    "90px 0.7fr 1.4fr 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr 0.9fr "
+    "90px 0.7fr minmax(90px,1fr) 0.9fr 0.8fr minmax(90px,0.5fr) 0.8fr minmax(80px,0.8fr) "
     "0.7fr minmax(90px,0.7fr) 0.8fr 0.8fr 0.8fr 0.8fr 0.7fr "
-    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 96px"
+    "0.7fr 0.7fr 0.7fr 0.7fr 0.6fr 0.8fr 0.8fr 0.8fr 130px"
 )
 
 _SORT_KEYS = {
@@ -1369,8 +1369,9 @@ def _rebuild_tabla(
                     _r_pdf2 = r.get("pdf_path_2") or ""
                     _r_courier = r.get("courier") or ""
                     _r_fac = r.get("nro_factura") or ""
-                    with ui.row().classes("gap-0").style(
-                        f"justify-content:center;{_sep};padding:3px 0"
+                    with ui.element("div").style(
+                        f"display:flex;align-items:center;justify-content:center;"
+                        f"gap:8px;flex-wrap:nowrap;white-space:nowrap;{_sep};padding:3px 0"
                     ):
                         with ui.element("div").classes(ico_id).style("display:inline-flex"):
                             ui.button(
@@ -2400,7 +2401,7 @@ def build_tab_guias() -> None:
                 placeholder="Buscar invoice / factura / HAWB...",
                 on_change=lambda e: _filter_change("busqueda", e.value or ""),
             ).props("dense outlined").style(
-                "font-size:12px;height:34px;border-radius:4px;width:100%"
+                "font-size:12px;height:34px;border-radius:4px;width:100%;min-width:280px"
             )
         with ui.element("button").on(
             "click",
