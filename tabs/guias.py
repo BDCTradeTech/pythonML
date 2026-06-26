@@ -7,6 +7,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import traceback
 from typing import Any, Dict, List
 
@@ -542,7 +543,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -646,7 +647,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
-        "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada "
+        "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada, pdf_path, pdf_path_2 "
         f"FROM guias_importacion WHERE {where_sql} "
         "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
         params,
@@ -773,6 +774,8 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "almacenaje_kg": almacenaje_kg,
             "productos": json.loads(r["productos"] or "[]") if r["productos"] else [],
             "ia_usada": r["ia_usada"] or "",
+            "pdf_path": r["pdf_path"] or "",
+            "pdf_path_2": r["pdf_path_2"] or "",
         })
     return result
 
@@ -797,9 +800,55 @@ def _get_guia(guia_id: int, user_id: int) -> Dict[str, Any] | None:
 
 def _delete_guia(guia_id: int, user_id: int) -> None:
     conn = get_connection()
+    row = conn.execute(
+        "SELECT pdf_path, pdf_path_2 FROM guias_importacion WHERE id=? AND user_id=?",
+        (guia_id, user_id),
+    ).fetchone()
+    if row:
+        for path in [row["pdf_path"], row["pdf_path_2"]]:
+            if path and os.path.exists(path):
+                os.remove(path)
+                logging.warning("[DELETE] PDF borrado: %s", path)
     conn.execute(
         "DELETE FROM guias_importacion WHERE id = ? AND user_id = ?",
         (guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _save_pdf_files(
+    user_id: int, courier: str, nro_factura: str,
+    data1: bytes, mime1: str = "application/pdf",
+    data2: bytes | None = None, mime2: str = "application/pdf",
+) -> tuple:
+    from datetime import datetime as _dt
+    now = _dt.now()
+    base = f"/opt/pythonml/pdfs/{user_id}/{now.year}/{now.month:02d}"
+    os.makedirs(base, exist_ok=True)
+    nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
+    courier_safe = courier.lower().replace(" ", "_")
+    def _ext(mime: str) -> str:
+        if mime and mime.startswith("image/"):
+            return "." + mime.split("/")[1].replace("jpeg", "jpg")
+        return ".pdf"
+    if data2 is not None:
+        p1 = os.path.join(base, f"{courier_safe}_{nro_safe}_factura{_ext(mime1)}")
+        p2 = os.path.join(base, f"{courier_safe}_{nro_safe}_invoice{_ext(mime2)}")
+        with open(p1, "wb") as f: f.write(data1)
+        with open(p2, "wb") as f: f.write(data2)
+        return p1, p2
+    else:
+        p1 = os.path.join(base, f"{courier_safe}_{nro_safe}{_ext(mime1)}")
+        with open(p1, "wb") as f: f.write(data1)
+        return p1, ""
+
+
+def _update_pdf_path(guia_id: int, pdf_path: str, pdf_path_2: str = "") -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET pdf_path=?, pdf_path_2=? WHERE id=?",
+        (pdf_path or None, pdf_path_2 or None, guia_id),
     )
     conn.commit()
     conn.close()
@@ -1316,6 +1365,10 @@ def _rebuild_tabla(
                         f"{pct * 100:.2f}%" if pct is not None else "—"
                     ).style(f"{_ct};white-space:nowrap;text-align:center;color:#1d4ed8;font-weight:600")
                     # Acciones
+                    _r_pdf = r.get("pdf_path") or ""
+                    _r_pdf2 = r.get("pdf_path_2") or ""
+                    _r_courier = r.get("courier") or ""
+                    _r_fac = r.get("nro_factura") or ""
                     with ui.row().classes("gap-0").style(
                         f"justify-content:center;{_sep};padding:3px 0"
                     ):
@@ -1328,6 +1381,32 @@ def _rebuild_tabla(
                             icon="visibility",
                             on_click=lambda rid=rid: _show_ver_dialog(rid, user_id),
                         ).props("flat dense").style("color:#1d4ed8;min-width:28px")
+                        if _r_pdf:
+                            with ui.element("button").on(
+                                "click",
+                                lambda p=_r_pdf, p2=_r_pdf2, c=_r_courier, fac=_r_fac:
+                                    _download_pdf_handler(p, p2, c, fac),
+                            ).style(
+                                "background:none;border:none;cursor:pointer;color:#2A7AC7;"
+                                "padding:4px;min-width:28px;display:inline-flex;"
+                                "align-items:center;justify-content:center"
+                            ).tooltip("Descargar PDF"):
+                                ui.html('<i class="ti ti-file-type-pdf" style="font-size:14px;pointer-events:none"></i>')
+                        else:
+                            with ui.element("button").on(
+                                "click",
+                                lambda rid=rid, c=_r_courier, fac=_r_fac:
+                                    _show_upload_pdf_dialog(
+                                        rid, user_id, c, fac,
+                                        tabla_container, filas_ref, parsed_ref, sort_state
+                                    ),
+                            ).style(
+                                "background:none;border:0.5px dashed var(--color-border-secondary);"
+                                "cursor:pointer;color:var(--color-text-tertiary);"
+                                "padding:1px 3px;border-radius:3px;min-width:28px;"
+                                "display:inline-flex;align-items:center;justify-content:center"
+                            ).tooltip("Subir PDF"):
+                                ui.html('<i class="ti ti-file-upload" style="font-size:14px;pointer-events:none"></i>')
                         ui.button(
                             icon="delete",
                             on_click=lambda rid=rid: _show_del_dialog(
@@ -1451,6 +1530,99 @@ def _show_del_dialog(
                 ui.notify("Guía eliminada", color="info")
                 _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
             ui.button("Eliminar", on_click=_confirm).props("flat").style("color:#dc2626")
+    d.open()
+
+
+def _download_pdf_handler(pdf_path: str, pdf_path_2: str, courier: str, nro_factura: str) -> None:
+    import zipfile as _zf
+    nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
+    is_lhs = courier.upper() == "LHS"
+    if is_lhs and pdf_path and pdf_path_2 and os.path.exists(pdf_path) and os.path.exists(pdf_path_2):
+        buf = io.BytesIO()
+        with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as z:
+            z.write(pdf_path, arcname=f"factura_{nro_safe}.pdf")
+            z.write(pdf_path_2, arcname=f"invoice_{nro_safe}.pdf")
+        buf.seek(0)
+        ui.download(buf.read(), f"LHS_{nro_safe}.zip")
+    elif pdf_path and os.path.exists(pdf_path):
+        ui.download(pdf_path, os.path.basename(pdf_path))
+    else:
+        ui.notify("Archivo no encontrado en el servidor", color="warning")
+
+
+def _show_upload_pdf_dialog(
+    rid: int, user_id: int, courier: str, nro_factura: str,
+    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+) -> None:
+    from datetime import datetime as _dt
+    is_lhs = courier.upper() == "LHS"
+    data1: list = [None]
+    mime1: list = ["application/pdf"]
+    data2: list = [None]
+    mime2: list = ["application/pdf"]
+
+    def _on_up1(e):
+        e.content.seek(0)
+        data1[0] = e.content.read()
+        mime1[0] = e.type or "application/pdf"
+
+    def _on_up2(e):
+        e.content.seek(0)
+        data2[0] = e.content.read()
+        mime2[0] = e.type or "application/pdf"
+
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:380px"):
+        ui.label(f"Subir PDF — {courier}").style(
+            "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
+        )
+        if is_lhs:
+            ui.label("Factura LHS").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.upload(on_upload=_on_up1, auto_upload=True, max_files=1).props(
+                'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
+            ).style("width:100%")
+            ui.label("Invoice BDC").style(
+                "font-size:11px;color:var(--color-text-secondary);margin-top:8px;display:block"
+            )
+            ui.upload(on_upload=_on_up2, auto_upload=True, max_files=1).props(
+                'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
+            ).style("width:100%")
+        else:
+            ui.upload(on_upload=_on_up1, auto_upload=True, max_files=1).props(
+                'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
+            ).style("width:100%")
+
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+
+            def _guardar(d=d):
+                if not data1[0]:
+                    ui.notify("Falta el PDF", color="warning")
+                    return
+                if is_lhs and not data2[0]:
+                    ui.notify("Falta el Invoice BDC", color="warning")
+                    return
+                try:
+                    nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
+                    if is_lhs:
+                        p1, p2 = _save_pdf_files(
+                            user_id, "LHS", nro_factura,
+                            data1[0], mime1[0], data2[0], mime2[0],
+                        )
+                    else:
+                        p1, p2 = _save_pdf_files(
+                            user_id, courier, nro_factura,
+                            data1[0], mime1[0],
+                        )
+                    _update_pdf_path(rid, p1, p2)
+                    d.close()
+                    ui.notify("PDF guardado", color="positive")
+                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                except Exception as exc:
+                    ui.notify(f"Error: {exc}", color="negative")
+
+            ui.button("Guardar", on_click=_guardar).style(
+                "background:#2A7AC7;color:#FFFFFF;border-radius:4px"
+            )
     d.open()
 
 
@@ -1768,8 +1940,18 @@ def _build_courier_panel(
                 else:
                     filas_ref[0].clear()
                     logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
-                    _save_guia(user_id, parsed)
-                    logger.warning("[DBG] _save_guia OK courier=%s", courier_key)
+                    _guia_id = _save_guia(user_id, parsed)
+                    logger.warning("[DBG] _save_guia OK courier=%s id=%s", courier_key, _guia_id)
+                    if archivo_data[0]:
+                        try:
+                            _p1, _p2 = _save_pdf_files(
+                                user_id, courier_key, nro_fac,
+                                archivo_data[0], archivo_mime[0] or "application/pdf",
+                            )
+                            _update_pdf_path(_guia_id, _p1, _p2)
+                            logger.warning("[DBG] PDF guardado courier=%s path=%s", courier_key, _p1)
+                        except Exception as _pe:
+                            logger.warning("[DBG] PDF save error courier=%s: %s", courier_key, _pe)
                     logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
                     _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
                     logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
@@ -1982,7 +2164,17 @@ def _build_lhs_panel(
                     )
                 else:
                     filas_ref[0].clear()
-                    _save_guia(user_id, parsed)
+                    _guia_id = _save_guia(user_id, parsed)
+                    if archivo_data_lhs1[0] and archivo_data_lhs2[0]:
+                        try:
+                            _p1, _p2 = _save_pdf_files(
+                                user_id, "LHS", nro_fac,
+                                archivo_data_lhs1[0], archivo_mime_lhs1[0] or "application/pdf",
+                                archivo_data_lhs2[0], archivo_mime_lhs2[0] or "application/pdf",
+                            )
+                            _update_pdf_path(_guia_id, _p1, _p2)
+                        except Exception as _pe:
+                            logger.warning("[DBG] PDF save error LHS: %s", _pe)
                     _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
