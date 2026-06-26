@@ -928,7 +928,13 @@ def _extract_pdf_text(data: bytes) -> str:
                 except Exception as e:
                     logging.warning(f"[OCR] error en página {i+1}: {e}")
             parts.append(text)
-    return "\n\n".join(parts).strip()
+    result = "\n\n".join(parts).strip()
+    logging.warning(f"[FULL-TEXT] total chars: {len(result)}")
+    logging.warning(f"[FULL-TEXT] primeros 1000: {repr(result[:1000])}")
+    logging.warning(f"[FULL-TEXT] chars 1000-2000: {repr(result[1000:2000])}")
+    logging.warning(f"[FULL-TEXT] chars 2000-3000: {repr(result[2000:3000])}")
+    logging.warning(f"[FULL-TEXT] chars 3000-4000: {repr(result[3000:4000])}")
+    return result
 
 
 def _clean_json(raw: str) -> str:
