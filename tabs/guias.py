@@ -1134,11 +1134,11 @@ def _rebuild_tabla(
             ):
                 # ── Cabecera ──────────────────────────────────────────────────
                 _hs_base = (
-                    "padding:3px 5px;background:#2A7AC7;border-bottom:1px solid rgba(255,255,255,0.2);"
+                    "padding:4px 6px;background:#2A7AC7;border-bottom:1px solid rgba(255,255,255,0.2);"
                     "border-right:0.5px solid rgba(255,255,255,0.15);"
                     "font-size:10px;font-weight:500;color:#FFFFFF;"
-                    "white-space:normal;word-break:break-word;line-height:1.3;"
-                    "min-height:28px;display:flex;align-items:center;justify-content:center;text-align:center;"
+                    "white-space:normal;word-break:break-word;line-height:1.2;"
+                    "height:44px;display:flex;align-items:center;justify-content:center;text-align:center;"
                     "position:sticky;top:0;z-index:10;overflow:hidden"
                 )
                 _hs = _hs_base
