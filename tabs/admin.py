@@ -63,99 +63,191 @@ def build_tab_admin(container) -> None:
     users_list = get_all_users()
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
-            # Tarjeta Permisos (usuarios y acceso por pestaña)
-            with ui.card().classes("w-full p-2 bg-grey-2"):
-                with ui.element("div").classes("w-full overflow-x-auto"):
-                    with ui.element("table").classes("border-collapse text-xs").style("width: 100%; min-width: 100%"):
+            # ─── Permisos (tabla transpuesta, colapsable) ───────────────
+            _SECTION_PAGES = [
+                ("Home",          [("home", "Home"), ("dashboard", "Dashboard")]),
+                ("MercadoLibre",  [
+                    ("estadisticas",  "Estadísticas"),
+                    ("ventas",        "Ventas"),
+                    ("productos",     "Productos"),
+                    ("cuotas",        "Cuotas"),
+                    ("promos",        "Promos"),
+                    ("preguntas",     "Preguntas"),
+                    ("flex",          "Flex"),
+                    ("busqueda",      "Búsqueda"),
+                ]),
+                ("BDC",           [("balance", "Balance"), ("compras", "Invoices")]),
+                ("Comex",         [
+                    ("stock",         "Stock"),
+                    ("compras_lista", "Compras"),
+                    ("pedidos",       "Pedidos"),
+                    ("historicos",    "Históricos"),
+                    ("importacion",   "Importación"),
+                    ("guias",         "Guías"),
+                ]),
+                ("Impuestos",     [("pesos", "Pesos"), ("arca", "ARCA")]),
+                ("Config",        [("datos", "Datos"), ("configuracion", "Configuración")]),
+                ("Admin",         [("admin", "Admin"), ("actividad", "Actividad")]),
+            ]
+
+            _all_perms = {u["id"]: get_user_tab_permissions(u["id"]) for u in users_list}
+            _all_ml    = {u["id"]: bool(get_ml_access_token(u["id"])) for u in users_list}
+            _all_bdc: dict = {}
+            for _u2 in users_list:
+                _tok2 = get_qb_tokens(_u2["id"])
+                _all_bdc[_u2["id"]] = bool(_tok2 and _tok2.get("access_token"))
+
+            _flat_rows: list = []
+            for _sname, _spages in _SECTION_PAGES:
+                _sn = len(_spages)
+                for _si, (_stk, _slbl) in enumerate(_spages):
+                    _flat_rows.append({"section": _sname if _si == 0 else None, "sc": _sn, "key": _stk, "label": _slbl})
+
+            def _perm_toggle(uid_i: int, tk_i: str, evt: Any) -> None:
+                set_user_tab_permission(uid_i, tk_i, bool(getattr(evt, "value", evt)))
+                ui.notify("Permiso actualizado", color="positive")
+
+            def _do_delete_u(tuid: int, tuname: str) -> None:
+                with ui.dialog() as _dlg:
+                    _dlg.props("persistent")
+                    with ui.card().classes("p-4 min-w-[300px]"):
+                        ui.label("¿Estás seguro que querés borrarlo?").classes("text-lg font-bold")
+                        ui.label(f"Se borrará el usuario {tuname} y todos sus datos.").classes("text-sm text-gray-600 mt-1")
+                        with ui.row().classes("mt-3 gap-2 justify-end"):
+                            ui.button("Cancelar", on_click=_dlg.close)
+                            def _del_confirm(_dr=_dlg, _ti=tuid):
+                                if _ti == user["id"]:
+                                    ui.notify("No podés borrarte a vos mismo.", color="negative")
+                                    _dr.close()
+                                    return
+                                err = delete_user_and_all_data(_ti)
+                                _dr.close()
+                                if err:
+                                    ui.notify(err, color="negative")
+                                else:
+                                    ui.notify("Usuario borrado correctamente", color="positive")
+                                    build_tab_admin(container)
+                            ui.button("Borrar", on_click=_del_confirm, color="negative").props("flat")
+                _dlg.open()
+
+            def _do_reset_u(tuid: int) -> None:
+                err, email_sent, dest_email, new_pwd = admin_reset_user_password(tuid)
+                if err and not new_pwd:
+                    ui.notify(err, color="negative")
+                elif email_sent and dest_email:
+                    ui.notify(f"Enviamos un email con la nueva contraseña a {dest_email}", color="positive")
+                elif new_pwd:
+                    with ui.dialog() as _dlg:
+                        _dlg.props("persistent")
+                        with ui.card().classes("p-6 min-w-[400px]"):
+                            ui.label("No se pudo enviar el email").classes("text-lg font-semibold text-warning")
+                            ui.label(err or "Contraseña actualizada, pero el correo no llegó.").classes("text-sm text-gray-600 mt-2")
+                            ui.label("Nueva contraseña generada (copiala y entregala al usuario):").classes("text-sm font-medium mt-4")
+                            with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
+                                ui.label(new_pwd)
+                            ui.button("Cerrar popup", on_click=_dlg.close).props("flat color=primary").classes("mt-4")
+                    _dlg.open()
+                else:
+                    ui.notify("Contraseña actualizada, pero no se pudo enviar el email.", color="warning")
+
+            _popen = {"v": True}
+
+            with ui.card().classes("w-full p-0 overflow-hidden").style("border: 1px solid #e0e0e0;"):
+                with ui.element("div").classes(
+                    "flex items-center gap-2 cursor-pointer select-none px-3 py-2 rounded-t"
+                ).style("background: var(--q-color-background-secondary, #f5f5f5);") as _phdr:
+                    _pchevron = ui.element("i").classes("ti ti-chevron-down").style("font-size: 14px; line-height: 1;")
+                    ui.label("Permisos").style("font-size: 13px; font-weight: 600;")
+
+                _pbody = ui.element("div").classes("w-full overflow-x-auto")
+                with _pbody:
+                    with ui.element("table").classes("border-collapse text-xs").style("width: 100%;"):
                         with ui.element("thead"):
-                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
-                                with ui.element("th").classes("px-2 py-1 border text-left"):
-                                    ui.label("Usuario")
-                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 52px"):
-                                    ui.label("Borrar")
-                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 58px"):
-                                    ui.label("Pass")
-                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 42px"):
-                                    ui.label("ML")
-                                with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 42px"):
-                                    ui.label("BDC")
-                                for _tab_key, label in TAB_KEYS:
-                                    with ui.element("th").classes("px-1 py-1 border text-center").style("min-width: 48px"):
-                                        ui.label(label[:8] if len(label) > 8 else label)
+                            with ui.element("tr").style(
+                                "background: #2A7AC7; color: white; position: sticky; top: 0; z-index: 10;"
+                            ):
+                                with ui.element("th").classes("px-2 py-1 border text-left").style(
+                                    "min-width: 72px; border-color: #4a9ad4; font-size: 11px;"
+                                ):
+                                    ui.label("Sección")
+                                with ui.element("th").classes("px-2 py-1 border text-left").style(
+                                    "min-width: 90px; border-color: #4a9ad4; font-size: 11px;"
+                                ):
+                                    ui.label("Página")
+                                for _u in users_list:
+                                    _uid = _u["id"]
+                                    _uname = _u.get("username", "")
+                                    _local  = _uname.split("@")[0] if "@" in _uname else _uname
+                                    _domain = _uname.split("@")[1] if "@" in _uname else ""
+                                    _ml_on  = _all_ml[_uid]
+                                    _bdc_on = _all_bdc[_uid]
+                                    with ui.element("th").classes("px-2 py-1 border text-center").style(
+                                        "min-width: 115px; vertical-align: top; border-color: #4a9ad4;"
+                                    ):
+                                        ui.label(_local).style(
+                                            "display:block; font-size:11px; font-weight:600; line-height:1.3;"
+                                        )
+                                        if _domain:
+                                            ui.label(_domain).style(
+                                                "display:block; font-size:9px; opacity:0.85; line-height:1.3;"
+                                            )
+                                        with ui.row().classes("justify-center items-center gap-1 flex-nowrap mt-1"):
+                                            ui.element("span").style(
+                                                f"display:inline-block;width:8px;height:8px;border-radius:50%;"
+                                                f"background:{'#22c55e' if _ml_on else '#ef4444'};"
+                                            )
+                                            ui.label("ML").style("font-size:9px;")
+                                            ui.element("span").style(
+                                                f"display:inline-block;width:8px;height:8px;border-radius:50%;"
+                                                f"background:{'#22c55e' if _bdc_on else '#ef4444'};"
+                                            )
+                                            ui.label("BDC").style("font-size:9px;")
+                                        with ui.row().classes("justify-center gap-1 flex-nowrap mt-1"):
+                                            ui.button(
+                                                "Borrar",
+                                                on_click=lambda _ui=_uid, _un=_uname: _do_delete_u(_ui, _un),
+                                            ).props("flat dense no-caps").style("font-size:10px; color:#dc2626;")
+                                            ui.button(
+                                                "Reiniciar Pass",
+                                                on_click=lambda _ui=_uid: _do_reset_u(_ui),
+                                            ).props("flat dense no-caps").style("font-size:10px;")
+
                         with ui.element("tbody"):
-                            for u in users_list:
-                                uid = u["id"]
-                                uname = u.get("username", "")
-                                ml_linked = bool(get_ml_access_token(uid))
-                                qb_tokens = get_qb_tokens(uid)
-                                bdc_linked = bool(qb_tokens and qb_tokens.get("access_token"))
-                                perms = get_user_tab_permissions(uid)
+                            for _row in _flat_rows:
                                 with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                    with ui.element("td").classes("px-2 py-0.5 border-b border-gray-100 font-medium"):
-                                        ui.label(uname)
-                                    with ui.element("td").classes("px-1 py-0.5 border-b border-gray-100 text-center"):
-                                        def _do_delete(target_uid: int, target_uname: str):
-                                            with ui.dialog() as dlg:
-                                                dlg.props("persistent")
-                                                with ui.card().classes("p-4 min-w-[300px]"):
-                                                    ui.label("¿Estás seguro que querés borrarlo?").classes("text-lg font-bold")
-                                                    ui.label(f"Se borrará el usuario {target_uname} y todos sus datos.").classes("text-sm text-gray-600 mt-1")
-                                                    with ui.row().classes("mt-3 gap-2 justify-end"):
-                                                        ui.button("Cancelar", on_click=dlg.close)
-                                                        def _confirm():
-                                                            if target_uid == user["id"]:
-                                                                ui.notify("No podés borrarte a vos mismo.", color="negative")
-                                                                dlg.close()
-                                                                return
-                                                            err = delete_user_and_all_data(target_uid)
-                                                            dlg.close()
-                                                            if err:
-                                                                ui.notify(err, color="negative")
-                                                            else:
-                                                                ui.notify("Usuario borrado correctamente", color="positive")
-                                                                build_tab_admin(container)
-                                                        ui.button("Borrar", on_click=_confirm, color="negative").props("flat")
-                                            dlg.open()
-                                        ui.button("Borrar", on_click=lambda uid_inner=uid, uname_inner=uname: _do_delete(uid_inner, uname_inner)).props("flat dense").classes("text-xs text-red-600")
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                        def _do_reset(target_uid: int):
-                                            err, email_sent, dest_email, new_pwd = admin_reset_user_password(target_uid)
-                                            if err and not new_pwd:
-                                                ui.notify(err, color="negative")
-                                            elif email_sent and dest_email:
-                                                ui.notify(f"Enviamos un email con la nueva contraseña a {dest_email}", color="positive")
-                                            elif new_pwd:
-                                                with ui.dialog() as dlg:
-                                                    dlg.props("persistent")
-                                                    with ui.card().classes("p-6 min-w-[400px]"):
-                                                        ui.label("No se pudo enviar el email").classes("text-lg font-semibold text-warning")
-                                                        ui.label(err or "Contraseña actualizada, pero el correo no llegó.").classes("text-sm text-gray-600 mt-2")
-                                                        ui.label("Nueva contraseña generada (copiala y entregala al usuario):").classes("text-sm font-medium mt-4")
-                                                        with ui.row().classes("mt-2 p-3 bg-gray-100 rounded font-mono text-lg select-all"):
-                                                            ui.label(new_pwd)
-                                                        ui.button("Cerrar popup", on_click=dlg.close).props("flat color=primary").classes("mt-4")
-                                                dlg.open()
-                                            else:
-                                                ui.notify("Contraseña actualizada, pero no se pudo enviar el email.", color="warning")
-                                        ui.button("Reiniciar", on_click=lambda uid_inner=uid: _do_reset(uid_inner)).props("flat dense").classes("text-xs")
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                        with ui.row().classes("items-center justify-center gap-1"):
-                                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if ml_linked else '#ef4444'}")
-                                            ui.label("Sí" if ml_linked else "No").classes("text-xs")
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                        with ui.row().classes("items-center justify-center gap-1"):
-                                            ui.element("span").classes("w-2.5 h-2.5 rounded-full").style(f"background:{'#22c55e' if bdc_linked else '#ef4444'}")
-                                            ui.label("Sí" if bdc_linked else "No").classes("text-xs")
-                                    for tab_key, _label in TAB_KEYS:
-                                        with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
-                                            val = perms.get(tab_key, True if tab_key != "admin" else False)
-                                            chk = ui.checkbox(value=val).classes("justify-center")
+                                    if _row["section"] is not None:
+                                        with ui.element("td").props(f'rowspan="{_row["sc"]}"').classes(
+                                            "px-2 py-1 border border-gray-200 text-center"
+                                        ).style(
+                                            "background: var(--q-color-background-secondary, #f5f5f5); "
+                                            "font-size: 10px; text-transform: uppercase; font-weight: 600; "
+                                            "color: var(--q-color-text-secondary, #888); vertical-align: middle;"
+                                        ):
+                                            ui.label(_row["section"])
+                                    with ui.element("td").classes("py-1 border-b border-gray-100").style(
+                                        "padding-left: 10px; padding-right: 8px;"
+                                    ):
+                                        ui.label(_row["label"])
+                                    for _u in users_list:
+                                        _uid = _u["id"]
+                                        _perms_u = _all_perms[_uid]
+                                        with ui.element("td").classes("px-1 py-0 border-b border-gray-100 text-center"):
+                                            _val = _perms_u.get(_row["key"], _row["key"] != "admin")
+                                            _chk = ui.checkbox(value=_val).props("dense")
+                                            _chk.on_value_change(
+                                                lambda e, _ui=_uid, _tk=_row["key"]: _perm_toggle(_ui, _tk, e)
+                                            )
 
-                                            def _on_toggle(uid_inner: int, tk: str, evt: Any) -> None:
-                                                set_user_tab_permission(uid_inner, tk, bool(getattr(evt, "value", evt)))
-                                                ui.notify("Permiso actualizado", color="positive")
+                def _toggle_perms():
+                    _popen["v"] = not _popen["v"]
+                    _pbody.set_visibility(_popen["v"])
+                    if _popen["v"]:
+                        _pchevron.classes(remove="ti-chevron-right", add="ti-chevron-down")
+                    else:
+                        _pchevron.classes(remove="ti-chevron-down", add="ti-chevron-right")
 
-                                            chk.on_value_change(lambda e, uid_inner=uid, tk=tab_key: _on_toggle(uid_inner, tk, e))
+                _phdr.on("click", _toggle_perms)
+
             ui.label("ML = MercadoLibre vinculado. BDC = QuickBooks vinculado. Marcá los checkboxes para permitir acceso a cada pestaña.").classes("text-xs text-gray-600")
 
             # Tarjeta Asignación QuickBooks
