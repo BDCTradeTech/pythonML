@@ -1438,6 +1438,8 @@ def _rebuild_tabla(
                                 )
                                 for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Costo Imp. u$s/IVA"]:
                                     _h_extra = ";color:#185FA5;font-weight:500" if _h == "Costo Imp. u$s/IVA" else ""
+                                    if _h == "SKU":
+                                        _h_extra += ";text-align:right;padding-right:12px"
                                     ui.label(_h).style(_sh2 + _h_extra)
                                 _sp2 = (
                                     "padding:4px 6px;font-size:11px;color:#374151;"
@@ -1452,10 +1454,15 @@ def _rebuild_tabla(
                                         else None
                                     )
                                     ui.label(str(prod.get("sku") or "—")).style(
-                                        f"{_sp2};text-align:center"
+                                        f"{_sp2};text-align:right;padding-right:12px"
                                     )
                                     ui.label(str(prod.get("descripcion") or "—")).style(_sp2)
-                                    ui.label(str(prod.get("cantidad") or "—")).style(
+                                    _qty_val = prod.get("cantidad", 0)
+                                    try:
+                                        _qty_disp = f"{int(float(_qty_val))}"
+                                    except (ValueError, TypeError):
+                                        _qty_disp = "—"
+                                    ui.label(_qty_disp).style(
                                         f"{_sp2};text-align:center"
                                     )
                                     ui.label(
