@@ -410,7 +410,7 @@ def build_tab_admin(container) -> None:
                     ui.label("Sistema").style("font-size: 13px; font-weight: 600;").classes("mb-3")
                     with ui.row().classes("gap-3"):
 
-                        def _restart_service() -> None:
+                        async def _restart_service() -> None:
                             with ui.dialog() as dlg_svc:
                                 dlg_svc.props("persistent")
                                 with ui.card().classes("p-4 min-w-[340px]"):
@@ -422,11 +422,11 @@ def build_tab_admin(container) -> None:
                                             if user["id"] != 1:
                                                 ui.notify("Sin permiso.", color="negative")
                                                 return
-                                            import subprocess, logging
+                                            import subprocess, logging, threading
                                             logging.warning(f"[ADMIN-RESTART] user_id={user['id']} ejecutó: reiniciar servicio pythonml")
-                                            subprocess.Popen(['sudo', 'systemctl', 'restart', 'pythonml'])
                                             dlg_svc.close()
                                             ui.notify("Servicio reiniciándose...", color="info")
+                                            threading.Timer(0.5, lambda: subprocess.Popen(['/bin/systemctl', 'restart', 'pythonml'])).start()
                                         ui.button("Confirmar", on_click=_confirm_svc, color="primary")
                             dlg_svc.open()
 
@@ -434,7 +434,7 @@ def build_tab_admin(container) -> None:
                             "background: #185FA5; color: white;"
                         ).props("no-caps").tooltip("Reinicia solo la app (~5 segundos)")
 
-                        def _restart_droplet() -> None:
+                        async def _restart_droplet() -> None:
                             with ui.dialog() as dlg_drop:
                                 dlg_drop.props("persistent")
                                 with ui.card().classes("p-4 min-w-[380px]"):
@@ -451,11 +451,11 @@ def build_tab_admin(container) -> None:
                                             if user["id"] != 1:
                                                 ui.notify("Sin permiso.", color="negative")
                                                 return
-                                            import subprocess, logging
+                                            import subprocess, logging, threading
                                             logging.warning(f"[ADMIN-RESTART] user_id={user['id']} ejecutó: reboot droplet")
-                                            subprocess.Popen(['sudo', 'reboot'])
                                             dlg_drop.close()
                                             ui.notify("Servidor reiniciándose... La página se va a desconectar.", color="warning")
+                                            threading.Timer(0.5, lambda: subprocess.Popen(['/sbin/reboot'])).start()
                                         ui.button("Sí, reiniciar", on_click=_confirm_drop).style(
                                             "background: #A32D2D; color: white;"
                                         ).props("no-caps")
