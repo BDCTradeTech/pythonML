@@ -1437,9 +1437,9 @@ def _rebuild_tabla(
                                     "font-weight:600;color:#1d4ed8;text-align:center"
                                 )
                                 for _h in ["SKU", "Descripción", "Qty", "Precio unitario", "Costo Imp. u$s/IVA"]:
-                                    _h_extra = ";color:#185FA5;font-weight:500" if _h == "Costo Imp. u$s/IVA" else ""
+                                    _h_extra = ""
                                     if _h == "SKU":
-                                        _h_extra += ";text-align:right;padding-right:12px"
+                                        _h_extra += ";text-align:left;padding-left:12px"
                                     ui.label(_h).style(_sh2 + _h_extra)
                                 _sp2 = (
                                     "padding:4px 6px;font-size:11px;color:#374151;"
@@ -1454,7 +1454,7 @@ def _rebuild_tabla(
                                         else None
                                     )
                                     ui.label(str(prod.get("sku") or "—")).style(
-                                        f"{_sp2};text-align:right;padding-right:12px"
+                                        f"{_sp2};text-align:left;padding-left:12px"
                                     )
                                     ui.label(str(prod.get("descripcion") or "—")).style(_sp2)
                                     _qty_val = prod.get("cantidad", 0)
@@ -1470,7 +1470,7 @@ def _rebuild_tabla(
                                     ).style(f"{_sp2};text-align:right")
                                     ui.label(
                                         f"u$s {costo_imp:.2f}" if costo_imp is not None else "—"
-                                    ).style(f"{_sp2};text-align:right;color:#185FA5;font-weight:500")
+                                    ).style(f"{_sp2};text-align:right")
 
 
 # ── Dialog helpers ────────────────────────────────────────────────────────────
