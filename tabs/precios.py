@@ -100,12 +100,20 @@ def build_tab_precios(container) -> None:
                 with area:
                     ui.label(f"❌ Error al conectar: {e}").classes("text-negative")
                 return
-            n_items = len(data.get("results", []))
+            _results = data.get("results", [])
+            _total = len(_results)
+            _n_active = sum(1 for r in _results if r.get("status") == "active")
+            _n_paused = sum(1 for r in _results if r.get("status") == "paused")
+            _n_closed = sum(1 for r in _results if r.get("status") == "closed")
+            _fmt = lambda n: f"{n:,}".replace(",", ".")
             area.clear()
             with area:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
-                    ui.label(f"Procesando {n_items} publicaciones...").classes("text-xl text-gray-700")
+                    ui.label(
+                        f"Procesando {_fmt(_total)} publicaciones "
+                        f"({_fmt(_n_active)} activas, {_fmt(_n_paused)} pausadas, {_fmt(_n_closed)} cerradas)..."
+                    ).classes("text-xl text-gray-700")
             await asyncio.sleep(0.1)
             # Auto-agregar catálogos nuevos detectados y sincronizar sus competidores
             try:
