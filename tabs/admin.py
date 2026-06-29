@@ -402,6 +402,69 @@ def build_tab_admin(container) -> None:
 
                     _refresh_despachantes()
 
+            # Sección Sistema (solo user_id == 1)
+            if user["id"] == 1:
+                with ui.card().classes("w-full p-3").style(
+                    "border: 1px solid #ccc; background: var(--q-color-background-secondary, #f5f5f5);"
+                ):
+                    ui.label("Sistema").style("font-size: 13px; font-weight: 600;").classes("mb-3")
+                    with ui.row().classes("gap-3"):
+
+                        def _restart_service() -> None:
+                            with ui.dialog() as dlg_svc:
+                                dlg_svc.props("persistent")
+                                with ui.card().classes("p-4 min-w-[340px]"):
+                                    ui.label("¿Reiniciar el servicio PythonML?").classes("text-base font-semibold")
+                                    ui.label("La app estará no disponible por ~5 segundos.").classes("text-sm text-gray-600 mt-1")
+                                    with ui.row().classes("mt-4 gap-2 justify-end"):
+                                        ui.button("Cancelar", on_click=dlg_svc.close).props("flat")
+                                        def _confirm_svc():
+                                            if user["id"] != 1:
+                                                ui.notify("Sin permiso.", color="negative")
+                                                return
+                                            import subprocess, logging
+                                            logging.warning(f"[ADMIN-RESTART] user_id={user['id']} ejecutó: reiniciar servicio pythonml")
+                                            subprocess.Popen(['sudo', 'systemctl', 'restart', 'pythonml'])
+                                            dlg_svc.close()
+                                            ui.notify("Servicio reiniciándose...", color="info")
+                                        ui.button("Confirmar", on_click=_confirm_svc, color="primary")
+                            dlg_svc.open()
+
+                        ui.button("Reiniciar servicio PythonML", icon="ti-refresh", on_click=_restart_service).style(
+                            "background: #185FA5; color: white;"
+                        ).props("no-caps").tooltip("Reinicia solo la app (~5 segundos)")
+
+                        def _restart_droplet() -> None:
+                            with ui.dialog() as dlg_drop:
+                                dlg_drop.props("persistent")
+                                with ui.card().classes("p-4 min-w-[380px]"):
+                                    ui.label("⚠ ATENCIÓN ⚠").classes("text-lg font-bold text-red-600")
+                                    ui.label(
+                                        "Esto reiniciará el servidor COMPLETO de DigitalOcean.\n"
+                                        "El sistema estará no disponible por 60-90 segundos.\n"
+                                        "Todos los procesos se interrumpirán.\n\n"
+                                        "¿Estás seguro?"
+                                    ).classes("text-sm text-gray-700 mt-2 whitespace-pre-line")
+                                    with ui.row().classes("mt-4 gap-2 justify-end"):
+                                        ui.button("Cancelar", on_click=dlg_drop.close).props("flat")
+                                        def _confirm_drop():
+                                            if user["id"] != 1:
+                                                ui.notify("Sin permiso.", color="negative")
+                                                return
+                                            import subprocess, logging
+                                            logging.warning(f"[ADMIN-RESTART] user_id={user['id']} ejecutó: reboot droplet")
+                                            subprocess.Popen(['sudo', 'reboot'])
+                                            dlg_drop.close()
+                                            ui.notify("Servidor reiniciándose... La página se va a desconectar.", color="warning")
+                                        ui.button("Sí, reiniciar", on_click=_confirm_drop).style(
+                                            "background: #A32D2D; color: white;"
+                                        ).props("no-caps")
+                            dlg_drop.open()
+
+                        ui.button("Reiniciar servidor (droplet)", icon="ti-power", on_click=_restart_droplet).style(
+                            "background: #A32D2D; color: white;"
+                        ).props("no-caps").tooltip("Reinicia el sistema completo (~60-90 segundos)")
+
 
 TABLA_CAMBIO_PA_DEFAULT = [{"valor": "$0"}, {"valor": "$100"}, {"valor": "$150"}, {"valor": "$200"}, {"valor": "$250"}, {"valor": "$300"}]
 TABLA_DERECHOS_DEFAULT = [{"valor": "0,35"}, {"valor": "0,2"}, {"valor": "0,108"}, {"valor": "0"}]
