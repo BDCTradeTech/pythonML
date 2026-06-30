@@ -85,7 +85,7 @@ def build_tab_admin(container) -> None:
                     ("importacion",   "Importación"),
                     ("guias",         "Guías"),
                 ]),
-                ("Impuestos",     [("pesos", "Pesos"), ("arca", "ARCA")]),
+                ("Impuestos",     [("pesos", "Pesos"), ("arca", "ARCA"), ("gastos", "Gastos")]),
                 ("Config",        [("datos", "Datos"), ("configuracion", "Configuración")]),
                 ("Admin",         [("admin", "Admin"), ("actividad", "Actividad")]),
             ]

@@ -49,6 +49,7 @@ TAB_KEYS = [
     ("historicos", "Históricos"),
     ("importacion", "Importacion"),
     ("pesos", "Pesos"),
+    ("gastos", "Gastos"),
     ("datos", "Datos"),
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
@@ -744,11 +745,32 @@ def init_db() -> None:
         """
     )
 
+    # Archivos de gastos impositivos por período y sección
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gastos_archivos (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id     INTEGER NOT NULL,
+            periodo     TEXT NOT NULL,
+            seccion     TEXT NOT NULL,
+            filename    TEXT NOT NULL,
+            filepath    TEXT NOT NULL,
+            size_bytes  INTEGER NOT NULL DEFAULT 0,
+            uploaded_at TIMESTAMP NOT NULL,
+            procesado   BOOLEAN NOT NULL DEFAULT 0,
+            procesado_at TIMESTAMP
+        )
+        """
+    )
+
     # Migración: habilitar permiso "guias" para user_id=1 (admin) si aún no tiene registro
     cur.execute("SELECT 1 FROM users WHERE id = 1")
     if cur.fetchone():
         cur.execute(
             "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'guias', 1)"
+        )
+        cur.execute(
+            "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'gastos', 1)"
         )
 
     conn.commit()
@@ -1884,6 +1906,69 @@ def save_arca_multilateral(filas: List[Dict[str, Any]], user_id: int = 1) -> Non
                     now,
                 ),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Gastos archivos
+# ---------------------------------------------------------------------------
+
+
+def get_gastos_archivos(user_id: int, periodo: str, seccion: str) -> List[Dict[str, Any]]:
+    """Devuelve archivos de una sección/período ordenados por fecha de subida."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT * FROM gastos_archivos WHERE user_id=? AND periodo=? AND seccion=? ORDER BY uploaded_at",
+            (user_id, periodo, seccion),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def insert_gastos_archivo(
+    user_id: int, periodo: str, seccion: str,
+    filename: str, filepath: str, size_bytes: int,
+) -> int:
+    """Inserta un nuevo archivo y devuelve su id."""
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO gastos_archivos (user_id, periodo, seccion, filename, filepath, size_bytes, uploaded_at) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (user_id, periodo, seccion, filename, filepath, size_bytes, now),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def delete_gastos_archivo(file_id: int) -> None:
+    """Elimina un registro de archivo."""
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM gastos_archivos WHERE id=?", (file_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_gastos_procesado(file_id: int) -> None:
+    """Marca un archivo como procesado."""
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "UPDATE gastos_archivos SET procesado=1, procesado_at=? WHERE id=?",
+            (now, file_id),
+        )
         conn.commit()
     finally:
         conn.close()
