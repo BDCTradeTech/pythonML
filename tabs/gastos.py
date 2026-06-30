@@ -299,7 +299,7 @@ def _build_gastos(user_id: int) -> None:
                 dot.style(_DOT.format(_semaforo_color(archivos_por_sec.get(sk, []))))
 
         # ── Modal visor de extracción IA ──────────────────────────────────────
-        def _open_eye_modal(fa: dict, seccion: str) -> None:
+        def _open_eye_modal(fa: dict, seccion: str, on_approve=None) -> None:
             path        = Path(fa["filepath"])
             ext         = path.suffix.lower()
             cur_status  = fa.get("extraction_status", "pendiente")
@@ -309,7 +309,7 @@ def _build_gastos(user_id: int) -> None:
             except Exception:
                 data_dict = {}
 
-            with ui.dialog().props("persistent") as dlg:
+            with ui.dialog() as dlg:
                 with ui.card().style(
                     "width:90vw;max-width:1200px;height:85vh;overflow:hidden;"
                     "display:flex;flex-direction:column;padding:0"
@@ -321,7 +321,9 @@ def _build_gastos(user_id: int) -> None:
                         ui.label(fa["filename"]).style(
                             f"color:{_HDR_COLOR};font-weight:700;font-size:15px"
                         )
-                        ui.button(icon="close", on_click=dlg.close).props("flat round dense")
+                        async def _cerrar():
+                            dlg.close()
+                        ui.button(icon="close", on_click=_cerrar).props("flat round dense")
 
                     # Body: dos columnas
                     with ui.row().classes("w-full flex-1").style("overflow:hidden;min-height:0"):
@@ -435,13 +437,15 @@ def _build_gastos(user_id: int) -> None:
                                 else:
                                     reproc_lbl.text = f"Error: {result['error']}"
 
-                            def _aprobar() -> None:
+                            async def _aprobar() -> None:
                                 mark_gastos_procesado(fa["id"])
                                 archivos_por_sec[seccion] = get_gastos_archivos(user_id, periodo, seccion)
                                 _refresh_dot(seccion)
                                 _refresh_progress()
-                                dlg.close()
+                                if on_approve:
+                                    on_approve(seccion)
                                 ui.notify("Archivo aprobado", color="positive")
+                                dlg.close()
 
                             with ui.row().classes("gap-2 mt-2 flex-wrap"):
                                 edit_btn = ui.button("Editar prompt", on_click=_toggle_edit).props(
@@ -500,7 +504,7 @@ def _build_gastos(user_id: int) -> None:
                                         f"color:{_BLUE};font-size:13px;cursor:pointer;flex-shrink:0"
                                     ).tooltip("Ver extracción IA").on(
                                         "click",
-                                        lambda _fa_=_fa, sk2=sk_: _open_eye_modal(_fa_, sk2),
+                                        lambda _fa_=_fa, sk2=sk_: _open_eye_modal(_fa_, sk2, on_approve=_render_list),
                                     )
 
                                     # Ícono tacho con confirmación
