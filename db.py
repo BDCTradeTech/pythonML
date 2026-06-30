@@ -775,6 +775,20 @@ def init_db() -> None:
         except Exception:
             pass  # columna ya existe
 
+    # Tabla de prompts custom por sección
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gastos_prompts (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id    INTEGER NOT NULL,
+            seccion    TEXT NOT NULL,
+            prompt     TEXT NOT NULL,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, seccion)
+        )
+        """
+    )
+
     # Migración: habilitar permiso "guias" para user_id=1 (admin) si aún no tiene registro
     cur.execute("SELECT 1 FROM users WHERE id = 1")
     if cur.fetchone():
@@ -2160,6 +2174,34 @@ def upsert_orders_cache(user_id: int, orders: List[Dict]) -> None:
                     _json.dumps(items), _json.dumps(pays),
                 ),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_gastos_prompt(user_id: int, seccion: str) -> Optional[str]:
+    """Retorna el prompt custom guardado para (user_id, seccion), o None si no existe."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT prompt FROM gastos_prompts WHERE user_id=? AND seccion=?",
+            (user_id, seccion),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def upsert_gastos_prompt(user_id: int, seccion: str, prompt: str) -> None:
+    """Guarda o actualiza el prompt custom para (user_id, seccion)."""
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO gastos_prompts (user_id, seccion, prompt, updated_at) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, seccion) DO UPDATE SET prompt=excluded.prompt, updated_at=excluded.updated_at",
+            (user_id, seccion, prompt, now),
+        )
         conn.commit()
     finally:
         conn.close()
