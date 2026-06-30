@@ -387,6 +387,109 @@ def _build_gastos(user_id: int) -> None:
                                             "text-xs text-gray-400 italic"
                                         )
                                         return
+
+                                    _MONEY_KEYS = {
+                                        "monto", "total", "subtotal", "precio", "iva",
+                                        "neto", "importe", "valor", "suma",
+                                    }
+
+                                    def _is_money_key(k: str) -> bool:
+                                        kl = k.lower()
+                                        return any(mk in kl for mk in _MONEY_KEYS)
+
+                                    def _fmt_money(val) -> str:
+                                        try:
+                                            n = float(val)
+                                            s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+                                            return f"$ {'-' if n < 0 else ''}{s}"
+                                        except Exception:
+                                            return str(val)
+
+                                    def _render_value(k: str, val) -> None:
+                                        # None / vacío
+                                        if val is None or val == "" or val == []:
+                                            ui.label("—").style("font-size:11px;color:#9e9e9e")
+                                            return
+                                        # Lista de dicts → mini-tabla
+                                        if isinstance(val, list) and val and isinstance(val[0], dict):
+                                            headers = list(val[0].keys())
+                                            ths = "".join(
+                                                f'<th style="border:1px solid #d0d0d0;padding:2px 8px;'
+                                                f'background:#eef3f8;font-size:10px;font-weight:600;'
+                                                f'color:{_HDR_COLOR};text-align:left">'
+                                                f'{h.replace("_"," ").capitalize()}</th>'
+                                                for h in headers
+                                            )
+                                            tbody = ""
+                                            for row in val:
+                                                tds = ""
+                                                for h in headers:
+                                                    cell = row.get(h)
+                                                    if isinstance(cell, (int, float)) and _is_money_key(h):
+                                                        cell_str = _fmt_money(cell)
+                                                        td_style = (
+                                                            f"color:{_BLUE};text-align:right;"
+                                                            "font-variant-numeric:tabular-nums"
+                                                        )
+                                                    elif isinstance(cell, (int, float)):
+                                                        cell_str = str(cell)
+                                                        td_style = f"color:{_BLUE};text-align:right"
+                                                    elif cell is None:
+                                                        cell_str = "—"
+                                                        td_style = "color:#9e9e9e"
+                                                    else:
+                                                        cell_str = str(cell)
+                                                        td_style = "color:#333"
+                                                    tds += (
+                                                        f'<td style="border:1px solid #e8e8e8;'
+                                                        f'padding:2px 8px;font-size:10px;{td_style}">'
+                                                        f"{cell_str}</td>"
+                                                    )
+                                                tbody += f"<tr>{tds}</tr>"
+                                            ui.html(
+                                                f'<table style="border-collapse:collapse;width:100%;'
+                                                f'background:#f9fbfe;border-radius:3px;margin-top:2px">'
+                                                f"<thead><tr>{ths}</tr></thead>"
+                                                f"<tbody>{tbody}</tbody></table>"
+                                            )
+                                            return
+                                        # Lista de scalars → bullets
+                                        if isinstance(val, list):
+                                            with ui.column().classes("gap-0"):
+                                                for item in val:
+                                                    ui.label(f"• {item}").style("font-size:11px;color:#333")
+                                            return
+                                        # Dict → sub-tabla 2 columnas
+                                        if isinstance(val, dict):
+                                            with ui.column().classes("gap-0 w-full"):
+                                                for dk, dv in val.items():
+                                                    with ui.row().classes("items-start gap-1").style(
+                                                        "border-bottom:1px solid #f5f5f5"
+                                                    ):
+                                                        ui.label(dk).style(
+                                                            "font-size:10px;color:#9e9e9e;"
+                                                            "width:100px;flex-shrink:0"
+                                                        )
+                                                        ui.label(str(dv) if dv is not None else "—").style(
+                                                            "font-size:10px;color:#333"
+                                                        )
+                                            return
+                                        # Número
+                                        if isinstance(val, (int, float)):
+                                            if _is_money_key(k):
+                                                ui.label(_fmt_money(val)).style(
+                                                    f"font-size:11px;color:{_BLUE};"
+                                                    "font-variant-numeric:tabular-nums"
+                                                )
+                                            else:
+                                                ui.label(str(val)).style(
+                                                    f"font-size:11px;color:{_BLUE};"
+                                                    "font-variant-numeric:tabular-nums"
+                                                )
+                                            return
+                                        # String / fallback
+                                        ui.label(str(val)).style("font-size:11px;color:#333")
+
                                     for k, v in d.items():
                                         with ui.row().classes("w-full items-start gap-2 py-1").style(
                                             "border-bottom:1px solid #f0f0f0"
@@ -394,12 +497,7 @@ def _build_gastos(user_id: int) -> None:
                                             ui.label(k).classes("text-xs text-gray-500 font-medium").style(
                                                 "width:140px;flex-shrink:0"
                                             )
-                                            is_num = isinstance(v, (int, float))
-                                            ui.label(str(v) if v is not None else "—").style(
-                                                f"font-size:11px;"
-                                                f"color:{_BLUE if is_num else '#333'};"
-                                                + ("font-variant-numeric:tabular-nums;" if is_num else "")
-                                            )
+                                            _render_value(k, v)
 
                             _render_kv(data_dict)
 
