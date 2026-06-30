@@ -164,11 +164,12 @@ def procesar_archivo_con_gemini(
 ) -> dict:
     """Envía el archivo a Gemini y retorna los datos extraídos."""
     try:
-        import google.generativeai as genai
+        from google import genai
+        from google.genai import types as genai_types
     except ImportError:
         return {
             "success": False, "data": {}, "prompt_used": "",
-            "error": "Instalar: pip install google-generativeai",
+            "error": "Instalar: pip install google-genai",
         }
 
     api_key = get_app_config("gemini_api_key")
@@ -183,12 +184,17 @@ def procesar_archivo_con_gemini(
     ext = path.suffix.lower()
 
     try:
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        client = genai.Client(api_key=api_key)
 
         if ext == ".pdf":
-            uploaded = genai.upload_file(path=str(path), mime_type="application/pdf")
-            response = model.generate_content([uploaded, prompt])
+            data = path.read_bytes()
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    genai_types.Part.from_bytes(data=data, mime_type="application/pdf"),
+                    prompt,
+                ],
+            )
         elif ext in (".xlsx", ".xls"):
             import openpyxl
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
@@ -196,7 +202,10 @@ def procesar_archivo_con_gemini(
             rows = list(ws.iter_rows(values_only=True))[:101]
             wb.close()
             lines = ["\t".join(str(c) if c is not None else "" for c in row) for row in rows]
-            response = model.generate_content(f"{prompt}\n\nDatos:\n" + "\n".join(lines))
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=f"{prompt}\n\nDatos:\n" + "\n".join(lines),
+            )
         else:
             return {
                 "success": False, "data": {}, "prompt_used": prompt,
