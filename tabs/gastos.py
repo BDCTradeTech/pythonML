@@ -17,9 +17,11 @@ from db import (
     delete_gastos_archivo,
     get_app_config,
     get_gastos_archivos,
+    get_gastos_prompt,
     insert_gastos_archivo,
     mark_gastos_procesado,
     update_gastos_extraccion,
+    upsert_gastos_prompt,
 )
 
 _BLUE       = "#2A7AC7"
@@ -51,8 +53,17 @@ _BASE_PATH = Path(__file__).parent.parent / "gastos"
 
 _PROMPTS_DEFAULT: Dict[str, str] = {
     "facturas_ml": (
-        "Analizá esta factura de MercadoLibre. Extraé en JSON puro (sin markdown ni bloques de código): "
-        "tipo (A/B/C), emisor, cuit_emisor, fecha, numero_factura, subtotal, iva_105, iva_21, total, cae, vencimiento_cae."
+        "Analizá esta factura de MercadoLibre y extraé en JSON puro (sin markdown ni bloques de código). "
+        "Campos obligatorios: tipo_documento (Factura A/B/C), emisor (razón social), cuit_emisor, "
+        "receptor (razón social), cuit_receptor, fecha (DD/MM/AAAA), punto_venta, nro_comprobante, "
+        "subtotal (número), lineas_intermedias (lista con TODOS los conceptos entre Subtotal y Total — "
+        "IVA 21%, IVA 10.5%, Percepciones IIBB, Percepción IVA, otros impuestos, descuentos, etc. — "
+        "extraé TODAS sin omitir ninguna, cada una con nombre exacto y monto numérico), "
+        "total (número), cae, cae_vto (DD/MM/AAAA). "
+        'Formato esperado: {"tipo_documento":"Factura A","emisor":"...","cuit_emisor":"...","receptor":"...",'
+        '"cuit_receptor":"...","fecha":"DD/MM/AAAA","punto_venta":"...","nro_comprobante":"...",'
+        '"subtotal":0.0,"lineas_intermedias":[{"concepto":"IVA 21%","monto":0.0}],'
+        '"total":0.0,"cae":"...","cae_vto":"DD/MM/AAAA"}'
     ),
     "retenciones": (
         "Analizá este comprobante de retención. Extraé en JSON puro: "
@@ -303,7 +314,7 @@ def _build_gastos(user_id: int) -> None:
             path        = Path(fa["filepath"])
             ext         = path.suffix.lower()
             cur_status  = fa.get("extraction_status", "pendiente")
-            prompt_init = fa.get("prompt_used") or _PROMPTS_DEFAULT.get(seccion, "")
+            prompt_init = get_gastos_prompt(user_id, seccion) or _PROMPTS_DEFAULT.get(seccion, "")
             try:
                 data_dict = json.loads(fa.get("extracted_data") or "{}") or {}
             except Exception:
@@ -311,7 +322,7 @@ def _build_gastos(user_id: int) -> None:
 
             with ui.dialog() as dlg:
                 with ui.card().style(
-                    "width:90vw;max-width:1200px;height:85vh;overflow:hidden;"
+                    "width:90vw;max-width:1200px;max-height:90vh;overflow:hidden;"
                     "display:flex;flex-direction:column;padding:0"
                 ):
                     # Header
@@ -326,7 +337,7 @@ def _build_gastos(user_id: int) -> None:
                         ui.button(icon="close", on_click=_cerrar).props("flat round dense")
 
                     # Body: dos columnas
-                    with ui.row().classes("w-full flex-1").style("overflow:hidden;min-height:0"):
+                    with ui.row().classes("w-full flex-1").style("max-height:calc(90vh - 120px);overflow-y:auto;min-height:0"):
 
                         # IZQUIERDA — documento original
                         with ui.column().classes("p-3 gap-2 flex-1").style(
@@ -399,20 +410,7 @@ def _build_gastos(user_id: int) -> None:
                                 .classes("w-full")
                                 .style("font-size:11px")
                             )
-                            editing_ref = [False]
-                            reproc_lbl  = ui.label("").classes("text-xs text-gray-500 mt-1")
-
-                            def _toggle_edit() -> None:
-                                editing_ref[0] = not editing_ref[0]
-                                if editing_ref[0]:
-                                    prompt_ta.props(remove="readonly")
-                                    edit_btn.text = "Cancelar edición"
-                                else:
-                                    prompt_ta.props("readonly")
-                                    prompt_ta.value = (
-                                        fa.get("prompt_used") or _PROMPTS_DEFAULT.get(seccion, "")
-                                    )
-                                    edit_btn.text = "Editar prompt"
+                            reproc_lbl = ui.label("").classes("text-xs text-gray-500 mt-1")
 
                             async def _reprocesar() -> None:
                                 reproc_lbl.text = "Procesando con Gemini..."
@@ -447,16 +445,47 @@ def _build_gastos(user_id: int) -> None:
                                 ui.notify("Archivo aprobado", color="positive")
                                 dlg.close()
 
-                            with ui.row().classes("gap-2 mt-2 flex-wrap"):
-                                edit_btn = ui.button("Editar prompt", on_click=_toggle_edit).props(
-                                    "outline dense"
-                                ).style(f"color:{_BLUE};border-color:{_BLUE};font-size:12px")
+                            with ui.row().classes("gap-2 mt-2 flex-wrap items-center"):
+                                edit_btn = ui.button("Editar prompt").props("outline dense").style(
+                                    f"color:{_BLUE};border-color:{_BLUE};font-size:12px"
+                                )
+                                guardar_btn = ui.button("Guardar").props("dense").style(
+                                    f"background:{_GREEN};color:white;font-size:12px"
+                                ).classes("hidden")
+                                cancelar_btn = ui.button("Cancelar").props("outline dense").style(
+                                    "font-size:12px"
+                                ).classes("hidden")
                                 ui.button("Re-procesar", on_click=_reprocesar).style(
                                     f"background:{_YELLOW};color:white;font-size:12px"
                                 ).props("dense")
                                 ui.button("Aprobar", on_click=_aprobar).style(
                                     f"background:{_GREEN};color:white;font-size:12px"
                                 ).props("dense")
+
+                            def _start_edit() -> None:
+                                prompt_ta.props(remove="readonly")
+                                edit_btn.classes(add="hidden")
+                                guardar_btn.classes(remove="hidden")
+                                cancelar_btn.classes(remove="hidden")
+
+                            async def _guardar_prompt() -> None:
+                                upsert_gastos_prompt(user_id, seccion, prompt_ta.value)
+                                prompt_ta.props("readonly")
+                                edit_btn.classes(remove="hidden")
+                                guardar_btn.classes(add="hidden")
+                                cancelar_btn.classes(add="hidden")
+                                ui.notify("Prompt guardado", color="positive")
+
+                            def _cancelar_edit() -> None:
+                                prompt_ta.value = prompt_init
+                                prompt_ta.props("readonly")
+                                edit_btn.classes(remove="hidden")
+                                guardar_btn.classes(add="hidden")
+                                cancelar_btn.classes(add="hidden")
+
+                            edit_btn.on("click", _start_edit)
+                            guardar_btn.on("click", _guardar_prompt)
+                            cancelar_btn.on("click", _cancelar_edit)
 
             dlg.open()
 
@@ -604,11 +633,12 @@ def _build_gastos(user_id: int) -> None:
                         pendientes = [f for f in fs if f.get("extraction_status") != "procesado"] or fs
                         if pl:
                             pl.text = f"Procesando 0 de {len(pendientes)}..."
+                        _prompt_custom = get_gastos_prompt(user_id, sk_)
                         for i, fa in enumerate(pendientes, 1):
                             if pl:
                                 pl.text = f"Procesando {i} de {len(pendientes)}..."
                             result = await run.io_bound(
-                                procesar_archivo_con_gemini, fa["filepath"], sk_
+                                procesar_archivo_con_gemini, fa["filepath"], sk_, _prompt_custom
                             )
                             new_status = "procesado" if result["success"] else "error"
                             update_gastos_extraccion(
