@@ -1,21 +1,25 @@
 """
-tabs/gastos.py
-Pestaña Gastos: gestión de documentos impositivos mensuales por sección.
-Funciones exportadas: build_tab_gastos
+tabs/gastos.py — Gestión de documentos impositivos mensuales por sección.
+Funciones exportadas: build_tab_gastos, procesar_archivo_con_gemini
 """
 from __future__ import annotations
 
+import base64
+import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from nicegui import app, ui
+from nicegui import app, run, ui
 
 from db import (
     delete_gastos_archivo,
+    get_app_config,
     get_gastos_archivos,
     insert_gastos_archivo,
     mark_gastos_procesado,
+    update_gastos_extraccion,
 )
 
 _BLUE       = "#2A7AC7"
@@ -26,16 +30,16 @@ _HDR_BORDER = "#85B7EB"
 _GREEN      = "#3B6D11"
 _YELLOW     = "#E2A93B"
 _GRAY       = "#9E9E9E"
+_RED        = "#A32D2D"
 
 _DOT = "display:inline-block;width:12px;height:12px;border-radius:9999px;flex-shrink:0;background:{}"
 
 _SECCIONES: List[tuple] = [
-    # (key, label, accept_ext, multiple, icon)
-    ("facturas_ml",    "Facturas MercadoLibre",    ".pdf",  True,  "ti-file-invoice"),
-    ("retenciones",    "Retenciones",              ".xlsx", True,  "ti-file-spreadsheet"),
-    ("percepciones",   "Percepciones",             ".xlsx", True,  "ti-file-spreadsheet"),
-    ("pagos_arca",     "Pagos ARCA",               ".pdf",  True,  "ti-file-invoice"),
-    ("operaciones_ml", "Operaciones MercadoLibre", ".xlsx", False, "ti-file-spreadsheet"),
+    ("facturas_ml",  "Facturas MercadoLibre",  ".pdf",  True,  "ti-file-invoice"),
+    ("retenciones",  "Retenciones",             ".xlsx", True,  "ti-file-spreadsheet"),
+    ("percepciones", "Percepciones",            ".xlsx", True,  "ti-file-spreadsheet"),
+    ("pagos_arca",   "Pagos ARCA",              ".pdf",  True,  "ti-file-invoice"),
+    ("reportes_ml",  "Reportes MercadoLibre",   ".xlsx", False, "ti-file-spreadsheet"),
 ]
 
 _MESES = [
@@ -45,11 +49,39 @@ _MESES = [
 
 _BASE_PATH = Path(__file__).parent.parent / "gastos"
 
+_PROMPTS_DEFAULT: Dict[str, str] = {
+    "facturas_ml": (
+        "Analizá esta factura de MercadoLibre. Extraé en JSON puro (sin markdown ni bloques de código): "
+        "tipo (A/B/C), emisor, cuit_emisor, fecha, numero_factura, subtotal, iva_105, iva_21, total, cae, vencimiento_cae."
+    ),
+    "retenciones": (
+        "Analizá este comprobante de retención. Extraé en JSON puro: "
+        "tipo_retencion, fecha, agente_retencion, cuit_agente, monto_retenido, numero_comprobante."
+    ),
+    "percepciones": (
+        "Analizá este comprobante de percepción. Extraé en JSON puro: "
+        "tipo_percepcion, fecha, agente_percepcion, cuit_agente, monto_percibido, numero_comprobante."
+    ),
+    "pagos_arca": (
+        "Analizá este comprobante de pago ARCA/AFIP. Extraé en JSON puro: "
+        "tipo, periodo, fecha_vencimiento, monto_pagado, numero_vep, banco."
+    ),
+    "reportes_ml": (
+        "Analizá este reporte de operaciones de MercadoLibre. Identificá las columnas principales y "
+        "resumí las primeras 5 filas. Devolvé JSON puro con keys: columnas (lista), resumen_filas (lista de dicts)."
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
 
 def _require_login() -> Optional[Dict[str, Any]]:
     user = app.storage.user.get("user")
     if not user:
-        ui.notify("Debes iniciar sesión para continuar", color="negative")
+        ui.notify("Debes iniciar sesión", color="negative")
     return user
 
 
@@ -61,19 +93,131 @@ def _fmt_size(n: int) -> str:
     return f"{n} B"
 
 
-def _semaforo(archivos: list, procesado: bool) -> str:
+def _semaforo_color(archivos: list) -> str:
     if not archivos:
         return _GRAY
-    return _GREEN if procesado else _YELLOW
+    statuses = [f.get("extraction_status", "pendiente") for f in archivos]
+    if all(s == "procesado" for s in statuses):
+        return _GREEN
+    return _YELLOW
+
+
+def _badge_html(status: str) -> str:
+    _STYLES = {
+        "pendiente": f"background:#FBF1DC;color:#7A5A0E;border:1px solid {_YELLOW}",
+        "procesado": f"background:#EAF3DE;color:#27500A;border:1px solid {_GREEN}",
+        "error":     f"background:#FBE9E9;color:#7A1414;border:1px solid {_RED}",
+    }
+    _LABELS = {"pendiente": "Pendiente", "procesado": "Procesado", "error": "Error"}
+    sty = _STYLES.get(status, _STYLES["pendiente"])
+    lbl = _LABELS.get(status, status)
+    return (
+        f'<span style="font-size:9px;padding:1px 5px;border-radius:3px;'
+        f'white-space:nowrap;{sty}">{lbl}</span>'
+    )
+
+
+def _pdf_first_page_b64(path: Path) -> Optional[str]:
+    try:
+        import fitz
+        doc = fitz.open(str(path))
+        pix = doc[0].get_pixmap(matrix=fitz.Matrix(1.5, 1.5))
+        data = pix.tobytes("png")
+        doc.close()
+        return base64.b64encode(data).decode()
+    except Exception:
+        return None
+
+
+def _excel_preview_html(path: Path, nrows: int = 50) -> str:
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))[: nrows + 1]
+        wb.close()
+        if not rows:
+            return "<p style='font-size:11px;color:#9e9e9e'>Excel vacío</p>"
+        header = [str(c) if c is not None else "" for c in rows[0]]
+        th = "".join(
+            f'<th style="border:1px solid #ccc;padding:2px 6px;background:#f0f0f0;white-space:nowrap">{h}</th>'
+            for h in header
+        )
+        body = ""
+        for row in rows[1:]:
+            tds = "".join(
+                f'<td style="border:1px solid #e0e0e0;padding:2px 6px;white-space:nowrap">'
+                f"{str(c) if c is not None else ''}</td>"
+                for c in row
+            )
+            body += f"<tr>{tds}</tr>"
+        return (
+            '<table style="border-collapse:collapse;font-size:11px;width:100%">'
+            f"<thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>"
+        )
+    except Exception as exc:
+        return f"<p style='font-size:11px;color:#a32d2d'>Error al leer Excel: {exc}</p>"
+
+
+def procesar_archivo_con_gemini(
+    archivo_path: str, seccion: str, prompt_custom: Optional[str] = None
+) -> dict:
+    """Envía el archivo a Gemini y retorna los datos extraídos."""
+    try:
+        import google.generativeai as genai
+    except ImportError:
+        return {
+            "success": False, "data": {}, "prompt_used": "",
+            "error": "Instalar: pip install google-generativeai",
+        }
+
+    api_key = get_app_config("gemini_api_key")
+    if not api_key:
+        return {
+            "success": False, "data": {}, "prompt_used": "",
+            "error": "API Key de Gemini no configurada (ir a Config → Gemini)",
+        }
+
+    prompt = prompt_custom or _PROMPTS_DEFAULT.get(seccion, "Extraé los datos del documento en JSON puro.")
+    path = Path(archivo_path)
+    ext = path.suffix.lower()
+
+    try:
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+
+        if ext == ".pdf":
+            uploaded = genai.upload_file(path=str(path), mime_type="application/pdf")
+            response = model.generate_content([uploaded, prompt])
+        elif ext in (".xlsx", ".xls"):
+            import openpyxl
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            ws = wb.active
+            rows = list(ws.iter_rows(values_only=True))[:101]
+            wb.close()
+            lines = ["\t".join(str(c) if c is not None else "" for c in row) for row in rows]
+            response = model.generate_content(f"{prompt}\n\nDatos:\n" + "\n".join(lines))
+        else:
+            return {
+                "success": False, "data": {}, "prompt_used": prompt,
+                "error": f"Tipo no soportado: {ext}",
+            }
+
+        raw = response.text or ""
+        m = re.search(r"\{.*\}", raw, re.DOTALL)
+        data = json.loads(m.group()) if m else {"respuesta_raw": raw}
+        return {"success": True, "data": data, "error": None, "prompt_used": prompt}
+
+    except Exception as exc:
+        return {"success": False, "data": {}, "error": str(exc), "prompt_used": prompt}
 
 
 # ---------------------------------------------------------------------------
-# Función exportada
+# Exported
 # ---------------------------------------------------------------------------
 
 
 def build_tab_gastos(container) -> None:
-    """Pestaña Gastos: documentos impositivos por período."""
     user = _require_login()
     if not user:
         return
@@ -82,98 +226,233 @@ def build_tab_gastos(container) -> None:
 
 
 # ---------------------------------------------------------------------------
-# UI principal
+# Main UI
 # ---------------------------------------------------------------------------
 
 
 def _build_gastos(user_id: int) -> None:
     now = datetime.now()
 
-    # ── Barra superior ───────────────────────────────────────────────────────
+    # ── Barra superior ────────────────────────────────────────────────────────
     with ui.row().classes("w-full items-center gap-4 flex-wrap").style(
         "background:#f8fafc;border-bottom:1px solid #e0e0e0;padding:10px 16px"
     ):
         with ui.row().classes("items-center gap-2"):
             ui.label("Período:").classes("font-semibold text-sm text-gray-600")
-            mes_sel = ui.select(
-                options=_MESES,
-                value=_MESES[now.month - 1],
-            ).style("width:148px")
+            mes_sel = ui.select(options=_MESES, value=_MESES[now.month - 1]).style("width:148px")
             ano_sel = ui.select(
                 options=[str(y) for y in range(now.year - 2, now.year + 2)],
                 value=str(now.year),
             ).style("width:90px")
-
         progress_lbl = ui.label("").classes("text-sm text-gray-500 ml-2")
         size_lbl     = ui.label("").classes("text-sm text-gray-400")
 
-    # ── Área de contenido (se reconstruye al cambiar el período) ─────────────
     content = ui.column().classes("w-full p-4 gap-4")
 
     def _get_periodo() -> str:
-        mes_idx = _MESES.index(mes_sel.value) + 1
-        return f"{ano_sel.value}-{mes_idx:02d}"
+        return f"{ano_sel.value}-{(_MESES.index(mes_sel.value) + 1):02d}"
 
     def _build_content() -> None:
         content.clear()
         periodo = _get_periodo()
 
         archivos_por_sec: Dict[str, list] = {}
-        procesado_por_sec: Dict[str, bool] = {}
-        dot_refs:    Dict[str, Any] = {}
-        subtitle_ref: list = [None]
-        final_btn_ref: list = [None]
+        dot_refs:         Dict[str, Any]  = {}
+        subtitle_ref:     list            = [None]
+        final_btn_ref:    list            = [None]
 
-        def _count_procesadas() -> int:
-            return sum(1 for sk, *_ in _SECCIONES if procesado_por_sec.get(sk, False))
+        def _sec_verde(sk: str) -> bool:
+            fs = archivos_por_sec.get(sk, [])
+            return bool(fs) and all(f.get("extraction_status") == "procesado" for f in fs)
+
+        def _count_verdes() -> int:
+            return sum(1 for sk, *_ in _SECCIONES if _sec_verde(sk))
 
         def _refresh_progress() -> None:
-            n     = _count_procesadas()
-            total = len(_SECCIONES)
-            pct   = int(n / total * 100) if total else 0
+            n, total = _count_verdes(), len(_SECCIONES)
+            pct = int(n / total * 100) if total else 0
             progress_lbl.text = f"{n} de {total} secciones procesadas — {pct}%"
-
-            total_files = sum(len(v) for v in archivos_por_sec.values())
-            total_bytes = sum(
-                sum(f.get("size_bytes", 0) for f in v)
-                for v in archivos_por_sec.values()
-            )
-            size_lbl.text = f"{total_files} archivo(s) — {_fmt_size(total_bytes)}" if total_files else ""
-
+            tf = sum(len(v) for v in archivos_por_sec.values())
+            tb = sum(sum(f.get("size_bytes", 0) for f in v) for v in archivos_por_sec.values())
+            size_lbl.text = f"{tf} archivo(s) — {_fmt_size(tb)}" if tf else ""
             if subtitle_ref[0]:
-                if n < total:
-                    subtitle_ref[0].text = (
-                        f"Disponible una vez que las 5 secciones estén procesadas — actualmente {n} de {total}"
-                    )
-                else:
-                    subtitle_ref[0].text = "Todas las secciones procesadas — listo para analizar"
-
+                subtitle_ref[0].text = (
+                    "Todas las secciones procesadas — listo para analizar"
+                    if n == total
+                    else f"Disponible cuando las 5 secciones estén procesadas — actualmente {n} de {total}"
+                )
             if final_btn_ref[0]:
-                if n == total:
-                    final_btn_ref[0].enable()
-                    final_btn_ref[0].style(
-                        f"background:{_BLUE};color:white;font-size:14px;"
-                        "font-weight:600;padding:10px 24px;margin-top:8px"
-                    )
-                else:
-                    final_btn_ref[0].disable()
-                    final_btn_ref[0].style(
-                        f"background:{_BLUE};color:white;font-size:14px;"
-                        "font-weight:600;padding:10px 24px;margin-top:8px;opacity:0.4;cursor:not-allowed"
-                    )
+                final_btn_ref[0].enable() if n == total else final_btn_ref[0].disable()
 
         def _refresh_dot(sk: str) -> None:
             dot = dot_refs.get(sk)
             if dot:
-                color = _semaforo(archivos_por_sec.get(sk, []), procesado_por_sec.get(sk, False))
-                dot.style(_DOT.format(color))
+                dot.style(_DOT.format(_semaforo_color(archivos_por_sec.get(sk, []))))
 
-        # ── Construir tarjeta de sección ─────────────────────────────────────
+        # ── Modal visor de extracción IA ──────────────────────────────────────
+        def _open_eye_modal(fa: dict, seccion: str) -> None:
+            path        = Path(fa["filepath"])
+            ext         = path.suffix.lower()
+            cur_status  = fa.get("extraction_status", "pendiente")
+            prompt_init = fa.get("prompt_used") or _PROMPTS_DEFAULT.get(seccion, "")
+            try:
+                data_dict = json.loads(fa.get("extracted_data") or "{}") or {}
+            except Exception:
+                data_dict = {}
+
+            with ui.dialog().props("persistent") as dlg:
+                with ui.card().style(
+                    "width:90vw;max-width:1200px;height:85vh;overflow:hidden;"
+                    "display:flex;flex-direction:column;padding:0"
+                ):
+                    # Header
+                    with ui.row().classes("items-center justify-between w-full px-4 py-2 flex-shrink-0").style(
+                        f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER}"
+                    ):
+                        ui.label(fa["filename"]).style(
+                            f"color:{_HDR_COLOR};font-weight:700;font-size:15px"
+                        )
+                        ui.button(icon="close", on_click=dlg.close).props("flat round dense")
+
+                    # Body: dos columnas
+                    with ui.row().classes("w-full flex-1").style("overflow:hidden;min-height:0"):
+
+                        # IZQUIERDA — documento original
+                        with ui.column().classes("p-3 gap-2 flex-1").style(
+                            f"border-right:1px solid #e0e0e0;overflow-y:auto;min-width:0"
+                        ):
+                            ui.label("Documento original").style(
+                                f"color:{_HDR_COLOR};font-weight:700;font-size:13px"
+                            )
+                            ui.label(f"Tipo: {ext.upper().lstrip('.')}").classes("text-xs text-gray-400")
+                            ui.separator()
+                            if ext == ".pdf":
+                                b64 = _pdf_first_page_b64(path)
+                                if b64:
+                                    ui.html(
+                                        f'<img src="data:image/png;base64,{b64}" '
+                                        'style="max-width:100%;border:1px solid #e0e0e0;border-radius:4px">'
+                                    )
+                                    ui.label("(Mostrando página 1)").classes("text-xs text-gray-400 mt-1")
+                                else:
+                                    ui.label("No se pudo renderizar el PDF").classes("text-xs text-red-500")
+                            elif ext in (".xlsx", ".xls"):
+                                ui.html(
+                                    f'<div style="overflow-x:auto">{_excel_preview_html(path)}</div>'
+                                )
+                            else:
+                                ui.label("Previsualización no disponible").classes("text-xs text-gray-400")
+
+                        # DERECHA — datos extraídos
+                        with ui.column().classes("p-3 gap-2 flex-1").style(
+                            "overflow-y:auto;min-width:0"
+                        ):
+                            with ui.row().classes("items-center gap-2"):
+                                ui.label("Datos extraídos por Gemini").style(
+                                    f"color:{_HDR_COLOR};font-weight:700;font-size:13px"
+                                )
+                                ui.html(_badge_html(cur_status))
+
+                            ui.separator()
+
+                            kv_container = ui.column().classes("w-full gap-0")
+
+                            def _render_kv(d: dict) -> None:
+                                kv_container.clear()
+                                with kv_container:
+                                    if not d:
+                                        ui.label("Sin datos extraídos").classes(
+                                            "text-xs text-gray-400 italic"
+                                        )
+                                        return
+                                    for k, v in d.items():
+                                        with ui.row().classes("w-full items-start gap-2 py-1").style(
+                                            "border-bottom:1px solid #f0f0f0"
+                                        ):
+                                            ui.label(k).classes("text-xs text-gray-500 font-medium").style(
+                                                "width:140px;flex-shrink:0"
+                                            )
+                                            is_num = isinstance(v, (int, float))
+                                            ui.label(str(v) if v is not None else "—").style(
+                                                f"font-size:11px;"
+                                                f"color:{_BLUE if is_num else '#333'};"
+                                                + ("font-variant-numeric:tabular-nums;" if is_num else "")
+                                            )
+
+                            _render_kv(data_dict)
+
+                            ui.label("Prompt usado").classes("text-xs font-semibold text-gray-600 mt-3")
+                            prompt_ta = (
+                                ui.textarea(value=prompt_init)
+                                .props("outlined dense autogrow readonly")
+                                .classes("w-full")
+                                .style("font-size:11px")
+                            )
+                            editing_ref = [False]
+                            reproc_lbl  = ui.label("").classes("text-xs text-gray-500 mt-1")
+
+                            def _toggle_edit() -> None:
+                                editing_ref[0] = not editing_ref[0]
+                                if editing_ref[0]:
+                                    prompt_ta.props(remove="readonly")
+                                    edit_btn.text = "Cancelar edición"
+                                else:
+                                    prompt_ta.props("readonly")
+                                    prompt_ta.value = (
+                                        fa.get("prompt_used") or _PROMPTS_DEFAULT.get(seccion, "")
+                                    )
+                                    edit_btn.text = "Editar prompt"
+
+                            async def _reprocesar() -> None:
+                                reproc_lbl.text = "Procesando con Gemini..."
+                                result = await run.io_bound(
+                                    procesar_archivo_con_gemini,
+                                    fa["filepath"], seccion, prompt_ta.value,
+                                )
+                                new_status = "procesado" if result["success"] else "error"
+                                update_gastos_extraccion(
+                                    fa["id"],
+                                    extracted_data=json.dumps(result["data"]) if result["success"] else None,
+                                    prompt_used=result["prompt_used"],
+                                    extraction_status=new_status,
+                                    extraction_error=result.get("error"),
+                                )
+                                archivos_por_sec[seccion] = get_gastos_archivos(user_id, periodo, seccion)
+                                _refresh_dot(seccion)
+                                _refresh_progress()
+                                if result["success"]:
+                                    _render_kv(result["data"])
+                                    reproc_lbl.text = "Re-procesado correctamente"
+                                else:
+                                    reproc_lbl.text = f"Error: {result['error']}"
+
+                            def _aprobar() -> None:
+                                mark_gastos_procesado(fa["id"])
+                                archivos_por_sec[seccion] = get_gastos_archivos(user_id, periodo, seccion)
+                                _refresh_dot(seccion)
+                                _refresh_progress()
+                                dlg.close()
+                                ui.notify("Archivo aprobado", color="positive")
+
+                            with ui.row().classes("gap-2 mt-2 flex-wrap"):
+                                edit_btn = ui.button("Editar prompt", on_click=_toggle_edit).props(
+                                    "outline dense"
+                                ).style(f"color:{_BLUE};border-color:{_BLUE};font-size:12px")
+                                ui.button("Re-procesar", on_click=_reprocesar).style(
+                                    f"background:{_YELLOW};color:white;font-size:12px"
+                                ).props("dense")
+                                ui.button("Aprobar", on_click=_aprobar).style(
+                                    f"background:{_GREEN};color:white;font-size:12px"
+                                ).props("dense")
+
+            dlg.open()
+
+        # ── Tarjeta de sección ────────────────────────────────────────────────
         def _build_section_card(sk: str, lbl: str, ext: str, multiple: bool, icon: str) -> None:
-            rows      = get_gastos_archivos(user_id, periodo, sk)
+            rows = get_gastos_archivos(user_id, periodo, sk)
             archivos_por_sec[sk] = rows
-            all_proc  = bool(rows and all(r.get("procesado") for r in rows))
-            procesado_por_sec[sk] = all_proc
+            footer_lbl_ref: list = [None]
+            proc_lbl_ref:   list = [None]
 
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 # Header
@@ -181,14 +460,10 @@ def _build_gastos(user_id: int) -> None:
                     f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER};"
                     "border-radius:4px 4px 0 0"
                 ):
-                    dot = ui.element("span").style(_DOT.format(_semaforo(rows, all_proc)))
+                    dot = ui.element("span").style(_DOT.format(_semaforo_color(rows)))
                     dot_refs[sk] = dot
-                    ui.element("i").classes(f"ti {icon}").style(
-                        f"color:{_HDR_COLOR};font-size:16px"
-                    )
-                    ui.label(lbl).style(
-                        f"color:{_HDR_COLOR};font-weight:600;font-size:14px"
-                    )
+                    ui.element("i").classes(f"ti {icon}").style(f"color:{_HDR_COLOR};font-size:16px")
+                    ui.label(lbl).style(f"color:{_HDR_COLOR};font-weight:600;font-size:14px")
                     if not multiple:
                         ui.label("(máx. 1 archivo)").classes("text-xs text-gray-400 ml-1")
 
@@ -201,38 +476,64 @@ def _build_gastos(user_id: int) -> None:
                         fs = archivos_por_sec.get(sk_, [])
                         if not fs:
                             ui.label("Sin archivos").classes("text-xs text-gray-400 italic")
-                            return
-                        for fa in fs:
-                            ok = "✓ " if fa.get("procesado") else ""
-                            with ui.row().classes("items-center gap-1 w-full flex-nowrap"):
-                                ui.label(
-                                    f"{ok}{fa['filename']}  ({_fmt_size(fa.get('size_bytes', 0))})"
-                                ).classes("text-xs flex-1 truncate text-gray-700")
+                        else:
+                            for fa in fs:
+                                _fa = dict(fa)
+                                status = _fa.get("extraction_status", "pendiente")
+                                with ui.row().classes("items-center gap-1 w-full flex-nowrap"):
+                                    ui.label(
+                                        f"{_fa['filename']}  ({_fmt_size(_fa.get('size_bytes', 0))})"
+                                    ).classes("text-xs flex-1 truncate text-gray-700")
+                                    ui.html(_badge_html(status))
 
-                                def _del(fid=fa["id"], sk2=sk_) -> None:
-                                    row = next(
-                                        (x for x in archivos_por_sec[sk2] if x["id"] == fid), None
+                                    # Ícono ojo
+                                    ui.element("i").classes("ti ti-eye").style(
+                                        f"color:{_BLUE};font-size:13px;cursor:pointer;flex-shrink:0"
+                                    ).tooltip("Ver extracción IA").on(
+                                        "click",
+                                        lambda _fa_=_fa, sk2=sk_: _open_eye_modal(_fa_, sk2),
                                     )
-                                    if row:
-                                        try:
-                                            Path(row["filepath"]).unlink(missing_ok=True)
-                                        except Exception:
-                                            pass
-                                        delete_gastos_archivo(fid)
-                                        archivos_por_sec[sk2] = get_gastos_archivos(user_id, periodo, sk2)
-                                        procesado_por_sec[sk2] = bool(
-                                            archivos_por_sec[sk2]
-                                            and all(f.get("procesado") for f in archivos_por_sec[sk2])
-                                        )
-                                    _render_list(sk2)
-                                    _refresh_dot(sk2)
-                                    _refresh_progress()
 
-                                ui.button(
-                                    icon="ti-trash", on_click=_del
-                                ).props("flat dense round").classes(
-                                    "text-red-600"
-                                ).style("font-size:14px").tooltip("Eliminar")
+                                    # Ícono tacho con confirmación
+                                    def _confirm_del(fa_=_fa, sk2=sk_) -> None:
+                                        with ui.dialog() as conf, ui.card().classes("p-4"):
+                                            ui.label("¿Eliminar este archivo?").classes(
+                                                "font-semibold text-sm mb-1"
+                                            )
+                                            ui.label(fa_["filename"]).classes(
+                                                "text-xs text-gray-500 mb-4 truncate"
+                                            ).style("max-width:280px")
+                                            with ui.row().classes("gap-2 justify-end w-full"):
+                                                ui.button("Cancelar", on_click=conf.close).props("flat dense")
+
+                                                def _do_del(fa__=fa_, sk3=sk2, _c=conf) -> None:
+                                                    try:
+                                                        Path(fa__["filepath"]).unlink(missing_ok=True)
+                                                    except Exception:
+                                                        pass
+                                                    delete_gastos_archivo(fa__["id"])
+                                                    archivos_por_sec[sk3] = get_gastos_archivos(
+                                                        user_id, periodo, sk3
+                                                    )
+                                                    _c.close()
+                                                    _render_list(sk3)
+                                                    _refresh_dot(sk3)
+                                                    _refresh_progress()
+                                                    ui.notify("Archivo eliminado", color="positive")
+
+                                                ui.button("Eliminar", on_click=_do_del).style(
+                                                    f"background:{_RED};color:white"
+                                                ).props("dense")
+                                        conf.open()
+
+                                    ui.element("i").classes("ti ti-trash").style(
+                                        f"color:{_RED};font-size:13px;cursor:pointer;flex-shrink:0"
+                                    ).tooltip("Eliminar").on("click", _confirm_del)
+
+                    # Actualizar contador del footer
+                    cnt = len(archivos_por_sec.get(sk_, []))
+                    if footer_lbl_ref[0]:
+                        footer_lbl_ref[0].text = f"{cnt} archivo(s)" if cnt else "Sin archivos"
 
                 _render_list(sk)
 
@@ -251,74 +552,86 @@ def _build_gastos(user_id: int) -> None:
                         data = e.content.read()
                         dest.write_bytes(data)
                         insert_gastos_archivo(
-                            user_id=user_id,
-                            periodo=periodo,
-                            seccion=sk_,
-                            filename=e.name,
-                            filepath=str(dest),
-                            size_bytes=len(data),
+                            user_id=user_id, periodo=periodo, seccion=sk_,
+                            filename=e.name, filepath=str(dest), size_bytes=len(data),
                         )
                         archivos_por_sec[sk_] = get_gastos_archivos(user_id, periodo, sk_)
-                        procesado_por_sec[sk_] = False
                         _render_list(sk_)
                         _refresh_dot(sk_)
                         _refresh_progress()
                         ui.notify(f"'{e.name}' subido", color="positive")
 
                     ui.upload(
-                        multiple=multiple,
-                        auto_upload=True,
-                        on_upload=_on_upload,
+                        multiple=multiple, auto_upload=True, on_upload=_on_upload,
                         label="Arrastrá archivos aquí o hacé clic",
                     ).props(
                         f'accept="{ext}" flat hide-upload-btn color="primary"'
                     ).classes("w-full").style(
-                        "border:2px dashed #85B7EB;border-radius:6px;"
-                        "background:#f9fbfe;min-height:56px"
+                        "border:2px dashed #85B7EB;border-radius:6px;background:#f9fbfe;min-height:56px"
                     )
 
                 # Footer
-                with ui.row().classes("items-center gap-2 px-3 pb-3 pt-1"):
-                    cnt = len(archivos_por_sec[sk])
-                    ui.label(
-                        f"{cnt} archivo(s)" if cnt else "Sin archivos"
+                with ui.row().classes("items-center gap-2 px-3 pb-3 pt-1 flex-wrap"):
+                    cnt0 = len(rows)
+                    footer_lbl_ref[0] = ui.label(
+                        f"{cnt0} archivo(s)" if cnt0 else "Sin archivos"
                     ).classes("text-xs text-gray-500 flex-1")
+                    proc_lbl_ref[0] = ui.label("").classes("text-xs text-gray-400")
 
-                    is_proc   = procesado_por_sec[sk]
+                    is_proc   = _sec_verde(sk)
                     btn_lbl   = "Reprocesar" if is_proc else "Procesar"
                     btn_color = _GREEN if is_proc else _BLUE
 
-                    def _procesar(sk_=sk) -> None:
-                        if not archivos_por_sec.get(sk_):
+                    async def _procesar(sk_=sk) -> None:
+                        pl = proc_lbl_ref[0]
+                        fs = archivos_por_sec.get(sk_, [])
+                        if not fs:
                             ui.notify("No hay archivos para procesar", color="warning")
                             return
-                        for fa in archivos_por_sec[sk_]:
-                            mark_gastos_procesado(fa["id"])
+                        pendientes = [f for f in fs if f.get("extraction_status") != "procesado"] or fs
+                        if pl:
+                            pl.text = f"Procesando 0 de {len(pendientes)}..."
+                        for i, fa in enumerate(pendientes, 1):
+                            if pl:
+                                pl.text = f"Procesando {i} de {len(pendientes)}..."
+                            result = await run.io_bound(
+                                procesar_archivo_con_gemini, fa["filepath"], sk_
+                            )
+                            new_status = "procesado" if result["success"] else "error"
+                            update_gastos_extraccion(
+                                fa["id"],
+                                extracted_data=json.dumps(result["data"]) if result["success"] else None,
+                                prompt_used=result["prompt_used"],
+                                extraction_status=new_status,
+                                extraction_error=result.get("error"),
+                            )
                         archivos_por_sec[sk_] = get_gastos_archivos(user_id, periodo, sk_)
-                        procesado_por_sec[sk_] = True
                         _render_list(sk_)
                         _refresh_dot(sk_)
                         _refresh_progress()
-                        ui.notify("Procesado — implementación pendiente", color="positive")
+                        ok    = sum(1 for f in archivos_por_sec[sk_] if f.get("extraction_status") == "procesado")
+                        total = len(archivos_por_sec[sk_])
+                        if pl:
+                            pl.text = f"{ok}/{total} procesados"
+                        if ok == total:
+                            ui.notify("Procesado correctamente", color="positive")
+                        else:
+                            ui.notify(f"{total - ok} archivo(s) con error — revisá el ícono ojo", color="warning")
 
-                    ui.button(
-                        btn_lbl, on_click=_procesar
-                    ).style(
-                        f"background:{btn_color};color:white;font-size:12px;"
-                        "padding:4px 14px;border-radius:4px"
+                    ui.button(btn_lbl, on_click=_procesar).style(
+                        f"background:{btn_color};color:white;font-size:12px;padding:4px 14px;border-radius:4px"
                     )
 
-        # ── Contenido principal ───────────────────────────────────────────────
+        # ── Grid de tarjetas ──────────────────────────────────────────────────
         with content:
             with ui.grid(columns=2).classes("w-full gap-4"):
                 for sk, lbl, ext, mul, icon in _SECCIONES[:4]:
                     _build_section_card(sk, lbl, ext, mul, icon)
 
-            # Operaciones ML: fila completa
             sk, lbl, ext, mul, icon = _SECCIONES[4]
             _build_section_card(sk, lbl, ext, mul, icon)
 
-            # Card de análisis final
+            # Card análisis final
             with ui.card().classes("w-full").style(
                 f"border:2px solid {_BLUE};background:{_BLUE_BG};border-radius:8px"
             ):
@@ -332,10 +645,7 @@ def _build_gastos(user_id: int) -> None:
                     def _final_procesar() -> None:
                         ui.notify("Análisis final pendiente de implementación", color="info")
 
-                    fb = ui.button(
-                        "Procesar análisis final",
-                        on_click=_final_procesar,
-                    ).style(
+                    fb = ui.button("Procesar análisis final", on_click=_final_procesar).style(
                         f"background:{_BLUE};color:white;font-size:14px;"
                         "font-weight:600;padding:10px 24px;margin-top:8px"
                     )
@@ -345,5 +655,4 @@ def _build_gastos(user_id: int) -> None:
 
     mes_sel.on("update:model-value", lambda _: _build_content())
     ano_sel.on("update:model-value", lambda _: _build_content())
-
     _build_content()

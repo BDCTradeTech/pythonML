@@ -763,6 +763,18 @@ def init_db() -> None:
         """
     )
 
+    # Migración: nuevas columnas Gemini en gastos_archivos
+    for _col_sql in [
+        "ALTER TABLE gastos_archivos ADD COLUMN extracted_data TEXT",
+        "ALTER TABLE gastos_archivos ADD COLUMN prompt_used TEXT",
+        "ALTER TABLE gastos_archivos ADD COLUMN extraction_status TEXT DEFAULT 'pendiente'",
+        "ALTER TABLE gastos_archivos ADD COLUMN extraction_error TEXT",
+    ]:
+        try:
+            cur.execute(_col_sql)
+        except Exception:
+            pass  # columna ya existe
+
     # Migración: habilitar permiso "guias" para user_id=1 (admin) si aún no tiene registro
     cur.execute("SELECT 1 FROM users WHERE id = 1")
     if cur.fetchone():
@@ -1966,9 +1978,37 @@ def mark_gastos_procesado(file_id: int) -> None:
     try:
         now = datetime.now().isoformat(timespec="seconds")
         conn.execute(
-            "UPDATE gastos_archivos SET procesado=1, procesado_at=? WHERE id=?",
+            "UPDATE gastos_archivos SET procesado=1, procesado_at=?, extraction_status='procesado' WHERE id=?",
             (now, file_id),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def update_gastos_extraccion(
+    file_id: int,
+    extracted_data: Optional[str],
+    prompt_used: Optional[str],
+    extraction_status: str,
+    extraction_error: Optional[str] = None,
+) -> None:
+    """Guarda resultado de extracción Gemini; si status='procesado' también marca procesado=1."""
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        if extraction_status == "procesado":
+            conn.execute(
+                "UPDATE gastos_archivos SET extracted_data=?, prompt_used=?, extraction_status=?, "
+                "extraction_error=?, procesado=1, procesado_at=? WHERE id=?",
+                (extracted_data, prompt_used, extraction_status, extraction_error, now, file_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE gastos_archivos SET extracted_data=?, prompt_used=?, extraction_status=?, "
+                "extraction_error=? WHERE id=?",
+                (extracted_data, prompt_used, extraction_status, extraction_error, file_id),
+            )
         conn.commit()
     finally:
         conn.close()
