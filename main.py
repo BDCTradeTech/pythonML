@@ -129,6 +129,7 @@ from tabs.importacion import build_tab_importacion
 from tabs.historicos import build_tab_historicos
 from tabs.pesos import build_tab_pesos
 from tabs.arca import build_tab_arca
+from tabs.gastos import build_tab_gastos
 from tabs.dashboard import build_tab_dashboard
 from tabs.datos import build_tab_datos
 from tabs.flex import build_tab_flex
@@ -145,7 +146,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.06.29.17b"
+VERSION = "3.26.06.29.14"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -368,6 +369,7 @@ def show_main_layout(container) -> None:
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
                 tab_arca = ui.tab("ARCA")
+                tab_gastos = ui.tab("Gastos")
                 tab_balance    = ui.tab("Balance")
                 tab_dashboard  = ui.tab("Dashboard")
                 tab_promos     = ui.tab("Promos")
@@ -394,6 +396,7 @@ def show_main_layout(container) -> None:
             "Datos": tab_datos,
             "Pesos": tab_pesos,
             "ARCA": tab_arca,
+            "Gastos": tab_gastos,
             "Balance":    tab_balance,
             "Dashboard":  tab_dashboard,
             "Promos":     tab_promos,
@@ -403,7 +406,7 @@ def show_main_layout(container) -> None:
             "Admin": tab_admin,
             "Actividad": tab_actividad,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -421,6 +424,7 @@ def show_main_layout(container) -> None:
         promos_cargado = [False]
         preguntas_cargado = [False]
         arca_cargado = [False]
+        gastos_cargado = [False]
         actividad_cargado = [False]
         guias_cargado = [False]
 
@@ -470,6 +474,9 @@ def show_main_layout(container) -> None:
             elif val == "ARCA" and not arca_cargado[0]:
                 arca_cargado[0] = True
                 build_tab_arca(arca_container)
+            elif val == "Gastos" and not gastos_cargado[0]:
+                gastos_cargado[0] = True
+                build_tab_gastos(gastos_container)
             elif val == "Actividad" and not actividad_cargado[0]:
                 actividad_cargado[0] = True
                 build_tab_actividad(actividad_container)
@@ -580,15 +587,22 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_pesos
                                         app.storage.user["last_tab"] = "Pesos"
                                     ui.menu_item("PESOS", _pesos_click)
-                if perms.get("arca", True):
+                if perms.get("arca", True) or perms.get("gastos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(impuestos_menu)):
                         with ui.button("IMPUESTOS").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as impuestos_menu:
-                                def _arca_click():
-                                    _lazy_load("ARCA")
-                                    tab_panels.value = tab_arca
-                                    app.storage.user["last_tab"] = "ARCA"
-                                ui.menu_item("ARCA", _arca_click)
+                                if perms.get("arca", True):
+                                    def _arca_click():
+                                        _lazy_load("ARCA")
+                                        tab_panels.value = tab_arca
+                                        app.storage.user["last_tab"] = "ARCA"
+                                    ui.menu_item("ARCA", _arca_click)
+                                if perms.get("gastos", True):
+                                    def _gastos_click():
+                                        _lazy_load("Gastos")
+                                        tab_panels.value = tab_gastos
+                                        app.storage.user["last_tab"] = "Gastos"
+                                    ui.menu_item("GASTOS", _gastos_click)
                 if perms.get("datos", True) or perms.get("configuracion", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(config_menu)):
                         with ui.button("CONFIG").props("flat dense no-caps").classes(_nav_font):
@@ -718,6 +732,7 @@ def show_main_layout(container) -> None:
             "Guias":         ("Comex", "Guías"),
             "Pesos":         ("Comex", "Pesos"),
             "ARCA":          ("Impuestos", "ARCA"),
+            "Gastos":        ("Impuestos", "Gastos"),
             "Datos":         ("Config", "Datos"),
             "Configuración": ("Config", "Configuración"),
             "Admin":         ("Config", "Admin"),
@@ -780,6 +795,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_arca):
                 arca_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_gastos):
+                gastos_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_balance):
                 balance_container = ui.column().classes("w-full")
