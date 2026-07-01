@@ -561,7 +561,13 @@ def _build_gastos(user_id: int) -> None:
                                         "padding-right:16px"
                                     )
 
+                                    _HIDDEN_FIELDS = {
+                                        'cae', 'cae_vto', 'cuit_receptor',
+                                        'receptor', 'emisor', 'cuit_emisor',
+                                    }
                                     for k, v in d.items():
+                                        if k in _HIDDEN_FIELDS:
+                                            continue
                                         if _is_concepto_monto_list(v):
                                             for item in v:
                                                 row_key = _concepto_to_key(item.get("concepto", k))
@@ -589,13 +595,36 @@ def _build_gastos(user_id: int) -> None:
 
                             _render_kv(data_dict)
 
-                            ui.label("Prompt usado").classes("text-xs font-semibold text-gray-600 mt-3")
-                            prompt_ta = (
-                                ui.textarea(value=prompt_init)
-                                .props("outlined dense autogrow readonly")
-                                .classes("w-full")
-                                .style("font-size:11px")
-                            )
+                            _prompt_open = [False]
+                            with ui.column().classes("w-full mt-3 gap-0"):
+                                with ui.row().classes("items-center gap-1 py-1").style(
+                                    "cursor:pointer;user-select:none"
+                                ) as _prompt_hdr:
+                                    _prompt_chev = ui.element("i").classes("ti ti-chevron-right").style(
+                                        f"color:{_HDR_COLOR};font-size:14px"
+                                    )
+                                    ui.label("Prompt usado").classes("text-xs font-semibold text-gray-600")
+
+                                prompt_ta = (
+                                    ui.textarea(value=prompt_init)
+                                    .props("outlined dense autogrow readonly")
+                                    .classes("w-full hidden")
+                                    .style("font-size:11px")
+                                )
+
+                                def _toggle_prompt():
+                                    _prompt_open[0] = not _prompt_open[0]
+                                    if _prompt_open[0]:
+                                        prompt_ta.classes(remove="hidden")
+                                        _prompt_chev.classes(remove="ti-chevron-right")
+                                        _prompt_chev.classes(add="ti-chevron-down")
+                                    else:
+                                        prompt_ta.classes(add="hidden")
+                                        _prompt_chev.classes(remove="ti-chevron-down")
+                                        _prompt_chev.classes(add="ti-chevron-right")
+
+                                _prompt_hdr.on("click", _toggle_prompt)
+
                             reproc_lbl = ui.label("").classes("text-xs text-gray-500 mt-1")
 
                             async def _reprocesar() -> None:
@@ -685,15 +714,38 @@ def _build_gastos(user_id: int) -> None:
 
                             reproc_all_btn.on("click", _reprocesar_todos)
 
-                            # Prompt desactualizado → aviso inmediato + mostrar botón
+                            # Prompt desactualizado → dialog Sí/No para actualizar
                             if seccion == "facturas_ml" and "lineas_antes_subtotal" not in prompt_init:
                                 reproc_lbl.text = (
-                                    "Prompt actualizado: ahora extrae lineas_antes_subtotal. "
-                                    "Reprocesá todos para obtener datos completos."
+                                    "⚠ El prompt guardado no pide líneas arriba del subtotal."
                                 )
                                 reproc_all_btn.classes(remove="hidden")
+                                with ui.dialog() as _upd_dlg:
+                                    with ui.card().classes("p-4 gap-2").style("min-width:340px"):
+                                        ui.label("Prompt desactualizado").classes("font-semibold text-sm")
+                                        ui.label(
+                                            "El prompt guardado no extrae lineas_antes_subtotal "
+                                            "(bonificaciones y cargos antes del subtotal). "
+                                            "¿Actualizar al prompt default nuevo?"
+                                        ).classes("text-xs text-gray-600").style("line-height:1.5")
+                                        with ui.row().classes("gap-2 justify-end w-full mt-2"):
+                                            ui.button("No", on_click=_upd_dlg.close).props("flat dense")
+                                            async def _actualizar_prompt(_d=_upd_dlg):
+                                                new_p = _PROMPTS_DEFAULT["facturas_ml"]
+                                                upsert_gastos_prompt(user_id, seccion, new_p)
+                                                prompt_ta.value = new_p
+                                                reproc_lbl.text = (
+                                                    "Prompt actualizado. Reprocesá todos para obtener datos completos."
+                                                )
+                                                _d.close()
+                                            ui.button("Sí, actualizar", on_click=_actualizar_prompt).style(
+                                                f"background:{_BLUE};color:white"
+                                            ).props("dense")
+                                _upd_dlg.open()
 
                             def _start_edit() -> None:
+                                if not _prompt_open[0]:
+                                    _toggle_prompt()
                                 prompt_ta.props(remove="readonly")
                                 edit_btn.classes(add="hidden")
                                 guardar_btn.classes(remove="hidden")
