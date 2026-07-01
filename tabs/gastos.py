@@ -107,33 +107,46 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "tipo_percepcion, fecha, agente_percepcion, cuit_agente, monto_percibido, numero_comprobante."
     ),
     "pagos_arca": (
-        "Analizá este comprobante de pago ARCA/AFIP. Extraé en JSON puro (sin markdown ni bloques de código). "
-        "Campos obligatorios: "
-        "tipo (descripción del tipo de obligación), "
+        "Analizá este comprobante de pago ARCA/AFIP. Identificá el tipo de documento y extraé en JSON puro "
+        "(sin markdown ni bloques de código) TODOS los conceptos financieros con nombre EXACTO y monto numérico. "
+        "Campos comunes (siempre extraer): "
+        "tipo (IVA | SIFERE Convenio Multilateral | texto descriptivo del documento), "
         "periodo (AAAA-MM), "
-        "numero_vep, "
-        "cuit, "
-        "organismo_recaudador, "
-        "tipo_pago, "
-        "concepto, "
-        "lineas_convenio_multilateral (lista con TODAS las líneas CM que aparezcan ANTES del importe total a pagar — "
-        "cada una con jurisdiccion (nombre de la provincia, sin el prefijo 'CM'), "
-        "codigo (código numérico entre paréntesis en el documento) y monto numérico; "
-        "si no hay líneas CM, devolvé array vacío []), "
+        "numero_vep. "
+        "Si el documento es SIFERE Convenio Multilateral: "
+        "lineas_convenio_multilateral (lista con TODAS las líneas CM que aparezcan antes del importe total — "
+        "cada una con jurisdiccion (nombre de la provincia sin el prefijo CM), "
+        "codigo (número entre paréntesis) y monto numérico; si no hay, devolvé []). "
+        "Si el documento es IVA: "
+        "determinacion_del_impuesto (lista de {concepto, monto} con TODOS los ítems de la sección "
+        "Determinación del Impuesto, en el orden en que aparecen), "
+        "determinacion_posicion_mensual (lista de {concepto, monto} con TODOS los ítems de la sección "
+        "Determinación de la Posición Mensual, en el orden en que aparecen). "
+        "En cualquier caso, si aparece explícitamente en el documento: "
         "importe_total_a_pagar (número). "
-        "IMPORTANTE: el JSON debe ser ESTRICTAMENTE válido. Usá SOLO comillas dobles. "
-        "NO uses comillas simples, ni trailing commas, ni comentarios. "
-        "Responde ÚNICAMENTE con el JSON, sin ningún texto adicional. "
-        'Formato esperado: {"tipo":"Obligación Mensual/Anual (DDJJ y Pagos)",'
-        '"periodo":"2026-04","numero_vep":"1629093052","cuit":"33-71851985-9",'
-        '"organismo_recaudador":"SIFERE CONVENIO MULTILATERAL",'
-        '"tipo_pago":"Convenio Multilateral - SIFERE PRESENTACION Y PAGO",'
-        '"concepto":"19 OBLIGACION MENSUAL/ANUAL",'
+        "CRÍTICO: extraé los nombres EXACTAMENTE como aparecen en el documento, sin abreviar ni traducir. "
+        "No omitas ningún concepto. Si un grupo no aparece en el documento, omití esa clave. "
+        "El JSON debe ser ESTRICTAMENTE válido — solo comillas dobles, sin trailing commas ni comentarios. "
+        "Responde ÚNICAMENTE con el JSON. "
+        'Ejemplo SIFERE: {"tipo":"SIFERE Convenio Multilateral","periodo":"2026-04",'
+        '"numero_vep":"1629093052",'
         '"lineas_convenio_multilateral":['
         '{"jurisdiccion":"PCIA BS AS","codigo":"5802","monto":2244403.49},'
-        '{"jurisdiccion":"CHACO","codigo":"5806","monto":7087.99},'
-        '{"jurisdiccion":"CHUBUT","codigo":"5807","monto":5328.68}],'
-        '"importe_total_a_pagar":3383401.10}'
+        '{"jurisdiccion":"CHACO","codigo":"5806","monto":7087.99}],'
+        '"importe_total_a_pagar":3383401.10} '
+        'Ejemplo IVA: {"tipo":"IVA","periodo":"2026-04","numero_vep":"1172911737",'
+        '"determinacion_del_impuesto":['
+        '{"concepto":"Total del Débito Fiscal del Período","monto":19292005.21},'
+        '{"concepto":"Total del Crédito Fiscal del Período","monto":21863249.64},'
+        '{"concepto":"Saldo técnico a favor del contribuyente del período anterior","monto":12105024.60},'
+        '{"concepto":"Saldo técnico a favor del contribuyente","monto":14676269.03}],'
+        '"determinacion_posicion_mensual":['
+        '{"concepto":"Saldo técnico a favor de ARCA","monto":0.00},'
+        '{"concepto":"Saldo técnico a favor del contribuyente","monto":14676269.03},'
+        '{"concepto":"Saldo a favor de libre disponibilidad del período anterior neto de usos","monto":1727.75},'
+        '{"concepto":"Total de retenciones, percepciones y pagos a cuenta neto de restituciones","monto":1534.81},'
+        '{"concepto":"Saldo de libre disponibilidad a favor del contribuyente del período","monto":3262.56}],'
+        '"importe_total_a_pagar":0.0}'
     ),
     "reportes_ml": (
         "Analizá este reporte de operaciones de MercadoLibre. Identificá las columnas principales y "
@@ -464,7 +477,8 @@ def _build_gastos(user_id: int) -> None:
                                         except Exception:
                                             return str(val)
 
-                                    def _render_value(k: str, val) -> None:
+                                    def _render_value(k: str, val, is_total: bool = False) -> None:
+                                        _bw = ";font-weight:700" if is_total else ""
                                         # None / vacío
                                         if val is None or val == "" or val == []:
                                             ui.label("—").style("font-size:11px;color:#9e9e9e")
@@ -540,12 +554,12 @@ def _build_gastos(user_id: int) -> None:
                                                     f"font-size:11px;color:{_BLUE};"
                                                     "font-variant-numeric:tabular-nums;"
                                                     "text-align:right;padding-right:12px;"
-                                                    "display:block;width:100%"
+                                                    f"display:block;width:100%{_bw}"
                                                 )
                                             else:
                                                 ui.label(str(val)).style(
                                                     f"font-size:11px;color:{_BLUE};"
-                                                    "font-variant-numeric:tabular-nums"
+                                                    f"font-variant-numeric:tabular-nums{_bw}"
                                                 )
                                             return
                                         # String / fallback
@@ -555,10 +569,10 @@ def _build_gastos(user_id: int) -> None:
                                                 "font-size:11px;color:#333;"
                                                 "text-align:right;padding-right:12px;"
                                                 "font-variant-numeric:tabular-nums;"
-                                                "display:block;width:100%"
+                                                f"display:block;width:100%{_bw}"
                                             )
                                         else:
-                                            ui.label(val_str).style("font-size:11px;color:#333")
+                                            ui.label(val_str).style(f"font-size:11px;color:#333{_bw}")
 
                                     def _concepto_to_key(concepto: str) -> str:
                                         s = str(concepto)
@@ -615,60 +629,99 @@ def _build_gastos(user_id: int) -> None:
                                         'receptor', 'emisor', 'cuit_emisor',
                                     }
                                     if seccion == "pagos_arca":
-                                        _HIDDEN_FIELDS = _HIDDEN_FIELDS | {'banco', 'fecha_vencimiento'}
+                                        _HIDDEN_FIELDS = _HIDDEN_FIELDS | {
+                                            'cuit', 'organismo_recaudador', 'tipo_pago', 'concepto',
+                                            'monto_pagado', 'banco', 'fecha_vencimiento', 'subconcepto',
+                                            'descripcion_reducida', 'codigo_jurisdiccion', 'nro_inscripcion',
+                                            'formulario_origen', 'generado_por_usuario', 'fecha_generacion',
+                                            'dia_expiracion', 'generado_desde_presentacion_de_dj_nro',
+                                            'denominacion', 'secuencia', 'fecha_presentacion',
+                                            'nro_transaccion', 'codigo_identificacion_presentacion_md5',
+                                        }
+                                    _SECTION_LABELS = {
+                                        "lineas_convenio_multilateral": "Convenio Multilateral",
+                                        "determinacion_del_impuesto": "Determinación del Impuesto",
+                                        "determinacion_posicion_mensual": "Determinación de la Posición Mensual",
+                                    }
+                                    _SEP_STYLE = (
+                                        f"width:100%;font-size:10px;font-weight:600;"
+                                        f"text-transform:uppercase;letter-spacing:0.04em;"
+                                        f"color:{_HDR_COLOR};background:{_HDR_BG};"
+                                        f"padding:8px 12px 4px;"
+                                        f"border-bottom:0.5px solid {_HDR_BORDER};"
+                                        f"margin-top:8px;display:block"
+                                    )
                                     for k, v in d.items():
                                         if k in _HIDDEN_FIELDS:
                                             continue
-                                        # lineas_convenio_multilateral → filas CM individuales
+                                        # lineas_convenio_multilateral → separador + filas CM
                                         if k == "lineas_convenio_multilateral" and isinstance(v, list):
+                                            if seccion == "pagos_arca" and v:
+                                                ui.html(
+                                                    f'<div style="{_SEP_STYLE}">'
+                                                    f'{_SECTION_LABELS.get(k, prettify_key(k))}</div>'
+                                                )
                                             for cm_item in v:
                                                 juris = cm_item.get("jurisdiccion", "")
                                                 code  = cm_item.get("codigo", "")
                                                 cm_val = cm_item.get("monto")
                                                 cm_key = f"CM {juris} ({code})" if code else f"CM {juris}"
+                                                _is_tot = 'total' in cm_key.lower()
+                                                _kw = ";font-weight:700" if _is_tot else ""
                                                 with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
                                                     ui.label(cm_key).classes(
                                                         "text-xs text-gray-500 font-medium"
-                                                    ).style(_KEY_STYLE)
+                                                    ).style(_KEY_STYLE + _kw)
                                                     if isinstance(cm_val, (int, float)):
                                                         ui.label(_fmt_money(cm_val)).style(
                                                             f"font-size:11px;color:{_BLUE};"
                                                             "font-variant-numeric:tabular-nums;"
                                                             "white-space:nowrap;"
                                                             "text-align:right;padding-right:12px;"
-                                                            "display:block;width:100%"
+                                                            f"display:block;width:100%{_kw}"
                                                         )
                                                     else:
                                                         ui.label(str(cm_val) if cm_val is not None else "—").style(
-                                                            "font-size:11px;color:#333"
+                                                            f"font-size:11px;color:#333{_kw}"
                                                         )
                                             continue
+                                        # concepto+monto list → separador (pagos_arca) + filas con bold
                                         if _is_concepto_monto_list(v):
+                                            if seccion == "pagos_arca" and k in _SECTION_LABELS:
+                                                ui.html(
+                                                    f'<div style="{_SEP_STYLE}">'
+                                                    f'{_SECTION_LABELS[k]}</div>'
+                                                )
                                             for item in v:
-                                                row_key = _concepto_to_key(item.get("concepto", k))
+                                                concepto_raw = str(item.get("concepto", k))
+                                                row_key = _concepto_to_key(concepto_raw)
                                                 row_val = item.get("monto")
+                                                _is_tot = 'total' in concepto_raw.lower()
+                                                _kw = ";font-weight:700" if _is_tot else ""
                                                 with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
                                                     ui.label(prettify_key(row_key)).classes(
                                                         "text-xs text-gray-500 font-medium"
-                                                    ).style(_KEY_STYLE)
+                                                    ).style(_KEY_STYLE + _kw)
                                                     if isinstance(row_val, (int, float)):
                                                         ui.label(_fmt_money(row_val)).style(
                                                             f"font-size:11px;color:{_BLUE};"
                                                             "font-variant-numeric:tabular-nums;"
                                                             "white-space:nowrap;"
                                                             "text-align:right;padding-right:12px;"
-                                                            "display:block;width:100%"
+                                                            f"display:block;width:100%{_kw}"
                                                         )
                                                     else:
                                                         ui.label(str(row_val) if row_val is not None else "—").style(
-                                                            "font-size:11px;color:#333;white-space:nowrap"
+                                                            f"font-size:11px;color:#333;white-space:nowrap{_kw}"
                                                         )
                                         else:
+                                            _is_tot = 'total' in k.lower()
+                                            _kw = ";font-weight:700" if _is_tot else ""
                                             with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
                                                 ui.label(prettify_key(k)).classes(
                                                     "text-xs text-gray-500 font-medium"
-                                                ).style(_KEY_STYLE)
-                                                _render_value(k, v)
+                                                ).style(_KEY_STYLE + _kw)
+                                                _render_value(k, v, is_total=_is_tot)
 
                             _render_kv(data_dict)
 
