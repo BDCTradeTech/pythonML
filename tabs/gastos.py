@@ -107,8 +107,33 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "tipo_percepcion, fecha, agente_percepcion, cuit_agente, monto_percibido, numero_comprobante."
     ),
     "pagos_arca": (
-        "Analizá este comprobante de pago ARCA/AFIP. Extraé en JSON puro: "
-        "tipo, periodo, fecha_vencimiento, monto_pagado, numero_vep, banco."
+        "Analizá este comprobante de pago ARCA/AFIP. Extraé en JSON puro (sin markdown ni bloques de código). "
+        "Campos obligatorios: "
+        "tipo (descripción del tipo de obligación), "
+        "periodo (AAAA-MM), "
+        "numero_vep, "
+        "cuit, "
+        "organismo_recaudador, "
+        "tipo_pago, "
+        "concepto, "
+        "lineas_convenio_multilateral (lista con TODAS las líneas CM que aparezcan ANTES del importe total a pagar — "
+        "cada una con jurisdiccion (nombre de la provincia, sin el prefijo 'CM'), "
+        "codigo (código numérico entre paréntesis en el documento) y monto numérico; "
+        "si no hay líneas CM, devolvé array vacío []), "
+        "importe_total_a_pagar (número). "
+        "IMPORTANTE: el JSON debe ser ESTRICTAMENTE válido. Usá SOLO comillas dobles. "
+        "NO uses comillas simples, ni trailing commas, ni comentarios. "
+        "Responde ÚNICAMENTE con el JSON, sin ningún texto adicional. "
+        'Formato esperado: {"tipo":"Obligación Mensual/Anual (DDJJ y Pagos)",'
+        '"periodo":"2026-04","numero_vep":"1629093052","cuit":"33-71851985-9",'
+        '"organismo_recaudador":"SIFERE CONVENIO MULTILATERAL",'
+        '"tipo_pago":"Convenio Multilateral - SIFERE PRESENTACION Y PAGO",'
+        '"concepto":"19 OBLIGACION MENSUAL/ANUAL",'
+        '"lineas_convenio_multilateral":['
+        '{"jurisdiccion":"PCIA BS AS","codigo":"5802","monto":2244403.49},'
+        '{"jurisdiccion":"CHACO","codigo":"5806","monto":7087.99},'
+        '{"jurisdiccion":"CHUBUT","codigo":"5807","monto":5328.68}],'
+        '"importe_total_a_pagar":3383401.10}'
     ),
     "reportes_ml": (
         "Analizá este reporte de operaciones de MercadoLibre. Identificá las columnas principales y "
@@ -424,6 +449,7 @@ def _build_gastos(user_id: int) -> None:
                                     _MONEY_KEYS = {
                                         "monto", "total", "subtotal", "precio", "iva",
                                         "neto", "importe", "valor", "suma",
+                                        "cargo", "bonificacion", "percepcion", "retencion",
                                     }
 
                                     def _is_money_key(k: str) -> bool:
@@ -512,7 +538,9 @@ def _build_gastos(user_id: int) -> None:
                                             if _is_money_key(k):
                                                 ui.label(_fmt_money(val)).style(
                                                     f"font-size:11px;color:{_BLUE};"
-                                                    "font-variant-numeric:tabular-nums"
+                                                    "font-variant-numeric:tabular-nums;"
+                                                    "text-align:right;padding-right:12px;"
+                                                    "display:block;width:100%"
                                                 )
                                             else:
                                                 ui.label(str(val)).style(
@@ -521,7 +549,16 @@ def _build_gastos(user_id: int) -> None:
                                                 )
                                             return
                                         # String / fallback
-                                        ui.label(str(val)).style("font-size:11px;color:#333")
+                                        val_str = str(val)
+                                        if val_str.startswith("$"):
+                                            ui.label(val_str).style(
+                                                "font-size:11px;color:#333;"
+                                                "text-align:right;padding-right:12px;"
+                                                "font-variant-numeric:tabular-nums;"
+                                                "display:block;width:100%"
+                                            )
+                                        else:
+                                            ui.label(val_str).style("font-size:11px;color:#333")
 
                                     def _concepto_to_key(concepto: str) -> str:
                                         s = str(concepto)
@@ -577,8 +614,34 @@ def _build_gastos(user_id: int) -> None:
                                         'cae', 'cae_vto', 'cuit_receptor',
                                         'receptor', 'emisor', 'cuit_emisor',
                                     }
+                                    if seccion == "pagos_arca":
+                                        _HIDDEN_FIELDS = _HIDDEN_FIELDS | {'banco', 'fecha_vencimiento'}
                                     for k, v in d.items():
                                         if k in _HIDDEN_FIELDS:
+                                            continue
+                                        # lineas_convenio_multilateral → filas CM individuales
+                                        if k == "lineas_convenio_multilateral" and isinstance(v, list):
+                                            for cm_item in v:
+                                                juris = cm_item.get("jurisdiccion", "")
+                                                code  = cm_item.get("codigo", "")
+                                                cm_val = cm_item.get("monto")
+                                                cm_key = f"CM {juris} ({code})" if code else f"CM {juris}"
+                                                with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
+                                                    ui.label(cm_key).classes(
+                                                        "text-xs text-gray-500 font-medium"
+                                                    ).style(_KEY_STYLE)
+                                                    if isinstance(cm_val, (int, float)):
+                                                        ui.label(_fmt_money(cm_val)).style(
+                                                            f"font-size:11px;color:{_BLUE};"
+                                                            "font-variant-numeric:tabular-nums;"
+                                                            "white-space:nowrap;"
+                                                            "text-align:right;padding-right:12px;"
+                                                            "display:block;width:100%"
+                                                        )
+                                                    else:
+                                                        ui.label(str(cm_val) if cm_val is not None else "—").style(
+                                                            "font-size:11px;color:#333"
+                                                        )
                                             continue
                                         if _is_concepto_monto_list(v):
                                             for item in v:
@@ -592,7 +655,9 @@ def _build_gastos(user_id: int) -> None:
                                                         ui.label(_fmt_money(row_val)).style(
                                                             f"font-size:11px;color:{_BLUE};"
                                                             "font-variant-numeric:tabular-nums;"
-                                                            "white-space:nowrap"
+                                                            "white-space:nowrap;"
+                                                            "text-align:right;padding-right:12px;"
+                                                            "display:block;width:100%"
                                                         )
                                                     else:
                                                         ui.label(str(row_val) if row_val is not None else "—").style(
@@ -774,6 +839,7 @@ def _build_gastos(user_id: int) -> None:
             footer_lbl_ref: list = [None]
             proc_lbl_ref:   list = [None]
             borrar_btn_ref: list = [None]
+            upload_ref:     list = [None]
 
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 # Header
@@ -884,7 +950,7 @@ def _build_gastos(user_id: int) -> None:
                         _refresh_progress()
                         ui.notify(f"'{e.name}' subido", color="positive")
 
-                    ui.upload(
+                    upload_ref[0] = ui.upload(
                         multiple=multiple, auto_upload=True, on_upload=_on_upload,
                         label="Arrastrá archivos aquí o hacé clic",
                     ).props(
@@ -902,7 +968,7 @@ def _build_gastos(user_id: int) -> None:
                     proc_lbl_ref[0] = ui.label("").classes("text-xs text-gray-400")
 
                     is_proc   = _sec_verde(sk)
-                    btn_lbl   = "Reprocesar" if is_proc else "Procesar"
+                    btn_lbl   = "Reprocesar" if is_proc else "Procesar Todo"
                     btn_color = _GREEN if is_proc else _BLUE
 
                     async def _procesar(sk_=sk) -> None:
@@ -941,6 +1007,8 @@ def _build_gastos(user_id: int) -> None:
                             ui.notify("Procesado correctamente", color="positive")
                         else:
                             ui.notify(f"{total - ok} archivo(s) con error — revisá el ícono ojo", color="warning")
+                        if upload_ref[0] is not None:
+                            await upload_ref[0].run_method("reset")
 
                     ui.button(btn_lbl, on_click=_procesar).style(
                         f"background:{btn_color};color:white;font-size:12px;padding:4px 14px;border-radius:4px"
