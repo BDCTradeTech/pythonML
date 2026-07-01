@@ -36,6 +36,18 @@ _RED        = "#A32D2D"
 
 _DOT = "display:inline-block;width:12px;height:12px;border-radius:9999px;flex-shrink:0;background:{}"
 
+_PROMPT_PRE_STYLE = (
+    "font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;"
+    "min-height:120px;max-height:none;height:auto;overflow-y:auto;"
+    "padding:8px 10px;"
+    "border:0.5px dashed #ccc;background:#f9f9f9;border-radius:4px;"
+    "margin:0;font-family:inherit"
+)
+
+
+def _escape_prompt_html(s: str) -> str:
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
 _SECCIONES: List[tuple] = [
     ("facturas_ml",  "Facturas MercadoLibre",  ".pdf",  True,  "ti-file-invoice"),
     ("retenciones",  "Retenciones",             ".xlsx", True,  "ti-file-spreadsheet"),
@@ -605,21 +617,26 @@ def _build_gastos(user_id: int) -> None:
                                     )
                                     ui.label("Prompt usado").classes("text-xs font-semibold text-gray-600")
 
+                                prompt_display = ui.html(
+                                    f'<pre style="{_PROMPT_PRE_STYLE}">'
+                                    f'{_escape_prompt_html(prompt_init)}</pre>'
+                                ).classes("w-full hidden")
+
                                 prompt_ta = (
                                     ui.textarea(value=prompt_init)
-                                    .props("outlined dense autogrow readonly")
+                                    .props("outlined autogrow")
                                     .classes("w-full hidden")
-                                    .style("font-size:11px")
+                                    .style("font-size:11px;line-height:1.5")
                                 )
 
                                 def _toggle_prompt():
                                     _prompt_open[0] = not _prompt_open[0]
                                     if _prompt_open[0]:
-                                        prompt_ta.classes(remove="hidden")
+                                        prompt_display.classes(remove="hidden")
                                         _prompt_chev.classes(remove="ti-chevron-right")
                                         _prompt_chev.classes(add="ti-chevron-down")
                                     else:
-                                        prompt_ta.classes(add="hidden")
+                                        prompt_display.classes(add="hidden")
                                         _prompt_chev.classes(remove="ti-chevron-down")
                                         _prompt_chev.classes(add="ti-chevron-right")
 
@@ -677,49 +694,11 @@ def _build_gastos(user_id: int) -> None:
                                     f"background:{_GREEN};color:white;font-size:12px"
                                 ).props("dense")
 
-                            reproc_all_btn = ui.button(
-                                "Reprocesar todos los archivos de esta sección",
-                            ).style(
-                                f"background:{_YELLOW};color:white;font-size:12px;margin-top:4px"
-                            ).props("dense").classes("hidden w-full")
-
-                            async def _reprocesar_todos() -> None:
-                                todos = archivos_por_sec.get(seccion, [])
-                                if not todos:
-                                    ui.notify("No hay archivos en esta sección", color="warning")
-                                    return
-                                reproc_all_btn.disable()
-                                prompt_actual = prompt_ta.value
-                                for i, fa_item in enumerate(todos, 1):
-                                    reproc_lbl.text = f"Reprocesando {i}/{len(todos)}: {fa_item['filename']}..."
-                                    result = await run.io_bound(
-                                        procesar_archivo_con_gemini,
-                                        fa_item["filepath"], seccion, prompt_actual,
-                                    )
-                                    new_status = "procesado" if result["success"] else "error"
-                                    update_gastos_extraccion(
-                                        fa_item["id"],
-                                        extracted_data=json.dumps(result["data"]) if result["success"] else None,
-                                        prompt_used=result["prompt_used"],
-                                        extraction_status=new_status,
-                                        extraction_error=result.get("error"),
-                                    )
-                                archivos_por_sec[seccion] = get_gastos_archivos(user_id, periodo, seccion)
-                                _refresh_dot(seccion)
-                                _refresh_progress()
-                                ok = sum(1 for f in archivos_por_sec[seccion] if f.get("extraction_status") == "procesado")
-                                reproc_lbl.text = f"Reproceso completo: {ok}/{len(todos)} OK"
-                                reproc_all_btn.enable()
-                                ui.notify(f"Reproceso completo — {ok}/{len(todos)} OK", color="positive")
-
-                            reproc_all_btn.on("click", _reprocesar_todos)
-
                             # Prompt desactualizado → dialog Sí/No para actualizar
                             if seccion == "facturas_ml" and "lineas_antes_subtotal" not in prompt_init:
                                 reproc_lbl.text = (
                                     "⚠ El prompt guardado no pide líneas arriba del subtotal."
                                 )
-                                reproc_all_btn.classes(remove="hidden")
                                 with ui.dialog() as _upd_dlg:
                                     with ui.card().classes("p-4 gap-2").style("min-width:340px"):
                                         ui.label("Prompt desactualizado").classes("font-semibold text-sm")
@@ -734,6 +713,10 @@ def _build_gastos(user_id: int) -> None:
                                                 new_p = _PROMPTS_DEFAULT["facturas_ml"]
                                                 upsert_gastos_prompt(user_id, seccion, new_p)
                                                 prompt_ta.value = new_p
+                                                prompt_display.content = (
+                                                    f'<pre style="{_PROMPT_PRE_STYLE}">'
+                                                    f'{_escape_prompt_html(new_p)}</pre>'
+                                                )
                                                 reproc_lbl.text = (
                                                     "Prompt actualizado. Reprocesá todos para obtener datos completos."
                                                 )
@@ -746,27 +729,37 @@ def _build_gastos(user_id: int) -> None:
                             def _start_edit() -> None:
                                 if not _prompt_open[0]:
                                     _toggle_prompt()
-                                prompt_ta.props(remove="readonly")
+                                prompt_display.classes(add="hidden")
+                                prompt_ta.classes(remove="hidden")
                                 edit_btn.classes(add="hidden")
                                 guardar_btn.classes(remove="hidden")
                                 cancelar_btn.classes(remove="hidden")
 
                             async def _guardar_prompt() -> None:
-                                upsert_gastos_prompt(user_id, seccion, prompt_ta.value)
-                                prompt_ta.props("readonly")
+                                new_val = prompt_ta.value
+                                upsert_gastos_prompt(user_id, seccion, new_val)
+                                prompt_ta.classes(add="hidden")
+                                prompt_display.content = (
+                                    f'<pre style="{_PROMPT_PRE_STYLE}">'
+                                    f'{_escape_prompt_html(new_val)}</pre>'
+                                )
+                                prompt_display.classes(remove="hidden")
                                 edit_btn.classes(remove="hidden")
                                 guardar_btn.classes(add="hidden")
                                 cancelar_btn.classes(add="hidden")
                                 ui.notify("Prompt guardado", color="positive")
-                                reproc_all_btn.classes(remove="hidden")
 
                             def _cancelar_edit() -> None:
                                 prompt_ta.value = prompt_init
-                                prompt_ta.props("readonly")
+                                prompt_ta.classes(add="hidden")
+                                prompt_display.content = (
+                                    f'<pre style="{_PROMPT_PRE_STYLE}">'
+                                    f'{_escape_prompt_html(prompt_init)}</pre>'
+                                )
+                                prompt_display.classes(remove="hidden")
                                 edit_btn.classes(remove="hidden")
                                 guardar_btn.classes(add="hidden")
                                 cancelar_btn.classes(add="hidden")
-                                reproc_all_btn.classes(add="hidden")
 
                             edit_btn.on("click", _start_edit)
                             guardar_btn.on("click", _guardar_prompt)
@@ -780,6 +773,7 @@ def _build_gastos(user_id: int) -> None:
             archivos_por_sec[sk] = rows
             footer_lbl_ref: list = [None]
             proc_lbl_ref:   list = [None]
+            borrar_btn_ref: list = [None]
 
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 # Header
@@ -861,6 +855,8 @@ def _build_gastos(user_id: int) -> None:
                     cnt = len(archivos_por_sec.get(sk_, []))
                     if footer_lbl_ref[0]:
                         footer_lbl_ref[0].text = f"{cnt} archivo(s)" if cnt else "Sin archivos"
+                    if borrar_btn_ref[0]:
+                        borrar_btn_ref[0].enable() if cnt else borrar_btn_ref[0].disable()
 
                 _render_list(sk)
 
@@ -949,6 +945,56 @@ def _build_gastos(user_id: int) -> None:
                     ui.button(btn_lbl, on_click=_procesar).style(
                         f"background:{btn_color};color:white;font-size:12px;padding:4px 14px;border-radius:4px"
                     )
+
+                    def _confirm_borrar_todos(sk_=sk) -> None:
+                        fs = archivos_por_sec.get(sk_, [])
+                        n = len(fs)
+                        if not n:
+                            return
+                        with ui.dialog() as conf_del, ui.card().classes("p-4"):
+                            ui.label(
+                                f"¿Eliminar los {n} archivos de esta sección?"
+                            ).classes("font-semibold text-sm mb-1")
+                            ui.label(
+                                "Esta acción borra los archivos del disco Y las "
+                                "extracciones guardadas. Es irreversible."
+                            ).classes("text-xs text-gray-500 mb-4")
+                            with ui.row().classes("gap-2 justify-end w-full"):
+                                ui.button("Cancelar", on_click=conf_del.close).props("flat dense")
+                                def _do_borrar_todos(sk2=sk_, _c=conf_del) -> None:
+                                    fs2 = archivos_por_sec.get(sk2, [])
+                                    count = len(fs2)
+                                    for fa_item in fs2:
+                                        try:
+                                            Path(fa_item["filepath"]).unlink(missing_ok=True)
+                                        except Exception:
+                                            pass
+                                        delete_gastos_archivo(fa_item["id"])
+                                    archivos_por_sec[sk2] = get_gastos_archivos(
+                                        user_id, periodo, sk2
+                                    )
+                                    _c.close()
+                                    _render_list(sk2)
+                                    _refresh_dot(sk2)
+                                    _refresh_progress()
+                                    ui.notify(f"{count} archivos eliminados", color="warning")
+                                ui.button("Sí, borrar todos", on_click=_do_borrar_todos).style(
+                                    f"background:{_RED};color:white"
+                                ).props("dense")
+                        conf_del.open()
+
+                    with ui.button(on_click=_confirm_borrar_todos).style(
+                        f"background:{_RED};color:white;height:30px;padding:0 12px;border-radius:4px"
+                    ).props("dense no-caps") as _borrar_btn:
+                        ui.html(
+                            '<i class="ti ti-trash" style="font-size:12px;margin-right:6px;'
+                            'vertical-align:middle"></i>'
+                            '<span style="font-size:11px;font-weight:500;vertical-align:middle">'
+                            'Borrar todos</span>'
+                        )
+                    if not cnt0:
+                        _borrar_btn.disable()
+                    borrar_btn_ref[0] = _borrar_btn
 
         # ── Grid de tarjetas ──────────────────────────────────────────────────
         with content:
