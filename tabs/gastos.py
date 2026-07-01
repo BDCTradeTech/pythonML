@@ -99,8 +99,25 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         '"total":0.0,"cae":"...","cae_vto":"DD/MM/AAAA"}'
     ),
     "retenciones": (
-        "Analizá este comprobante de retención. Extraé en JSON puro: "
-        "tipo_retencion, fecha, agente_retencion, cuit_agente, monto_retenido, numero_comprobante."
+        "Analizá este Excel de retenciones. Extraé en JSON puro (sin markdown ni bloques de código). "
+        "De la CABECERA del Excel extraé: "
+        "usuario (ej: 'NORTHTECHNOLOGY'), "
+        "impuesto (ej: 'Impuesto a los IIBB Corrientes'), "
+        "fecha_desde (del campo 'Intervalo de fechas consultadas', formato DD/MM/AAAA), "
+        "fecha_hasta (del mismo campo, formato DD/MM/AAAA). "
+        "De la TABLA de detalle, mirá la columna 'Alícuota': "
+        "si el valor es el MISMO en todas las filas, extraé ese valor único. "
+        "Si varía, extraé el rango como 'min-max'. "
+        "Del BLOQUE DE TOTALES extraé: "
+        "base_imponible (número), "
+        "importe_retenido (número), "
+        "importe_devuelto (número). "
+        "IMPORTANTE: NO extraer las filas individuales de la tabla — solo los totales agregados y la alícuota. "
+        "El JSON debe ser ESTRICTAMENTE válido. Usá SOLO comillas dobles. "
+        "Responde ÚNICAMENTE con el JSON. "
+        'Ejemplo: {"usuario":"NORTHTECHNOLOGY","impuesto":"Impuesto a los IIBB Corrientes",'
+        '"fecha_desde":"01/04/2026","fecha_hasta":"01/05/2026","alicuota":"2,00 %",'
+        '"base_imponible":869973.24,"importe_retenido":17399.46,"importe_devuelto":3777.96}'
     ),
     "percepciones": (
         "Analizá este comprobante de percepción. Extraé en JSON puro: "
@@ -638,6 +655,11 @@ def _build_gastos(user_id: int) -> None:
                                             'denominacion', 'secuencia', 'fecha_presentacion',
                                             'nro_transaccion', 'codigo_identificacion_presentacion_md5',
                                         }
+                                    if seccion == "retenciones":
+                                        _HIDDEN_FIELDS = _HIDDEN_FIELDS | {
+                                            'cuit_agente', 'monto_retenido',
+                                            'numero_comprobante', 'agente_retencion',
+                                        }
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
@@ -761,8 +783,12 @@ def _build_gastos(user_id: int) -> None:
                                 _prompt_hdr.on("click", _toggle_prompt)
 
                             reproc_lbl = ui.label("").classes("text-xs text-gray-500 mt-1")
+                            reproc_btn_ref: list = [None]
 
                             async def _reprocesar() -> None:
+                                if reproc_btn_ref[0]:
+                                    reproc_btn_ref[0].disable()
+                                    reproc_btn_ref[0].text = "Procesando..."
                                 reproc_lbl.text = "Procesando con Gemini..."
                                 result = await run.io_bound(
                                     procesar_archivo_con_gemini,
@@ -784,6 +810,9 @@ def _build_gastos(user_id: int) -> None:
                                     reproc_lbl.text = "Re-procesado correctamente"
                                 else:
                                     reproc_lbl.text = f"Error: {result['error']}"
+                                if reproc_btn_ref[0]:
+                                    reproc_btn_ref[0].enable()
+                                    reproc_btn_ref[0].text = "Re-procesar"
 
                             async def _aprobar() -> None:
                                 mark_gastos_procesado(fa["id"])
@@ -805,9 +834,10 @@ def _build_gastos(user_id: int) -> None:
                                 cancelar_btn = ui.button("Cancelar").props("outline dense").style(
                                     "font-size:12px"
                                 ).classes("hidden")
-                                ui.button("Re-procesar", on_click=_reprocesar).style(
+                                _rb = ui.button("Re-procesar", on_click=_reprocesar).style(
                                     f"background:{_YELLOW};color:white;font-size:12px"
                                 ).props("dense")
+                                reproc_btn_ref[0] = _rb
                                 ui.button("Aprobar", on_click=_aprobar).style(
                                     f"background:{_GREEN};color:white;font-size:12px"
                                 ).props("dense")
@@ -889,10 +919,34 @@ def _build_gastos(user_id: int) -> None:
         def _build_section_card(sk: str, lbl: str, ext: str, multiple: bool, icon: str) -> None:
             rows = get_gastos_archivos(user_id, periodo, sk)
             archivos_por_sec[sk] = rows
-            footer_lbl_ref: list = [None]
-            proc_lbl_ref:   list = [None]
-            borrar_btn_ref: list = [None]
-            upload_ref:     list = [None]
+            footer_lbl_ref:    list = [None]
+            proc_lbl_ref:      list = [None]
+            borrar_btn_ref:    list = [None]
+            upload_ref:        list = [None]
+            proc_btn_ref:      list = [None]
+            proc_btn_html_ref: list = [None]
+            is_proc_ref:       list = [False]
+
+            def _proc_btn_html(txt, icon=None, spinning=False):
+                if not icon:
+                    return f'<span style="font-size:12px;font-weight:500">{txt}</span>'
+                spin = "animation:spin 1s linear infinite;" if spinning else ""
+                return (
+                    f'<i class="ti {icon}" style="font-size:12px;margin-right:4px;'
+                    f'vertical-align:middle;{spin}"></i>'
+                    f'<span style="font-size:12px;font-weight:500;vertical-align:middle">{txt}</span>'
+                )
+
+            def _refresh_proc_btn(sk_=sk) -> None:
+                btn = proc_btn_ref[0]
+                if btn is None:
+                    return
+                fs = archivos_por_sec.get(sk_, [])
+                _isp = is_proc_ref[0]
+                can = bool(fs) if _isp else any(
+                    f.get("extraction_status") != "procesado" for f in fs
+                )
+                btn.enable() if can else btn.disable()
 
             with ui.card().classes("w-full").style("border:1px solid #e0e0e0"):
                 # Header
@@ -976,6 +1030,7 @@ def _build_gastos(user_id: int) -> None:
                         footer_lbl_ref[0].text = f"{cnt} archivo(s)" if cnt else "Sin archivos"
                     if borrar_btn_ref[0]:
                         borrar_btn_ref[0].enable() if cnt else borrar_btn_ref[0].disable()
+                    _refresh_proc_btn(sk_)
 
                 _render_list(sk)
 
@@ -1021,14 +1076,29 @@ def _build_gastos(user_id: int) -> None:
                     proc_lbl_ref[0] = ui.label("").classes("text-xs text-gray-400")
 
                     is_proc   = _sec_verde(sk)
-                    btn_lbl   = "Reprocesar" if is_proc else "Procesar Todo"
+                    is_proc_ref[0] = is_proc
                     btn_color = _GREEN if is_proc else _BLUE
+                    btn_icon  = "ti-refresh" if is_proc else None
+                    btn_txt   = "Reprocesar Todos" if is_proc else "Procesar Todo"
 
                     async def _procesar(sk_=sk) -> None:
+                        if proc_btn_ref[0]:
+                            proc_btn_ref[0].disable()
+                        if proc_btn_html_ref[0]:
+                            proc_btn_html_ref[0].content = _proc_btn_html(
+                                "Procesando...", "ti-loader-2"
+                            )
+                        if borrar_btn_ref[0]:
+                            borrar_btn_ref[0].disable()
                         pl = proc_lbl_ref[0]
                         fs = archivos_por_sec.get(sk_, [])
                         if not fs:
                             ui.notify("No hay archivos para procesar", color="warning")
+                            if proc_btn_html_ref[0]:
+                                proc_btn_html_ref[0].content = _proc_btn_html(btn_txt, btn_icon)
+                            _refresh_proc_btn(sk_)
+                            if borrar_btn_ref[0]:
+                                borrar_btn_ref[0].enable() if archivos_por_sec.get(sk_) else borrar_btn_ref[0].disable()
                             return
                         pendientes = [f for f in fs if f.get("extraction_status") != "procesado"] or fs
                         if pl:
@@ -1062,10 +1132,21 @@ def _build_gastos(user_id: int) -> None:
                             ui.notify(f"{total - ok} archivo(s) con error — revisá el ícono ojo", color="warning")
                         if upload_ref[0] is not None:
                             await upload_ref[0].run_method("reset")
+                        if proc_btn_html_ref[0]:
+                            proc_btn_html_ref[0].content = _proc_btn_html(btn_txt, btn_icon)
+                        _refresh_proc_btn(sk_)
+                        if borrar_btn_ref[0]:
+                            cnt_now = len(archivos_por_sec.get(sk_, []))
+                            borrar_btn_ref[0].enable() if cnt_now else borrar_btn_ref[0].disable()
 
-                    ui.button(btn_lbl, on_click=_procesar).style(
-                        f"background:{btn_color};color:white;font-size:12px;padding:4px 14px;border-radius:4px"
-                    )
+                    with ui.button(on_click=_procesar).style(
+                        f"background:{btn_color};color:white;font-size:12px;"
+                        "padding:4px 14px;border-radius:4px"
+                    ).props("dense no-caps") as _proc_btn:
+                        _html_el = ui.html(_proc_btn_html(btn_txt, btn_icon))
+                        proc_btn_html_ref[0] = _html_el
+                    proc_btn_ref[0] = _proc_btn
+                    _refresh_proc_btn(sk)
 
                     def _confirm_borrar_todos(sk_=sk) -> None:
                         fs = archivos_por_sec.get(sk_, [])
