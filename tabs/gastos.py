@@ -511,6 +511,14 @@ def _build_gastos(user_id: int) -> None:
                                         s = re.sub(r'_+', '_', s).strip('_')
                                         return s or str(concepto).lower().replace(' ', '_')
 
+                                    def prettify_key(key: str) -> str:
+                                        _UPPER = {"iva", "iibb", "cae", "cuit", "rg", "sr", "srl"}
+                                        words = key.replace("_", " ").split()
+                                        return " ".join(
+                                            w.upper() if w.lower() in _UPPER else w.capitalize()
+                                            for w in words
+                                        )
+
                                     def _is_concepto_monto_list(val) -> bool:
                                         return (
                                             isinstance(val, list) and bool(val)
@@ -519,33 +527,41 @@ def _build_gastos(user_id: int) -> None:
                                             and "monto" in val[0]
                                         )
 
+                                    _ROW_STYLE = (
+                                        "border-bottom:1px solid #f0f0f0;"
+                                        "display:grid;"
+                                        "grid-template-columns:minmax(230px,300px) 1fr;"
+                                        "gap:0 20px;padding:2px 8px"
+                                    )
+                                    _KEY_STYLE = (
+                                        "white-space:normal;word-break:break-word;"
+                                        "padding-right:16px"
+                                    )
+
                                     for k, v in d.items():
                                         if _is_concepto_monto_list(v):
                                             for item in v:
                                                 row_key = _concepto_to_key(item.get("concepto", k))
                                                 row_val = item.get("monto")
-                                                with ui.row().classes("w-full items-start gap-2 py-1").style(
-                                                    "border-bottom:1px solid #f0f0f0"
-                                                ):
-                                                    ui.label(row_key).classes("text-xs text-gray-500 font-medium").style(
-                                                        "width:140px;flex-shrink:0"
-                                                    )
+                                                with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
+                                                    ui.label(prettify_key(row_key)).classes(
+                                                        "text-xs text-gray-500 font-medium"
+                                                    ).style(_KEY_STYLE)
                                                     if isinstance(row_val, (int, float)):
                                                         ui.label(_fmt_money(row_val)).style(
                                                             f"font-size:11px;color:{_BLUE};"
-                                                            "font-variant-numeric:tabular-nums"
+                                                            "font-variant-numeric:tabular-nums;"
+                                                            "white-space:nowrap"
                                                         )
                                                     else:
                                                         ui.label(str(row_val) if row_val is not None else "—").style(
-                                                            "font-size:11px;color:#333"
+                                                            "font-size:11px;color:#333;white-space:nowrap"
                                                         )
                                         else:
-                                            with ui.row().classes("w-full items-start gap-2 py-1").style(
-                                                "border-bottom:1px solid #f0f0f0"
-                                            ):
-                                                ui.label(k).classes("text-xs text-gray-500 font-medium").style(
-                                                    "width:140px;flex-shrink:0"
-                                                )
+                                            with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
+                                                ui.label(prettify_key(k)).classes(
+                                                    "text-xs text-gray-500 font-medium"
+                                                ).style(_KEY_STYLE)
                                                 _render_value(k, v)
 
                             _render_kv(data_dict)
