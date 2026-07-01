@@ -282,6 +282,13 @@ def procesar_archivo_con_gemini(
     path = Path(archivo_path)
     ext = path.suffix.lower()
 
+    print(f"[DBG-GASTOS] seccion={seccion!r} path={archivo_path!r}", flush=True)
+    try:
+        sz = path.stat().st_size
+    except Exception:
+        sz = -1
+    print(f"[DBG-GASTOS] tamaño={sz} bytes", flush=True)
+
     try:
         client = genai.Client(api_key=api_key)
 
@@ -298,9 +305,13 @@ def procesar_archivo_con_gemini(
             import openpyxl
             wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
             ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))[:101]
+            all_rows = list(ws.iter_rows(values_only=True))
+            rows = all_rows[:101]
             wb.close()
+            print(f"[DBG-GASTOS] filas_totales={len(all_rows)} filas_enviadas={len(rows)}", flush=True)
             lines = ["\t".join(str(c) if c is not None else "" for c in row) for row in rows]
+            print(f"[DBG-GASTOS] primeras_3={lines[:3]}", flush=True)
+            print(f"[DBG-GASTOS] ultimas_3_enviadas={lines[-3:]}", flush=True)
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=f"{prompt}\n\nDatos:\n" + "\n".join(lines),
@@ -312,11 +323,13 @@ def procesar_archivo_con_gemini(
             }
 
         raw = response.text or ""
+        print(f"[DBG-GASTOS] respuesta_gemini={raw[:400]!r}", flush=True)
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group()) if m else {"respuesta_raw": raw}
         return {"success": True, "data": data, "error": None, "prompt_used": prompt}
 
     except Exception as exc:
+        print(f"[DBG-GASTOS] excepcion={exc!r}", flush=True)
         return {"success": False, "data": {}, "error": str(exc), "prompt_used": prompt}
 
 
@@ -478,8 +491,9 @@ def _build_gastos(user_id: int) -> None:
 
                                     _MONEY_KEYS = {
                                         "monto", "total", "subtotal", "precio", "iva",
-                                        "neto", "importe", "valor", "suma",
+                                        "neto", "importe", "imponible", "valor", "suma",
                                         "cargo", "bonificacion", "percepcion", "retencion",
+                                        "gravado", "honorario", "flete", "almacenaje",
                                     }
 
                                     def _is_money_key(k: str) -> bool:
