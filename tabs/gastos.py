@@ -60,9 +60,19 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "IVA 21%, IVA 10.5%, Percepciones IIBB, Percepción IVA, otros impuestos, descuentos, etc. — "
         "extraé TODAS sin omitir ninguna, cada una con nombre exacto y monto numérico), "
         "total (número), cae, cae_vto (DD/MM/AAAA). "
+        "CRÍTICO: Las líneas entre Subtotal y Total pueden ser 1 sola o hasta 15 líneas distintas. "
+        "Es OBLIGATORIO extraer TODAS las que aparezcan en el documento, incluyendo: "
+        "- Todas las percepciones de IIBB de distintas provincias (Corrientes, Catamarca, CABA, Tucumán, La Pampa, Neuquén, Buenos Aires, etc.) "
+        "- Percepciones IVA de distintas jurisdicciones "
+        "- IVA 21% e IVA 10,5% "
+        "- Retenciones si las hubiere "
+        "- Cualquier otro concepto que aparezca listado entre Subtotal y Total. "
+        "NO OMITAS NINGUNA. Si tenés dudas sobre si una línea corresponde, INCLUÍLA. "
+        "Es preferible incluir de más que omitir alguna. "
+        "Extraé el nombre EXACTAMENTE como aparece en el PDF, sin abreviar ni traducir. "
         'Formato esperado: {"tipo_documento":"Factura A","emisor":"...","cuit_emisor":"...","receptor":"...",'
         '"cuit_receptor":"...","fecha":"DD/MM/AAAA","punto_venta":"...","nro_comprobante":"...",'
-        '"subtotal":0.0,"lineas_intermedias":[{"concepto":"IVA 21%","monto":0.0}],'
+        '"subtotal":0.0,"lineas_intermedias":[{"concepto":"IVA 21%","monto":0.0},{"concepto":"PERCEPCION IIBB CORRIENTES","monto":0.0}],'
         '"total":0.0,"cae":"...","cae_vto":"DD/MM/AAAA"}'
     ),
     "retenciones": (
@@ -490,14 +500,53 @@ def _build_gastos(user_id: int) -> None:
                                         # String / fallback
                                         ui.label(str(val)).style("font-size:11px;color:#333")
 
+                                    def _concepto_to_key(concepto: str) -> str:
+                                        s = str(concepto)
+                                        prev = None
+                                        while prev != s:
+                                            prev = s
+                                            s = re.sub(r'([A-Za-z])\.([A-Za-z])', r'\1\2', s)
+                                        s = re.sub(r'[^\w\s]', ' ', s)
+                                        s = re.sub(r'\s+', '_', s.lower().strip())
+                                        s = re.sub(r'_+', '_', s).strip('_')
+                                        return s or str(concepto).lower().replace(' ', '_')
+
+                                    def _is_concepto_monto_list(val) -> bool:
+                                        return (
+                                            isinstance(val, list) and bool(val)
+                                            and isinstance(val[0], dict)
+                                            and "concepto" in val[0]
+                                            and "monto" in val[0]
+                                        )
+
                                     for k, v in d.items():
-                                        with ui.row().classes("w-full items-start gap-2 py-1").style(
-                                            "border-bottom:1px solid #f0f0f0"
-                                        ):
-                                            ui.label(k).classes("text-xs text-gray-500 font-medium").style(
-                                                "width:140px;flex-shrink:0"
-                                            )
-                                            _render_value(k, v)
+                                        if _is_concepto_monto_list(v):
+                                            for item in v:
+                                                row_key = _concepto_to_key(item.get("concepto", k))
+                                                row_val = item.get("monto")
+                                                with ui.row().classes("w-full items-start gap-2 py-1").style(
+                                                    "border-bottom:1px solid #f0f0f0"
+                                                ):
+                                                    ui.label(row_key).classes("text-xs text-gray-500 font-medium").style(
+                                                        "width:140px;flex-shrink:0"
+                                                    )
+                                                    if isinstance(row_val, (int, float)):
+                                                        ui.label(_fmt_money(row_val)).style(
+                                                            f"font-size:11px;color:{_BLUE};"
+                                                            "font-variant-numeric:tabular-nums"
+                                                        )
+                                                    else:
+                                                        ui.label(str(row_val) if row_val is not None else "—").style(
+                                                            "font-size:11px;color:#333"
+                                                        )
+                                        else:
+                                            with ui.row().classes("w-full items-start gap-2 py-1").style(
+                                                "border-bottom:1px solid #f0f0f0"
+                                            ):
+                                                ui.label(k).classes("text-xs text-gray-500 font-medium").style(
+                                                    "width:140px;flex-shrink:0"
+                                                )
+                                                _render_value(k, v)
 
                             _render_kv(data_dict)
 
@@ -560,6 +609,43 @@ def _build_gastos(user_id: int) -> None:
                                     f"background:{_GREEN};color:white;font-size:12px"
                                 ).props("dense")
 
+                            reproc_all_btn = ui.button(
+                                "Reprocesar todos los archivos de esta sección",
+                            ).style(
+                                f"background:{_YELLOW};color:white;font-size:12px;margin-top:4px"
+                            ).props("dense").classes("hidden w-full")
+
+                            async def _reprocesar_todos() -> None:
+                                todos = archivos_por_sec.get(seccion, [])
+                                if not todos:
+                                    ui.notify("No hay archivos en esta sección", color="warning")
+                                    return
+                                reproc_all_btn.disable()
+                                prompt_actual = prompt_ta.value
+                                for i, fa_item in enumerate(todos, 1):
+                                    reproc_lbl.text = f"Reprocesando {i}/{len(todos)}: {fa_item['filename']}..."
+                                    result = await run.io_bound(
+                                        procesar_archivo_con_gemini,
+                                        fa_item["filepath"], seccion, prompt_actual,
+                                    )
+                                    new_status = "procesado" if result["success"] else "error"
+                                    update_gastos_extraccion(
+                                        fa_item["id"],
+                                        extracted_data=json.dumps(result["data"]) if result["success"] else None,
+                                        prompt_used=result["prompt_used"],
+                                        extraction_status=new_status,
+                                        extraction_error=result.get("error"),
+                                    )
+                                archivos_por_sec[seccion] = get_gastos_archivos(user_id, periodo, seccion)
+                                _refresh_dot(seccion)
+                                _refresh_progress()
+                                ok = sum(1 for f in archivos_por_sec[seccion] if f.get("extraction_status") == "procesado")
+                                reproc_lbl.text = f"Reproceso completo: {ok}/{len(todos)} OK"
+                                reproc_all_btn.enable()
+                                ui.notify(f"Reproceso completo — {ok}/{len(todos)} OK", color="positive")
+
+                            reproc_all_btn.on("click", _reprocesar_todos)
+
                             def _start_edit() -> None:
                                 prompt_ta.props(remove="readonly")
                                 edit_btn.classes(add="hidden")
@@ -573,6 +659,7 @@ def _build_gastos(user_id: int) -> None:
                                 guardar_btn.classes(add="hidden")
                                 cancelar_btn.classes(add="hidden")
                                 ui.notify("Prompt guardado", color="positive")
+                                reproc_all_btn.classes(remove="hidden")
 
                             def _cancelar_edit() -> None:
                                 prompt_ta.value = prompt_init
@@ -580,6 +667,7 @@ def _build_gastos(user_id: int) -> None:
                                 edit_btn.classes(remove="hidden")
                                 guardar_btn.classes(add="hidden")
                                 cancelar_btn.classes(add="hidden")
+                                reproc_all_btn.classes(add="hidden")
 
                             edit_btn.on("click", _start_edit)
                             guardar_btn.on("click", _guardar_prompt)
