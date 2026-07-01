@@ -56,13 +56,20 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "Analizá esta factura de MercadoLibre y extraé en JSON puro (sin markdown ni bloques de código). "
         "Campos obligatorios: tipo_documento (Factura A/B/C), emisor (razón social), cuit_emisor, "
         "receptor (razón social), cuit_receptor, fecha (DD/MM/AAAA), punto_venta, nro_comprobante, "
-        "subtotal (número), lineas_intermedias (lista con TODOS los conceptos entre Subtotal y Total — "
+        "lineas_antes_subtotal (lista con TODOS los conceptos que aparezcan ANTES del subtotal — "
+        "cargos, bonificaciones, servicios, comisiones, etc. — cada uno con concepto y monto numérico; "
+        "si una bonificación tiene signo negativo en el documento, devolvé el monto negativo; "
+        "si no hay ningún concepto antes del subtotal, devolvé array vacío []), "
+        "subtotal (número), "
+        "lineas_intermedias (lista con TODOS los conceptos entre Subtotal y Total — "
         "IVA 21%, IVA 10.5%, Percepciones IIBB, Percepción IVA, otros impuestos, descuentos, etc. — "
         "extraé TODAS sin omitir ninguna, cada una con nombre exacto y monto numérico), "
         "total (número), cae, cae_vto (DD/MM/AAAA). "
-        "CRÍTICO: Las líneas entre Subtotal y Total pueden ser 1 sola o hasta 15 líneas distintas. "
-        "Es OBLIGATORIO extraer TODAS las que aparezcan en el documento, incluyendo: "
-        "- Todas las percepciones de IIBB de distintas provincias (Corrientes, Catamarca, CABA, Tucumán, La Pampa, Neuquén, Buenos Aires, etc.) "
+        "CRÍTICO: Es OBLIGATORIO extraer TODAS las líneas del documento, tanto antes como después del subtotal. "
+        "Las líneas antes del subtotal pueden incluir cargos por uso de plataforma, bonificaciones, servicios, etc. "
+        "Las líneas entre Subtotal y Total pueden ser 1 sola o hasta 15 líneas distintas, incluyendo: "
+        "- Todas las percepciones de IIBB de distintas provincias (Corrientes, Catamarca, CABA, Tucumán, "
+        "La Pampa, Neuquén, Buenos Aires, etc.) "
         "- Percepciones IVA de distintas jurisdicciones "
         "- IVA 21% e IVA 10,5% "
         "- Retenciones si las hubiere "
@@ -70,9 +77,13 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "NO OMITAS NINGUNA. Si tenés dudas sobre si una línea corresponde, INCLUÍLA. "
         "Es preferible incluir de más que omitir alguna. "
         "Extraé el nombre EXACTAMENTE como aparece en el PDF, sin abreviar ni traducir. "
-        'Formato esperado: {"tipo_documento":"Factura A","emisor":"...","cuit_emisor":"...","receptor":"...",'
-        '"cuit_receptor":"...","fecha":"DD/MM/AAAA","punto_venta":"...","nro_comprobante":"...",'
-        '"subtotal":0.0,"lineas_intermedias":[{"concepto":"IVA 21%","monto":0.0},{"concepto":"PERCEPCION IIBB CORRIENTES","monto":0.0}],'
+        'Formato esperado: {"tipo_documento":"Factura A","emisor":"MercadoLibre S.R.L.",'
+        '"cuit_emisor":"...","receptor":"...","cuit_receptor":"...","fecha":"DD/MM/AAAA",'
+        '"punto_venta":"...","nro_comprobante":"...",'
+        '"lineas_antes_subtotal":[{"concepto":"Cargos por uso de la plataforma Mercado Libre","monto":23976326.91},'
+        '{"concepto":"Bonificaciones uso plataforma Mercado Libre","monto":-1171322.59}],'
+        '"subtotal":0.0,'
+        '"lineas_intermedias":[{"concepto":"IVA 21%","monto":0.0},{"concepto":"PERCEPCION IIBB CORRIENTES","monto":0.0}],'
         '"total":0.0,"cae":"...","cae_vto":"DD/MM/AAAA"}'
     ),
     "retenciones": (
@@ -512,12 +523,24 @@ def _build_gastos(user_id: int) -> None:
                                         return s or str(concepto).lower().replace(' ', '_')
 
                                     def prettify_key(key: str) -> str:
-                                        _UPPER = {"iva", "iibb", "cae", "cuit", "rg", "sr", "srl"}
+                                        _UPPER = {"iva", "iibb", "cae", "cuit", "rg", "sr", "srl", "caba"}
+                                        _STOP = {
+                                            'a', 'ante', 'bajo', 'con', 'contra', 'de', 'del', 'desde',
+                                            'en', 'entre', 'hacia', 'hasta', 'para', 'por', 'según', 'sin',
+                                            'sobre', 'tras', 'y', 'e', 'ni', 'o', 'u', 'el', 'la', 'los',
+                                            'las', 'un', 'una', 'al',
+                                        }
                                         words = key.replace("_", " ").split()
-                                        return " ".join(
-                                            w.upper() if w.lower() in _UPPER else w.capitalize()
-                                            for w in words
-                                        )
+                                        result = []
+                                        for i, w in enumerate(words):
+                                            wl = w.lower()
+                                            if wl in _UPPER:
+                                                result.append(wl.upper())
+                                            elif i > 0 and wl in _STOP:
+                                                result.append(wl)
+                                            else:
+                                                result.append(w.capitalize())
+                                        return " ".join(result)
 
                                     def _is_concepto_monto_list(val) -> bool:
                                         return (
@@ -661,6 +684,14 @@ def _build_gastos(user_id: int) -> None:
                                 ui.notify(f"Reproceso completo — {ok}/{len(todos)} OK", color="positive")
 
                             reproc_all_btn.on("click", _reprocesar_todos)
+
+                            # Prompt desactualizado → aviso inmediato + mostrar botón
+                            if seccion == "facturas_ml" and "lineas_antes_subtotal" not in prompt_init:
+                                reproc_lbl.text = (
+                                    "Prompt actualizado: ahora extrae lineas_antes_subtotal. "
+                                    "Reprocesá todos para obtener datos completos."
+                                )
+                                reproc_all_btn.classes(remove="hidden")
 
                             def _start_edit() -> None:
                                 prompt_ta.props(remove="readonly")
