@@ -8,6 +8,7 @@ import base64
 import json
 import re
 import unicodedata
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -533,69 +534,562 @@ def _calcular_notas_credito_ml(filas: list) -> Optional[dict]:
     }
 
 
-def _calcular_facturacion_ml(filas: list) -> Optional[dict]:
-    """Calcula en Python (sin Gemini) los 5 campos del 'Reporte Facturación MercadoLibre'
-    (el reporte principal, con TODOS los cargos/comisiones/bonificaciones del período):
-    fecha_desde/fecha_hasta (rango de 'Fecha del cargo'), total_de_ventas (cantidad de filas
-    con 'Total de la venta' no vacío), total_de_la_venta (SUMA de esa columna) y
-    total_valor_del_cargo (SUMA de 'Valor del cargo' — acá SIN abs(), a diferencia de las
-    'notas de crédito': este reporte trae todos los cargos, no solo anulaciones, y sus
-    valores ya vienen en positivo)."""
-    def _norm(s: str) -> str:
-        return _strip_accents(s.strip().lower())
+def analizar_facturacion_ml(path: Path) -> Optional[dict]:
+    """Calcula en Python (100% determinista, sin Gemini) el análisis completo del
+    'Reporte Facturación MercadoLibre': lee la hoja REPORT del Excel con openpyxl
+    (fila 1 = fecha de actualización, filas 7-8 = headers, fila 9+ = detalle) y devuelve
+    totales generales, margen neto estimado, desglose por tipo de cargo, ventas por día
+    de semana, tops de provincias/categorías/productos/clientes, concentración y
+    percepciones — sin límite de filas ni de tokens."""
+    from openpyxl import load_workbook
 
-    idx_fecha = idx_totventa = idx_valorcargo = header_idx = None
-    for i, linea in enumerate(filas):
-        celdas_norm = [_norm(c) for c in linea.split("\t")]
-        cand_fecha = next((j for j, c in enumerate(celdas_norm) if c == "fecha del cargo"), None)
-        cand_totventa = next((j for j, c in enumerate(celdas_norm) if c == "total de la venta"), None)
-        cand_valorcargo = next((j for j, c in enumerate(celdas_norm) if c == "valor del cargo"), None)
-        if cand_fecha is not None and cand_totventa is not None and cand_valorcargo is not None:
-            idx_fecha, idx_totventa, idx_valorcargo, header_idx = (
-                cand_fecha, cand_totventa, cand_valorcargo, i
-            )
-            break
+    wb = load_workbook(path, data_only=True, read_only=False)
+    sheet_name = next(
+        (s for s in wb.sheetnames if _strip_accents(s.strip().lower()) == "report"), None
+    )
+    if sheet_name is None:
+        wb.close()
+        return None
+    ws = wb[sheet_name]
 
-    if header_idx is None:
+    def _norm(s) -> str:
+        return _strip_accents(str(s or "").strip().lower())
+
+    def _num(v) -> float:
+        if v is None or v == "":
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fecha(v) -> Optional[datetime]:
+        if v is None or v == "":
+            return None
+        if isinstance(v, datetime):
+            return v
+        try:
+            return datetime.strptime(str(v).strip().split(" ")[0], "%Y-%m-%d")
+        except ValueError:
+            return None
+
+    def _col(row, idx1: int):
+        j = idx1 - 1
+        return row[j] if j < len(row) else None
+
+    _row1 = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+    fecha_actualizacion = None
+    if _row1:
+        _v = _col(_row1, 3)
+        _fv = _fecha(_v)
+        fecha_actualizacion = _fv.strftime("%d/%m/%Y") if _fv else (str(_v).strip() if _v else None)
+
+    filas = [
+        row for row in ws.iter_rows(min_row=9, values_only=True)
+        if not all(c is None for c in row)
+    ]
+    wb.close()
+    if not filas:
         return None
 
-    fechas = []
-    suma_venta = 0.0
-    n_venta = 0
-    suma_cargo = 0.0
-    n_filas = 0
-    for linea in filas[header_idx + 1:]:
-        celdas = linea.split("\t")
-        if len(celdas) <= max(idx_fecha, idx_totventa, idx_valorcargo):
+    # --- ventas únicas (dedup por Número de venta) ---
+    ventas: Dict[str, dict] = {}
+    for row in filas:
+        nro = _col(row, 13)
+        if nro is None or str(nro).strip() == "":
             continue
-        n_filas += 1
-        if celdas[idx_fecha].strip():
-            try:
-                fechas.append(datetime.strptime(celdas[idx_fecha].strip().split(" ")[0], "%Y-%m-%d"))
-            except ValueError:
-                pass
-        if celdas[idx_totventa].strip():
-            try:
-                suma_venta += float(celdas[idx_totventa])
-                n_venta += 1
-            except ValueError:
-                pass
-        if celdas[idx_valorcargo].strip():
-            try:
-                suma_cargo += float(celdas[idx_valorcargo])
-            except ValueError:
-                pass
+        nro = str(nro).strip()
+        v = ventas.setdefault(nro, {
+            "total_venta": None, "fecha_venta": None, "cliente": None,
+            "provincia": None, "categoria": None, "titulo": None,
+            "cantidad_vendida": None,
+        })
+        _tv = _num(_col(row, 23))
+        if _tv and not v["total_venta"]:
+            v["total_venta"] = _tv
+        _fv = _fecha(_col(row, 15))
+        if _fv and not v["fecha_venta"]:
+            v["fecha_venta"] = _fv
+        for campo, idx in (("cliente", 18), ("provincia", 19), ("categoria", 31), ("titulo", 29)):
+            _val = _col(row, idx)
+            if _val and not v[campo]:
+                v[campo] = str(_val).strip()
+        _cant = _num(_col(row, 20))
+        if _cant and not v["cantidad_vendida"]:
+            v["cantidad_vendida"] = _cant
 
-    if n_filas == 0:
-        return None
+    fechas_venta = [v["fecha_venta"] for v in ventas.values() if v["fecha_venta"]]
+    fecha_desde = min(fechas_venta).strftime("%d/%m/%Y") if fechas_venta else None
+    fecha_hasta = max(fechas_venta).strftime("%d/%m/%Y") if fechas_venta else None
+
+    total_ingresos = round(sum(v["total_venta"] or 0.0 for v in ventas.values()), 2)
+    cantidad_operaciones = len(ventas)
+    ticket_promedio = round(total_ingresos / cantidad_operaciones, 2) if cantidad_operaciones else 0.0
+
+    # --- totales generales (sobre TODAS las filas, sin dedup) ---
+    suma_cargo = 0.0
+    suma_descuento_total = 0.0
+    suma_descuento_pos = 0.0
+    cantidad_descuentos = 0
+    envios_pagados_comprador = 0.0
+    comisiones_venta_monto = 0.0
+    envios_neto_monto = 0.0
+    impuestos_monto = 0.0
+    detalle_agg: Dict[str, dict] = defaultdict(lambda: {"total": 0.0, "cantidad": 0})
+    percepciones_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+
+    _SET_COMISIONES = {_norm(s) for s in (
+        "Cargo por vender", "Anulación del cargo por vender",
+        "Costo por unidad vendida", "Costo por ofrecer cuotas",
+        "Cargo por devolución", "Anulación del cargo por devolución",
+        "Cargo por mantenimiento de Mi página",
+    )}
+    _SET_ENVIOS = {_norm(s) for s in (
+        "Cargo por envíos de Mercado Libre",
+        "Anulación del cargo por envíos de Mercado Libre",
+    )}
+
+    for row in filas:
+        detalle_raw = _col(row, 4)
+        detalle = str(detalle_raw).strip() if detalle_raw else ""
+        dn = _norm(detalle)
+        valor_cargo = _num(_col(row, 8))
+        valor_descuento = _num(_col(row, 11))
+
+        suma_cargo += valor_cargo
+        suma_descuento_total += valor_descuento
+        if valor_descuento > 0:
+            suma_descuento_pos += valor_descuento
+            cantidad_descuentos += 1
+        envios_pagados_comprador += _num(_col(row, 26))
+
+        if dn in _SET_COMISIONES:
+            comisiones_venta_monto += valor_cargo
+        if dn in _SET_ENVIOS:
+            envios_neto_monto += valor_cargo
+        if "percep" in dn:
+            impuestos_monto += valor_cargo
+            percepciones_agg[detalle]["monto"] += valor_cargo
+            percepciones_agg[detalle]["cantidad"] += 1
+            continue
+        if detalle:
+            detalle_agg[detalle]["total"] += valor_cargo
+            detalle_agg[detalle]["cantidad"] += 1
+
+    facturacion_bruta = round(suma_cargo + suma_descuento_total, 2)
+    facturacion_neta = round(suma_cargo, 2)
+    total_descuentos = round(suma_descuento_pos, 2)
+
+    base = total_ingresos
+    comisiones_pct = round(comisiones_venta_monto / base * 100, 2) if base else 0.0
+    envios_pct = round(envios_neto_monto / base * 100, 2) if base else 0.0
+    impuestos_pct = round(impuestos_monto / base * 100, 2) if base else 0.0
+    margen_neto_pct = round(100 - comisiones_pct - envios_pct - impuestos_pct, 2)
+
+    # --- desglose por tipo de cargo (empareja "X" con "Anulación del X") ---
+    bases: Dict[str, tuple] = {}
+    anulaciones: Dict[str, tuple] = {}
+    for label, info in detalle_agg.items():
+        n = _norm(label)
+        resto = None
+        if n.startswith("anulacion del "):
+            resto = n[len("anulacion del "):]
+        elif n.startswith("anulacion de "):
+            resto = n[len("anulacion de "):]
+        if resto is not None:
+            anulaciones[resto] = (label, info["total"], info["cantidad"])
+        else:
+            bases[n] = (label, info["total"], info["cantidad"])
+
+    desglose_cargos = {}
+    for n, (label, total, cantidad) in bases.items():
+        entry = {
+            "total": round(total, 2), "cantidad": cantidad,
+            "anulacion_monto": 0.0, "anulacion_cantidad": 0, "proporcion_anulaciones": 0.0,
+        }
+        if n in anulaciones:
+            anu_label, anu_total, anu_cant = anulaciones[n]
+            entry["anulacion_monto"] = round(anu_total, 2)
+            entry["anulacion_cantidad"] = anu_cant
+            entry["proporcion_anulaciones"] = round(anu_cant / cantidad * 100, 2) if cantidad else 0.0
+        desglose_cargos[label] = entry
+    for n, (label, total, cantidad) in anulaciones.items():
+        if n not in bases:
+            desglose_cargos[label] = {
+                "total": round(total, 2), "cantidad": cantidad,
+                "anulacion_monto": 0.0, "anulacion_cantidad": 0, "proporcion_anulaciones": 0.0,
+            }
+
+    # --- ventas por día de la semana ---
+    _DIAS = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+    por_dia = {d: {"monto": 0.0, "cantidad": 0} for d in _DIAS}
+    for v in ventas.values():
+        if not v["fecha_venta"]:
+            continue
+        dia = _DIAS[v["fecha_venta"].weekday()]
+        por_dia[dia]["monto"] += v["total_venta"] or 0.0
+        por_dia[dia]["cantidad"] += 1
+    ventas_por_dia = {}
+    for d in _DIAS:
+        m = round(por_dia[d]["monto"], 2)
+        ventas_por_dia[d] = {
+            "monto": m, "cantidad_ventas": por_dia[d]["cantidad"],
+            "porcentaje": round(m / total_ingresos * 100, 2) if total_ingresos else 0.0,
+        }
+
+    # --- provincias (normalizadas) ---
+    def _norm_provincia(p) -> str:
+        if not p:
+            return "—"
+        n = _strip_accents(p.strip().lower())
+        if n == "buenos aires":
+            return "Buenos Aires"
+        if n in ("ciudad autonoma de buenos aires", "ciudad autonoma buenos aires", "caba"):
+            return "CABA"
+        return p.strip().title()
+
+    prov_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+    for v in ventas.values():
+        p = _norm_provincia(v["provincia"])
+        prov_agg[p]["monto"] += v["total_venta"] or 0.0
+        prov_agg[p]["cantidad"] += 1
+    prov_ordenadas = sorted(prov_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
+    top_provincias = [
+        {
+            "nombre": nombre, "monto": round(info["monto"], 2), "cantidad_ventas": info["cantidad"],
+            "porcentaje": round(info["monto"] / total_ingresos * 100, 2) if total_ingresos else 0.0,
+        }
+        for nombre, info in prov_ordenadas[:5]
+    ]
+
+    # --- categorías ---
+    cat_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+    for v in ventas.values():
+        c = v["categoria"] or "—"
+        cat_agg[c]["monto"] += v["total_venta"] or 0.0
+        cat_agg[c]["cantidad"] += 1
+    cat_por_monto = sorted(cat_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
+    cat_por_cantidad = sorted(cat_agg.items(), key=lambda kv: kv[1]["cantidad"], reverse=True)
+    top_categorias = [
+        {
+            "nombre": nombre, "monto": round(info["monto"], 2), "cantidad_ventas": info["cantidad"],
+            "porcentaje": round(info["monto"] / total_ingresos * 100, 2) if total_ingresos else 0.0,
+        }
+        for nombre, info in cat_por_monto[:10]
+    ]
+
+    # --- productos ---
+    prod_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "unidades": 0.0})
+    for v in ventas.values():
+        t = v["titulo"] or "—"
+        prod_agg[t]["monto"] += v["total_venta"] or 0.0
+        prod_agg[t]["unidades"] += v["cantidad_vendida"] or 0.0
+    prod_ordenados = sorted(prod_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
+    top_productos = [
+        {
+            "nombre": nombre, "monto": round(info["monto"], 2), "unidades": round(info["unidades"], 2),
+            "porcentaje": round(info["monto"] / total_ingresos * 100, 2) if total_ingresos else 0.0,
+        }
+        for nombre, info in prod_ordenados[:10]
+    ]
+
+    # --- clientes ---
+    cli_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+    for v in ventas.values():
+        c = v["cliente"] or "—"
+        cli_agg[c]["monto"] += v["total_venta"] or 0.0
+        cli_agg[c]["cantidad"] += 1
+    cli_por_monto = sorted(cli_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
+    cli_por_cantidad = sorted(cli_agg.items(), key=lambda kv: kv[1]["cantidad"], reverse=True)
+    top_clientes_facturacion = [
+        {
+            "nombre": nombre, "monto": round(info["monto"], 2), "cantidad_ventas": info["cantidad"],
+            "porcentaje": round(info["monto"] / total_ingresos * 100, 2) if total_ingresos else 0.0,
+        }
+        for nombre, info in cli_por_monto[:10]
+    ]
+    top_clientes_frecuentes = [
+        {"nombre": nombre, "cantidad_ventas": info["cantidad"], "monto": round(info["monto"], 2)}
+        for nombre, info in cli_por_cantidad[:10]
+    ]
+
+    # --- concentración ---
+    total_categorias_unicas = len(cat_agg)
+    total_clientes_unicos = len(cli_agg)
+    concentracion_top10_categorias_facturacion = round(
+        sum(info["monto"] for _, info in cat_por_monto[:10]) / total_ingresos * 100, 2
+    ) if total_ingresos else 0.0
+    concentracion_top10_categorias_cantidad = round(
+        sum(info["cantidad"] for _, info in cat_por_cantidad[:10]) / cantidad_operaciones * 100, 2
+    ) if cantidad_operaciones else 0.0
+    concentracion_top10_clientes_facturacion = round(
+        sum(info["monto"] for _, info in cli_por_monto[:10]) / total_ingresos * 100, 2
+    ) if total_ingresos else 0.0
+    concentracion_top10_clientes_cantidad = round(
+        sum(info["cantidad"] for _, info in cli_por_cantidad[:10]) / cantidad_operaciones * 100, 2
+    ) if cantidad_operaciones else 0.0
+
+    # --- percepciones detalladas ---
+    percepciones = {
+        label: {"monto": round(info["monto"], 2), "cantidad": info["cantidad"]}
+        for label, info in percepciones_agg.items()
+    }
+    total_percepciones = round(sum(p["monto"] for p in percepciones.values()), 2)
 
     return {
-        "fecha_desde": fechas and min(fechas).strftime("%d/%m/%Y") or None,
-        "fecha_hasta": fechas and max(fechas).strftime("%d/%m/%Y") or None,
-        "total_de_ventas": n_venta,
-        "total_de_la_venta": round(suma_venta, 2),
-        "total_valor_del_cargo": round(suma_cargo, 2),
+        "fecha_actualizacion": fecha_actualizacion,
+        "fecha_desde": fecha_desde,
+        "fecha_hasta": fecha_hasta,
+        "total_ingresos": total_ingresos,
+        "cantidad_operaciones": cantidad_operaciones,
+        "ticket_promedio": ticket_promedio,
+        "facturacion_bruta": facturacion_bruta,
+        "facturacion_neta": facturacion_neta,
+        "total_descuentos": total_descuentos,
+        "cantidad_descuentos": cantidad_descuentos,
+        "envios_pagados_comprador": round(envios_pagados_comprador, 2),
+        "margen": {
+            "comisiones_pct": comisiones_pct,
+            "envios_pct": envios_pct,
+            "impuestos_pct": impuestos_pct,
+            "margen_neto_pct": margen_neto_pct,
+        },
+        "desglose_cargos": desglose_cargos,
+        "ventas_por_dia": ventas_por_dia,
+        "top_provincias": top_provincias,
+        "top_categorias": top_categorias,
+        "top_productos": top_productos,
+        "top_clientes_facturacion": top_clientes_facturacion,
+        "top_clientes_frecuentes": top_clientes_frecuentes,
+        "concentracion": {
+            "total_categorias_unicas": total_categorias_unicas,
+            "concentracion_top10_categorias_facturacion": concentracion_top10_categorias_facturacion,
+            "concentracion_top10_categorias_cantidad": concentracion_top10_categorias_cantidad,
+            "total_clientes_unicos": total_clientes_unicos,
+            "concentracion_top10_clientes_facturacion": concentracion_top10_clientes_facturacion,
+            "concentracion_top10_clientes_cantidad": concentracion_top10_clientes_cantidad,
+        },
+        "percepciones": percepciones,
+        "total_percepciones": total_percepciones,
+        "total_percepciones_pct": round(total_percepciones / facturacion_neta * 100, 2) if facturacion_neta else 0.0,
     }
+
+
+def _titulo_cargo_ml(s: str) -> str:
+    """Title-case 'suave' para labels de cargos ML: capitaliza cada palabra salvo los
+    conectores (por/de/del/...), igual que el resto del visor los muestra."""
+    _STOP = {"por", "de", "del", "la", "el", "los", "las", "en", "y", "a", "con", "al"}
+    palabras = s.split()
+    out = []
+    for i, w in enumerate(palabras):
+        wl = w.lower()
+        if i > 0 and _strip_accents(wl) in _STOP:
+            out.append(wl)
+        else:
+            out.append(wl[:1].upper() + wl[1:] if wl else wl)
+    return " ".join(out)
+
+
+def _label_cargo_ml(raw: str) -> str:
+    _RENAME = {"cargo por envios de mercado libre": "Envíos"}
+    key = _strip_accents(raw.strip().lower())
+    return _RENAME.get(key, _titulo_cargo_ml(raw))
+
+
+def _render_facturacion_ml_html(d: dict) -> str:
+    """Arma el HTML del panel derecho de 'facturacion_ml': secciones con separador
+    uppercase (ícono + título) y filas label/valor alineadas, a partir del dict devuelto
+    por analizar_facturacion_ml. d nunca se muta (viene de extracted_data, persistido tal cual)."""
+
+    def _money(v) -> str:
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        return f"$ {'-' if n < 0 else ''}{s}"
+
+    def _pct(v) -> str:
+        try:
+            n = float(v)
+        except (TypeError, ValueError):
+            return "—"
+        return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " %"
+
+    def _entero(v) -> str:
+        try:
+            n = int(v)
+        except (TypeError, ValueError):
+            return "—"
+        return f"{n:,}".replace(",", ".")
+
+    _ROW_CSS = (
+        "display:flex;justify-content:space-between;align-items:baseline;"
+        "padding:3px 12px;border-bottom:1px solid #f5f5f5;font-size:11px;gap:12px"
+    )
+    _STYLE = f"<style>.fml-row{{{_ROW_CSS}}}.fml-row:hover{{background:#fafafa}}</style>"
+    _SEP = (
+        f"font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
+        f"color:{_HDR_COLOR};background:{_HDR_BG};padding:8px 12px;"
+        f"border-bottom:1px solid {_HDR_BORDER};margin-top:14px;display:flex;"
+        f"align-items:center;gap:6px"
+    )
+
+    def _sec(icon: str, titulo: str) -> str:
+        return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span></div>'
+
+    def _row(label, value, bold: bool = False, indent: bool = False) -> str:
+        style_label = "color:#555"
+        if indent:
+            style_label += ";padding-left:16px"
+        if bold:
+            style_label += ";font-weight:700"
+        style_value = f"color:{_BLUE};font-variant-numeric:tabular-nums;white-space:nowrap;text-align:right"
+        if bold:
+            style_value += ";font-weight:700"
+        return (
+            '<div class="fml-row">'
+            f'<span style="{style_label}">{_escape_prompt_html(str(label))}</span>'
+            f'<span style="{style_value}">{_escape_prompt_html(str(value))}</span>'
+            '</div>'
+        )
+
+    parts = [_STYLE]
+
+    parts.append(_sec("ti-calendar", "Período"))
+    parts.append(_row("Fecha Desde", d.get("fecha_desde") or "—"))
+    parts.append(_row("Fecha Hasta", d.get("fecha_hasta") or "—"))
+
+    parts.append(_sec("ti-cash", "Totales Generales"))
+    parts.append(_row("Total de Ingresos", _money(d.get("total_ingresos"))))
+    parts.append(_row("Cantidad de Operaciones", _entero(d.get("cantidad_operaciones"))))
+    parts.append(_row("Ticket Promedio", _money(d.get("ticket_promedio"))))
+    parts.append(_row("Facturación Bruta", _money(d.get("facturacion_bruta"))))
+    parts.append(_row(
+        "Total Descuentos",
+        f"{_money(d.get('total_descuentos'))} ({_entero(d.get('cantidad_descuentos'))})",
+    ))
+    parts.append(_row("Facturación Neta", _money(d.get("facturacion_neta")), bold=True))
+    parts.append(_row("Envíos Pagados por Comprador", _money(d.get("envios_pagados_comprador"))))
+
+    _margen = d.get("margen") or {}
+    parts.append(_sec("ti-chart-bar", "Margen Neto Estimado"))
+    parts.append(_row("Ingreso Bruto por Venta", _pct(100)))
+    parts.append(_row("(-) Comisiones de Venta", _pct(_margen.get("comisiones_pct"))))
+    parts.append(_row("(-) Costos de Envío Neto", _pct(_margen.get("envios_pct"))))
+    parts.append(_row("(-) Impuestos y Retenciones", _pct(_margen.get("impuestos_pct"))))
+    parts.append(_row("(=) Margen Neto Estimado", _pct(_margen.get("margen_neto_pct")), bold=True))
+
+    _desglose = d.get("desglose_cargos") or {}
+    if _desglose:
+        parts.append(_sec("ti-package", "Desglose por Tipo de Cargo"))
+        for label, info in _desglose.items():
+            parts.append(_row(
+                _label_cargo_ml(label),
+                f"{_money(info.get('total'))} ({_entero(info.get('cantidad'))} cargos)",
+            ))
+            if info.get("anulacion_cantidad"):
+                parts.append(_row(
+                    "Anulaciones",
+                    f"{_money(info.get('anulacion_monto'))} ({_entero(info.get('anulacion_cantidad'))})",
+                    indent=True,
+                ))
+                parts.append(_row(
+                    "Proporción Anulaciones", _pct(info.get("proporcion_anulaciones")), indent=True,
+                ))
+
+    _por_dia = d.get("ventas_por_dia") or {}
+    if _por_dia:
+        parts.append(_sec("ti-calendar", "Ventas por Día de la Semana"))
+        for dia in ("Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"):
+            info = _por_dia.get(dia) or {}
+            parts.append(_row(
+                dia,
+                f"{_money(info.get('monto'))} "
+                f"({_entero(info.get('cantidad_ventas'))} ventas — {_pct(info.get('porcentaje'))})",
+            ))
+
+    _provs = d.get("top_provincias") or []
+    if _provs:
+        parts.append(_sec("ti-world", "Top 5 Provincias"))
+        for i, p in enumerate(_provs, 1):
+            parts.append(_row(
+                f"{i}  {p.get('nombre')}",
+                f"{_money(p.get('monto'))} ({_pct(p.get('porcentaje'))} — {_entero(p.get('cantidad_ventas'))} ventas)",
+            ))
+
+    _cats = d.get("top_categorias") or []
+    if _cats:
+        parts.append(_sec("ti-tag", "Top 10 Categorías"))
+        for i, c in enumerate(_cats, 1):
+            parts.append(_row(
+                f"{i}  {c.get('nombre')}",
+                f"{_money(c.get('monto'))} ({_pct(c.get('porcentaje'))} — {_entero(c.get('cantidad_ventas'))} ventas)",
+            ))
+
+    _prods = d.get("top_productos") or []
+    if _prods:
+        parts.append(_sec("ti-package", "Top 10 Productos"))
+        for i, p in enumerate(_prods, 1):
+            parts.append(_row(
+                f"{i}  {p.get('nombre')}",
+                f"{_money(p.get('monto'))} ({_entero(p.get('unidades'))} u. — {_pct(p.get('porcentaje'))})",
+            ))
+
+    _clis_f = d.get("top_clientes_facturacion") or []
+    if _clis_f:
+        parts.append(_sec("ti-users", "Top 10 Clientes (por facturación)"))
+        for i, c in enumerate(_clis_f, 1):
+            n = c.get("cantidad_ventas") or 0
+            parts.append(_row(
+                f"{i}  {c.get('nombre')}",
+                f"{_money(c.get('monto'))} ({_pct(c.get('porcentaje'))} — {_entero(n)} venta{'s' if n != 1 else ''})",
+            ))
+
+    _clis_c = d.get("top_clientes_frecuentes") or []
+    if _clis_c:
+        parts.append(_sec("ti-users", "Top 10 Clientes Frecuentes (por cantidad)"))
+        for i, c in enumerate(_clis_c, 1):
+            n = c.get("cantidad_ventas") or 0
+            parts.append(_row(
+                f"{i}  {c.get('nombre')}",
+                f"{_entero(n)} venta{'s' if n != 1 else ''}, {_money(c.get('monto'))}",
+            ))
+
+    _conc = d.get("concentracion") or {}
+    if _conc:
+        parts.append(_sec("ti-target", "Concentración"))
+        parts.append(_row("Categorías únicas", _entero(_conc.get("total_categorias_unicas"))))
+        parts.append(_row(
+            "Concentración Top 10 categorías (facturación)",
+            _pct(_conc.get("concentracion_top10_categorias_facturacion")),
+        ))
+        parts.append(_row(
+            "Concentración Top 10 categorías (cantidad)",
+            _pct(_conc.get("concentracion_top10_categorias_cantidad")),
+        ))
+        parts.append(_row("Clientes únicos", _entero(_conc.get("total_clientes_unicos"))))
+        parts.append(_row(
+            "Concentración Top 10 clientes (facturación)",
+            _pct(_conc.get("concentracion_top10_clientes_facturacion")),
+        ))
+        parts.append(_row(
+            "Concentración Top 10 clientes (cantidad)",
+            _pct(_conc.get("concentracion_top10_clientes_cantidad")),
+        ))
+
+    _percs = d.get("percepciones") or {}
+    if _percs:
+        parts.append(_sec("ti-receipt-tax", "Percepciones Detalladas"))
+        for label, info in sorted(_percs.items(), key=lambda kv: kv[1].get("monto", 0), reverse=True):
+            parts.append(_row(label, _money(info.get("monto"))))
+        parts.append(_row(
+            "Total Percepciones",
+            f"{_money(d.get('total_percepciones'))} ({_pct(d.get('total_percepciones_pct'))})",
+            bold=True,
+        ))
+
+    return "".join(parts)
 
 
 def _es_pagos_facturas(filename: str) -> bool:
@@ -899,17 +1393,19 @@ def procesar_archivo_con_gemini(
             print("[DBG-PAGOS-FACTURAS-CALC] no se encontraron columnas fecha/estado/importe", flush=True)
 
         if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _es_facturacion_ml(path.name):
-            filas_sin_hoja = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
-            calc_fact = _calcular_facturacion_ml(filas_sin_hoja)
+            calc_fact = analizar_facturacion_ml(path)
             if calc_fact:
-                print(f"[DBG-FACTURACION-ML-CALC] {calc_fact}", flush=True)
+                print(
+                    f"[DBG-FACTURACION-ML-CALC] operaciones={calc_fact['cantidad_operaciones']} "
+                    f"ingresos={calc_fact['total_ingresos']} neta={calc_fact['facturacion_neta']}",
+                    flush=True,
+                )
                 return {
                     "success": True, "data": calc_fact, "error": None,
                     "prompt_used": "(calculado en Python, sin Gemini)",
                 }
             print(
-                "[DBG-FACTURACION-ML-CALC] no se encontraron columnas "
-                "fecha del cargo/total de la venta/valor del cargo",
+                "[DBG-FACTURACION-ML-CALC] no se encontró la hoja REPORT o no tiene filas de detalle",
                 flush=True,
             )
 
@@ -1237,6 +1733,14 @@ def _build_gastos(user_id: int) -> None:
                                             f'overflow-y:auto">{_escape_prompt_html(texto)}</pre>'
                                         )
                                         return
+                                    if seccion == "reportes_ml" and _es_facturacion_ml(fa.get("filename", "")):
+                                        if not d or "total_ingresos" not in d:
+                                            ui.label(
+                                                "Sin datos extraídos (reprocesar archivo)"
+                                            ).classes("text-xs text-gray-400 italic")
+                                            return
+                                        ui.html(_render_facturacion_ml_html(d))
+                                        return
                                     if not d:
                                         ui.label("Sin datos extraídos").classes(
                                             "text-xs text-gray-400 italic"
@@ -1460,12 +1964,6 @@ def _build_gastos(user_id: int) -> None:
                                     if seccion == "reportes_ml" and _es_pagos_facturas(fa.get("filename", "")):
                                         _CAMPOS_PAGOS_FACTURAS = {'fecha_actualizacion', 'pagos'}
                                         _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_PAGOS_FACTURAS}
-                                    if seccion == "reportes_ml" and _es_facturacion_ml(fa.get("filename", "")):
-                                        _CAMPOS_FACTURACION_ML = {
-                                            'fecha_desde', 'fecha_hasta', 'total_de_ventas',
-                                            'total_de_la_venta', 'total_valor_del_cargo',
-                                        }
-                                        _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_FACTURACION_ML}
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
