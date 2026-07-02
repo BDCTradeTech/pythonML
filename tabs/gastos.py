@@ -1372,24 +1372,54 @@ def _buscar_cargo_neto(desglose: dict, *nombres_norm: str) -> float:
     return round(total, 2)
 
 
-_PROVINCIAS_ESPECIALES = {"caba": "CABA"}
+# Mapeo de patterns (sin acentos, lowercase) a jurisdicción canónica.
+# El orden importa: los patterns más específicos van primero (ej. "CABA Comercio
+# Electrónico" debe matchear antes que "CABA" para no perder esa distinción).
+_JURISDICCION_PERCEPCION_MAP = [
+    ("caba comercio electronico", "CABA (Comercio Electrónico)"),
+    ("comercio electronico caba", "CABA (Comercio Electrónico)"),
+    ("caba", "CABA"),
+    ("ciudad autonoma", "CABA"),
+    ("capital federal", "CABA"),
+    ("buenos aires", "Buenos Aires"),
+    ("bs as", "Buenos Aires"),
+    ("catamarca", "Catamarca"),
+    ("chaco", "Chaco"),
+    ("chubut", "Chubut"),
+    ("cordoba", "Córdoba"),
+    ("corrientes", "Corrientes"),
+    ("entre rios", "Entre Ríos"),
+    ("formosa", "Formosa"),
+    ("jujuy", "Jujuy"),
+    ("la pampa", "La Pampa"),
+    ("la rioja", "La Rioja"),
+    ("mendoza", "Mendoza"),
+    ("misiones", "Misiones"),
+    ("neuquen", "Neuquén"),
+    ("rio negro", "Río Negro"),
+    ("salta", "Salta"),
+    ("san juan", "San Juan"),
+    ("san luis", "San Luis"),
+    ("santa cruz", "Santa Cruz"),
+    ("santa fe", "Santa Fe"),
+    ("sgo del estero", "Santiago del Estero"),
+    ("santiago del estero", "Santiago del Estero"),
+    ("tierra del fuego", "Tierra del Fuego"),
+    ("tucuman", "Tucumán"),
+]
 
 
-def _fmt_provincia(nombre: str) -> str:
-    n = _strip_accents(nombre.strip().lower())
-    return _PROVINCIAS_ESPECIALES.get(n, nombre.strip().title())
-
-
-def _provincia_de_concepto_factura(concepto: str) -> Optional[str]:
-    """De 'PERCEPCION IIBB CORRIENTES' o 'PERCEPCION IVA CABA' devuelve 'Corrientes'/'CABA'."""
-    n = _strip_accents(concepto.strip().lower())
-    if "percep" not in n:
+def normalizar_jurisdiccion_percepcion(concepto: str) -> Optional[str]:
+    """Devuelve el nombre canónico de la jurisdicción/provincia a partir del concepto
+    de una línea de percepción de IIBB (Facturas ML o reportes de Percepciones).
+    Usada en ambos lados para que las claves coincidan al cruzar. None si no matchea."""
+    if not concepto:
         return None
-    resto = n
-    for kw in ("percepcion", "percepc.", "iibb", "iva"):
-        resto = resto.replace(kw, " ")
-    resto = " ".join(resto.split()).strip()
-    return _fmt_provincia(resto) if resto else None
+    s = _strip_accents(concepto.lower())
+    for pattern, jurisdiccion in _JURISDICCION_PERCEPCION_MAP:
+        if pattern in s:
+            return jurisdiccion
+    return None
 
 
 def _clasificar_impuesto(nombre: str) -> str:
@@ -1458,11 +1488,16 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
 
     # Percepciones por provincia según las Facturas ML
     perc_facturas: Dict[str, float] = defaultdict(float)
+    perc_facturas_detalle: Dict[str, list] = defaultdict(list)
     for fd in facturas_data:
         for l in _lineas_intermedias(fd):
-            prov = _provincia_de_concepto_factura(str(l.get("concepto", "")))
-            if prov:
-                perc_facturas[prov] += l.get("monto") or 0.0
+            concepto = str(l.get("concepto", ""))
+            if "percep" not in _strip_accents(concepto.lower()):
+                continue
+            monto = l.get("monto") or 0.0
+            jurisdiccion = normalizar_jurisdiccion_percepcion(concepto) or "Sin identificar"
+            perc_facturas[jurisdiccion] += monto
+            perc_facturas_detalle[jurisdiccion].append(f"{concepto}: {_ar_money(round(monto, 2))}")
     perc_facturas = {k: round(v, 2) for k, v in perc_facturas.items()}
 
     # --- SECCIÓN 1 — Ventas ---
@@ -1510,19 +1545,29 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
 
     # --- Percepciones (reportes de Percepciones), por provincia ---
     perc_reportes: Dict[str, float] = defaultdict(float)
+    perc_reportes_detalle: Dict[str, list] = defaultdict(list)
     for f in archivos.get("percepciones", []):
         d = _ed(f)
         etiqueta = _extraer_impuesto_percepciones(f.get("filename", "")) or d.get("impuesto") or ""
-        prov = etiqueta.replace("Percepciones IIBB", "").strip() or "Sin identificar"
-        perc_reportes[_fmt_provincia(prov)] += d.get("monto_percibido") or 0.0
+        monto = d.get("monto_percibido") or 0.0
+        jurisdiccion = normalizar_jurisdiccion_percepcion(etiqueta) or "Sin identificar"
+        perc_reportes[jurisdiccion] += monto
+        perc_reportes_detalle[jurisdiccion].append(f"{etiqueta or f.get('filename', '')}: {_ar_money(round(monto, 2))}")
     perc_reportes = {k: round(v, 2) for k, v in perc_reportes.items()}
 
+    _todas_juris = set(perc_facturas) | set(perc_reportes)
+    _provs_ordenadas = sorted(_todas_juris - {"Sin identificar"}) + (
+        ["Sin identificar"] if "Sin identificar" in _todas_juris else []
+    )
     cruce_percepciones = []
-    for prov in sorted(set(perc_facturas) | set(perc_reportes)):
+    for prov in _provs_ordenadas:
         a, b = perc_facturas.get(prov, 0.0), perc_reportes.get(prov, 0.0)
+        ok = abs(a - b) < 1
         cruce_percepciones.append({
             "provincia": prov, "facturas_ml": a, "reportes": b,
-            "diff": round(a - b, 2), "ok": abs(a - b) < 1,
+            "diff": round(a - b, 2), "ok": ok,
+            "detalle_facturas": perc_facturas_detalle.get(prov, []) if not ok else [],
+            "detalle_reportes": perc_reportes_detalle.get(prov, []) if not ok else [],
         })
 
     # --- Retenciones sufridas ---
@@ -1873,11 +1918,22 @@ def _render_consolidado_html(resultado: dict) -> str:
         "Percepciones por provincia — Facturas ML vs Reportes</div>"
     )
     if imp["cruce_percepciones"]:
-        filas = [
-            [r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
-             _ar_money(r["diff"]), "✓" if r["ok"] else "✗"]
-            for r in imp["cruce_percepciones"]
-        ]
+        filas = []
+        for r in imp["cruce_percepciones"]:
+            if r["ok"]:
+                simbolo = f'<span style="color:{_GREEN}">✓</span>'
+            else:
+                _tt = "Facturas ML:\n" + ("\n".join(r["detalle_facturas"]) or "(sin líneas)")
+                _tt += "\n\nReportes Percepciones:\n" + ("\n".join(r["detalle_reportes"]) or "(sin líneas)")
+                _tt_esc = _tt.replace('"', "&quot;").replace("<", "&lt;")
+                simbolo = (
+                    f'<span title="{_tt_esc}" style="color:{_RED};cursor:help;'
+                    f'border-bottom:1px dotted {_RED}">✗</span>'
+                )
+            filas.append([
+                r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
+                _ar_money(r["diff"]), simbolo,
+            ])
         s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", ""], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
