@@ -228,32 +228,46 @@ def _pdf_first_page_b64(path: Path) -> Optional[str]:
         return None
 
 
-def _excel_preview_html(path: Path, nrows: int = 50) -> str:
+_EXCEL_PREVIEW_HEADERS_DETALLE = (
+    "número de venta", "n° de venta", "referencia externa", "detalle de movimientos",
+)
+
+
+def _excel_preview_html(path: Path) -> str:
+    """Preview acotado: solo metadatos + totales, sin la tabla de detalle completa."""
     try:
-        import openpyxl
-        wb = openpyxl.load_workbook(path, data_only=True)
-        ws = wb.active
-        rows = list(ws.iter_rows(values_only=True))[: nrows + 1]
-        wb.close()
-        if not rows:
+        filas = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
+        if not filas:
             return "<p style='font-size:11px;color:#9e9e9e'>Excel vacío</p>"
-        header = [str(c) if c is not None else "" for c in rows[0]]
-        th = "".join(
-            f'<th style="border:1px solid #ccc;padding:2px 6px;background:#f0f0f0;white-space:nowrap">{h}</th>'
-            for h in header
+
+        preview = []
+        for linea in filas:
+            primera_celda = linea.split("\t", 1)[0].strip().lower()
+            if any(primera_celda.startswith(h) for h in _EXCEL_PREVIEW_HEADERS_DETALLE):
+                break
+            preview.append(linea)
+            if len(preview) >= 12:
+                break
+
+        titulo = preview[0].split("\t", 1)[0].replace("_", " ").strip()
+        titulo_html = (
+            '<div style="font-size:12px;font-weight:700;color:#333;'
+            'white-space:normal;word-break:break-word;line-height:1.3;padding:8px 10px">'
+            f"{titulo}</div>"
         )
+
         body = ""
-        for row in rows[1:]:
+        for linea in preview[1:]:
             tds = "".join(
-                f'<td style="border:1px solid #e0e0e0;padding:2px 6px;white-space:nowrap">'
-                f"{str(c) if c is not None else ''}</td>"
-                for c in row
+                f'<td style="border:1px solid #e0e0e0;padding:2px 6px;white-space:nowrap">{c}</td>'
+                for c in linea.split("\t")
             )
             body += f"<tr>{tds}</tr>"
-        return (
+        tabla_html = (
             '<table style="border-collapse:collapse;font-size:11px;width:100%">'
-            f"<thead><tr>{th}</tr></thead><tbody>{body}</tbody></table>"
+            f"<tbody>{body}</tbody></table>"
         )
+        return titulo_html + tabla_html
     except Exception as exc:
         return f"<p style='font-size:11px;color:#a32d2d'>Error al leer Excel: {exc}</p>"
 
@@ -444,15 +458,17 @@ def _build_gastos(user_id: int) -> None:
                     "display:flex;flex-direction:column;padding:0"
                 ):
                     # Header
-                    with ui.row().classes("items-center justify-between w-full px-4 py-2 flex-shrink-0").style(
+                    with ui.row().classes("items-start justify-between w-full px-4 py-2 flex-shrink-0 gap-2").style(
                         f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER}"
                     ):
-                        ui.label(fa["filename"]).style(
-                            f"color:{_HDR_COLOR};font-weight:700;font-size:15px"
+                        _fname_display = Path(fa["filename"]).stem.replace("_", " ") + Path(fa["filename"]).suffix
+                        ui.label(_fname_display).style(
+                            f"color:{_HDR_COLOR};font-weight:700;font-size:15px;"
+                            "white-space:normal;word-break:break-word;line-height:1.3;flex:1;min-width:0"
                         )
                         async def _cerrar():
                             dlg.close()
-                        ui.button(icon="close", on_click=_cerrar).props("flat round dense")
+                        ui.button(icon="close", on_click=_cerrar).props("flat round dense").classes("flex-shrink-0")
 
                     # Body: dos columnas
                     with ui.row().classes("w-full flex-1").style("max-height:calc(90vh - 120px);overflow-y:auto;min-height:0"):
