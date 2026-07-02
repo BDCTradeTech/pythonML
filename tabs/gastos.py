@@ -54,7 +54,7 @@ _SECCIONES: List[tuple] = [
     ("retenciones",  "Retenciones",             ".xlsx", True,  "ti-file-spreadsheet"),
     ("percepciones", "Percepciones",            ".xlsx", True,  "ti-file-spreadsheet"),
     ("pagos_arca",   "Pagos ARCA",              ".pdf",  True,  "ti-file-invoice"),
-    ("reportes_ml",  "Reportes MercadoLibre",   ".xlsx", False, "ti-file-spreadsheet"),
+    ("reportes_ml",  "Reportes MercadoLibre",   ".xlsx", True,  "ti-file-spreadsheet"),
 ]
 
 _MESES = [
@@ -369,7 +369,7 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
     def _norm(s: str) -> str:
         return _strip_accents(s.strip().lower())
 
-    idx_base = idx_alic = idx_monto = header_idx = None
+    idx_base = idx_alic = idx_monto = idx_fecha = header_idx = None
     for i, linea in enumerate(filas):
         celdas_norm = [_norm(c) for c in linea.split("\t")]
         if "base imponible" in celdas_norm:
@@ -380,6 +380,10 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
                 if cand in celdas_norm:
                     idx_monto = celdas_norm.index(cand)
                     break
+            for cand in ("fecha del cargo", "fecha de la venta", "fecha de operacion"):
+                if cand in celdas_norm:
+                    idx_fecha = celdas_norm.index(cand)
+                    break
             header_idx = i
             break
 
@@ -388,6 +392,7 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
 
     total_base = total_monto = 0.0
     alicuota_val = None
+    fecha_min = fecha_max = None
     n_filas = 0
     for linea in filas[header_idx + 1:]:
         celdas = linea.split("\t")
@@ -406,6 +411,15 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
                 alicuota_val = float(celdas[idx_alic])
             except ValueError:
                 pass
+        if idx_fecha is not None and idx_fecha < len(celdas):
+            try:
+                dt = datetime.strptime(celdas[idx_fecha].strip().split(" ")[0], "%Y-%m-%d")
+                if fecha_min is None or dt < fecha_min:
+                    fecha_min = dt
+                if fecha_max is None or dt > fecha_max:
+                    fecha_max = dt
+            except ValueError:
+                pass
 
     if n_filas == 0:
         return None
@@ -419,6 +433,8 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
         "base_imponible": round(total_base, 2),
         "monto_percibido": round(total_monto, 2),
         "alicuota": alicuota_str,
+        "fecha_desde": fecha_min.strftime("%d/%m/%Y") if fecha_min else None,
+        "fecha_hasta": fecha_max.strftime("%d/%m/%Y") if fecha_max else None,
     }
 
 
@@ -479,7 +495,9 @@ def procesar_archivo_con_gemini(
                     print(
                         f"[DBG-PERCEPCIONES-CALC] filas_tabla={calc_percepciones['filas_tabla']} "
                         f"base_imponible_calc=${calc_percepciones['base_imponible']} "
-                        f"monto_percibido_calc=${calc_percepciones['monto_percibido']}",
+                        f"monto_percibido_calc=${calc_percepciones['monto_percibido']} "
+                        f"fecha_desde_calc={calc_percepciones['fecha_desde']} "
+                        f"fecha_hasta_calc={calc_percepciones['fecha_hasta']}",
                         flush=True,
                     )
                 corte = _cortar_en_detalle(filas_sin_hoja)
@@ -524,6 +542,10 @@ def procesar_archivo_con_gemini(
                 data["monto_percibido"] = calc_percepciones["monto_percibido"]
                 if calc_percepciones["alicuota"]:
                     data["alicuota"] = calc_percepciones["alicuota"]
+                if calc_percepciones["fecha_desde"]:
+                    data["fecha_desde"] = calc_percepciones["fecha_desde"]
+                if calc_percepciones["fecha_hasta"]:
+                    data["fecha_hasta"] = calc_percepciones["fecha_hasta"]
 
         return {"success": True, "data": data, "error": None, "prompt_used": prompt}
 
