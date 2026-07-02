@@ -231,7 +231,7 @@ def _pdf_first_page_b64(path: Path) -> Optional[str]:
 def _excel_preview_html(path: Path, nrows: int = 50) -> str:
     try:
         import openpyxl
-        wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+        wb = openpyxl.load_workbook(path, data_only=True)
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))[: nrows + 1]
         wb.close()
@@ -256,6 +256,28 @@ def _excel_preview_html(path: Path, nrows: int = 50) -> str:
         )
     except Exception as exc:
         return f"<p style='font-size:11px;color:#a32d2d'>Error al leer Excel: {exc}</p>"
+
+
+def leer_excel_completo(path: Path) -> list[str]:
+    """Lee TODAS las hojas de un Excel y devuelve las filas como líneas tab-separated.
+
+    wb.active solo apunta a la hoja marcada como activa en el workbook, y los
+    reportes de retenciones de MercadoPago suelen tener los datos reales en
+    una hoja distinta a la activa (que a veces solo trae el título).
+    """
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, data_only=True, read_only=False)
+    filas_texto = []
+    for sheet_name in wb.sheetnames:
+        ws = wb[sheet_name]
+        filas_texto.append(f"=== HOJA: {sheet_name} ===")
+        for row in ws.iter_rows(values_only=True):
+            if all(cell is None for cell in row):
+                continue
+            filas_texto.append("\t".join(str(c) if c is not None else "" for c in row))
+    wb.close()
+    return filas_texto
 
 
 def procesar_archivo_con_gemini(
@@ -302,19 +324,14 @@ def procesar_archivo_con_gemini(
                 ],
             )
         elif ext in (".xlsx", ".xls"):
-            import openpyxl
-            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
-            ws = wb.active
-            all_rows = list(ws.iter_rows(values_only=True))
-            rows = all_rows[:101]
-            wb.close()
-            print(f"[DBG-GASTOS] filas_totales={len(all_rows)} filas_enviadas={len(rows)}", flush=True)
-            lines = ["\t".join(str(c) if c is not None else "" for c in row) for row in rows]
-            print(f"[DBG-GASTOS] primeras_3={lines[:3]}", flush=True)
-            print(f"[DBG-GASTOS] ultimas_3_enviadas={lines[-3:]}", flush=True)
+            filas_todas = leer_excel_completo(path)
+            filas_texto = filas_todas[:500]
+            print(f"[DBG-GASTOS] filas_totales={len(filas_todas)} filas_enviadas={len(filas_texto)}", flush=True)
+            print(f"[DBG-GASTOS] primeras_3={filas_texto[:3]}", flush=True)
+            print(f"[DBG-GASTOS] ultimas_3_enviadas={filas_texto[-3:]}", flush=True)
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
-                contents=f"{prompt}\n\nDatos:\n" + "\n".join(lines),
+                contents=f"{prompt}\n\nDatos:\n" + "\n".join(filas_texto),
             )
         else:
             return {
