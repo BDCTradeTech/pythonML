@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import tempfile
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -88,8 +89,12 @@ def build_tab_precios(container) -> None:
             background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref, force_refresh=force_refresh), name="cargar_precios")
 
         async def _cargar_precios_async(area, token, usr, on_actualizar, inc_paused_ref, f_stock_ref, force_refresh: bool = False) -> None:
+            _t_perf_uid = usr["id"]
+            _t_perf_total = time.perf_counter()
             try:
-                data = await run.io_bound(ml_get_my_items, token, inc_paused_ref.get("val", False), force_refresh)
+                data = await run.io_bound(
+                    ml_get_my_items, token, inc_paused_ref.get("val", False), force_refresh, _t_perf_uid
+                )
             except requests.exceptions.HTTPError as e:
                 area.clear()
                 with area:
@@ -115,6 +120,7 @@ def build_tab_precios(container) -> None:
                         f"({_fmt(_n_active)} activas, {_fmt(_n_paused)} pausadas, {_fmt(_n_closed)} cerradas)..."
                     ).classes("text-xl text-gray-700")
             await asyncio.sleep(0.1)
+            _t_fase = time.perf_counter()
             # Auto-agregar catálogos nuevos detectados y sincronizar sus competidores
             try:
                 _uid_ac = usr["id"]
@@ -150,12 +156,25 @@ def build_tab_precios(container) -> None:
                     logging.warning(f"[CATALOGOS] Competidores sincronizados: {_sync_ok}/{len(_cpids_nuevos)} catálogos para user {_uid_ac}")
             except Exception as _e_ac:
                 logging.error(f"[CATALOGOS] Error auto-agregando catálogos: {_e_ac}")
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='auto_catalogos' user_id={_t_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_fase:.3f}s items={_total}"
+            )
+            _t_fase = time.perf_counter()
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
                 area.clear()
                 with area:
                     ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='mostrar_tabla_precios_TOTAL' user_id={_t_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_fase:.3f}s items={_total}"
+            )
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='CARGA_INICIAL_TOTAL' user_id={_t_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_perf_total:.3f}s items={_total}"
+            )
 
         background_tasks.create(_cargar_precios_async(result_area, access_token, user, cargar_precios, include_paused_ref, filtro_stock_ref), name="cargar_precios")
 
@@ -557,6 +576,8 @@ def _mostrar_tabla_precios(
         with result_area:
             ui.label("No tienes publicaciones en MercadoLibre o aún no se han cargado.").classes("text-gray-500")
         return
+    _perf_uid = user["id"]
+    _t_fase = time.perf_counter()
 
     # Agrupación dinámica por SKU (misma lógica que _mostrar_tabla_cuotas).
     groups_sku: Dict[tuple, List[Dict[str, Any]]] = {}
@@ -590,6 +611,12 @@ def _mostrar_tabla_precios(
         _rep_id = str(principal.get("id") or "")
         if _rep_id:
             _grp_ids_map[_rep_id] = [str(x.get("id") or "") for x in grupo if x.get("id")]
+
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='python_dedup_agrupamiento' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(items_dedup)}"
+    )
+    _t_fase = time.perf_counter()
 
     _uid = user["id"]
     _sku_cats_all = get_sku_catalogos(_uid)
@@ -633,6 +660,12 @@ def _mostrar_tabla_precios(
                 _prod_map[s] = {"costo_usd": None, "fob_usd": None, "tipo_iva": 0.105, "price_updated_at": None}
         finally:
             _conn_ins.close()
+
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='db_query_productos_sku' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_skus_dedup)}"
+    )
+    _t_fase = time.perf_counter()
 
     dolar_str = get_cotizador_param("dolar_oficial", user["id"]) or COTIZADOR_DEFAULTS.get("dolar_oficial", "1475")
     dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
@@ -763,6 +796,12 @@ def _mostrar_tabla_precios(
             "n_catalogos":          _n_cat_by_sku.get(i.get("seller_sku") or "", 0),
         })
 
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='python_calculo_margenes' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(items_loaded)}"
+    )
+    _t_fase = time.perf_counter()
+
     _gan_rows = [
         (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"),
          str(row.get("title") or ""), row.get("seller_sku"))
@@ -798,6 +837,12 @@ def _mostrar_tabla_precios(
         finally:
             _conn_nombre.close()
 
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='db_update_productos_gan_nombre' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_gan_rows) + len(_no_costo_rows)}"
+    )
+    _t_fase = time.perf_counter()
+
     publicaciones_totales = len(items_loaded)
     publicaciones_con_stock = sum(1 for i in items_loaded if (i.get("available_quantity") or 0) > 0)
     publicaciones_propias_con_stock = sum(1 for i in items_loaded if i.get("tipo") == "Propia" and (i.get("available_quantity") or 0) > 0)
@@ -825,7 +870,12 @@ def _mostrar_tabla_precios(
                     except Exception:
                         res[iid] = None
             return res
+        _t_api_ptw = time.perf_counter()
         _cat_pos_map = _fetch_catalog_pos(_cat_ids)
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
+        )
         for r in items_loaded:
             _rid = str(r.get("catalog_item_id") or r.get("id") or "")
             if _rid in _cat_pos_map:
@@ -873,6 +923,12 @@ def _mostrar_tabla_precios(
         finally:
             _conn_cs.close()
 
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='catalog_position_y_db' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_cat_ids)}"
+    )
+    _t_fase = time.perf_counter()
+
     _items_para_quality = [
         r for r in items_loaded
         if str(r.get("status") or "").lower() == "active"
@@ -898,6 +954,12 @@ def _mostrar_tabla_precios(
                 d = _quality_map[_qid] or {}
                 r["quality_score"] = d.get("score")
                 r["quality_level"] = d.get("level")
+
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='api_quality' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_quality_ids)}"
+    )
+    _t_fase = time.perf_counter()
 
     _sp_item_ids = [str(r["id"]) for r in items_loaded if r.get("id")]
     if _sp_item_ids and access_token:
@@ -928,7 +990,12 @@ def _mostrar_tabla_precios(
                     elif rid not in res:
                         res[rid] = None
             return res
+        _t_api_promo = time.perf_counter()
         _promo_map = _fetch_has_promo(_sp_item_ids)
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='api_promo_sale_price' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_api_promo:.3f}s items={len(_sp_item_ids)}"
+        )
         _gan_promo_rows = []
         for r in items_loaded:
             _rid = str(r.get("id") or "")
@@ -973,6 +1040,12 @@ def _mostrar_tabla_precios(
                 _conn_gp.commit()
             finally:
                 _conn_gp.close()
+
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='promo_calculo_y_db' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_sp_item_ids)}"
+    )
+    _t_fase = time.perf_counter()
 
     _hoy_str = datetime.now().strftime("%Y-%m-%d")
     _conn_rev_clean = get_connection()
@@ -3040,5 +3113,14 @@ def _mostrar_tabla_precios(
     filtro_ganando.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
     filtro_revision.on_value_change(lambda *a: filtrar_y_pintar())
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='pre_render_setup_ui' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(items_loaded)}"
+    )
+    _t_fase = time.perf_counter()
     filtrar_y_pintar()
+    logging.warning(
+        f"[PERF-PRODUCTOS] fase='render_tabla_inicial' user_id={_perf_uid} "
+        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(current_filtrados)}"
+    )
 
