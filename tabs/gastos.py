@@ -1051,6 +1051,7 @@ def _build_gastos(user_id: int) -> None:
                                 else:
                                     reproc_lbl.text = f"Error: {result['error']}"
                                 if reproc_btn_ref[0]:
+                                    reproc_btn_ref[0].enable()
                                     reproc_btn_ref[0].text = "Re-procesar"
                                 _set_procesando(seccion, False)
 
