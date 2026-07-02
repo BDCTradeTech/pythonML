@@ -740,7 +740,7 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
     # --- provincias (normalizadas) ---
     def _norm_provincia(p) -> str:
         if not p:
-            return "—"
+            return "Sin Provincia"
         n = _strip_accents(p.strip().lower())
         if n == "buenos aires":
             return "Buenos Aires"
@@ -765,7 +765,7 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
     # --- categorías ---
     cat_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
     for v in ventas.values():
-        c = v["categoria"] or "—"
+        c = v["categoria"] or "Sin Categoría"
         cat_agg[c]["monto"] += v["total_venta"] or 0.0
         cat_agg[c]["cantidad"] += 1
     cat_por_monto = sorted(cat_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
@@ -781,7 +781,7 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
     # --- productos ---
     prod_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "unidades": 0.0})
     for v in ventas.values():
-        t = v["titulo"] or "—"
+        t = v["titulo"] or "Sin Título"
         prod_agg[t]["monto"] += v["total_venta"] or 0.0
         prod_agg[t]["unidades"] += v["cantidad_vendida"] or 0.0
     prod_ordenados = sorted(prod_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
@@ -796,7 +796,7 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
     # --- clientes ---
     cli_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
     for v in ventas.values():
-        c = v["cliente"] or "—"
+        c = v["cliente"] or "Sin Cliente"
         cli_agg[c]["monto"] += v["total_venta"] or 0.0
         cli_agg[c]["cantidad"] += 1
     cli_por_monto = sorted(cli_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
