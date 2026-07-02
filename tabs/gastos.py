@@ -124,6 +124,7 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "De la CABECERA del Excel extraé: "
         "usuario (ej: 'NORTHTECHNOLOGY'), "
         "impuesto (ej: 'Impuesto a los IIBB Corrientes - Percepciones'), "
+        "condicion_fiscal (ej: 'Responsable Inscripto', tal como aparece en la cabecera), "
         "fecha_desde (del campo 'Intervalo de fechas consultadas', formato DD/MM/AAAA), "
         "fecha_hasta (del mismo campo, formato DD/MM/AAAA). "
         "De la TABLA de detalle, mirá la columna 'Alícuota': "
@@ -137,6 +138,7 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "El JSON debe ser ESTRICTAMENTE válido. Usá SOLO comillas dobles. "
         "Responde ÚNICAMENTE con el JSON. "
         'Ejemplo: {"usuario":"NORTHTECHNOLOGY","impuesto":"Impuesto a los IIBB Corrientes",'
+        '"condicion_fiscal":"Responsable Inscripto",'
         '"fecha_desde":"01/04/2026","fecha_hasta":"01/05/2026","alicuota":"2,00 %",'
         '"base_imponible":869973.24,"monto_percibido":17399.46}'
     ),
@@ -247,6 +249,7 @@ def _pdf_first_page_b64(path: Path) -> Optional[str]:
 
 _EXCEL_PREVIEW_HEADERS_DETALLE = (
     "número de venta", "n° de venta", "referencia externa", "detalle de movimientos",
+    "fecha del cargo",
 )
 
 
@@ -259,14 +262,19 @@ def _excel_preview_html(path: Path) -> str:
 
         preview = []
         for linea in filas:
-            primera_celda = linea.split("\t", 1)[0].strip().lower()
+            celdas = linea.split("\t")
+            primera_celda = celdas[0].strip().lower()
             if any(primera_celda.startswith(h) for h in _EXCEL_PREVIEW_HEADERS_DETALLE):
                 break
+            # Filas banner/párrafo (una sola celda con texto largo, p.ej. leyendas legales) → ruido, saltar
+            no_vacias = [c for c in celdas if c.strip()]
+            if len(no_vacias) <= 1 and (not no_vacias or len(no_vacias[0]) > 40):
+                continue
             preview.append(linea)
             if len(preview) >= 12:
                 break
 
-        titulo = preview[0].split("\t", 1)[0].replace("_", " ").strip()
+        titulo = path.stem.replace("_", " ").replace("-", " ").strip()
         titulo_html = (
             '<div style="font-size:12px;font-weight:700;color:#333;'
             'white-space:normal;word-break:break-word;line-height:1.3;padding:8px 10px">'
@@ -274,7 +282,7 @@ def _excel_preview_html(path: Path) -> str:
         )
 
         body = ""
-        for linea in preview[1:]:
+        for linea in preview:
             tds = "".join(
                 f'<td style="border:1px solid #e0e0e0;padding:2px 6px;white-space:nowrap">{c}</td>'
                 for c in linea.split("\t")
@@ -488,7 +496,10 @@ def _build_gastos(user_id: int) -> None:
                     with ui.row().classes("items-start justify-between w-full px-4 py-2 flex-shrink-0 gap-2").style(
                         f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER}"
                     ):
-                        _fname_display = Path(fa["filename"]).stem.replace("_", " ") + Path(fa["filename"]).suffix
+                        _fname_display = (
+                            Path(fa["filename"]).stem.replace("_", " ").replace("-", " ")
+                            + Path(fa["filename"]).suffix
+                        )
                         ui.label(_fname_display).style(
                             f"color:{_HDR_COLOR};font-weight:700;font-size:15px;"
                             "white-space:normal;word-break:break-word;line-height:1.3;flex:1;min-width:0"
