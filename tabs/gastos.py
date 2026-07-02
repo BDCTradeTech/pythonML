@@ -7,6 +7,7 @@ from __future__ import annotations
 import base64
 import json
 import re
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -253,6 +254,20 @@ _EXCEL_PREVIEW_HEADERS_DETALLE = (
 )
 
 
+def _cortar_en_detalle(filas: list) -> int:
+    """Índice de la primera fila que pertenece a la tabla de detalle (headers de columnas o de
+    agrupamiento tipo "Información sobre..."), para no incluirla ni lo que sigue."""
+    for i, linea in enumerate(filas):
+        celdas = linea.split("\t")
+        primera_celda = celdas[0].strip().lower()
+        if any(primera_celda.startswith(h) for h in _EXCEL_PREVIEW_HEADERS_DETALLE):
+            return i
+        info_count = sum(1 for c in celdas if "información sobre" in c.strip().lower())
+        if info_count >= 2:
+            return i
+    return len(filas)
+
+
 def _excel_preview_html(path: Path) -> str:
     """Preview acotado: solo metadatos + totales, sin la tabla de detalle completa."""
     try:
@@ -260,12 +275,10 @@ def _excel_preview_html(path: Path) -> str:
         if not filas:
             return "<p style='font-size:11px;color:#9e9e9e'>Excel vacío</p>"
 
+        corte = _cortar_en_detalle(filas)
         preview = []
-        for linea in filas:
+        for linea in filas[:corte]:
             celdas = linea.split("\t")
-            primera_celda = celdas[0].strip().lower()
-            if any(primera_celda.startswith(h) for h in _EXCEL_PREVIEW_HEADERS_DETALLE):
-                break
             # Filas banner/párrafo (una sola celda con texto largo, p.ej. leyendas legales) → ruido, saltar
             no_vacias = [c for c in celdas if c.strip()]
             if len(no_vacias) <= 1 and (not no_vacias or len(no_vacias[0]) > 40):
@@ -319,6 +332,96 @@ def leer_excel_completo(path: Path) -> list[str]:
     return filas_texto
 
 
+def _strip_accents(s: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
+
+
+_MESES_ABBR_ARCHIVO = {"ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}
+
+
+def _extraer_impuesto_percepciones(filename: str) -> Optional[str]:
+    """Deduce 'Percepciones IIBB {provincia}' del NOMBRE del archivo.
+
+    El Excel de percepciones no trae el nombre del impuesto explícito en ninguna celda
+    (a diferencia de Retenciones, que sí lo trae) — el nombre de archivo es la única fuente confiable.
+    """
+    palabras = Path(filename).stem.split("-")
+    idx = next(
+        (i for i, p in enumerate(palabras) if _strip_accents(p.lower()) == "percepcion"),
+        None,
+    )
+    if idx is None or idx + 2 >= len(palabras):
+        return None
+    provincia_palabras = []
+    for p in palabras[idx + 2:]:
+        pl = _strip_accents(p.lower())
+        if pl in _MESES_ABBR_ARCHIVO or re.fullmatch(r"20\d{2}", p):
+            break
+        provincia_palabras.append(p)
+    if not provincia_palabras:
+        return None
+    return f"Percepciones IIBB {' '.join(provincia_palabras)}"
+
+
+def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
+    """Suma en Python (100% preciso, sin límite de filas ni de tokens) TODA la tabla de
+    detalle de un Excel de percepciones: base_imponible y monto_percibido."""
+    def _norm(s: str) -> str:
+        return _strip_accents(s.strip().lower())
+
+    idx_base = idx_alic = idx_monto = header_idx = None
+    for i, linea in enumerate(filas):
+        celdas_norm = [_norm(c) for c in linea.split("\t")]
+        if "base imponible" in celdas_norm:
+            idx_base = celdas_norm.index("base imponible")
+            if "alicuota" in celdas_norm:
+                idx_alic = celdas_norm.index("alicuota")
+            for cand in ("monto percibido", "importe percibido"):
+                if cand in celdas_norm:
+                    idx_monto = celdas_norm.index(cand)
+                    break
+            header_idx = i
+            break
+
+    if header_idx is None or idx_base is None or idx_monto is None:
+        return None
+
+    total_base = total_monto = 0.0
+    alicuota_val = None
+    n_filas = 0
+    for linea in filas[header_idx + 1:]:
+        celdas = linea.split("\t")
+        if len(celdas) <= max(idx_base, idx_monto):
+            continue
+        try:
+            base_v = float(celdas[idx_base])
+            monto_v = float(celdas[idx_monto])
+        except ValueError:
+            continue
+        total_base += base_v
+        total_monto += monto_v
+        n_filas += 1
+        if alicuota_val is None and idx_alic is not None and idx_alic < len(celdas):
+            try:
+                alicuota_val = float(celdas[idx_alic])
+            except ValueError:
+                pass
+
+    if n_filas == 0:
+        return None
+
+    alicuota_str = None
+    if alicuota_val is not None:
+        alicuota_str = f"{alicuota_val * 100:.2f}".replace(".", ",") + " %"
+
+    return {
+        "filas_tabla": n_filas,
+        "base_imponible": round(total_base, 2),
+        "monto_percibido": round(total_monto, 2),
+        "alicuota": alicuota_str,
+    }
+
+
 def procesar_archivo_con_gemini(
     archivo_path: str, seccion: str, prompt_custom: Optional[str] = None
 ) -> dict:
@@ -350,6 +453,8 @@ def procesar_archivo_con_gemini(
         sz = -1
     print(f"[DBG-GASTOS] tamaño={sz} bytes", flush=True)
 
+    calc_percepciones = None
+
     try:
         client = genai.Client(api_key=api_key)
 
@@ -364,7 +469,24 @@ def procesar_archivo_con_gemini(
             )
         elif ext in (".xlsx", ".xls"):
             filas_todas = leer_excel_completo(path)
-            filas_texto = filas_todas[:500]
+            filas_sin_hoja = [f for f in filas_todas if not f.startswith("=== HOJA:")]
+
+            if seccion == "percepciones":
+                # Los totales se calculan en Python (sin límite de filas/tokens); a Gemini
+                # solo se le manda la cabecera para que extraiga los campos de texto.
+                calc_percepciones = _calcular_totales_percepciones(filas_sin_hoja)
+                if calc_percepciones:
+                    print(
+                        f"[DBG-PERCEPCIONES-CALC] filas_tabla={calc_percepciones['filas_tabla']} "
+                        f"base_imponible_calc=${calc_percepciones['base_imponible']} "
+                        f"monto_percibido_calc=${calc_percepciones['monto_percibido']}",
+                        flush=True,
+                    )
+                corte = _cortar_en_detalle(filas_sin_hoja)
+                filas_texto = filas_sin_hoja[:corte] or filas_sin_hoja[:20]
+            else:
+                filas_texto = filas_todas[:500]
+
             print(f"[DBG-GASTOS] filas_totales={len(filas_todas)} filas_enviadas={len(filas_texto)}", flush=True)
             print(f"[DBG-GASTOS] primeras_3={filas_texto[:3]}", flush=True)
             print(f"[DBG-GASTOS] ultimas_3_enviadas={filas_texto[-3:]}", flush=True)
@@ -392,6 +514,17 @@ def procesar_archivo_con_gemini(
         print(f"[DBG-GASTOS] respuesta_gemini={raw[:400]!r}", flush=True)
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group()) if m else {"respuesta_raw": raw}
+
+        if seccion == "percepciones":
+            impuesto_calc = _extraer_impuesto_percepciones(path.name)
+            if impuesto_calc:
+                data["impuesto"] = impuesto_calc
+            if calc_percepciones:
+                data["base_imponible"] = calc_percepciones["base_imponible"]
+                data["monto_percibido"] = calc_percepciones["monto_percibido"]
+                if calc_percepciones["alicuota"]:
+                    data["alicuota"] = calc_percepciones["alicuota"]
+
         return {"success": True, "data": data, "error": None, "prompt_used": prompt}
 
     except Exception as exc:
@@ -447,6 +580,21 @@ def _build_gastos(user_id: int) -> None:
         dot_refs:         Dict[str, Any]  = {}
         subtitle_ref:     list            = [None]
         final_btn_ref:    list            = [None]
+        _seccion_botones: Dict[str, dict] = {}
+
+        def _sec_state(sk: str) -> dict:
+            return _seccion_botones.setdefault(sk, {"proc": None, "borrar": None, "aprobar": []})
+
+        def _set_procesando(sk: str, procesando: bool) -> None:
+            """Deshabilita/habilita Procesar Todo, Borrar Todos y los Aprobar de popups abiertos de esa sección."""
+            st = _sec_state(sk)
+            for key in ("proc", "borrar"):
+                b = st.get(key)
+                if b:
+                    b.disable() if procesando else b.enable()
+            for b in st.get("aprobar", []):
+                b.disable() if procesando else b.enable()
+                b.style(f"opacity:{'0.5' if procesando else '1'}")
 
         def _sec_verde(sk: str) -> bool:
             fs = archivos_por_sec.get(sk, [])
@@ -877,6 +1025,7 @@ def _build_gastos(user_id: int) -> None:
                             reproc_btn_ref: list = [None]
 
                             async def _reprocesar() -> None:
+                                _set_procesando(seccion, True)
                                 if reproc_btn_ref[0]:
                                     reproc_btn_ref[0].disable()
                                     reproc_btn_ref[0].text = "Procesando..."
@@ -902,8 +1051,8 @@ def _build_gastos(user_id: int) -> None:
                                 else:
                                     reproc_lbl.text = f"Error: {result['error']}"
                                 if reproc_btn_ref[0]:
-                                    reproc_btn_ref[0].enable()
                                     reproc_btn_ref[0].text = "Re-procesar"
+                                _set_procesando(seccion, False)
 
                             async def _aprobar() -> None:
                                 mark_gastos_procesado(fa["id"])
@@ -929,9 +1078,16 @@ def _build_gastos(user_id: int) -> None:
                                     f"background:{_YELLOW};color:white;font-size:12px"
                                 ).props("dense")
                                 reproc_btn_ref[0] = _rb
-                                ui.button("Aprobar", on_click=_aprobar).style(
+                                _ab = ui.button("Aprobar", on_click=_aprobar).style(
                                     f"background:{_GREEN};color:white;font-size:12px"
                                 ).props("dense")
+                                _sec_state(seccion)["aprobar"].append(_ab)
+
+                                def _unregister_aprobar(_b=_ab, _sk=seccion):
+                                    _lst = _sec_state(_sk)["aprobar"]
+                                    if _b in _lst:
+                                        _lst.remove(_b)
+                                dlg.on("hide", _unregister_aprobar)
 
                             # Prompt desactualizado → dialog Sí/No para actualizar
                             if seccion == "facturas_ml" and "lineas_antes_subtotal" not in prompt_init:
@@ -1192,20 +1348,18 @@ def _build_gastos(user_id: int) -> None:
                     btn_txt   = "Reprocesar Todos" if is_proc else "Procesar Todo"
 
                     async def _procesar(sk_=sk) -> None:
-                        if proc_btn_ref[0]:
-                            proc_btn_ref[0].disable()
+                        _set_procesando(sk_, True)
                         if proc_btn_html_ref[0]:
                             proc_btn_html_ref[0].content = _proc_btn_html(
                                 "Procesando...", "ti-loader-2"
                             )
-                        if borrar_btn_ref[0]:
-                            borrar_btn_ref[0].disable()
                         pl = proc_lbl_ref[0]
                         fs = archivos_por_sec.get(sk_, [])
                         if not fs:
                             ui.notify("No hay archivos para procesar", color="warning")
                             if proc_btn_html_ref[0]:
                                 proc_btn_html_ref[0].content = _proc_btn_html(btn_txt, btn_icon)
+                            _set_procesando(sk_, False)
                             _refresh_proc_btn(sk_)
                             if borrar_btn_ref[0]:
                                 borrar_btn_ref[0].enable() if archivos_por_sec.get(sk_) else borrar_btn_ref[0].disable()
@@ -1244,6 +1398,7 @@ def _build_gastos(user_id: int) -> None:
                             await upload_ref[0].run_method("reset")
                         if proc_btn_html_ref[0]:
                             proc_btn_html_ref[0].content = _proc_btn_html(btn_txt, btn_icon)
+                        _set_procesando(sk_, False)
                         _refresh_proc_btn(sk_)
                         if borrar_btn_ref[0]:
                             cnt_now = len(archivos_por_sec.get(sk_, []))
@@ -1256,6 +1411,7 @@ def _build_gastos(user_id: int) -> None:
                         _html_el = ui.html(_proc_btn_html(btn_txt, btn_icon))
                         proc_btn_html_ref[0] = _html_el
                     proc_btn_ref[0] = _proc_btn
+                    _sec_state(sk)["proc"] = _proc_btn
                     _refresh_proc_btn(sk)
 
                     def _confirm_borrar_todos(sk_=sk) -> None:
@@ -1307,6 +1463,7 @@ def _build_gastos(user_id: int) -> None:
                     if not cnt0:
                         _borrar_btn.disable()
                     borrar_btn_ref[0] = _borrar_btn
+                    _sec_state(sk)["borrar"] = _borrar_btn
 
         # ── Grid de tarjetas ──────────────────────────────────────────────────
         with content:
