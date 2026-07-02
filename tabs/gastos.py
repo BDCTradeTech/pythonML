@@ -361,6 +361,13 @@ def _strip_accents(s: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
 
 
+def _concepto_norm(s: str) -> str:
+    """Normaliza un concepto de factura para matching por substring: sin acentos, minúsculas,
+    sin puntuación — así "I.V.A. INSC.21,00%" matchea "iva" igual que "IVA 21%"."""
+    s = _strip_accents(str(s or "").lower())
+    return "".join(c for c in s if c.isalnum())
+
+
 _MESES_ABBR_ARCHIVO = {"ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"}
 
 
@@ -1486,7 +1493,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     iva_21_total = round(sum(
         l.get("monto") or 0.0
         for fd in facturas_data for l in _lineas_intermedias(fd)
-        if "iva" in _strip_accents(str(l.get("concepto", "")).lower()) and "21" in str(l.get("concepto", ""))
+        if "iva" in _concepto_norm(l.get("concepto", "")) and "21" in str(l.get("concepto", ""))
     ), 2)
     percepciones_ml_total = round(sum(
         l.get("monto") or 0.0
@@ -1625,6 +1632,34 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         pagos_arca_por_tipo[tipo] += d.get("importe_total_a_pagar") or 0.0
     pagos_arca_por_tipo = {k: round(v, 2) for k, v in pagos_arca_por_tipo.items()}
 
+    # --- IVA: Débito Fiscal vs Crédito Fiscal vs Pago a ARCA ---
+    ventas_gravadas = fact.get("total_ingresos") or 0.0
+    iva_debito_fiscal = round(ventas_gravadas * 0.105 / 1.105, 2)
+    iva_credito_fiscal_facturas = round(sum(
+        l.get("monto") or 0.0
+        for fd in facturas_data for l in _lineas_intermedias(fd)
+        if "iva" in _concepto_norm(l.get("concepto", ""))
+        and "percep" not in _concepto_norm(l.get("concepto", ""))
+    ), 2)
+    retenciones_iva = round(sum(
+        r["neto"] for r in retenciones_detalle
+        if "iva" in _concepto_norm(r["impuesto"])
+    ), 2)
+    iva_a_pagar_estimado = round(iva_debito_fiscal - iva_credito_fiscal_facturas - retenciones_iva, 2)
+    iva_pagado_arca = pagos_arca_por_tipo.get("IVA", 0.0)
+    diff_iva = round(iva_a_pagar_estimado - iva_pagado_arca, 2)
+    _umbral_iva = max(abs(iva_pagado_arca), abs(iva_a_pagar_estimado)) * 0.05
+    iva_analisis = {
+        "ventas_gravadas": ventas_gravadas,
+        "iva_debito_fiscal": iva_debito_fiscal,
+        "iva_credito_fiscal_facturas": iva_credito_fiscal_facturas,
+        "retenciones_iva": retenciones_iva,
+        "iva_a_pagar_estimado": iva_a_pagar_estimado,
+        "iva_pagado_arca": iva_pagado_arca,
+        "diff": diff_iva,
+        "ok": abs(diff_iva) <= _umbral_iva,
+    }
+
     # --- Cruce Impuestos vs Pagos ARCA, por categoría ---
     categorias = sorted(set(creditos_fiscales) | {_clasificar_impuesto(t) for t in pagos_arca_por_tipo})
     cruce_impuestos_pagos = []
@@ -1641,6 +1676,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         "percepciones_facturas_ml": perc_facturas,
         "percepciones_reportes": perc_reportes,
         "cruce_percepciones": cruce_percepciones,
+        "iva_analisis": iva_analisis,
         "retenciones_detalle": retenciones_detalle,
         "total_retenciones_neto": total_retenciones_neto,
         "creditos_fiscales": creditos_fiscales,
@@ -1900,7 +1936,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     desc = v["descuentos_aplicados"]
     s.append(_row(
         "Descuentos aplicados",
-        f'{_ar_money(desc["monto"])} ({_ar_num(desc["cantidad"] or 0)} op.)',
+        f'{_ar_money(desc["monto"])} ({_ar_num(desc["cantidad"] or 0)} descuentos)',
     ))
     s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"])))
     s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"])))
@@ -1963,6 +1999,26 @@ def _render_consolidado_html(resultado: dict) -> str:
         s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK"], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+
+    s.append(_sec("ti-percentage", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA"))
+    iva = imp["iva_analisis"]
+    s.append(_row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"])))
+    s.append(_row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"])))
+    s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"])))
+    s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"])))
+    s.append(_row("IVA a Pagar Estimado", _ar_money(iva["iva_a_pagar_estimado"]), bold=True))
+    s.append(_row("IVA Pagado a ARCA", _ar_money(iva["iva_pagado_arca"])))
+    _iva_diff_color = _GREEN if iva["ok"] else _RED
+    s.append(
+        '<div style="display:flex;justify-content:space-between;padding:5px 14px;'
+        f'font-size:12px;font-weight:700"><span style="color:#555">Diferencia</span>'
+        f'<span style="color:{_iva_diff_color}">{_ar_money(iva["diff"])}</span></div>'
+    )
+    s.append(
+        '<div style="padding:4px 14px 8px;font-size:10px;color:#9e9e9e;font-style:italic">'
+        "El IVA débito fiscal se calcula al 10,5% asumiendo que todas las ventas están gravadas a esa "
+        "alícuota. Puede diferir del real si hay ventas al 21% u otras alícuotas.</div>"
+    )
 
     s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
     if imp["retenciones_detalle"]:
