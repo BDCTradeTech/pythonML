@@ -19,9 +19,11 @@ from db import (
     delete_gastos_archivo,
     get_app_config,
     get_gastos_archivos,
+    get_gastos_consolidado,
     get_gastos_prompt,
     insert_gastos_archivo,
     mark_gastos_procesado,
+    save_gastos_consolidado,
     update_gastos_extraccion,
     upsert_gastos_prompt,
     user_can_access_tab,
@@ -1315,6 +1317,674 @@ def _calcular_pagos_facturas(filas: list) -> Optional[dict]:
     }
 
 
+# ---------------------------------------------------------------------------
+# Análisis consolidado del período (cruza las 6 secciones de Gastos)
+# ---------------------------------------------------------------------------
+
+
+def _ar_money(v) -> str:
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    return f"$ {'-' if n < 0 else ''}{s}"
+
+
+def _ed(archivo: Optional[Dict[str, Any]]) -> dict:
+    """Parsea extracted_data de un registro de gastos_archivos; {} si no hay o es inválido."""
+    if not archivo:
+        return {}
+    try:
+        return json.loads(archivo.get("extracted_data") or "{}") or {}
+    except Exception:
+        return {}
+
+
+def _clasificar_reportes_ml(archivos: list) -> Dict[str, Optional[dict]]:
+    """Separa los archivos de 'Reportes MercadoLibre' del período por subtipo, según el nombre."""
+    out: Dict[str, Optional[dict]] = {
+        "facturacion_ml": None, "pagos_facturas": None,
+        "nc_ml": None, "nc_flex": None, "nd_flex": None,
+    }
+    for f in archivos:
+        fn = f.get("filename", "")
+        if _es_facturacion_ml(fn):
+            out["facturacion_ml"] = f
+        elif _es_pagos_facturas(fn):
+            out["pagos_facturas"] = f
+        elif _es_notas_credito_ml(fn):
+            out["nc_ml"] = f
+        elif _es_notas_credito(fn):
+            out["nc_flex"] = f
+        elif _es_notas_debito(fn):
+            out["nd_flex"] = f
+    return out
+
+
+def _buscar_cargo_neto(desglose: dict, *nombres_norm: str) -> float:
+    """Busca en desglose_cargos (de analizar_facturacion_ml) el/los label(s) normalizados
+    dados y devuelve total + anulacion_monto (neto de anulaciones)."""
+    total = 0.0
+    for label, info in (desglose or {}).items():
+        if _strip_accents(label.strip().lower()) in nombres_norm:
+            total += (info.get("total") or 0.0) + (info.get("anulacion_monto") or 0.0)
+    return round(total, 2)
+
+
+_PROVINCIAS_ESPECIALES = {"caba": "CABA"}
+
+
+def _fmt_provincia(nombre: str) -> str:
+    n = _strip_accents(nombre.strip().lower())
+    return _PROVINCIAS_ESPECIALES.get(n, nombre.strip().title())
+
+
+def _provincia_de_concepto_factura(concepto: str) -> Optional[str]:
+    """De 'PERCEPCION IIBB CORRIENTES' o 'PERCEPCION IVA CABA' devuelve 'Corrientes'/'CABA'."""
+    n = _strip_accents(concepto.strip().lower())
+    if "percep" not in n:
+        return None
+    resto = n
+    for kw in ("percepcion", "percepc.", "iibb", "iva"):
+        resto = resto.replace(kw, " ")
+    resto = " ".join(resto.split()).strip()
+    return _fmt_provincia(resto) if resto else None
+
+
+def _clasificar_impuesto(nombre: str) -> str:
+    """Clasifica un nombre de impuesto (Retenciones/Pagos ARCA) en una categoría común
+    para poder cruzarlo contra percepciones y pagos a ARCA."""
+    n = _strip_accents((nombre or "").strip().lower())
+    if "sirtac" in n:
+        return "SIRTAC"
+    if "credito" in n and "debito" in n:
+        return "Impuesto Créditos y Débitos"
+    if "ganancias" in n:
+        return "Ganancias"
+    if "iibb" in n or "ingresos brutos" in n or "convenio multilateral" in n or "sifere" in n:
+        return "IIBB"
+    if "iva" in n:
+        return "IVA"
+    return "Otros"
+
+
+def _neto_gravado(fd: dict) -> float:
+    v = fd.get("neto_gravado")
+    if v is None:
+        v = fd.get("subtotal")
+    return v or 0.0
+
+
+def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
+    """Cruza los datos extraídos de las 6 secciones de Gastos (Facturas ML, Retenciones,
+    Percepciones, Pagos ARCA, Reportes ML, Análisis ML) del período dado y arma el reporte
+    consolidado que muestra el modal de 'Procesar Análisis Final'.
+
+    Fase 1: estructura y cálculos base sobre los datos ya extraídos por archivo — los
+    cruces y validaciones se van a ir refinando en próximas iteraciones."""
+    archivos: Dict[str, list] = {
+        sk: [f for f in get_gastos_archivos(user_id, periodo, sk) if f.get("extraction_status") == "procesado"]
+        for sk, _, _, _, _ in _SECCIONES
+    }
+    faltantes = [lbl for sk, lbl, _, _, _ in _SECCIONES if not archivos.get(sk)]
+
+    # --- Reportes ML clasificados por subtipo ---
+    reportes = _clasificar_reportes_ml(archivos.get("reportes_ml", []))
+    fact       = _ed(reportes["facturacion_ml"])
+    nc_ml      = _ed(reportes["nc_ml"])
+    nc_flex    = _ed(reportes["nc_flex"])
+    nd_flex    = _ed(reportes["nd_flex"])
+
+    # --- Facturas ML ---
+    facturas_data = [_ed(f) for f in archivos.get("facturas_ml", [])]
+
+    def _lineas_intermedias(fd: dict) -> list:
+        return fd.get("lineas_intermedias") or []
+
+    total_facturas_ml = round(sum(fd.get("total") or 0.0 for fd in facturas_data), 2)
+    cantidad_facturas = len(facturas_data)
+    neto_gravado_total = round(sum(_neto_gravado(fd) for fd in facturas_data), 2)
+    iva_21_total = round(sum(
+        l.get("monto") or 0.0
+        for fd in facturas_data for l in _lineas_intermedias(fd)
+        if "iva" in _strip_accents(str(l.get("concepto", "")).lower()) and "21" in str(l.get("concepto", ""))
+    ), 2)
+    percepciones_ml_total = round(sum(
+        l.get("monto") or 0.0
+        for fd in facturas_data for l in _lineas_intermedias(fd)
+        if "percep" in _strip_accents(str(l.get("concepto", "")).lower())
+    ), 2)
+
+    # Percepciones por provincia según las Facturas ML
+    perc_facturas: Dict[str, float] = defaultdict(float)
+    for fd in facturas_data:
+        for l in _lineas_intermedias(fd):
+            prov = _provincia_de_concepto_factura(str(l.get("concepto", "")))
+            if prov:
+                perc_facturas[prov] += l.get("monto") or 0.0
+    perc_facturas = {k: round(v, 2) for k, v in perc_facturas.items()}
+
+    # --- SECCIÓN 1 — Ventas ---
+    seccion_ventas = {
+        "total_ingresos_brutos": fact.get("total_ingresos"),
+        "cantidad_operaciones": fact.get("cantidad_operaciones"),
+        "ticket_promedio": fact.get("ticket_promedio"),
+        "descuentos_aplicados": {
+            "monto": fact.get("total_descuentos"),
+            "cantidad": fact.get("cantidad_descuentos"),
+        },
+        "envios_pagados_por_comprador": fact.get("envios_pagados_comprador"),
+        "notas_credito_ml": nc_ml.get("total"),
+        "notas_credito_flex": nc_flex.get("total_bonificado"),
+        "notas_debito_flex": nd_flex.get("total_debitado"),
+        "_incompleto": reportes["facturacion_ml"] is None,
+    }
+
+    # --- SECCIÓN 2 — Costos de MercadoLibre ---
+    desglose = fact.get("desglose_cargos", {})
+    comisiones_venta      = _buscar_cargo_neto(desglose, "cargo por vender")
+    costos_envio_ml_neto  = _buscar_cargo_neto(desglose, "cargo por envios de mercado libre")
+    cuotas                = _buscar_cargo_neto(desglose, "costo por ofrecer cuotas")
+    total_valor_del_cargo = fact.get("facturacion_neta")
+    facturacion_bruta     = fact.get("facturacion_bruta")
+    diff_facturado_vs_reporte = (
+        round(total_facturas_ml - total_valor_del_cargo, 2)
+        if total_valor_del_cargo is not None else None
+    )
+    seccion_costos_ml = {
+        "comisiones_venta": comisiones_venta,
+        "costos_envio_ml_neto": costos_envio_ml_neto,
+        "cuotas": cuotas,
+        "total_valor_del_cargo": total_valor_del_cargo,
+        "facturacion_bruta": facturacion_bruta,
+        "total_facturas_ml": total_facturas_ml,
+        "cantidad_facturas": cantidad_facturas,
+        "neto_gravado_total": neto_gravado_total,
+        "iva_21_total": iva_21_total,
+        "percepciones_ml_total": percepciones_ml_total,
+        "diff_facturado_vs_reporte": diff_facturado_vs_reporte,
+        "diff_alerta": diff_facturado_vs_reporte is not None and abs(diff_facturado_vs_reporte) > 1000,
+        "_incompleto": not facturas_data or reportes["facturacion_ml"] is None,
+    }
+
+    # --- Percepciones (reportes de Percepciones), por provincia ---
+    perc_reportes: Dict[str, float] = defaultdict(float)
+    for f in archivos.get("percepciones", []):
+        d = _ed(f)
+        etiqueta = _extraer_impuesto_percepciones(f.get("filename", "")) or d.get("impuesto") or ""
+        prov = etiqueta.replace("Percepciones IIBB", "").strip() or "Sin identificar"
+        perc_reportes[_fmt_provincia(prov)] += d.get("monto_percibido") or 0.0
+    perc_reportes = {k: round(v, 2) for k, v in perc_reportes.items()}
+
+    cruce_percepciones = []
+    for prov in sorted(set(perc_facturas) | set(perc_reportes)):
+        a, b = perc_facturas.get(prov, 0.0), perc_reportes.get(prov, 0.0)
+        cruce_percepciones.append({
+            "provincia": prov, "facturas_ml": a, "reportes": b,
+            "diff": round(a - b, 2), "ok": abs(a - b) < 1,
+        })
+
+    # --- Retenciones sufridas ---
+    retenciones_detalle = []
+    total_retenciones_neto = 0.0
+    for f in archivos.get("retenciones", []):
+        d = _ed(f)
+        neto = (d.get("importe_retenido") or 0.0) - (d.get("importe_devuelto") or 0.0)
+        retenciones_detalle.append({
+            "impuesto": d.get("impuesto") or f.get("filename"),
+            "base_imponible": d.get("base_imponible"),
+            "importe_retenido": d.get("importe_retenido"),
+            "importe_devuelto": d.get("importe_devuelto"),
+            "neto": round(neto, 2),
+        })
+        total_retenciones_neto += neto
+    total_retenciones_neto = round(total_retenciones_neto, 2)
+
+    # --- Créditos fiscales (percepciones + retenciones) por categoría de impuesto ---
+    creditos_fiscales: Dict[str, float] = defaultdict(float)
+    for monto in perc_reportes.values():
+        creditos_fiscales["IIBB"] += monto
+    for r in retenciones_detalle:
+        creditos_fiscales[_clasificar_impuesto(r["impuesto"])] += r["neto"]
+    creditos_fiscales = {k: round(v, 2) for k, v in creditos_fiscales.items()}
+
+    # --- Pagos a ARCA por tipo ---
+    pagos_arca_por_tipo: Dict[str, float] = defaultdict(float)
+    for f in archivos.get("pagos_arca", []):
+        d = _ed(f)
+        tipo = d.get("tipo") or "Otro"
+        pagos_arca_por_tipo[tipo] += d.get("importe_total_a_pagar") or 0.0
+    pagos_arca_por_tipo = {k: round(v, 2) for k, v in pagos_arca_por_tipo.items()}
+
+    # --- Cruce Impuestos vs Pagos ARCA, por categoría ---
+    categorias = sorted(set(creditos_fiscales) | {_clasificar_impuesto(t) for t in pagos_arca_por_tipo})
+    cruce_impuestos_pagos = []
+    for cat in categorias:
+        credito = creditos_fiscales.get(cat, 0.0)
+        pagado = round(sum(v for t, v in pagos_arca_por_tipo.items() if _clasificar_impuesto(t) == cat), 2)
+        neto = round(credito - pagado, 2)
+        cruce_impuestos_pagos.append({
+            "concepto": cat, "total_credito": credito, "pagado_arca": pagado, "neto": neto,
+            "saldo": "A favor" if neto > 0 else ("A pagar" if neto < 0 else "Sin saldo"),
+        })
+
+    seccion_impuestos = {
+        "percepciones_facturas_ml": perc_facturas,
+        "percepciones_reportes": perc_reportes,
+        "cruce_percepciones": cruce_percepciones,
+        "retenciones_detalle": retenciones_detalle,
+        "total_retenciones_neto": total_retenciones_neto,
+        "creditos_fiscales": creditos_fiscales,
+        "pagos_arca_por_tipo": pagos_arca_por_tipo,
+        "cruce_impuestos_pagos": cruce_impuestos_pagos,
+        "_incompleto": (
+            not archivos.get("retenciones") or not archivos.get("percepciones")
+            or not archivos.get("pagos_arca")
+        ),
+    }
+
+    # --- SECCIÓN 4 — Flujo financiero neto ---
+    ingresos_brutos = fact.get("total_ingresos") or 0.0
+    facturacion_neta = fact.get("facturacion_neta") or 0.0
+    otros_costos_ml = round(facturacion_neta - comisiones_venta - costos_envio_ml_neto - cuotas, 2)
+    total_percepciones_ml = fact.get("total_percepciones") or 0.0
+    nd_flex_total = nd_flex.get("total_debitado") or 0.0
+    nc_ml_total = nc_ml.get("total") or 0.0
+    envios_comprador = fact.get("envios_pagados_comprador") or 0.0
+
+    lineas_flujo = [
+        {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2)},
+        {"concepto": "Comisiones ML netas", "monto": round(-comisiones_venta, 2)},
+        {"concepto": "Costos de envío ML netos", "monto": round(-costos_envio_ml_neto, 2)},
+        {"concepto": "Cuotas", "monto": round(-cuotas, 2)},
+        {"concepto": "Otros costos ML", "monto": round(-otros_costos_ml, 2)},
+        {"concepto": "Percepciones (van a AFIP)", "monto": round(-total_percepciones_ml, 2)},
+        {"concepto": "Retenciones sufridas", "monto": round(-total_retenciones_neto, 2)},
+        {"concepto": "Notas de débito EnvíosFlex", "monto": round(-nd_flex_total, 2)},
+        {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2)},
+        {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2)},
+    ]
+    cobrado_neto = round(sum(l["monto"] for l in lineas_flujo), 2)
+    seccion_flujo = {"lineas": lineas_flujo, "cobrado_neto": cobrado_neto}
+
+    # --- SECCIÓN 5 — Validaciones y alertas ---
+    validaciones = []
+
+    if total_valor_del_cargo is None or not facturas_data:
+        validaciones.append({
+            "check": "Facturas ML suman coherente con Facturación neta del reporte",
+            "status": "warn", "detalle": "Datos incompletos para comparar.",
+        })
+    elif abs(diff_facturado_vs_reporte) <= 1000:
+        validaciones.append({
+            "check": "Facturas ML suman coherente con Facturación neta del reporte",
+            "status": "ok",
+            "detalle": f"Facturas ML suman {_ar_money(total_facturas_ml)} — coincide con Facturación neta.",
+        })
+    else:
+        validaciones.append({
+            "check": "Facturas ML suman coherente con Facturación neta del reporte",
+            "status": "error",
+            "detalle": (
+                f"Facturas ML ({_ar_money(total_facturas_ml)}) vs Facturación neta "
+                f"({_ar_money(total_valor_del_cargo)}) — diff {_ar_money(diff_facturado_vs_reporte)}"
+            ),
+        })
+
+    if not cruce_percepciones:
+        validaciones.append({
+            "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
+            "status": "warn", "detalle": "Sin datos de percepciones para cruzar.",
+        })
+    else:
+        malas = [x for x in cruce_percepciones if not x["ok"]]
+        if malas:
+            detalle = "; ".join(
+                f"{x['provincia']}: Facturas {_ar_money(x['facturas_ml'])} vs Reporte "
+                f"{_ar_money(x['reportes'])} (diff {_ar_money(x['diff'])})"
+                for x in malas
+            )
+            validaciones.append({
+                "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
+                "status": "error", "detalle": detalle,
+            })
+        else:
+            validaciones.append({
+                "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
+                "status": "ok", "detalle": "Todas las jurisdicciones coinciden.",
+            })
+
+    if faltantes:
+        validaciones.append({
+            "check": "Todos los archivos de las secciones están procesados y aprobados",
+            "status": "warn", "detalle": f"Falta procesar: {', '.join(faltantes)}.",
+        })
+    else:
+        validaciones.append({
+            "check": "Todos los archivos de las secciones están procesados y aprobados",
+            "status": "ok", "detalle": "Las 6 secciones tienen archivos procesados.",
+        })
+
+    if not cruce_impuestos_pagos:
+        validaciones.append({
+            "check": "Pagos a ARCA cubren los impuestos declarados",
+            "status": "warn", "detalle": "Sin datos suficientes para el cruce.",
+        })
+    else:
+        saldos_a_pagar = [x for x in cruce_impuestos_pagos if x["neto"] < 0]
+        if saldos_a_pagar:
+            detalle = "; ".join(
+                f"{x['concepto']}: falta pagar {_ar_money(-x['neto'])}" for x in saldos_a_pagar
+            )
+            validaciones.append({
+                "check": "Pagos a ARCA cubren los impuestos declarados",
+                "status": "error", "detalle": detalle,
+            })
+        else:
+            validaciones.append({
+                "check": "Pagos a ARCA cubren los impuestos declarados",
+                "status": "ok", "detalle": "Los pagos a ARCA cubren los impuestos declarados.",
+            })
+
+    if ingresos_brutos:
+        pct_retenciones = abs(total_retenciones_neto) / ingresos_brutos * 100
+        validaciones.append({
+            "check": "No hay retenciones inusuales (> 15% de la facturación)",
+            "status": "warn" if pct_retenciones > 15 else "ok",
+            "detalle": f"Retenciones representan {_ar_pct_simple(pct_retenciones)} de la facturación.",
+        })
+    else:
+        validaciones.append({
+            "check": "No hay retenciones inusuales (> 15% de la facturación)",
+            "status": "warn", "detalle": "Sin facturación para calcular el ratio.",
+        })
+
+    cargo_venta = next(
+        (info for label, info in desglose.items() if _strip_accents(label.lower()) == "cargo por vender"),
+        None,
+    )
+    if cargo_venta is None:
+        validaciones.append({
+            "check": "Ratio de anulaciones aceptable (< 10%)",
+            "status": "warn", "detalle": "Sin datos de cargos por venta.",
+        })
+    else:
+        prop = cargo_venta.get("proporcion_anulaciones") or 0.0
+        validaciones.append({
+            "check": "Ratio de anulaciones aceptable (< 10%)",
+            "status": "ok" if prop < 10 else "warn",
+            "detalle": f"Anulaciones: {_ar_pct_simple(prop)} de las ventas.",
+        })
+
+    # --- SECCIÓN 6 — Panorama impositivo ---
+    panorama = []
+    for cat in ("IIBB", "IVA", "Ganancias", "Impuesto Créditos y Débitos"):
+        percepciones_cat = round(sum(perc_reportes.values()), 2) if cat == "IIBB" else 0.0
+        retenciones_cat = round(sum(
+            r["neto"] for r in retenciones_detalle if _clasificar_impuesto(r["impuesto"]) == cat
+        ), 2)
+        pagado_cat = round(sum(
+            v for t, v in pagos_arca_por_tipo.items() if _clasificar_impuesto(t) == cat
+        ), 2)
+        saldo = round(percepciones_cat + retenciones_cat - pagado_cat, 2)
+        if saldo > 0:
+            recomendacion = "Podés compensar contra el próximo período"
+        elif saldo < 0:
+            recomendacion = f"Tenés que pagar {_ar_money(abs(saldo))} en la próxima DDJJ"
+        else:
+            recomendacion = "Sin saldo pendiente"
+        panorama.append({
+            "impuesto": cat,
+            "total_percepciones": percepciones_cat,
+            "total_retenciones": retenciones_cat,
+            "total_pagado_arca": pagado_cat,
+            "saldo": saldo,
+            "recomendacion": recomendacion,
+        })
+
+    return {
+        "user_id": user_id,
+        "periodo": periodo,
+        "faltantes": faltantes,
+        "ventas": seccion_ventas,
+        "costos_ml": seccion_costos_ml,
+        "impuestos": seccion_impuestos,
+        "flujo_financiero": seccion_flujo,
+        "validaciones": validaciones,
+        "panorama_impositivo": panorama,
+    }
+
+
+def _ar_pct_simple(n: float) -> str:
+    return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " %"
+
+
+def _render_consolidado_html(resultado: dict) -> str:
+    """Arma el HTML de las 6 secciones del análisis consolidado para el modal."""
+    v         = resultado["ventas"]
+    c         = resultado["costos_ml"]
+    imp       = resultado["impuestos"]
+    flujo     = resultado["flujo_financiero"]
+    validaciones = resultado["validaciones"]
+    panorama  = resultado["panorama_impositivo"]
+    faltantes = resultado["faltantes"]
+
+    _SEP = (
+        f"font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
+        f"color:{_HDR_COLOR};background:{_HDR_BG};padding:10px 14px;"
+        f"border-bottom:2px solid {_HDR_BORDER};display:flex;align-items:center;gap:8px"
+    )
+    _WRAP = "border-bottom:1px solid #e5e5e5;padding-bottom:14px;margin-bottom:14px"
+
+    def _sec(icon: str, titulo: str) -> str:
+        return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span></div>'
+
+    def _row(label, value, bold: bool = False) -> str:
+        w = ";font-weight:700" if bold else ""
+        return (
+            '<div style="display:flex;justify-content:space-between;padding:3px 14px;'
+            f'border-bottom:1px solid #f5f5f5;font-size:12px{w}">'
+            f'<span style="color:#555">{label}</span>'
+            f'<span style="color:{_BLUE};font-variant-numeric:tabular-nums">{value}</span></div>'
+        )
+
+    def _incompleto_html() -> str:
+        return (
+            '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
+            "Datos incompletos</div>"
+        )
+
+    def _tabla(headers: list, filas: list) -> str:
+        ths = "".join(
+            f'<th style="border:1px solid #d0d0d0;padding:3px 8px;background:#eef3f8;'
+            f'font-size:10px;font-weight:600;color:{_HDR_COLOR};text-align:left">{h}</th>'
+            for h in headers
+        )
+        body = ""
+        for fila in filas:
+            tds = "".join(
+                f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333">{c}</td>'
+                for c in fila
+            )
+            body += f"<tr>{tds}</tr>"
+        return (
+            '<table style="border-collapse:collapse;width:100%;margin-top:4px">'
+            f"<thead><tr>{ths}</tr></thead><tbody>{body}</tbody></table>"
+        )
+
+    partes = []
+
+    if faltantes:
+        partes.append(
+            '<div style="background:#FBF1DC;color:#7A5A0E;border:1px solid #E2A93B;'
+            'border-radius:4px;padding:8px 14px;margin-bottom:14px;font-size:12px">'
+            f'⚠ Falta procesar: {", ".join(faltantes)} (0 archivos)</div>'
+        )
+
+    # 1 — Ventas
+    s = [f'<div style="{_WRAP}">', _sec("ti-shopping-cart", "1 · Ventas")]
+    if v["_incompleto"]:
+        s.append(_incompleto_html())
+    s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"])))
+    s.append(_row("Cantidad de operaciones", v["cantidad_operaciones"] if v["cantidad_operaciones"] is not None else "—"))
+    s.append(_row("Ticket promedio", _ar_money(v["ticket_promedio"])))
+    desc = v["descuentos_aplicados"]
+    s.append(_row(
+        "Descuentos aplicados",
+        f'{_ar_money(desc["monto"])} ({desc["cantidad"] if desc["cantidad"] is not None else 0} op.)',
+    ))
+    s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"])))
+    s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"])))
+    s.append(_row("Notas de crédito EnvíosFlex", _ar_money(v["notas_credito_flex"])))
+    s.append(_row("Notas de débito EnvíosFlex", _ar_money(v["notas_debito_flex"])))
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 2 — Costos de MercadoLibre
+    s = [f'<div style="{_WRAP}">', _sec("ti-receipt-tax", "2 · Costos de MercadoLibre")]
+    if c["_incompleto"]:
+        s.append(_incompleto_html())
+    s.append(_row("Comisiones de venta (neto anulaciones)", _ar_money(c["comisiones_venta"])))
+    s.append(_row("Costos de envío ML (neto)", _ar_money(c["costos_envio_ml_neto"])))
+    s.append(_row("Cuotas", _ar_money(c["cuotas"])))
+    s.append(_row("Total valor del cargo (facturación neta ML)", _ar_money(c["total_valor_del_cargo"])))
+    s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"])))
+    s.append(_row("Total Facturas ML", _ar_money(c["total_facturas_ml"])))
+    s.append(_row("Cantidad de facturas", c["cantidad_facturas"]))
+    s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"])))
+    s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"])))
+    s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"])))
+    diff_color = _RED if c["diff_alerta"] else _GREEN
+    s.append(
+        '<div style="display:flex;justify-content:space-between;padding:5px 14px;'
+        f'font-size:12px;font-weight:700"><span style="color:#555">Diff. Facturado vs Reporte</span>'
+        f'<span style="color:{diff_color}">{_ar_money(c["diff_facturado_vs_reporte"])}</span></div>'
+    )
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 3 — Impuestos y Retenciones
+    s = [f'<div style="{_WRAP}">', _sec("ti-building-bank", "3 · Impuestos y Retenciones")]
+    if imp["_incompleto"]:
+        s.append(_incompleto_html())
+    s.append(
+        '<div style="padding:6px 14px 0;font-size:11px;font-weight:700;color:#555">'
+        "Percepciones por provincia — Facturas ML vs Reportes</div>"
+    )
+    if imp["cruce_percepciones"]:
+        filas = [
+            [r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
+             _ar_money(r["diff"]), "✓" if r["ok"] else "✗"]
+            for r in imp["cruce_percepciones"]
+        ]
+        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", ""], filas)}</div>')
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+
+    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
+    if imp["retenciones_detalle"]:
+        filas = [
+            [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
+             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"])]
+            for r in imp["retenciones_detalle"]
+        ]
+        s.append(f'<div style="padding:0 14px">{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto"], filas)}</div>')
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+
+    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Cruce Impuestos vs Pagos a ARCA</div>')
+    if imp["cruce_impuestos_pagos"]:
+        filas = [
+            [r["concepto"], _ar_money(r["total_credito"]), _ar_money(r["pagado_arca"]),
+             _ar_money(r["neto"]), r["saldo"]]
+            for r in imp["cruce_impuestos_pagos"]
+        ]
+        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo"], filas)}</div>')
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 4 — Flujo Financiero Neto
+    s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto")]
+    for l in flujo["lineas"]:
+        s.append(_row(l["concepto"], _ar_money(l["monto"])))
+    cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
+    s.append(
+        '<div style="display:flex;justify-content:space-between;padding:6px 14px;'
+        f'font-size:13px;font-weight:700;border-top:2px solid {_HDR_BORDER};margin-top:4px">'
+        f'<span style="color:#333">Cobrado neto de ML</span>'
+        f'<span style="color:{cobrado_color}">{_ar_money(flujo["cobrado_neto"])}</span></div>'
+    )
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 5 — Validaciones y Alertas
+    s = [f'<div style="{_WRAP}">', _sec("ti-shield-check", "5 · Validaciones y Alertas")]
+    _ICONS = {"ok": ("✓", _GREEN), "warn": ("⚠", _YELLOW), "error": ("✗", _RED)}
+    for chk in validaciones:
+        icono, color = _ICONS.get(chk["status"], ("•", "#9e9e9e"))
+        s.append(
+            '<div style="display:flex;gap:8px;padding:5px 14px;font-size:12px;align-items:flex-start">'
+            f'<span style="color:{color};font-weight:700">{icono}</span>'
+            f'<span><b>{chk["check"]}</b> — {chk["detalle"]}</span></div>'
+        )
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 6 — Panorama Impositivo
+    s = ['<div>', _sec("ti-scale", "6 · Panorama Impositivo")]
+    filas = [
+        [p["impuesto"], _ar_money(p["total_percepciones"]), _ar_money(p["total_retenciones"]),
+         _ar_money(p["total_pagado_arca"]), _ar_money(p["saldo"]), p["recomendacion"]]
+        for p in panorama
+    ]
+    s.append(
+        f'<div style="padding:6px 14px">'
+        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación"], filas)}'
+        f'</div>'
+    )
+    s.append("</div>")
+    partes.append("".join(s))
+
+    return "".join(partes)
+
+
+def _abrir_modal_consolidado(resultado: dict) -> None:
+    with ui.dialog() as dlg:
+        with ui.card().style(
+            "width:90vw;max-width:1400px;height:90vh;overflow:hidden;"
+            "display:flex;flex-direction:column;padding:0"
+        ):
+            with ui.row().classes("items-center justify-between w-full px-4 py-3 flex-shrink-0").style(
+                f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER}"
+            ):
+                ui.label(f"Análisis Consolidado del Período — {resultado['periodo']}").style(
+                    f"color:{_HDR_COLOR};font-weight:700;font-size:16px"
+                )
+                ui.button(icon="close", on_click=dlg.close).props("flat round dense")
+
+            with ui.column().classes("w-full flex-1").style("overflow-y:auto;min-height:0;padding:14px 0"):
+                ui.html(_render_consolidado_html(resultado))
+
+            with ui.row().classes("w-full justify-end gap-2 px-4 py-3 flex-shrink-0").style(
+                f"border-top:1px solid {_HDR_BORDER};background:{_HDR_BG}"
+            ):
+                ui.button(
+                    "Exportar PDF",
+                    on_click=lambda: ui.notify("Exportar PDF: próximamente", color="info"),
+                ).props("flat no-caps")
+                ui.button(
+                    "Exportar Excel",
+                    on_click=lambda: ui.notify("Exportar Excel: próximamente", color="info"),
+                ).props("flat no-caps")
+                ui.button("Cerrar", on_click=dlg.close).style(
+                    f"background:{_BLUE};color:white"
+                ).props("no-caps")
+    dlg.open()
+
+
 def procesar_archivo_con_gemini(
     archivo_path: str, seccion: str, prompt_custom: Optional[str] = None
 ) -> dict:
@@ -2576,14 +3246,41 @@ def _build_gastos(user_id: int) -> None:
                         subtitle = ui.label("").classes("text-sm text-gray-500")
                         subtitle_ref[0] = subtitle
 
-                        def _final_procesar() -> None:
-                            ui.notify("Análisis final pendiente de implementación", color="info")
+                        _consolidado_previo = get_gastos_consolidado(user_id, periodo)
+                        ultimo_lbl = ui.label(
+                            f"Último análisis: {_consolidado_previo['_generado_at']}"
+                            if _consolidado_previo else ""
+                        ).classes("text-xs text-gray-400")
 
-                        fb = ui.button("Procesar análisis final", on_click=_final_procesar).style(
-                            f"background:{_BLUE};color:white;font-size:14px;"
-                            "font-weight:600;padding:10px 24px;margin-top:8px"
-                        )
-                        final_btn_ref[0] = fb
+                        async def _final_procesar() -> None:
+                            fb = final_btn_ref[0]
+                            periodo_actual = _get_periodo()
+                            if fb:
+                                fb.disable()
+                                fb.text = "Analizando 6 secciones..."
+                            try:
+                                resultado = await run.io_bound(
+                                    analizar_periodo_consolidado, user_id, periodo_actual
+                                )
+                                save_gastos_consolidado(user_id, periodo_actual, resultado)
+                                ultimo_lbl.text = f"Último análisis: {datetime.now().isoformat(timespec='seconds')}"
+                                _abrir_modal_consolidado(resultado)
+                            finally:
+                                if fb:
+                                    fb.text = "Procesar análisis final"
+                                    fb.enable()
+
+                        with ui.row().classes("items-center gap-2 mt-2"):
+                            fb = ui.button("Procesar análisis final", on_click=_final_procesar).style(
+                                f"background:{_BLUE};color:white;font-size:14px;"
+                                "font-weight:600;padding:10px 24px"
+                            )
+                            final_btn_ref[0] = fb
+                            if _consolidado_previo:
+                                ui.button(
+                                    "Ver último análisis",
+                                    on_click=lambda r=_consolidado_previo: _abrir_modal_consolidado(r),
+                                ).props("flat no-caps").style(f"color:{_BLUE}")
 
             _refresh_progress()
 
