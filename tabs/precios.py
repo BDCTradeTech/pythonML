@@ -1547,7 +1547,7 @@ def _mostrar_tabla_precios(
                     if nuevo_costo is not None:
                         row["costo_usd"] = nuevo_costo
                     dialog.close()
-                    filtrar_y_pintar()
+                    background_tasks.create(filtrar_y_pintar())
 
                 with ui.row().classes("w-full justify-end gap-2 mt-2"):
                     ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat dense")
@@ -1604,7 +1604,7 @@ def _mostrar_tabla_precios(
                         row["margen_pesos"]     = _mgn_r
                         row["margen_venta_pct"] = (_mgn_r / _pc_r * 100) if _pc_r > 0 else 0.0
                     dialog.close()
-                    filtrar_y_pintar()
+                    background_tasks.create(filtrar_y_pintar())
 
                 with ui.row().classes("w-full justify-end gap-2 mt-3"):
                     ui.button("Cancelar", on_click=lambda: dialog.close()).props("flat")
@@ -1880,7 +1880,7 @@ def _mostrar_tabla_precios(
         else:
             sort_col_ref["val"] = col_name
             sort_asc_ref["val"] = True
-        filtrar_y_pintar()
+        background_tasks.create(filtrar_y_pintar())
 
     def _generar_pdf_stock(filtrados_actuales: List[Dict[str, Any]], include_ventas: bool = False) -> Optional[str]:
         """Genera un PDF A4 con columnas SKU/Marca/Producto/Color/Stock[/Ventas], ordenado por Marca+Producto."""
@@ -2883,7 +2883,8 @@ def _mostrar_tabla_precios(
                 else:
                     ui.label(str(val) if val is not None and str(val) != "''" else "—")
 
-    def filtrar_y_pintar() -> None:
+    async def filtrar_y_pintar() -> None:
+        _t_fyp = time.perf_counter()
         filtrados = list(items_loaded)
         stock_val = getattr(filtro_stock, "value", "con_stock")
         if stock_val == "con_stock":
@@ -2918,7 +2919,10 @@ def _mostrar_tabla_precios(
         _pendientes_enriq = [x for x in filtrados if str(x.get("id") or "") not in _enriquecidos_ids]
         if _pendientes_enriq:
             _t_enriq_od = time.perf_counter()
-            _enriquecer_items(_pendientes_enriq)
+            # [FIX freeze global] corre en un thread aparte (run.io_bound) para NO bloquear
+            # el event loop de NiceGUI mientras esperan las requests HTTP a ML — si no,
+            # se congela la app entera para todos los usuarios conectados, no solo este.
+            await run.io_bound(_enriquecer_items, _pendientes_enriq)
             logging.warning(
                 f"[PERF-PRODUCTOS] fase='enriquecimiento_bajo_demanda' user_id={_perf_uid} "
                 f"tiempo={time.perf_counter() - _t_enriq_od:.3f}s items={len(_pendientes_enriq)}"
@@ -3001,10 +3005,15 @@ def _mostrar_tabla_precios(
             background_tasks.create(_recalc_padding())
             current_table.clear()
 
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='filtrar_y_pintar_total' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_fyp:.3f}s items={len(filtrados)}"
+        )
+
     def _actualizar_fila(sku_key: str, row_data: dict) -> None:
         tr_el = row_refs.get(sku_key)
         if tr_el is None:
-            filtrar_y_pintar()
+            background_tasks.create(filtrar_y_pintar())
             return
         _precio_ok_r = revisiones_hoy.get(sku_key, False)
         _revisado_r  = sku_key in revisiones_hoy
@@ -3047,7 +3056,7 @@ def _mostrar_tabla_precios(
             conn.commit()
         finally:
             conn.close()
-        filtrar_y_pintar()
+        background_tasks.create(filtrar_y_pintar())
         ui.notify("Revisiones del día borradas", color="info")
 
     with result_area:
@@ -3131,22 +3140,24 @@ def _mostrar_tabla_precios(
             if on_actualizar:
                 on_actualizar()
             return
-        filtrar_y_pintar()
+        background_tasks.create(filtrar_y_pintar())
 
     filtro_stock.on_value_change(on_filtro_stock_change)
-    filtro_estado.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_awei.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_ganando.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_sku.on_value_change(lambda *a: filtrar_y_pintar())
-    filtro_revision.on_value_change(lambda *a: filtrar_y_pintar())
+    filtro_estado.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
+    filtro_awei.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
+    filtro_ganando.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
+    filtro_sku.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
+    filtro_revision.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
     logging.warning(
         f"[PERF-PRODUCTOS] fase='pre_render_setup_ui' user_id={_perf_uid} "
         f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(items_loaded)}"
     )
-    _t_fase = time.perf_counter()
-    filtrar_y_pintar()
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='render_tabla_inicial' user_id={_perf_uid} "
-        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(current_filtrados)}"
-    )
+    # [FIX freeze global] la carga inicial de filas (que incluye el enriquecimiento
+    # price_to_win/quality/promo) se dispara como background task, no se espera acá:
+    # así el request HTTP que sirvió esta página se libera ya, y el event loop de
+    # NiceGUI queda disponible para atender a otros usuarios mientras las filas
+    # aparecen progresivamente (ver fase='filtrar_y_pintar_total' para el tiempo real).
+    with table_container:
+        ui.spinner(size="md").classes("m-4")
+    background_tasks.create(filtrar_y_pintar())
 
