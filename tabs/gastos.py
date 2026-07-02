@@ -871,7 +871,8 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
         },
         "percepciones": percepciones,
         "total_percepciones": total_percepciones,
-        "total_percepciones_pct": round(total_percepciones / facturacion_neta * 100, 2) if facturacion_neta else 0.0,
+        # % sobre el ingreso bruto por venta (misma base que "Impuestos y Retenciones" del margen)
+        "total_percepciones_pct": round(total_percepciones / base * 100, 2) if base else 0.0,
     }
 
 
