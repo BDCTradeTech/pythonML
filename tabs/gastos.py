@@ -452,6 +452,50 @@ def _es_notas_debito(filename: str) -> bool:
     return "notas" in norm and "debito" in norm
 
 
+def _es_pagos_facturas(filename: str) -> bool:
+    """Detecta el 'Reporte Pagos Facturas' de MercadoLibre por el nombre del archivo
+    (p.ej. 'Reporte_Pagos_Facturas_Abr2026.xlsx'), sin importar acentos/mayúsculas."""
+    norm = _strip_accents(filename.lower())
+    return "pagos" in norm and "facturas" in norm
+
+
+REPORTE_ML_DESCRIPCIONES = {
+    "nota_debito_enviosflex": (
+        "Las anulaciones de bonificaciones de Mercado Envíos Flex se generan cuando se cancela "
+        "una venta en la cual Mercado Libre te había bonificado parte de la tarifa. Al anularse, "
+        "te emitiremos una Nota de débito para que puedas realizar tus conciliaciones y "
+        "descontamos el dinero que te habíamos acreditado en Mercado Pago por esta bonificación."
+    ),
+    "nota_credito_enviosflex": (
+        "Las bonificaciones de Mercado Envíos Flex se generan cuando tu cliente obtiene envío "
+        "gratis en compras de productos nuevos que superan el importe mínimo. En ese caso, "
+        "Mercado Libre te bonifica parte de la tarifa según tu reputación."
+    ),
+    "pagos_facturas": (
+        "En este reporte no aparecen los pagos cobrados en la operación. Puedes revisar todos "
+        "los cargos facturados, incluídos los cobrados en la operación, en el Reporte de "
+        "Facturación de Mercado Libre y/o Mercado Pago.\n\n"
+        "Las notas de crédito son devoluciones por bonificaciones de cargos o cancelación de "
+        "ventas que se generaron después del cierre de una factura. Las verás aplicadas para "
+        "pagar el saldo de tu período. Puedes encontrar el detalle de cada Nota de crédito en "
+        "Factura y Reportes."
+    ),
+}
+
+
+def _tipo_reporte_ml_descripcion(filename: str) -> Optional[str]:
+    """Clasifica un archivo de 'Reportes MercadoLibre' para elegir, si existe, el texto
+    descriptivo de REPORTE_ML_DESCRIPCIONES a mostrar en el panel del documento original."""
+    norm = _strip_accents(filename.lower())
+    if "nota" in norm and "debito" in norm and "flex" in norm:
+        return "nota_debito_enviosflex"
+    if "nota" in norm and "credito" in norm and "flex" in norm:
+        return "nota_credito_enviosflex"
+    if _es_pagos_facturas(filename):
+        return "pagos_facturas"
+    return None
+
+
 _NOTAS_BONIF_CONFIG = {
     # Header exacto (normalizado: sin acentos, minúscula) de la columna de valor en cada
     # reporte real de Envíos Flex, confirmado contra archivos de producción.
@@ -523,6 +567,62 @@ def _calcular_notas_bonificacion(filas: list, tipo: str) -> Optional[dict]:
     }
 
 
+def _calcular_pagos_facturas(filas: list) -> Optional[dict]:
+    """Calcula en Python (100% preciso, sin depender de Gemini) los 3 campos del reporte
+    'Pagos Facturas': fecha (la más reciente de la tabla 'Pagos y notas de crédito'),
+    estado (de esa misma fila más reciente — el reporte no trae un estado único de documento,
+    cada pago/NC tiene el suyo) e importe_total (SUMA de la columna 'Importe total').
+    El archivo real trae 2 hojas; la segunda ('Detalle de Pagos del mes') tiene menos columnas
+    y queda excluida naturalmente por el chequeo de ancho de fila."""
+    def _norm(s: str) -> str:
+        return _strip_accents(s.strip().lower())
+
+    idx_fecha = idx_estado = idx_importe = header_idx = None
+    for i, linea in enumerate(filas):
+        celdas_norm = [_norm(c) for c in linea.split("\t")]
+        cand_fecha = next((j for j, c in enumerate(celdas_norm) if "fecha de pago" in c), None)
+        cand_estado = next((j for j, c in enumerate(celdas_norm) if c == "estado"), None)
+        cand_importe = next((j for j, c in enumerate(celdas_norm) if "importe total" in c), None)
+        if cand_fecha is not None and cand_estado is not None and cand_importe is not None:
+            idx_fecha, idx_estado, idx_importe, header_idx = cand_fecha, cand_estado, cand_importe, i
+            break
+
+    if header_idx is None:
+        return None
+
+    total = 0.0
+    n_filas = 0
+    fecha_max = None
+    estado_max = None
+    for linea in filas[header_idx + 1:]:
+        celdas = linea.split("\t")
+        if len(celdas) <= max(idx_fecha, idx_estado, idx_importe):
+            continue
+        try:
+            v = float(celdas[idx_importe])
+        except ValueError:
+            continue
+        total += v
+        n_filas += 1
+        if celdas[idx_fecha].strip():
+            try:
+                dt = datetime.strptime(celdas[idx_fecha].strip().split(" ")[0], "%Y-%m-%d")
+                if fecha_max is None or dt > fecha_max:
+                    fecha_max = dt
+                    estado_max = celdas[idx_estado].strip() or None
+            except ValueError:
+                pass
+
+    if n_filas == 0:
+        return None
+
+    return {
+        "fecha": fecha_max.strftime("%d/%m/%Y") if fecha_max else None,
+        "estado": estado_max,
+        "importe_total": round(total, 2),
+    }
+
+
 def procesar_archivo_con_gemini(
     archivo_path: str, seccion: str, prompt_custom: Optional[str] = None
 ) -> dict:
@@ -573,6 +673,17 @@ def procesar_archivo_con_gemini(
                     "prompt_used": "(calculado en Python, sin Gemini)",
                 }
             print(f"[{tag}] no se encontraron columnas fecha/valor", flush=True)
+
+        if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _es_pagos_facturas(path.name):
+            filas_sin_hoja = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
+            calc_pagos = _calcular_pagos_facturas(filas_sin_hoja)
+            if calc_pagos:
+                print(f"[DBG-PAGOS-FACTURAS-CALC] {calc_pagos}", flush=True)
+                return {
+                    "success": True, "data": calc_pagos, "error": None,
+                    "prompt_used": "(calculado en Python, sin Gemini)",
+                }
+            print("[DBG-PAGOS-FACTURAS-CALC] no se encontraron columnas fecha/estado/importe", flush=True)
 
         client = genai.Client(api_key=api_key)
 
@@ -792,6 +903,20 @@ def _build_gastos(user_id: int) -> None:
                             )
                             ui.label(f"Tipo: {ext.upper().lstrip('.')}").classes("text-xs text-gray-400")
                             ui.separator()
+                            _desc_tipo = (
+                                _tipo_reporte_ml_descripcion(fa["filename"])
+                                if seccion == "reportes_ml" else None
+                            )
+                            _desc_texto = REPORTE_ML_DESCRIPCIONES.get(_desc_tipo) if _desc_tipo else None
+                            if _desc_texto:
+                                ui.html(
+                                    '<div style="background:#EEF6FD;border-left:3px solid #2A7AC7;'
+                                    'padding:10px 12px;border-radius:4px;font-size:11px;'
+                                    'color:var(--color-text-secondary);line-height:1.5;margin-bottom:10px">'
+                                    '<i class="ti ti-info-circle" style="margin-right:6px;'
+                                    'vertical-align:middle"></i>'
+                                    f'{_escape_prompt_html(_desc_texto).replace(chr(10), "<br>")}</div>'
+                                )
                             if ext == ".pdf":
                                 b64 = _pdf_first_page_b64(path)
                                 if b64:
@@ -1037,6 +1162,9 @@ def _build_gastos(user_id: int) -> None:
                                             'total_debitado', 'cantidad_debitos',
                                         }
                                         _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_NOTAS_DEBITO}
+                                    if seccion == "reportes_ml" and _es_pagos_facturas(fa.get("filename", "")):
+                                        _CAMPOS_PAGOS_FACTURAS = {'fecha', 'estado', 'importe_total'}
+                                        _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_PAGOS_FACTURAS}
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
