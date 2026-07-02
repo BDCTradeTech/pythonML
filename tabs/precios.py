@@ -851,200 +851,212 @@ def _mostrar_tabla_precios(
     total_pesos_propias = sum(i.get("subtotal") or 0 for i in items_loaded if i.get("tipo") == "Propia")
     total_dolares_propias = (total_pesos_propias / dolar_oficial) if dolar_oficial else None
 
-    _items_para_ptw = [
-        r for r in items_loaded
-        if (r.get("catalog_listing") is True or r.get("catalog_item_id") or bool(r.get("catalog_product_id")))
-        and str(r.get("status") or "").lower() == "active"
-        and str(r.get("catalog_item_id") or r.get("id") or "").strip()
-    ]
-    _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
-    if _cat_ids and access_token:
-        def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
-            res: Dict[str, Optional[Dict]] = {}
-            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
-                futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
-                for fut in as_completed(futures):
-                    iid = futures[fut]
-                    try:
-                        res[iid] = fut.result()
-                    except Exception:
-                        res[iid] = None
-            return res
-        _t_api_ptw = time.perf_counter()
-        _cat_pos_map = _fetch_catalog_pos(_cat_ids)
-        logging.warning(
-            f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
-            f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
-        )
-        for r in items_loaded:
-            _rid = str(r.get("catalog_item_id") or r.get("id") or "")
-            if _rid in _cat_pos_map:
-                d = _cat_pos_map[_rid] or {}
-                r["catalog_status"]       = d.get("status")
-                r["catalog_price_to_win"] = d.get("price_to_win")
-                r["catalog_visit_share"]  = d.get("visit_share")
-                r["catalog_reason"]       = d.get("reason")
-                r["catalog_competitors"]  = d.get("competitors")
+    # [QUICK WIN performance] price_to_win/quality/promo_sale_price ya NO se piden para
+    # items_loaded completo (313-1097 items dedupeados): se piden solo para el subset que
+    # va a quedar visible según los filtros. _enriquecer_items la llama filtrar_y_pintar,
+    # tanto en la carga inicial como cuando un cambio de filtro revela items todavía no
+    # enriquecidos (en ese caso hay un delay adicional acotado a esos items nuevos).
+    _enriquecidos_ids: set = set()
 
-        _our_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
-        for r in items_loaded:
-            if r.get("catalog_status") != "competing":
-                continue
-            _cpid_r = str(r.get("catalog_product_id") or "")
-            if not _cpid_r:
-                continue
-            _comps_r = get_catalogo_competidores(_cpid_r)
-            if not _comps_r:
-                continue
-            _sorted_r = sorted(_comps_r, key=lambda c: float(c.get("price") or 0))
-            for _pos_r, _c_r in enumerate(_sorted_r, 1):
-                if str(_c_r.get("item_id") or "") in _our_ids_set:
-                    r["catalog_position"] = _pos_r
-                    break
-            else:
-                _our_price = float(r.get("price") or 0)
-                if _our_price > 0:
-                    r["catalog_position"] = sum(1 for _c in _sorted_r if float(_c.get("price") or 0) < _our_price) + 1
-
-    _cs_rows = [
-        (r.get("catalog_status"), r.get("seller_sku"))
-        for r in items_loaded
-        if r.get("seller_sku")
-    ]
-    if _cs_rows:
-        _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        _conn_cs = get_connection()
-        try:
-            _conn_cs.executemany(
-                "UPDATE productos SET catalog_status=?, updated_at=? WHERE sku=? AND user_id=?",
-                [(cs, _now_cs, sku, _uid) for cs, sku in _cs_rows],
+    def _enriquecer_items(items_subset: List[Dict[str, Any]]) -> None:
+        _t_ptw = time.perf_counter()
+        _items_para_ptw = [
+            r for r in items_subset
+            if (r.get("catalog_listing") is True or r.get("catalog_item_id") or bool(r.get("catalog_product_id")))
+            and str(r.get("status") or "").lower() == "active"
+            and str(r.get("catalog_item_id") or r.get("id") or "").strip()
+        ]
+        _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
+        if _cat_ids and access_token:
+            def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
+                res: Dict[str, Optional[Dict]] = {}
+                with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                    futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            res[iid] = fut.result()
+                        except Exception:
+                            res[iid] = None
+                return res
+            _t_api_ptw = time.perf_counter()
+            _cat_pos_map = _fetch_catalog_pos(_cat_ids)
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
             )
-            _conn_cs.commit()
-        finally:
-            _conn_cs.close()
+            for r in items_subset:
+                _rid = str(r.get("catalog_item_id") or r.get("id") or "")
+                if _rid in _cat_pos_map:
+                    d = _cat_pos_map[_rid] or {}
+                    r["catalog_status"]       = d.get("status")
+                    r["catalog_price_to_win"] = d.get("price_to_win")
+                    r["catalog_visit_share"]  = d.get("visit_share")
+                    r["catalog_reason"]       = d.get("reason")
+                    r["catalog_competitors"]  = d.get("competitors")
 
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='catalog_position_y_db' user_id={_perf_uid} "
-        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_cat_ids)}"
-    )
-    _t_fase = time.perf_counter()
+            _our_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
+            for r in items_subset:
+                if r.get("catalog_status") != "competing":
+                    continue
+                _cpid_r = str(r.get("catalog_product_id") or "")
+                if not _cpid_r:
+                    continue
+                _comps_r = get_catalogo_competidores(_cpid_r)
+                if not _comps_r:
+                    continue
+                _sorted_r = sorted(_comps_r, key=lambda c: float(c.get("price") or 0))
+                for _pos_r, _c_r in enumerate(_sorted_r, 1):
+                    if str(_c_r.get("item_id") or "") in _our_ids_set:
+                        r["catalog_position"] = _pos_r
+                        break
+                else:
+                    _our_price = float(r.get("price") or 0)
+                    if _our_price > 0:
+                        r["catalog_position"] = sum(1 for _c in _sorted_r if float(_c.get("price") or 0) < _our_price) + 1
 
-    _items_para_quality = [
-        r for r in items_loaded
-        if str(r.get("status") or "").lower() == "active"
-        and str(r.get("id") or "").strip()
-    ]
-    _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
-    if _quality_ids and access_token:
-        def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
-            res: Dict[str, Dict] = {}
-            with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
-                futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
-                for fut in as_completed(futures):
-                    iid = futures[fut]
-                    try:
-                        res[iid] = fut.result()
-                    except Exception:
-                        res[iid] = {}
-            return res
-        _quality_map = _fetch_quality(_quality_ids)
-        for r in items_loaded:
-            _qid = str(r.get("id") or "")
-            if _qid in _quality_map:
-                d = _quality_map[_qid] or {}
-                r["quality_score"] = d.get("score")
-                r["quality_level"] = d.get("level")
-
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='api_quality' user_id={_perf_uid} "
-        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_quality_ids)}"
-    )
-    _t_fase = time.perf_counter()
-
-    _sp_item_ids = [str(r["id"]) for r in items_loaded if r.get("id")]
-    if _sp_item_ids and access_token:
-        def _fetch_has_promo(ids):
-            def _one(cid):
-                sp = ml_get_item_sale_price_full(access_token, cid)
-                if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
-                    try:
-                        amt = float(sp["amount"])
-                        if amt < float(sp["regular_amount"]) - 0.01:
-                            return amt
-                    except (TypeError, ValueError):
-                        pass
-                return None
-            _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
-            res: Dict[str, Optional[float]] = {}
-            with ThreadPoolExecutor(max_workers=min(8, max(1, len(_pairs)))) as ex:
-                futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
-                for fut in as_completed(futures):
-                    rid, _ = futures[fut]
-                    try:
-                        price_p = fut.result()
-                    except Exception:
-                        price_p = None
-                    if price_p is not None:
-                        if rid not in res or res[rid] is None:
-                            res[rid] = price_p
-                    elif rid not in res:
-                        res[rid] = None
-            return res
-        _t_api_promo = time.perf_counter()
-        _promo_map = _fetch_has_promo(_sp_item_ids)
-        logging.warning(
-            f"[PERF-PRODUCTOS] fase='api_promo_sale_price' user_id={_perf_uid} "
-            f"tiempo={time.perf_counter() - _t_api_promo:.3f}s items={len(_sp_item_ids)}"
-        )
-        _gan_promo_rows = []
-        for r in items_loaded:
-            _rid = str(r.get("id") or "")
-            if _rid in _promo_map:
-                _pp = _promo_map[_rid]
-                r["has_promo"] = _pp is not None
-                if _pp is not None:
-                    r["price_promo"] = _pp
-                    _costo_rp = float(r.get("costo_usd") or 0)
-                    if _costo_rp > 0 and _pp > 0:
-                        _lt_rp    = str(r.get("listing_type_id") or "").lower()
-                        _tasa_rp  = cuotas_6x_p if _lt_rp == "gold_pro" else 0.0
-                        _tiva_rp  = float(r.get("tipo_iva") or 0.105)
-                        _com_rp   = _pp * ml_comision_p
-                        _cob_rp   = _pp - _com_rp
-                        _ivav_rp  = _pp * _tiva_rp / (1 + _tiva_rp)
-                        _ivam_rp  = _com_rp * 0.21 / 1.21
-                        _ivai_rp  = 0.09 * _costo_rp * dolar_oficial
-                        _ivat_rp  = _ivav_rp - _ivam_rp - _ivai_rp
-                        _deb_rp   = _pp * ml_debcre_p
-                        _iibb_rp  = _pp * ml_iibb_per_p
-                        _env_rp   = ml_envios_p if _pp >= ml_envios_grat_p else 0.0
-                        _ccuot_rp = _pp * _tasa_rp if _tasa_rp else 0.0
-                        _cp_rp    = _costo_rp * dolar_oficial
-                        _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp
-                        r["margen_pesos"]     = _mgn_rp
-                        r["margen_venta_pct"] = (_mgn_rp / _pp * 100) if _pp > 0 else 0.0
-                        if r.get("seller_sku"):
-                            _gan_promo_rows.append((
-                                r["margen_pesos"], r["margen_venta_pct"],
-                                r.get("available_quantity"), str(r.get("title") or ""),
-                                r["seller_sku"]
-                            ))
-        if _gan_promo_rows:
-            _now_gp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            _conn_gp = get_connection()
+        _cs_rows = [
+            (r.get("catalog_status"), r.get("seller_sku"))
+            for r in items_subset
+            if r.get("seller_sku")
+        ]
+        if _cs_rows:
+            _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            _conn_cs = get_connection()
             try:
-                _conn_gp.executemany(
-                    "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
-                    [(g[0], g[1], g[2], g[3], _now_gp, g[4], _uid) for g in _gan_promo_rows],
+                _conn_cs.executemany(
+                    "UPDATE productos SET catalog_status=?, updated_at=? WHERE sku=? AND user_id=?",
+                    [(cs, _now_cs, sku, _uid) for cs, sku in _cs_rows],
                 )
-                _conn_gp.commit()
+                _conn_cs.commit()
             finally:
-                _conn_gp.close()
+                _conn_cs.close()
 
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='promo_calculo_y_db' user_id={_perf_uid} "
-        f"tiempo={time.perf_counter() - _t_fase:.3f}s items={len(_sp_item_ids)}"
-    )
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='catalog_position_y_db' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_ptw:.3f}s items={len(_cat_ids)}"
+        )
+
+        _t_quality = time.perf_counter()
+        _items_para_quality = [
+            r for r in items_subset
+            if str(r.get("status") or "").lower() == "active"
+            and str(r.get("id") or "").strip()
+        ]
+        _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
+        if _quality_ids and access_token:
+            def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
+                res: Dict[str, Dict] = {}
+                with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                    futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            res[iid] = fut.result()
+                        except Exception:
+                            res[iid] = {}
+                return res
+            _quality_map = _fetch_quality(_quality_ids)
+            for r in items_subset:
+                _qid = str(r.get("id") or "")
+                if _qid in _quality_map:
+                    d = _quality_map[_qid] or {}
+                    r["quality_score"] = d.get("score")
+                    r["quality_level"] = d.get("level")
+
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='api_quality' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_quality:.3f}s items={len(_quality_ids)}"
+        )
+
+        _t_promo = time.perf_counter()
+        _sp_item_ids = [str(r["id"]) for r in items_subset if r.get("id")]
+        if _sp_item_ids and access_token:
+            def _fetch_has_promo(ids):
+                def _one(cid):
+                    sp = ml_get_item_sale_price_full(access_token, cid)
+                    if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
+                        try:
+                            amt = float(sp["amount"])
+                            if amt < float(sp["regular_amount"]) - 0.01:
+                                return amt
+                        except (TypeError, ValueError):
+                            pass
+                    return None
+                _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
+                res: Dict[str, Optional[float]] = {}
+                with ThreadPoolExecutor(max_workers=min(8, max(1, len(_pairs)))) as ex:
+                    futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
+                    for fut in as_completed(futures):
+                        rid, _ = futures[fut]
+                        try:
+                            price_p = fut.result()
+                        except Exception:
+                            price_p = None
+                        if price_p is not None:
+                            if rid not in res or res[rid] is None:
+                                res[rid] = price_p
+                        elif rid not in res:
+                            res[rid] = None
+                return res
+            _t_api_promo = time.perf_counter()
+            _promo_map = _fetch_has_promo(_sp_item_ids)
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='api_promo_sale_price' user_id={_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_api_promo:.3f}s items={len(_sp_item_ids)}"
+            )
+            _gan_promo_rows = []
+            for r in items_subset:
+                _rid = str(r.get("id") or "")
+                if _rid in _promo_map:
+                    _pp = _promo_map[_rid]
+                    r["has_promo"] = _pp is not None
+                    if _pp is not None:
+                        r["price_promo"] = _pp
+                        _costo_rp = float(r.get("costo_usd") or 0)
+                        if _costo_rp > 0 and _pp > 0:
+                            _lt_rp    = str(r.get("listing_type_id") or "").lower()
+                            _tasa_rp  = cuotas_6x_p if _lt_rp == "gold_pro" else 0.0
+                            _tiva_rp  = float(r.get("tipo_iva") or 0.105)
+                            _com_rp   = _pp * ml_comision_p
+                            _cob_rp   = _pp - _com_rp
+                            _ivav_rp  = _pp * _tiva_rp / (1 + _tiva_rp)
+                            _ivam_rp  = _com_rp * 0.21 / 1.21
+                            _ivai_rp  = 0.09 * _costo_rp * dolar_oficial
+                            _ivat_rp  = _ivav_rp - _ivam_rp - _ivai_rp
+                            _deb_rp   = _pp * ml_debcre_p
+                            _iibb_rp  = _pp * ml_iibb_per_p
+                            _env_rp   = ml_envios_p if _pp >= ml_envios_grat_p else 0.0
+                            _ccuot_rp = _pp * _tasa_rp if _tasa_rp else 0.0
+                            _cp_rp    = _costo_rp * dolar_oficial
+                            _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp
+                            r["margen_pesos"]     = _mgn_rp
+                            r["margen_venta_pct"] = (_mgn_rp / _pp * 100) if _pp > 0 else 0.0
+                            if r.get("seller_sku"):
+                                _gan_promo_rows.append((
+                                    r["margen_pesos"], r["margen_venta_pct"],
+                                    r.get("available_quantity"), str(r.get("title") or ""),
+                                    r["seller_sku"]
+                                ))
+            if _gan_promo_rows:
+                _now_gp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                _conn_gp = get_connection()
+                try:
+                    _conn_gp.executemany(
+                        "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
+                        [(g[0], g[1], g[2], g[3], _now_gp, g[4], _uid) for g in _gan_promo_rows],
+                    )
+                    _conn_gp.commit()
+                finally:
+                    _conn_gp.close()
+
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='promo_calculo_y_db' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_promo:.3f}s items={len(_sp_item_ids)}"
+        )
+
+        _enriquecidos_ids.update(str(r.get("id")) for r in items_subset if r.get("id"))
+
     _t_fase = time.perf_counter()
 
     _hoy_str = datetime.now().strftime("%Y-%m-%d")
@@ -2886,13 +2898,6 @@ def _mostrar_tabla_precios(
         awei_val = getattr(filtro_awei, "value", "no_incluye")
         if awei_val == "no_incluye":
             filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
-        ganando_val = getattr(filtro_ganando, "value", "todos")
-        if ganando_val == "ganando":
-            filtrados = [x for x in filtrados if x.get("catalog_status") == "winning"]
-        elif ganando_val == "empatando":
-            filtrados = [x for x in filtrados if x.get("catalog_status") == "sharing_first_place"]
-        elif ganando_val == "perdiendo":
-            filtrados = [x for x in filtrados if x.get("catalog_status") in ("competing", "listed")]
         sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
         if sku_txt:
             filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
@@ -2906,6 +2911,27 @@ def _mostrar_tabla_precios(
                 filtrados = [x for x in filtrados if _sku_rev_key(x) in revisiones_hoy and not revisiones_hoy.get(_sku_rev_key(x), False)]
             elif rev_val == "precio_ok":
                 filtrados = [x for x in filtrados if revisiones_hoy.get(_sku_rev_key(x), False)]
+
+        # [QUICK WIN performance] enriquecer (price_to_win/quality/promo) solo los items
+        # que van a quedar visibles y todavía no se enriquecieron. El filtro "Ganando"
+        # depende de catalog_status (dato de enriquecimiento), por eso se aplica DESPUÉS.
+        _pendientes_enriq = [x for x in filtrados if str(x.get("id") or "") not in _enriquecidos_ids]
+        if _pendientes_enriq:
+            _t_enriq_od = time.perf_counter()
+            _enriquecer_items(_pendientes_enriq)
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='enriquecimiento_bajo_demanda' user_id={_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_enriq_od:.3f}s items={len(_pendientes_enriq)}"
+            )
+
+        ganando_val = getattr(filtro_ganando, "value", "todos")
+        if ganando_val == "ganando":
+            filtrados = [x for x in filtrados if x.get("catalog_status") == "winning"]
+        elif ganando_val == "empatando":
+            filtrados = [x for x in filtrados if x.get("catalog_status") == "sharing_first_place"]
+        elif ganando_val == "perdiendo":
+            filtrados = [x for x in filtrados if x.get("catalog_status") in ("competing", "listed")]
+
         col_sort = sort_col_ref.get("val", "title")
         asc = sort_asc_ref.get("val", True)
         filtrados = sorted(filtrados, key=lambda r: _sort_key_precios(r, col_sort), reverse=not asc)
