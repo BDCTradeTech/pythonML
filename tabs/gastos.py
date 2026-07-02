@@ -23,6 +23,7 @@ from db import (
     mark_gastos_procesado,
     update_gastos_extraccion,
     upsert_gastos_prompt,
+    user_can_access_tab,
 )
 
 _BLUE       = "#2A7AC7"
@@ -55,6 +56,7 @@ _SECCIONES: List[tuple] = [
     ("percepciones", "Percepciones",            ".xlsx", True,  "ti-file-spreadsheet"),
     ("pagos_arca",   "Pagos ARCA",              ".pdf",  True,  "ti-file-invoice"),
     ("reportes_ml",  "Reportes MercadoLibre",   ".xlsx", True,  "ti-file-spreadsheet"),
+    ("analisis_ml",  "Análisis MercadoLibre",   ".pdf",  False, "ti-report-analytics"),
 ]
 
 _MESES = [
@@ -189,6 +191,12 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "Analizá este reporte de operaciones de MercadoLibre. Identificá las columnas principales y "
         "resumí las primeras 5 filas. Devolvé JSON puro con keys: columnas (lista), resumen_filas (lista de dicts)."
     ),
+    "analisis_ml": (
+        "Extraé TODO el texto del documento tal cual aparece. No lo interpretes, "
+        "no lo resumas. Solo transcribí el contenido completo del PDF, respetando "
+        "el orden y la estructura visual (párrafos, tablas, listas). Devolvé el "
+        "texto en formato plano."
+    ),
 }
 
 
@@ -246,6 +254,20 @@ def _pdf_first_page_b64(path: Path) -> Optional[str]:
         return base64.b64encode(data).decode()
     except Exception:
         return None
+
+
+def _pdf_all_pages_b64(path: Path) -> List[str]:
+    try:
+        import fitz
+        doc = fitz.open(str(path))
+        pages = [
+            base64.b64encode(page.get_pixmap(matrix=fitz.Matrix(1.5, 1.5)).tobytes("png")).decode()
+            for page in doc
+        ]
+        doc.close()
+        return pages
+    except Exception:
+        return []
 
 
 _EXCEL_PREVIEW_HEADERS_DETALLE = (
@@ -949,6 +971,13 @@ def procesar_archivo_con_gemini(
 
         raw = response.text or ""
         print(f"[DBG-GASTOS] respuesta_gemini={raw[:400]!r}", flush=True)
+
+        if seccion == "analisis_ml":
+            return {
+                "success": True, "data": {"texto_completo": raw},
+                "error": None, "prompt_used": prompt,
+            }
+
         m = re.search(r"\{.*\}", raw, re.DOTALL)
         data = json.loads(m.group()) if m else {"respuesta_raw": raw}
 
@@ -1022,6 +1051,7 @@ def _build_gastos(user_id: int) -> None:
         subtitle_ref:     list            = [None]
         final_btn_ref:    list            = [None]
         _seccion_botones: Dict[str, dict] = {}
+        _secciones_visibles = [s for s in _SECCIONES if user_can_access_tab(user_id, s[0])]
 
         def _sec_state(sk: str) -> dict:
             return _seccion_botones.setdefault(sk, {"proc": None, "borrar": None, "aprobar": []})
@@ -1042,10 +1072,10 @@ def _build_gastos(user_id: int) -> None:
             return bool(fs) and all(f.get("extraction_status") == "procesado" for f in fs)
 
         def _count_verdes() -> int:
-            return sum(1 for sk, *_ in _SECCIONES if _sec_verde(sk))
+            return sum(1 for sk, *_ in _secciones_visibles if _sec_verde(sk))
 
         def _refresh_progress() -> None:
-            n, total = _count_verdes(), len(_SECCIONES)
+            n, total = _count_verdes(), len(_secciones_visibles)
             pct = int(n / total * 100) if total else 0
             progress_lbl.text = f"{n} de {total} secciones procesadas — {pct}%"
             tf = sum(len(v) for v in archivos_por_sec.values())
@@ -1055,7 +1085,7 @@ def _build_gastos(user_id: int) -> None:
                 subtitle_ref[0].text = (
                     "Todas las secciones procesadas — listo para analizar"
                     if n == total
-                    else f"Disponible cuando las 5 secciones estén procesadas — actualmente {n} de {total}"
+                    else f"Disponible cuando las {total} secciones estén procesadas — actualmente {n} de {total}"
                 )
             if final_btn_ref[0]:
                 final_btn_ref[0].enable() if n == total else final_btn_ref[0].disable()
@@ -1137,6 +1167,20 @@ def _build_gastos(user_id: int) -> None:
                                 ui.label(f"Fecha de Actualización: {_fecha_act or '—'}").style(
                                     "font-size:12px;color:#333;font-weight:600;padding:4px 0"
                                 )
+                            elif seccion == "analisis_ml" and ext == ".pdf":
+                                b64_pages = _pdf_all_pages_b64(path)
+                                if b64_pages:
+                                    for _b64_pg in b64_pages:
+                                        ui.html(
+                                            f'<img src="data:image/png;base64,{_b64_pg}" '
+                                            'style="max-width:100%;border:1px solid #e0e0e0;'
+                                            'border-radius:4px;margin-bottom:8px">'
+                                        )
+                                    ui.label(f"({len(b64_pages)} página(s))").classes(
+                                        "text-xs text-gray-400 mt-1"
+                                    )
+                                else:
+                                    ui.label("No se pudo renderizar el PDF").classes("text-xs text-red-500")
                             elif ext == ".pdf":
                                 b64 = _pdf_first_page_b64(path)
                                 if b64:
@@ -1171,6 +1215,22 @@ def _build_gastos(user_id: int) -> None:
                             def _render_kv(d: dict) -> None:
                                 kv_container.clear()
                                 with kv_container:
+                                    if seccion == "analisis_ml":
+                                        texto = (d or {}).get("texto_completo", "")
+                                        if not texto:
+                                            ui.label("Sin datos extraídos").classes(
+                                                "text-xs text-gray-400 italic"
+                                            )
+                                            return
+                                        ui.html(
+                                            '<pre style="font-family:var(--font-mono, monospace);'
+                                            'font-size:11px;line-height:1.5;white-space:pre-wrap;'
+                                            'word-break:break-word;padding:12px;'
+                                            'background:var(--color-background-secondary, #f5f5f5);'
+                                            'border-radius:4px;max-height:calc(90vh - 200px);'
+                                            f'overflow-y:auto">{_escape_prompt_html(texto)}</pre>'
+                                        )
+                                        return
                                     if not d:
                                         ui.label("Sin datos extraídos").classes(
                                             "text-xs text-gray-400 italic"
@@ -1996,12 +2056,13 @@ def _build_gastos(user_id: int) -> None:
         # ── Grid de tarjetas ──────────────────────────────────────────────────
         with content:
             with ui.grid(columns=2).classes("w-full gap-4"):
-                for sk, lbl, ext, mul, icon in _SECCIONES:
+                for sk, lbl, ext, mul, icon in _secciones_visibles:
                     _build_section_card(sk, lbl, ext, mul, icon)
 
-                # Card análisis final
+                # Card análisis final — fila propia, ancho completo
                 with ui.card().classes("w-full").style(
-                    f"border:2px solid {_BLUE};background:{_BLUE_BG};border-radius:8px"
+                    f"border:2px solid {_BLUE};background:{_BLUE_BG};border-radius:8px;"
+                    "grid-column:1 / -1"
                 ):
                     with ui.column().classes("p-4 gap-1"):
                         ui.label("Análisis consolidado del período").style(

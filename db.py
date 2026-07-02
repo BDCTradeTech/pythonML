@@ -50,6 +50,7 @@ TAB_KEYS = [
     ("importacion", "Importacion"),
     ("pesos", "Pesos"),
     ("gastos", "Gastos"),
+    ("analisis_ml", "Análisis ML"),
     ("datos", "Datos"),
     ("configuracion", "Configuración"),
     ("admin", "Admin"),
@@ -798,6 +799,9 @@ def init_db() -> None:
         cur.execute(
             "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'gastos', 1)"
         )
+        cur.execute(
+            "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'analisis_ml', 1)"
+        )
 
     conn.commit()
     conn.close()
@@ -1220,7 +1224,7 @@ def get_user_tab_permissions(user_id: int) -> Dict[str, bool]:
         result: Dict[str, bool] = {}
         for r in rows:
             result[str(r["tab_key"])] = bool(r["can_access"])
-        _default_off = {"admin", "guias"}
+        _default_off = {"admin", "guias", "analisis_ml"}
         for tab_key, _ in TAB_KEYS:
             if tab_key not in result:
                 result[tab_key] = False if tab_key in _default_off else True
