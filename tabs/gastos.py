@@ -511,11 +511,84 @@ def _calcular_notas_credito_ml(filas: list) -> Optional[dict]:
     }
 
 
+def _calcular_facturacion_ml(filas: list) -> Optional[dict]:
+    """Calcula en Python (sin Gemini) los 5 campos del 'Reporte Facturación MercadoLibre'
+    (el reporte principal, con TODOS los cargos/comisiones/bonificaciones del período):
+    fecha_desde/fecha_hasta (rango de 'Fecha del cargo'), total_de_ventas (cantidad de filas
+    con 'Total de la venta' no vacío), total_de_la_venta (SUMA de esa columna) y
+    total_valor_del_cargo (SUMA de 'Valor del cargo' — acá SIN abs(), a diferencia de las
+    'notas de crédito': este reporte trae todos los cargos, no solo anulaciones, y sus
+    valores ya vienen en positivo)."""
+    def _norm(s: str) -> str:
+        return _strip_accents(s.strip().lower())
+
+    idx_fecha = idx_totventa = idx_valorcargo = header_idx = None
+    for i, linea in enumerate(filas):
+        celdas_norm = [_norm(c) for c in linea.split("\t")]
+        cand_fecha = next((j for j, c in enumerate(celdas_norm) if c == "fecha del cargo"), None)
+        cand_totventa = next((j for j, c in enumerate(celdas_norm) if c == "total de la venta"), None)
+        cand_valorcargo = next((j for j, c in enumerate(celdas_norm) if c == "valor del cargo"), None)
+        if cand_fecha is not None and cand_totventa is not None and cand_valorcargo is not None:
+            idx_fecha, idx_totventa, idx_valorcargo, header_idx = (
+                cand_fecha, cand_totventa, cand_valorcargo, i
+            )
+            break
+
+    if header_idx is None:
+        return None
+
+    fechas = []
+    suma_venta = 0.0
+    n_venta = 0
+    suma_cargo = 0.0
+    n_filas = 0
+    for linea in filas[header_idx + 1:]:
+        celdas = linea.split("\t")
+        if len(celdas) <= max(idx_fecha, idx_totventa, idx_valorcargo):
+            continue
+        n_filas += 1
+        if celdas[idx_fecha].strip():
+            try:
+                fechas.append(datetime.strptime(celdas[idx_fecha].strip().split(" ")[0], "%Y-%m-%d"))
+            except ValueError:
+                pass
+        if celdas[idx_totventa].strip():
+            try:
+                suma_venta += float(celdas[idx_totventa])
+                n_venta += 1
+            except ValueError:
+                pass
+        if celdas[idx_valorcargo].strip():
+            try:
+                suma_cargo += float(celdas[idx_valorcargo])
+            except ValueError:
+                pass
+
+    if n_filas == 0:
+        return None
+
+    return {
+        "fecha_desde": fechas and min(fechas).strftime("%d/%m/%Y") or None,
+        "fecha_hasta": fechas and max(fechas).strftime("%d/%m/%Y") or None,
+        "total_de_ventas": n_venta,
+        "total_de_la_venta": round(suma_venta, 2),
+        "total_valor_del_cargo": round(suma_cargo, 2),
+    }
+
+
 def _es_pagos_facturas(filename: str) -> bool:
     """Detecta el 'Reporte Pagos Facturas' de MercadoLibre por el nombre del archivo
     (p.ej. 'Reporte_Pagos_Facturas_Abr2026.xlsx'), sin importar acentos/mayúsculas."""
     norm = _strip_accents(filename.lower())
     return "pagos" in norm and "facturas" in norm
+
+
+def _es_facturacion_ml(filename: str) -> bool:
+    """Detecta el 'Reporte Facturación MercadoLibre' (el reporte principal, con el detalle
+    completo de cargos/comisiones/bonificaciones) por el nombre del archivo
+    (p.ej. 'Reporte_Facturacion_MercadoLibre_Abr2026.xlsx'), sin importar acentos/mayúsculas."""
+    norm = _strip_accents(filename.lower())
+    return "facturacion" in norm and "mercadolibre" in norm
 
 
 REPORTE_ML_DESCRIPCIONES = {
@@ -539,6 +612,11 @@ REPORTE_ML_DESCRIPCIONES = {
         "pagar el saldo de tu período. Puedes encontrar el detalle de cada Nota de crédito en "
         "Factura y Reportes."
     ),
+    "facturacion_ml": (
+        "Este reporte contiene el detalle completo de la facturación de MercadoLibre del "
+        "período: cargos por publicación, comisiones, bonificaciones y todos los conceptos "
+        "que ML te cobra o te acredita."
+    ),
 }
 
 
@@ -552,6 +630,8 @@ def _tipo_reporte_ml_descripcion(filename: str) -> Optional[str]:
         return "nota_credito_enviosflex"
     if _es_pagos_facturas(filename):
         return "pagos_facturas"
+    if _es_facturacion_ml(filename):
+        return "facturacion_ml"
     return None
 
 
@@ -647,22 +727,28 @@ def _calcular_pagos_facturas(filas: list) -> Optional[dict]:
     """Calcula en Python (100% preciso, sin depender de Gemini) el detalle completo del
     reporte 'Pagos Facturas': fecha_actualizacion (de la cabecera del Excel) y la lista
     completa de filas de la tabla 'Pagos y notas de crédito' (fecha_pago, estado,
-    fecha_anulacion, importe_total). El archivo real trae 2 hojas; la segunda
+    nota_credito, importe_total). Las filas con estado 'Facturado' en realidad son notas de
+    crédito (no pagos) — se normalizan a estado='Nota de crédito' + su número, tomado de la
+    columna 'Número de nota de crédito'. El archivo real trae 2 hojas; la segunda
     ('Detalle de Pagos del mes') tiene menos columnas y queda excluida naturalmente por el
     chequeo de ancho de fila."""
     def _norm(s: str) -> str:
         return _strip_accents(s.strip().lower())
 
-    idx_fecha = idx_estado = idx_anulacion = idx_importe = header_idx = None
+    idx_fecha = idx_estado = idx_nc = idx_importe = header_idx = None
     for i, linea in enumerate(filas):
         celdas_norm = [_norm(c) for c in linea.split("\t")]
         cand_fecha = next((j for j, c in enumerate(celdas_norm) if "fecha de pago" in c), None)
         cand_estado = next((j for j, c in enumerate(celdas_norm) if c == "estado"), None)
-        cand_anulacion = next((j for j, c in enumerate(celdas_norm) if "fecha de anulacion" in c), None)
+        cand_nc = next(
+            (j for j, c in enumerate(celdas_norm)
+             if "numero de nota de credito" in c or "nro nc" in c or "numero de nc" in c),
+            None,
+        )
         cand_importe = next((j for j, c in enumerate(celdas_norm) if "importe total" in c), None)
         if cand_fecha is not None and cand_estado is not None and cand_importe is not None:
-            idx_fecha, idx_estado, idx_anulacion, idx_importe, header_idx = (
-                cand_fecha, cand_estado, cand_anulacion, cand_importe, i
+            idx_fecha, idx_estado, idx_nc, idx_importe, header_idx = (
+                cand_fecha, cand_estado, cand_nc, cand_importe, i
             )
             break
 
@@ -688,19 +774,18 @@ def _calcular_pagos_facturas(filas: list) -> Optional[dict]:
             except ValueError:
                 pass
 
-        fecha_anulacion = None
-        if idx_anulacion is not None and idx_anulacion < len(celdas) and celdas[idx_anulacion].strip():
-            try:
-                fecha_anulacion = datetime.strptime(
-                    celdas[idx_anulacion].strip().split(" ")[0], "%Y-%m-%d"
-                ).strftime("%d/%m/%Y")
-            except ValueError:
-                pass
+        estado_raw = celdas[idx_estado].strip() or None
+        estado_final = estado_raw
+        nota_credito = None
+        if estado_raw == "Facturado":
+            estado_final = "Nota de crédito"
+            if idx_nc is not None and idx_nc < len(celdas):
+                nota_credito = celdas[idx_nc].strip() or None
 
         pagos.append({
             "fecha_pago": fecha_pago,
-            "estado": celdas[idx_estado].strip() or None,
-            "fecha_anulacion": fecha_anulacion,
+            "estado": estado_final,
+            "nota_credito": nota_credito,
             "importe_total": round(importe, 2),
         })
 
@@ -790,6 +875,21 @@ def procesar_archivo_con_gemini(
                     "prompt_used": "(calculado en Python, sin Gemini)",
                 }
             print("[DBG-PAGOS-FACTURAS-CALC] no se encontraron columnas fecha/estado/importe", flush=True)
+
+        if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _es_facturacion_ml(path.name):
+            filas_sin_hoja = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
+            calc_fact = _calcular_facturacion_ml(filas_sin_hoja)
+            if calc_fact:
+                print(f"[DBG-FACTURACION-ML-CALC] {calc_fact}", flush=True)
+                return {
+                    "success": True, "data": calc_fact, "error": None,
+                    "prompt_used": "(calculado en Python, sin Gemini)",
+                }
+            print(
+                "[DBG-FACTURACION-ML-CALC] no se encontraron columnas "
+                "fecha del cargo/total de la venta/valor del cargo",
+                flush=True,
+            )
 
         client = genai.Client(api_key=api_key)
 
@@ -1023,10 +1123,10 @@ def _build_gastos(user_id: int) -> None:
                                     'vertical-align:middle"></i>'
                                     f'{_escape_prompt_html(_desc_texto).replace(chr(10), "<br>")}</div>'
                                 )
-                            _es_pagos_facturas_file = (
-                                seccion == "reportes_ml" and _es_pagos_facturas(fa["filename"])
+                            _solo_fecha_actualizacion = seccion == "reportes_ml" and (
+                                _es_pagos_facturas(fa["filename"]) or _es_facturacion_ml(fa["filename"])
                             )
-                            if _es_pagos_facturas_file and ext in (".xlsx", ".xls"):
+                            if _solo_fecha_actualizacion and ext in (".xlsx", ".xls"):
                                 try:
                                     _filas_izq = [
                                         f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")
@@ -1086,7 +1186,7 @@ def _build_gastos(user_id: int) -> None:
 
                                     def _is_money_key(k: str) -> bool:
                                         kl = k.lower()
-                                        if kl.startswith("cantidad"):
+                                        if kl.startswith("cantidad") or kl == "total_de_ventas":
                                             return False
                                         return any(mk in kl for mk in _MONEY_KEYS)
 
@@ -1178,7 +1278,11 @@ def _build_gastos(user_id: int) -> None:
                                                     f"display:block;width:100%{_bw}"
                                                 )
                                             else:
-                                                ui.label(str(val)).style(
+                                                _val_str = (
+                                                    f"{val:,}".replace(",", ".")
+                                                    if k == "total_de_ventas" else str(val)
+                                                )
+                                                ui.label(_val_str).style(
                                                     f"font-size:11px;color:{_BLUE};"
                                                     f"font-variant-numeric:tabular-nums{_bw}"
                                                 )
@@ -1290,6 +1394,12 @@ def _build_gastos(user_id: int) -> None:
                                     if seccion == "reportes_ml" and _es_pagos_facturas(fa.get("filename", "")):
                                         _CAMPOS_PAGOS_FACTURAS = {'fecha_actualizacion', 'pagos'}
                                         _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_PAGOS_FACTURAS}
+                                    if seccion == "reportes_ml" and _es_facturacion_ml(fa.get("filename", "")):
+                                        _CAMPOS_FACTURACION_ML = {
+                                            'fecha_desde', 'fecha_hasta', 'total_de_ventas',
+                                            'total_de_la_venta', 'total_valor_del_cargo',
+                                        }
+                                        _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_FACTURACION_ML}
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
@@ -1306,21 +1416,23 @@ def _build_gastos(user_id: int) -> None:
                                     for k, v in d.items():
                                         if k in _HIDDEN_FIELDS:
                                             continue
-                                        # pagos (reportes_ml/pagos_facturas) → separador + fila por pago + Total
+                                        # pagos (reportes_ml/pagos_facturas) → separador + fila por pago/NC
                                         if k == "pagos" and seccion == "reportes_ml" and isinstance(v, list):
                                             if v:
                                                 ui.html(f'<div style="{_SEP_STYLE}">Pagos</div>')
-                                            total_pagos = 0.0
                                             for pago in v:
                                                 fecha_p = pago.get("fecha_pago") or "—"
                                                 estado_p = pago.get("estado") or "—"
+                                                nc_p = pago.get("nota_credito")
+                                                label = f"{fecha_p} · {estado_p}"
+                                                if nc_p:
+                                                    label += f" ({nc_p})"
                                                 importe_p = pago.get("importe_total")
                                                 with ui.row().classes("w-full items-start py-1").style(_ROW_STYLE):
-                                                    ui.label(f"{fecha_p} · {estado_p}").classes(
+                                                    ui.label(label).classes(
                                                         "text-xs text-gray-500 font-medium"
                                                     ).style(_KEY_STYLE)
                                                     if isinstance(importe_p, (int, float)):
-                                                        total_pagos += importe_p
                                                         ui.label(_fmt_money(importe_p)).style(
                                                             f"font-size:11px;color:{_BLUE};"
                                                             "font-variant-numeric:tabular-nums;"
@@ -1329,19 +1441,6 @@ def _build_gastos(user_id: int) -> None:
                                                         )
                                                     else:
                                                         ui.label("—").style("font-size:11px;color:#9e9e9e")
-                                            if v:
-                                                with ui.row().classes("w-full items-start py-1").style(
-                                                    _ROW_STYLE + ";border-top:1px solid #d0d0d0;margin-top:4px"
-                                                ):
-                                                    ui.label("Total").classes(
-                                                        "text-xs text-gray-500 font-medium"
-                                                    ).style(_KEY_STYLE + ";font-weight:700")
-                                                    ui.label(_fmt_money(total_pagos)).style(
-                                                        f"font-size:11px;color:{_BLUE};font-weight:700;"
-                                                        "font-variant-numeric:tabular-nums;"
-                                                        "text-align:right;padding-right:12px;"
-                                                        "display:block;width:100%"
-                                                    )
                                             continue
                                         # lineas_convenio_multilateral → separador + filas CM
                                         if k == "lineas_convenio_multilateral" and isinstance(v, list):
