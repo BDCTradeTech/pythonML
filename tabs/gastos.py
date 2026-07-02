@@ -445,13 +445,41 @@ def _es_notas_credito(filename: str) -> bool:
     return "notas" in norm and "credito" in norm
 
 
-def _calcular_totales_notas_credito(filas: list) -> Optional[dict]:
-    """Calcula en Python (100% preciso, sin depender de Gemini) los 4 campos del reporte
-    'notas de crédito': fecha_desde/fecha_hasta (rango de fechas de la tabla de detalle) y
-    total_bonificado/cantidad_bonificaciones (suma y conteo de filas con valor != 0 de la
-    columna 'Valor de la bonificación'). En este reporte los valores vienen en NEGATIVO
-    (son anulaciones/créditos de un cargo previo) — se toma el valor absoluto porque
-    'Total Bonificado' representa el monto total acreditado, no un saldo con signo."""
+def _es_notas_debito(filename: str) -> bool:
+    """Detecta el 'Reporte notas de débito' de MercadoLibre por el nombre del archivo
+    (p.ej. 'Reporte_Notas_Debito_EnviosFlex_Abr2026.xlsx'), sin importar acentos/mayúsculas."""
+    norm = _strip_accents(filename.lower())
+    return "notas" in norm and "debito" in norm
+
+
+_NOTAS_BONIF_CONFIG = {
+    # Header exacto (normalizado: sin acentos, minúscula) de la columna de valor en cada
+    # reporte real de Envíos Flex, confirmado contra archivos de producción.
+    "credito": {
+        "valor_headers": {"valor de la bonificacion"},
+        "campo_total": "total_bonificado",
+        "campo_cantidad": "cantidad_bonificaciones",
+    },
+    "debito": {
+        "valor_headers": {
+            "valor de la anulacion", "valor del debito", "valor debitado",
+            "monto debitado", "monto debito", "importe debitado",
+        },
+        "campo_total": "total_debitado",
+        "campo_cantidad": "cantidad_debitos",
+    },
+}
+
+
+def _calcular_notas_bonificacion(filas: list, tipo: str) -> Optional[dict]:
+    """Calcula en Python (100% preciso, sin depender de Gemini) los 4 campos de los reportes
+    'notas de crédito' / 'notas de débito' de Envíos Flex: fecha_desde/fecha_hasta (rango de
+    fechas de la tabla de detalle) y total/cantidad (suma en valor absoluto y conteo de filas
+    con valor != 0) de la columna de valor. En estos reportes los valores pueden venir en
+    NEGATIVO (son anulaciones de un cargo previo) — se toma el valor absoluto porque el total
+    representa el monto acreditado/debitado, no un saldo con signo."""
+    cfg = _NOTAS_BONIF_CONFIG[tipo]
+
     def _norm(s: str) -> str:
         return _strip_accents(s.strip().lower())
 
@@ -460,7 +488,7 @@ def _calcular_totales_notas_credito(filas: list) -> Optional[dict]:
         celdas_norm = [_norm(c) for c in linea.split("\t")]
         cand_fecha = next((j for j, c in enumerate(celdas_norm) if "fecha" in c), None)
         cand_valor = next(
-            (j for j, c in enumerate(celdas_norm) if "valor" in c and "bonificacion" in c), None
+            (j for j, c in enumerate(celdas_norm) if c in cfg["valor_headers"]), None
         )
         if cand_fecha is not None and cand_valor is not None:
             idx_fecha, idx_valor, header_idx = cand_fecha, cand_valor, i
@@ -490,8 +518,8 @@ def _calcular_totales_notas_credito(filas: list) -> Optional[dict]:
     return {
         "fecha_desde": fechas and min(fechas).strftime("%d/%m/%Y") or None,
         "fecha_hasta": fechas and max(fechas).strftime("%d/%m/%Y") or None,
-        "total_bonificado": round(sum(valores), 2),
-        "cantidad_bonificaciones": len(valores),
+        cfg["campo_total"]: round(sum(valores), 2),
+        cfg["campo_cantidad"]: len(valores),
     }
 
 
@@ -529,22 +557,22 @@ def procesar_archivo_con_gemini(
     calc_percepciones = None
 
     try:
-        if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _es_notas_credito(path.name):
+        _tipo_notas = (
+            "credito" if _es_notas_credito(path.name)
+            else "debito" if _es_notas_debito(path.name)
+            else None
+        )
+        if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _tipo_notas:
             filas_sin_hoja = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
-            calc_notas = _calcular_totales_notas_credito(filas_sin_hoja)
+            calc_notas = _calcular_notas_bonificacion(filas_sin_hoja, _tipo_notas)
+            tag = f"DBG-NOTAS-{_tipo_notas.upper()}-CALC"
             if calc_notas:
-                print(
-                    f"[DBG-NOTAS-CREDITO-CALC] fecha_desde={calc_notas['fecha_desde']} "
-                    f"fecha_hasta={calc_notas['fecha_hasta']} "
-                    f"total_bonificado=${calc_notas['total_bonificado']} "
-                    f"cantidad_bonificaciones={calc_notas['cantidad_bonificaciones']}",
-                    flush=True,
-                )
+                print(f"[{tag}] {calc_notas}", flush=True)
                 return {
                     "success": True, "data": calc_notas, "error": None,
                     "prompt_used": "(calculado en Python, sin Gemini)",
                 }
-            print("[DBG-NOTAS-CREDITO-CALC] no se encontraron columnas fecha/valor bonificación", flush=True)
+            print(f"[{tag}] no se encontraron columnas fecha/valor", flush=True)
 
         client = genai.Client(api_key=api_key)
 
@@ -1003,6 +1031,12 @@ def _build_gastos(user_id: int) -> None:
                                             'total_bonificado', 'cantidad_bonificaciones',
                                         }
                                         _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_NOTAS_CREDITO}
+                                    if seccion == "reportes_ml" and _es_notas_debito(fa.get("filename", "")):
+                                        _CAMPOS_NOTAS_DEBITO = {
+                                            'fecha_desde', 'fecha_hasta',
+                                            'total_debitado', 'cantidad_debitos',
+                                        }
+                                        _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_NOTAS_DEBITO}
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
