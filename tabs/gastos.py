@@ -120,8 +120,25 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         '"base_imponible":869973.24,"importe_retenido":17399.46,"importe_devuelto":3777.96}'
     ),
     "percepciones": (
-        "Analizá este comprobante de percepción. Extraé en JSON puro: "
-        "tipo_percepcion, fecha, agente_percepcion, cuit_agente, monto_percibido, numero_comprobante."
+        "Analizá este Excel de percepciones. Extraé en JSON puro (sin markdown ni bloques de código). "
+        "De la CABECERA del Excel extraé: "
+        "usuario (ej: 'NORTHTECHNOLOGY'), "
+        "impuesto (ej: 'Impuesto a los IIBB Corrientes - Percepciones'), "
+        "fecha_desde (del campo 'Intervalo de fechas consultadas', formato DD/MM/AAAA), "
+        "fecha_hasta (del mismo campo, formato DD/MM/AAAA). "
+        "De la TABLA de detalle, mirá la columna 'Alícuota': "
+        "si el valor es el MISMO en todas las filas, extraé ese valor único. "
+        "Si varía, extraé el rango como 'min-max'. "
+        "CRÍTICO: base_imponible es la SUMA de TODOS los valores de la columna 'Base imponible' de la tabla "
+        "de detalle. NO uses un valor individual — sumá todas las filas. Lo mismo para monto_percibido: "
+        "es la SUMA de TODOS los valores de la columna 'Monto percibido' (o 'Importe percibido', "
+        "según el nombre que aparezca en el Excel). "
+        "IMPORTANTE: NO extraer las filas individuales de la tabla — solo los agregados sumados y la alícuota. "
+        "El JSON debe ser ESTRICTAMENTE válido. Usá SOLO comillas dobles. "
+        "Responde ÚNICAMENTE con el JSON. "
+        'Ejemplo: {"usuario":"NORTHTECHNOLOGY","impuesto":"Impuesto a los IIBB Corrientes",'
+        '"fecha_desde":"01/04/2026","fecha_hasta":"01/05/2026","alicuota":"2,00 %",'
+        '"base_imponible":869973.24,"monto_percibido":17399.46}'
     ),
     "pagos_arca": (
         "Analizá este comprobante de pago ARCA/AFIP. Identificá el tipo de documento y extraé en JSON puro "
@@ -707,6 +724,12 @@ def _build_gastos(user_id: int) -> None:
                                             'cuit_agente', 'monto_retenido',
                                             'numero_comprobante', 'agente_retencion',
                                         }
+                                    if seccion == "percepciones":
+                                        _HIDDEN_FIELDS = _HIDDEN_FIELDS | {
+                                            'agente_percepcion', 'agente_percepciones',
+                                            'cuit_agente', 'numero_comprobante', 'monto',
+                                            'fecha_percepcion', 'agente',
+                                        }
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
@@ -920,6 +943,25 @@ def _build_gastos(user_id: int) -> None:
                                                 f"background:{_BLUE};color:white"
                                             ).props("dense")
                                 _upd_dlg.open()
+
+                            # Percepciones: datos extraídos con el prompt viejo (sin agregados) → ofrecer reprocesar
+                            if seccion == "percepciones" and data_dict and "base_imponible" not in data_dict:
+                                with ui.dialog() as _upd_dlg_perc:
+                                    with ui.card().classes("p-4 gap-2").style("min-width:340px"):
+                                        ui.label("Prompt actualizado").classes("font-semibold text-sm")
+                                        ui.label(
+                                            "El prompt fue actualizado. "
+                                            "¿Reprocesar archivos existentes de esta sección?"
+                                        ).classes("text-xs text-gray-600").style("line-height:1.5")
+                                        with ui.row().classes("gap-2 justify-end w-full mt-2"):
+                                            ui.button("No", on_click=_upd_dlg_perc.close).props("flat dense")
+                                            async def _reprocesar_desde_dialog(_d=_upd_dlg_perc):
+                                                _d.close()
+                                                await _reprocesar()
+                                            ui.button("Sí, reprocesar", on_click=_reprocesar_desde_dialog).style(
+                                                f"background:{_BLUE};color:white"
+                                            ).props("dense")
+                                _upd_dlg_perc.open()
 
                             def _start_edit() -> None:
                                 if not _prompt_open[0]:
