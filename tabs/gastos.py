@@ -1222,6 +1222,12 @@ def _build_gastos(user_id: int) -> None:
                                                 "text-xs text-gray-400 italic"
                                             )
                                             return
+                                        _corte = re.search(
+                                            r'\n\s*2\.\s*An[áa]lisis detallado', texto, re.IGNORECASE
+                                        )
+                                        if _corte:
+                                            texto = texto[:_corte.start()]
+                                        texto = texto.rstrip()
                                         ui.html(
                                             '<pre style="font-family:var(--font-mono, monospace);'
                                             'font-size:11px;line-height:1.5;white-space:pre-wrap;'
