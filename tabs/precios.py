@@ -870,7 +870,7 @@ def _mostrar_tabla_precios(
         if _cat_ids and access_token:
             def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
                 res: Dict[str, Optional[Dict]] = {}
-                with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
                     futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
                     for fut in as_completed(futures):
                         iid = futures[fut]
@@ -947,7 +947,7 @@ def _mostrar_tabla_precios(
         if _quality_ids and access_token:
             def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
                 res: Dict[str, Dict] = {}
-                with ThreadPoolExecutor(max_workers=min(8, len(ids))) as ex:
+                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
                     futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
                     for fut in as_completed(futures):
                         iid = futures[fut]
@@ -985,7 +985,7 @@ def _mostrar_tabla_precios(
                     return None
                 _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
                 res: Dict[str, Optional[float]] = {}
-                with ThreadPoolExecutor(max_workers=min(8, max(1, len(_pairs)))) as ex:
+                with ThreadPoolExecutor(max_workers=min(16, max(1, len(_pairs)))) as ex:
                     futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
                     for fut in as_completed(futures):
                         rid, _ = futures[fut]

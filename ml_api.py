@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
@@ -185,7 +186,7 @@ def ml_get_my_items(
     include_paused=True: incluye pausadas (sin stock), carga más lento.
     force_refresh=True: saltea el cache y llama la API directamente.
     perf_uid: [DIAGNOSTICO TEMPORAL] user_id de la app, solo para logging [PERF-PRODUCTOS]."""
-    from db import get_cached, set_cached
+    from db import get_cached, get_cached_stale_ok, set_cached
     _t_total = time.perf_counter()
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
@@ -203,6 +204,100 @@ def ml_get_my_items(
         return {"results": [], "paging": {"total": 0}, "error": "No se pudo obtener el usuario de ML"}
 
     _cache_key = f"cache_my_items_{ml_user_id}_{'all' if include_paused else 'active'}"
+
+    def _fetch_fresh() -> Dict[str, Any]:
+        # 2. Listar IDs: activas siempre; pausadas, closed y under_review solo si include_paused.
+        # ML no soporta status=under_review en /items/search; se usa sub_status=pending_documentation
+        # y sub_status=held para obtener esos items (confirmado por diagnóstico).
+        # ML limita offset a 1000; pasarlo devuelve 400 Bad Request.
+        item_ids = []
+        seen: set = set()
+        MAX_OFFSET = 1000
+        param_sets = [{"status": "active"}]
+        if include_paused:
+            param_sets += [
+                {"status": "paused"},
+                {"status": "closed"},
+                {"sub_status": "pending_documentation"},
+                {"sub_status": "held"},
+            ]
+        for extra_params in param_sets:
+            _t_grupo = time.perf_counter()
+            _n_paginas = 0
+            _n_ids_grupo = 0
+            offset = 0
+            limit = 50
+            while offset <= MAX_OFFSET:
+                search = requests.get(
+                    f"{base}/users/{ml_user_id}/items/search",
+                    headers=headers,
+                    params={"limit": limit, "offset": offset, **extra_params},
+                    timeout=15,
+                )
+                search.raise_for_status()
+                search_data = search.json()
+                chunk = search_data.get("results", [])
+                _n_paginas += 1
+                for _id in chunk:
+                    if _id and _id not in seen:
+                        seen.add(_id)
+                        item_ids.append(_id)
+                        _n_ids_grupo += 1
+                if len(chunk) < limit or offset + limit > MAX_OFFSET:
+                    break
+                offset += limit
+            _grupo_label = "_".join(f"{k}={v}" for k, v in extra_params.items())
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='api_search_{_grupo_label}' user_id={perf_uid} "
+                f"tiempo={time.perf_counter() - _t_grupo:.3f}s items={_n_ids_grupo} paginas={_n_paginas}"
+            )
+
+        paging = search_data.get("paging", {})
+        total = paging.get("total", len(item_ids))
+
+        if not item_ids:
+            resultado = {"results": [], "paging": {"total": total}, "seller_id": ml_user_id}
+            set_cached(_cache_key, resultado)
+            return resultado
+
+        # 3. Obtener detalles de cada ítem (la API acepta hasta 20 IDs por request)
+        _t_multiget = time.perf_counter()
+        _n_batches = 0
+        all_items = []
+        for i in range(0, len(item_ids), 20):
+            chunk = item_ids[i : i + 20]
+            ids_param = ",".join(chunk)
+            items_resp = requests.get(
+                f"{base}/items",
+                params={"ids": ids_param},
+                headers=headers,
+                timeout=15,
+            )
+            items_resp.raise_for_status()
+            _n_batches += 1
+            def _item_from_body(body: dict) -> dict:
+                return _parse_ml_item_body(body)
+
+            for item_data in items_resp.json():
+                if isinstance(item_data, dict) and item_data.get("code") == 200:
+                    body = item_data.get("body", {})
+                    all_items.append(_item_from_body(body))
+                elif isinstance(item_data, dict) and "body" in item_data:
+                    body = item_data["body"]
+                    all_items.append(_item_from_body(body))
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='api_multiget_items' user_id={perf_uid} "
+            f"tiempo={time.perf_counter() - _t_multiget:.3f}s items={len(all_items)} batches={_n_batches}"
+        )
+
+        resultado = {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
+        set_cached(_cache_key, resultado)
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='ml_get_my_items_TOTAL' user_id={perf_uid} "
+            f"tiempo={time.perf_counter() - _t_total:.3f}s items={len(all_items)} include_paused={include_paused}"
+        )
+        return resultado
+
     if not force_refresh:
         _t0 = time.perf_counter()
         cached = get_cached(_cache_key, max_age_minutes=15)
@@ -213,95 +308,30 @@ def ml_get_my_items(
             )
             return cached
 
-    # 2. Listar IDs: activas siempre; pausadas, closed y under_review solo si include_paused.
-    # ML no soporta status=under_review en /items/search; se usa sub_status=pending_documentation
-    # y sub_status=held para obtener esos items (confirmado por diagnóstico).
-    # ML limita offset a 1000; pasarlo devuelve 400 Bad Request.
-    item_ids = []
-    seen: set = set()
-    MAX_OFFSET = 1000
-    param_sets = [{"status": "active"}]
-    if include_paused:
-        param_sets += [
-            {"status": "paused"},
-            {"status": "closed"},
-            {"sub_status": "pending_documentation"},
-            {"sub_status": "held"},
-        ]
-    for extra_params in param_sets:
-        _t_grupo = time.perf_counter()
-        _n_paginas = 0
-        _n_ids_grupo = 0
-        offset = 0
-        limit = 50
-        while offset <= MAX_OFFSET:
-            search = requests.get(
-                f"{base}/users/{ml_user_id}/items/search",
-                headers=headers,
-                params={"limit": limit, "offset": offset, **extra_params},
-                timeout=15,
+        # TTL vencido o no existe: si hay una versión "rancia" (de cualquier
+        # antigüedad), la devolvemos ya mismo y refrescamos en background.
+        stale = get_cached_stale_ok(_cache_key)
+        if stale is not None:
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='ml_get_my_items_STALE_HIT' user_id={perf_uid} "
+                f"tiempo={time.perf_counter() - _t0:.3f}s items={len(stale.get('results', []))}"
             )
-            search.raise_for_status()
-            search_data = search.json()
-            chunk = search_data.get("results", [])
-            _n_paginas += 1
-            for _id in chunk:
-                if _id and _id not in seen:
-                    seen.add(_id)
-                    item_ids.append(_id)
-                    _n_ids_grupo += 1
-            if len(chunk) < limit or offset + limit > MAX_OFFSET:
-                break
-            offset += limit
-        _grupo_label = "_".join(f"{k}={v}" for k, v in extra_params.items())
-        logging.warning(
-            f"[PERF-PRODUCTOS] fase='api_search_{_grupo_label}' user_id={perf_uid} "
-            f"tiempo={time.perf_counter() - _t_grupo:.3f}s items={_n_ids_grupo} paginas={_n_paginas}"
-        )
 
-    paging = search_data.get("paging", {})
-    total = paging.get("total", len(item_ids))
+            def _refresh_bg() -> None:
+                _t_bg = time.perf_counter()
+                try:
+                    _fetch_fresh()
+                    logging.warning(
+                        f"[PERF-PRODUCTOS] fase='ml_get_my_items_BG_REFRESH_TOTAL' user_id={perf_uid} "
+                        f"tiempo={time.perf_counter() - _t_bg:.3f}s items=-"
+                    )
+                except Exception as _e_bg:
+                    logging.error(f"[PERF-PRODUCTOS] ml_get_my_items_BG_REFRESH_ERROR user_id={perf_uid}: {_e_bg}")
 
-    if not item_ids:
-        return {"results": [], "paging": {"total": total}, "seller_id": ml_user_id}
+            threading.Thread(target=_refresh_bg, daemon=True, name="ml_items_bg_refresh").start()
+            return stale
 
-    # 3. Obtener detalles de cada ítem (la API acepta hasta 20 IDs por request)
-    _t_multiget = time.perf_counter()
-    _n_batches = 0
-    all_items = []
-    for i in range(0, len(item_ids), 20):
-        chunk = item_ids[i : i + 20]
-        ids_param = ",".join(chunk)
-        items_resp = requests.get(
-            f"{base}/items",
-            params={"ids": ids_param},
-            headers=headers,
-            timeout=15,
-        )
-        items_resp.raise_for_status()
-        _n_batches += 1
-        def _item_from_body(body: dict) -> dict:
-            return _parse_ml_item_body(body)
-
-        for item_data in items_resp.json():
-            if isinstance(item_data, dict) and item_data.get("code") == 200:
-                body = item_data.get("body", {})
-                all_items.append(_item_from_body(body))
-            elif isinstance(item_data, dict) and "body" in item_data:
-                body = item_data["body"]
-                all_items.append(_item_from_body(body))
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='api_multiget_items' user_id={perf_uid} "
-        f"tiempo={time.perf_counter() - _t_multiget:.3f}s items={len(all_items)} batches={_n_batches}"
-    )
-
-    resultado = {"results": all_items, "paging": {"total": total}, "seller_id": ml_user_id}
-    set_cached(_cache_key, resultado)
-    logging.warning(
-        f"[PERF-PRODUCTOS] fase='ml_get_my_items_TOTAL' user_id={perf_uid} "
-        f"tiempo={time.perf_counter() - _t_total:.3f}s items={len(all_items)} include_paused={include_paused}"
-    )
-    return resultado
+    return _fetch_fresh()
 
 
 def _tipo_publicacion_desde_item(item: Dict[str, Any]) -> str:
