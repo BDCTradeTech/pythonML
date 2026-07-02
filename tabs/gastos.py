@@ -360,6 +360,16 @@ def procesar_archivo_con_gemini(
             print(f"[DBG-GASTOS] filas_totales={len(filas_todas)} filas_enviadas={len(filas_texto)}", flush=True)
             print(f"[DBG-GASTOS] primeras_3={filas_texto[:3]}", flush=True)
             print(f"[DBG-GASTOS] ultimas_3_enviadas={filas_texto[-3:]}", flush=True)
+            if seccion == "percepciones":
+                hojas = [
+                    ln.replace("=== HOJA: ", "").replace(" ===", "")
+                    for ln in filas_todas if ln.startswith("=== HOJA:")
+                ]
+                print(f"[DBG-PERCEPCIONES] path={str(path)!r}", flush=True)
+                print(f"[DBG-PERCEPCIONES] filas_totales={len(filas_todas)}", flush=True)
+                print(f"[DBG-PERCEPCIONES] hojas={hojas}", flush=True)
+                print(f"[DBG-PERCEPCIONES] primeras_5={filas_todas[:5]}", flush=True)
+                print(f"[DBG-PERCEPCIONES] ultimas_5={filas_todas[-5:]}", flush=True)
             response = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=f"{prompt}\n\nDatos:\n" + "\n".join(filas_texto),
