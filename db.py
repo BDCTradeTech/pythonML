@@ -790,6 +790,20 @@ def init_db() -> None:
         """
     )
 
+    # Resultado guardado del análisis consolidado del período (tab Gastos)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gastos_consolidado (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER NOT NULL,
+            periodo        TEXT NOT NULL,
+            resultado_json TEXT NOT NULL,
+            generado_at    TIMESTAMP NOT NULL,
+            UNIQUE(user_id, periodo)
+        )
+        """
+    )
+
     # Migración: habilitar permiso "guias" para user_id=1 (admin) si aún no tiene registro
     cur.execute("SELECT 1 FROM users WHERE id = 1")
     if cur.fetchone():
@@ -2028,6 +2042,42 @@ def update_gastos_extraccion(
                 (extracted_data, prompt_used, extraction_status, extraction_error, file_id),
             )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def save_gastos_consolidado(user_id: int, periodo: str, resultado: Dict[str, Any]) -> None:
+    """Guarda (o reemplaza) el resultado del análisis consolidado del período."""
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            "INSERT INTO gastos_consolidado (user_id, periodo, resultado_json, generado_at) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(user_id, periodo) DO UPDATE SET "
+            "resultado_json=excluded.resultado_json, generado_at=excluded.generado_at",
+            (user_id, periodo, json.dumps(resultado), now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_gastos_consolidado(user_id: int, periodo: str) -> Optional[Dict[str, Any]]:
+    """Devuelve el último análisis consolidado guardado para el período, o None."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT resultado_json, generado_at FROM gastos_consolidado WHERE user_id=? AND periodo=?",
+            (user_id, periodo),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        resultado = json.loads(row["resultado_json"])
+        resultado["_generado_at"] = row["generado_at"]
+        return resultado
     finally:
         conn.close()
 
