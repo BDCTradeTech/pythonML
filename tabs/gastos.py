@@ -438,6 +438,63 @@ def _calcular_totales_percepciones(filas: list) -> Optional[dict]:
     }
 
 
+def _es_notas_credito(filename: str) -> bool:
+    """Detecta el 'Reporte notas de crédito' de MercadoLibre por el nombre del archivo
+    (p.ej. 'Reporte_Notas_Credito_MercadoLibre_Abr2026.xlsx'), sin importar acentos/mayúsculas."""
+    norm = _strip_accents(filename.lower())
+    return "notas" in norm and "credito" in norm
+
+
+def _calcular_totales_notas_credito(filas: list) -> Optional[dict]:
+    """Calcula en Python (100% preciso, sin depender de Gemini) los 4 campos del reporte
+    'notas de crédito': fecha_desde/fecha_hasta (rango de fechas de la tabla de detalle) y
+    total_bonificado/cantidad_bonificaciones (suma y conteo de filas con valor != 0 de la
+    columna 'Valor de la bonificación'). En este reporte los valores vienen en NEGATIVO
+    (son anulaciones/créditos de un cargo previo) — se toma el valor absoluto porque
+    'Total Bonificado' representa el monto total acreditado, no un saldo con signo."""
+    def _norm(s: str) -> str:
+        return _strip_accents(s.strip().lower())
+
+    idx_fecha = idx_valor = header_idx = None
+    for i, linea in enumerate(filas):
+        celdas_norm = [_norm(c) for c in linea.split("\t")]
+        cand_fecha = next((j for j, c in enumerate(celdas_norm) if "fecha" in c), None)
+        cand_valor = next(
+            (j for j, c in enumerate(celdas_norm) if "valor" in c and "bonificacion" in c), None
+        )
+        if cand_fecha is not None and cand_valor is not None:
+            idx_fecha, idx_valor, header_idx = cand_fecha, cand_valor, i
+            break
+
+    if header_idx is None:
+        return None
+
+    fechas = []
+    valores = []
+    for linea in filas[header_idx + 1:]:
+        celdas = linea.split("\t")
+        if len(celdas) <= max(idx_fecha, idx_valor):
+            continue
+        if celdas[idx_fecha].strip():
+            try:
+                fechas.append(datetime.strptime(celdas[idx_fecha].strip().split(" ")[0], "%Y-%m-%d"))
+            except ValueError:
+                pass
+        try:
+            v = float(celdas[idx_valor])
+        except ValueError:
+            v = 0.0
+        if v != 0:
+            valores.append(abs(v))
+
+    return {
+        "fecha_desde": fechas and min(fechas).strftime("%d/%m/%Y") or None,
+        "fecha_hasta": fechas and max(fechas).strftime("%d/%m/%Y") or None,
+        "total_bonificado": round(sum(valores), 2),
+        "cantidad_bonificaciones": len(valores),
+    }
+
+
 def procesar_archivo_con_gemini(
     archivo_path: str, seccion: str, prompt_custom: Optional[str] = None
 ) -> dict:
@@ -472,6 +529,23 @@ def procesar_archivo_con_gemini(
     calc_percepciones = None
 
     try:
+        if seccion == "reportes_ml" and ext in (".xlsx", ".xls") and _es_notas_credito(path.name):
+            filas_sin_hoja = [f for f in leer_excel_completo(path) if not f.startswith("=== HOJA:")]
+            calc_notas = _calcular_totales_notas_credito(filas_sin_hoja)
+            if calc_notas:
+                print(
+                    f"[DBG-NOTAS-CREDITO-CALC] fecha_desde={calc_notas['fecha_desde']} "
+                    f"fecha_hasta={calc_notas['fecha_hasta']} "
+                    f"total_bonificado=${calc_notas['total_bonificado']} "
+                    f"cantidad_bonificaciones={calc_notas['cantidad_bonificaciones']}",
+                    flush=True,
+                )
+                return {
+                    "success": True, "data": calc_notas, "error": None,
+                    "prompt_used": "(calculado en Python, sin Gemini)",
+                }
+            print("[DBG-NOTAS-CREDITO-CALC] no se encontraron columnas fecha/valor bonificación", flush=True)
+
         client = genai.Client(api_key=api_key)
 
         if ext == ".pdf":
@@ -739,6 +813,8 @@ def _build_gastos(user_id: int) -> None:
 
                                     def _is_money_key(k: str) -> bool:
                                         kl = k.lower()
+                                        if kl.startswith("cantidad"):
+                                            return False
                                         return any(mk in kl for mk in _MONEY_KEYS)
 
                                     def _fmt_money(val) -> str:
@@ -921,6 +997,12 @@ def _build_gastos(user_id: int) -> None:
                                             'cuit_agente', 'numero_comprobante', 'monto',
                                             'fecha_percepcion', 'agente',
                                         }
+                                    if seccion == "reportes_ml" and _es_notas_credito(fa.get("filename", "")):
+                                        _CAMPOS_NOTAS_CREDITO = {
+                                            'fecha_desde', 'fecha_hasta',
+                                            'total_bonificado', 'cantidad_bonificaciones',
+                                        }
+                                        _HIDDEN_FIELDS = {k for k in d.keys() if k not in _CAMPOS_NOTAS_CREDITO}
                                     _SECTION_LABELS = {
                                         "lineas_convenio_multilateral": "Convenio Multilateral",
                                         "determinacion_del_impuesto": "Determinación del Impuesto",
@@ -1491,31 +1573,28 @@ def _build_gastos(user_id: int) -> None:
         # ── Grid de tarjetas ──────────────────────────────────────────────────
         with content:
             with ui.grid(columns=2).classes("w-full gap-4"):
-                for sk, lbl, ext, mul, icon in _SECCIONES[:4]:
+                for sk, lbl, ext, mul, icon in _SECCIONES:
                     _build_section_card(sk, lbl, ext, mul, icon)
 
-            sk, lbl, ext, mul, icon = _SECCIONES[4]
-            _build_section_card(sk, lbl, ext, mul, icon)
+                # Card análisis final
+                with ui.card().classes("w-full").style(
+                    f"border:2px solid {_BLUE};background:{_BLUE_BG};border-radius:8px"
+                ):
+                    with ui.column().classes("p-4 gap-1"):
+                        ui.label("Análisis consolidado del período").style(
+                            f"color:{_BLUE};font-size:16px;font-weight:700"
+                        )
+                        subtitle = ui.label("").classes("text-sm text-gray-500")
+                        subtitle_ref[0] = subtitle
 
-            # Card análisis final
-            with ui.card().classes("w-full").style(
-                f"border:2px solid {_BLUE};background:{_BLUE_BG};border-radius:8px"
-            ):
-                with ui.column().classes("p-4 gap-1"):
-                    ui.label("Análisis consolidado del período").style(
-                        f"color:{_BLUE};font-size:16px;font-weight:700"
-                    )
-                    subtitle = ui.label("").classes("text-sm text-gray-500")
-                    subtitle_ref[0] = subtitle
+                        def _final_procesar() -> None:
+                            ui.notify("Análisis final pendiente de implementación", color="info")
 
-                    def _final_procesar() -> None:
-                        ui.notify("Análisis final pendiente de implementación", color="info")
-
-                    fb = ui.button("Procesar análisis final", on_click=_final_procesar).style(
-                        f"background:{_BLUE};color:white;font-size:14px;"
-                        "font-weight:600;padding:10px 24px;margin-top:8px"
-                    )
-                    final_btn_ref[0] = fb
+                        fb = ui.button("Procesar análisis final", on_click=_final_procesar).style(
+                            f"background:{_BLUE};color:white;font-size:14px;"
+                            "font-weight:600;padding:10px 24px;margin-top:8px"
+                        )
+                        final_btn_ref[0] = fb
 
             _refresh_progress()
 
