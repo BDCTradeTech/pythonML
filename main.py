@@ -146,7 +146,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.02.16"
+VERSION = "3.26.07.02.17"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -907,6 +907,8 @@ async def _qb_callback_redirect(request: Request) -> RedirectResponse:
 
 app.add_api_route("/qb/callback", _qb_callback_redirect, methods=["GET"])
 
+app.add_static_files("/static/favicon", "static/favicon")
+
 
 # ==========================
 # ARRANQUE DE LA APP
@@ -916,6 +918,11 @@ app.add_api_route("/qb/callback", _qb_callback_redirect, methods=["GET"])
 @ui.page("/")
 def index(request: Request) -> None:  # type: ignore[override]
     ui.add_head_html('<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">')
+    ui.add_head_html(
+        '<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png">'
+        '<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png">'
+        '<link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">'
+    )
     root = ui.column().classes("w-full")
 
     # Procesar callback de OAuth
@@ -1213,6 +1220,7 @@ def main() -> None:
     # host 0.0.0.0 necesario para que Render/cloud pueda acceder al servicio
     ui.run(
         title="BDC systems",
+        favicon="static/favicon/favicon.ico",
         reload=False,
         host="0.0.0.0" if es_produccion else "127.0.0.1",
         port=port,
