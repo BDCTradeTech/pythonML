@@ -1327,8 +1327,16 @@ def _ar_money(v) -> str:
         n = float(v)
     except (TypeError, ValueError):
         return "—"
-    s = f"{abs(n):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    s = f"{round(abs(n)):,}".replace(",", ".")
     return f"$ {'-' if n < 0 else ''}{s}"
+
+
+def _ar_num(v) -> str:
+    try:
+        n = int(round(float(v)))
+    except (TypeError, ValueError):
+        return "—"
+    return f"{n:,}".replace(",", ".")
 
 
 def _ed(archivo: Optional[Dict[str, Any]]) -> dict:
@@ -1373,11 +1381,9 @@ def _buscar_cargo_neto(desglose: dict, *nombres_norm: str) -> float:
 
 
 # Mapeo de patterns (sin acentos, lowercase) a jurisdicción canónica.
-# El orden importa: los patterns más específicos van primero (ej. "CABA Comercio
-# Electrónico" debe matchear antes que "CABA" para no perder esa distinción).
+# "CABA" agrupa tanto el régimen general como "Comercio Electrónico" — Diego
+# los quiere sumados en una sola fila.
 _JURISDICCION_PERCEPCION_MAP = [
-    ("caba comercio electronico", "CABA (Comercio Electrónico)"),
-    ("comercio electronico caba", "CABA (Comercio Electrónico)"),
     ("caba", "CABA"),
     ("ciudad autonoma", "CABA"),
     ("capital federal", "CABA"),
@@ -1467,7 +1473,9 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     nd_flex    = _ed(reportes["nd_flex"])
 
     # --- Facturas ML ---
-    facturas_data = [_ed(f) for f in archivos.get("facturas_ml", [])]
+    facturas_raw = archivos.get("facturas_ml", [])
+    facturas_data = [_ed(f) for f in facturas_raw]
+    print(f"[DBG-CONSOLIDADO] Facturas ML encontradas: {len(facturas_data)}", flush=True)
 
     def _lineas_intermedias(fd: dict) -> list:
         return fd.get("lineas_intermedias") or []
@@ -1499,6 +1507,18 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             perc_facturas[jurisdiccion] += monto
             perc_facturas_detalle[jurisdiccion].append(f"{concepto}: {_ar_money(round(monto, 2))}")
     perc_facturas = {k: round(v, 2) for k, v in perc_facturas.items()}
+
+    _dbg_suma_lineas, _dbg_percs_por_factura = {}, {}
+    for _f_raw, _fd in zip(facturas_raw, facturas_data):
+        _fid = _f_raw.get("filename") or _f_raw.get("id")
+        _dbg_suma_lineas[_fid] = round(sum(l.get("monto") or 0.0 for l in _lineas_intermedias(_fd)), 2)
+        _dbg_percs_por_factura[_fid] = [
+            {"concepto": l.get("concepto"), "monto": l.get("monto")}
+            for l in _lineas_intermedias(_fd)
+            if "percep" in _strip_accents(str(l.get("concepto", "")).lower())
+        ]
+    print(f"[DBG-CONSOLIDADO] Suma lineas_intermedias por factura: {_dbg_suma_lineas}", flush=True)
+    print(f"[DBG-CONSOLIDADO] Percepciones extraídas por factura: {_dbg_percs_por_factura}", flush=True)
 
     # --- SECCIÓN 1 — Ventas ---
     seccion_ventas = {
@@ -1554,6 +1574,9 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         perc_reportes[jurisdiccion] += monto
         perc_reportes_detalle[jurisdiccion].append(f"{etiqueta or f.get('filename', '')}: {_ar_money(round(monto, 2))}")
     perc_reportes = {k: round(v, 2) for k, v in perc_reportes.items()}
+
+    print(f"[DBG-CONSOLIDADO] percepciones_por_jurisdiccion_facturas = {perc_facturas}", flush=True)
+    print(f"[DBG-CONSOLIDADO] percepciones_por_jurisdiccion_reportes = {perc_reportes}", flush=True)
 
     _todas_juris = set(perc_facturas) | set(perc_reportes)
     _provs_ordenadas = sorted(_todas_juris - {"Sin identificar"}) + (
@@ -1872,12 +1895,12 @@ def _render_consolidado_html(resultado: dict) -> str:
     if v["_incompleto"]:
         s.append(_incompleto_html())
     s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"])))
-    s.append(_row("Cantidad de operaciones", v["cantidad_operaciones"] if v["cantidad_operaciones"] is not None else "—"))
+    s.append(_row("Cantidad de operaciones", _ar_num(v["cantidad_operaciones"])))
     s.append(_row("Ticket promedio", _ar_money(v["ticket_promedio"])))
     desc = v["descuentos_aplicados"]
     s.append(_row(
         "Descuentos aplicados",
-        f'{_ar_money(desc["monto"])} ({desc["cantidad"] if desc["cantidad"] is not None else 0} op.)',
+        f'{_ar_money(desc["monto"])} ({_ar_num(desc["cantidad"] or 0)} op.)',
     ))
     s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"])))
     s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"])))
@@ -1896,7 +1919,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     s.append(_row("Total valor del cargo (facturación neta ML)", _ar_money(c["total_valor_del_cargo"])))
     s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"])))
     s.append(_row("Total Facturas ML", _ar_money(c["total_facturas_ml"])))
-    s.append(_row("Cantidad de facturas", c["cantidad_facturas"]))
+    s.append(_row("Cantidad de facturas", _ar_num(c["cantidad_facturas"])))
     s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"])))
     s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"])))
     s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"])))
@@ -1921,20 +1944,23 @@ def _render_consolidado_html(resultado: dict) -> str:
         filas = []
         for r in imp["cruce_percepciones"]:
             if r["ok"]:
-                simbolo = f'<span style="color:{_GREEN}">✓</span>'
+                simbolo = (
+                    f'<div style="text-align:center"><i class="ti ti-check" '
+                    f'style="color:{_GREEN};font-size:16px"></i></div>'
+                )
             else:
                 _tt = "Facturas ML:\n" + ("\n".join(r["detalle_facturas"]) or "(sin líneas)")
                 _tt += "\n\nReportes Percepciones:\n" + ("\n".join(r["detalle_reportes"]) or "(sin líneas)")
                 _tt_esc = _tt.replace('"', "&quot;").replace("<", "&lt;")
                 simbolo = (
-                    f'<span title="{_tt_esc}" style="color:{_RED};cursor:help;'
-                    f'border-bottom:1px dotted {_RED}">✗</span>'
+                    f'<div style="text-align:center" title="{_tt_esc}">'
+                    f'<i class="ti ti-x" style="color:{_RED};font-size:16px;cursor:help"></i></div>'
                 )
             filas.append([
                 r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
                 _ar_money(r["diff"]), simbolo,
             ])
-        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", ""], filas)}</div>')
+        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK"], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
