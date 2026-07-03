@@ -1974,6 +1974,52 @@ def get_gastos_archivos(user_id: int, periodo: str, seccion: str) -> List[Dict[s
         conn.close()
 
 
+_GASTOS_TOTAL_SECCIONES = 6  # facturas_ml, retenciones, percepciones, pagos_arca, reportes_ml, analisis_ml
+
+
+def calcular_estados_anio(user_id: int, year: int) -> Dict[int, Dict[str, Any]]:
+    """calcular_estado_mes() para los 12 meses de un año en 1 sola query agrupada
+    (evita 12 round-trips al armar el selector de período con semáforo por mes)."""
+    hoy = datetime.now()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT periodo, COUNT(DISTINCT seccion) FROM gastos_archivos "
+            "WHERE user_id=? AND periodo LIKE ? AND extraction_status='procesado' "
+            "GROUP BY periodo",
+            (user_id, f"{year:04d}-%"),
+        )
+        procesadas_por_mes = {int(periodo.split("-")[1]): n for periodo, n in cur.fetchall()}
+    finally:
+        conn.close()
+
+    resultado: Dict[int, Dict[str, Any]] = {}
+    for month in range(1, 13):
+        es_futuro = (year, month) > (hoy.year, hoy.month)
+        procesadas = 0 if es_futuro else procesadas_por_mes.get(month, 0)
+        if es_futuro:
+            estado, label = "futuro", "Futuro"
+        elif procesadas == 0:
+            estado, label = "vacio", "Sin archivos"
+        elif procesadas == _GASTOS_TOTAL_SECCIONES:
+            estado, label = "completo", "Completo"
+        else:
+            estado, label = "parcial", f"{procesadas} de {_GASTOS_TOTAL_SECCIONES}"
+        resultado[month] = {
+            "total_secciones": _GASTOS_TOTAL_SECCIONES, "secciones_procesadas": procesadas,
+            "estado": estado, "es_futuro": es_futuro, "label": label,
+        }
+    return resultado
+
+
+def calcular_estado_mes(user_id: int, year: int, month: int) -> Dict[str, Any]:
+    """Estado de procesamiento de un mes: cuántas de las 6 secciones de Gastos tienen
+    al menos 1 archivo con extraction_status='procesado'. 'futuro' si el período es
+    posterior al mes actual."""
+    return calcular_estados_anio(user_id, year)[month]
+
+
 def insert_gastos_archivo(
     user_id: int, periodo: str, seccion: str,
     filename: str, filepath: str, size_bytes: int,

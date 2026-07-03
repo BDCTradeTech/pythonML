@@ -20,6 +20,7 @@ import requests
 from nicegui import app, run, ui
 
 from db import (
+    calcular_estados_anio,
     delete_gastos_archivo,
     get_app_config,
     get_connection,
@@ -110,6 +111,34 @@ _MESES = [
     "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
     "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
 ]
+
+_ESTADO_MES_ICONOS = {
+    "completo": "ti-circle-check",
+    "parcial":  "ti-circle-half-2",
+    "vacio":    "ti-circle-x",
+    "futuro":   "ti-lock",
+}
+_ESTADO_MES_COLORES = {
+    "completo": (_GREEN, "#EAF3DE"),
+    "parcial":  (_YELLOW, "#FBF1DC"),
+    "vacio":    (_RED, "#F8DFDD"),
+    "futuro":   ("var(--color-text-tertiary)", "var(--color-background-secondary)"),
+}
+
+
+def _render_estado_mes_icono(estado: str, size: int = 14) -> str:
+    color = _ESTADO_MES_COLORES.get(estado, (_GRAY, ""))[0]
+    icono = _ESTADO_MES_ICONOS.get(estado, "ti-circle")
+    return f'<i class="ti {icono}" style="font-size:{size}px;color:{color}"></i>'
+
+
+def _render_estado_mes_badge(est: dict) -> str:
+    color, bg = _ESTADO_MES_COLORES.get(est["estado"], (_GRAY, "#eee"))
+    return (
+        f'<span style="display:inline-flex;align-items:center;padding:2px 8px;'
+        f'border-radius:10px;font-size:10px;font-weight:600;line-height:1.6;'
+        f'color:{color};background:{bg}">{est["label"]}</span>'
+    )
 
 _BASE_PATH = Path(__file__).parent.parent / "gastos"
 
@@ -3210,7 +3239,18 @@ def _build_gastos(user_id: int) -> None:
     ):
         with ui.row().classes("items-center gap-2"):
             ui.label("Período:").classes("font-semibold text-sm text-gray-600")
-            mes_sel = ui.select(options=_MESES, value=_MESES[now.month - 1]).style("width:148px")
+
+            mes_state = {"value": _MESES[now.month - 1]}
+            with ui.button().props("flat dense no-caps icon-right=expand_more").style(
+                "border:0.5px solid var(--color-border-tertiary);border-radius:6px;"
+                "padding:4px 10px;min-width:150px;justify-content:flex-start;gap:6px"
+            ):
+                mes_btn_icon  = ui.html(_render_estado_mes_icono("vacio"))
+                mes_btn_label = ui.label(mes_state["value"]).style("font-size:13px")
+                mes_menu = ui.menu()
+
+            mes_badge = ui.html("")
+
             ano_sel = ui.select(
                 options=[str(y) for y in range(now.year - 2, now.year + 2)],
                 value=str(now.year),
@@ -3221,7 +3261,44 @@ def _build_gastos(user_id: int) -> None:
     content = ui.column().classes("w-full p-4 gap-4")
 
     def _get_periodo() -> str:
-        return f"{ano_sel.value}-{(_MESES.index(mes_sel.value) + 1):02d}"
+        return f"{ano_sel.value}-{(_MESES.index(mes_state['value']) + 1):02d}"
+
+    def _refrescar_mes_btn() -> None:
+        year  = int(ano_sel.value)
+        month = _MESES.index(mes_state["value"]) + 1
+        est = calcular_estados_anio(user_id, year)[month]
+        mes_btn_icon.content  = _render_estado_mes_icono(est["estado"], size=15)
+        mes_btn_label.text    = mes_state["value"]
+        mes_badge.content     = _render_estado_mes_badge(est)
+
+    def _populate_mes_menu() -> None:
+        mes_menu.clear()
+        year = int(ano_sel.value)
+        estados = calcular_estados_anio(user_id, year)
+        with mes_menu:
+            for i, nombre in enumerate(_MESES):
+                est = estados[i + 1]
+                es_futuro = est["es_futuro"]
+                es_actual = nombre == mes_state["value"]
+
+                def _elegir(nombre=nombre) -> None:
+                    mes_state["value"] = nombre
+                    _refrescar_mes_btn()
+                    _populate_mes_menu()
+                    mes_menu.close()
+                    _build_content()
+
+                with ui.row().classes("items-center w-full no-wrap").style(
+                    "padding:6px 12px;gap:8px;min-width:210px;"
+                    f"cursor:{'default' if es_futuro else 'pointer'};"
+                    f"opacity:{'0.45' if es_futuro else '1'}"
+                    + (f";background:{_BLUE_BG}" if es_actual else "")
+                ) as fila:
+                    ui.html(_render_estado_mes_icono(est["estado"]))
+                    ui.label(nombre).style("font-size:13px;flex:1")
+                    ui.html(_render_estado_mes_badge(est))
+                if not es_futuro:
+                    fila.on("click", _elegir)
 
     def _build_content() -> None:
         content.clear()
@@ -4299,6 +4376,12 @@ def _build_gastos(user_id: int) -> None:
 
             _refresh_progress()
 
-    mes_sel.on("update:model-value", lambda _: _build_content())
-    ano_sel.on("update:model-value", lambda _: _build_content())
+    def _on_ano_change() -> None:
+        _refrescar_mes_btn()
+        _populate_mes_menu()
+        _build_content()
+
+    ano_sel.on("update:model-value", lambda _: _on_ano_change())
+    _refrescar_mes_btn()
+    _populate_mes_menu()
     _build_content()
