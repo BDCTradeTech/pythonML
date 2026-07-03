@@ -1791,11 +1791,15 @@ def _cruzar_ventas_reporte_vs_bd(
 
     total_reporte = len(filas_reporte)
     total_bd = len(ventas_bd)
-    salud = (len(cruzadas_ok) / total_reporte * 100) if total_reporte else 0.0
+    anuladas_ok = sum(1 for a in anuladas if a["_marcada_ok"])
+    # Las anuladas correctamente marcadas como canceladas en BD son operación normal,
+    # no un error de cruce: cuentan como "procesadas OK" igual que las cruzadas.
+    salud = ((len(cruzadas_ok) + anuladas_ok) / total_reporte * 100) if total_reporte else 0.0
 
     return {
         "cruzadas_ok": cruzadas_ok, "solo_reporte": solo_reporte, "solo_bd": solo_bd,
         "con_diferencias": con_diferencias, "anuladas": anuladas,
+        "anuladas_ok_count": anuladas_ok,
         "total_reporte": total_reporte, "total_bd": total_bd,
         "salud_pct": round(salud, 1),
         "tolerancia_pct": tolerancia_pct * 100,
@@ -2796,9 +2800,9 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
     )
     ui.html(
         '<style>.cruce-card{background:var(--color-background-secondary);'
-        'border:0.5px solid var(--color-border-tertiary);border-radius:6px;'
-        'padding:12px 14px;display:flex;align-items:center;gap:12px}'
-        '.cruce-card.is-zero{opacity:0.55}</style>'
+        'border:0.5px solid var(--color-border-tertiary);border-radius:5px;'
+        'padding:8px 10px;display:flex;align-items:center;gap:8px}'
+        '.cruce-card.is-zero{opacity:0.5}</style>'
         f'<div style="{_sep_style}"><i class="ti ti-arrows-exchange"></i>'
         f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span>'
         f'{_render_periodo_badge("ml", periodo_fiscal, periodo_ml)}</div>'
@@ -2831,13 +2835,20 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
     con_diferencias = cr.get("con_diferencias") or []
     anuladas = cr.get("anuladas") or []
     total_reporte = cr.get("total_reporte", 0)
+    anuladas_ok = cr.get("anuladas_ok_count")
+    if anuladas_ok is None:
+        anuladas_ok = sum(1 for a in anuladas if a.get("_marcada_ok"))
 
-    # --- Hero de salud del período ---
+    # --- Hero de salud del período (compacto, 1 línea) ---
     salud = cr.get("salud_pct", 0.0)
-    if salud >= 95:
+    if salud >= 100:
         hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
         hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
         hero_icon = "ti-mood-happy"
+    elif salud >= 95:
+        hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
+        hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
+        hero_icon = "ti-mood-neutral"
     elif salud >= 85:
         hero_bg1, hero_bg2, hero_border = "#FBF1DC", "#FCFAF4", "#E9C77B"
         hero_icon_color, hero_value_color, hero_title_color = "#7A5A0E", "#6B4A08", "#8A6B2E"
@@ -2847,59 +2858,48 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
         hero_icon_color, hero_value_color, hero_title_color = "#A32D2D", "#7A1F1F", "#A85C56"
         hero_icon = "ti-mood-sad"
 
-    salud_str = f"{salud:.1f}".replace(".", ",") + "%"
+    salud_str = f"{int(salud)}%" if salud == int(salud) else f"{salud:.1f}".replace(".", ",") + "%"
+    procesadas_ok = len(cruzadas_ok) + anuladas_ok
     ui.html(
-        f'<div style="padding:16px 20px;background:linear-gradient(135deg,{hero_bg1},{hero_bg2});'
+        f'<div style="padding:10px 14px;background:linear-gradient(135deg,{hero_bg1},{hero_bg2});'
         f'border:0.5px solid {hero_border};border-radius:8px;margin:12px 14px;'
-        'display:flex;align-items:center;gap:16px">'
-        f'<i class="ti {hero_icon}" style="font-size:32px;color:{hero_icon_color}"></i>'
-        '<div>'
-        f'<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.05em;'
-        f'color:{hero_title_color}">Salud del período</div>'
-        f'<div style="font-size:26px;font-weight:700;color:{hero_value_color}">{salud_str}</div>'
-        f'<div style="font-size:11px;color:var(--color-text-secondary)">'
-        f'{_ar_num(len(cruzadas_ok))} de {_ar_num(total_reporte)} ventas del reporte '
-        'cruzan correctamente con tu BD.</div>'
-        '</div></div>'
+        'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">'
+        f'<i class="ti {hero_icon}" style="font-size:22px;color:{hero_icon_color}"></i>'
+        f'<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;'
+        f'color:{hero_title_color}">Salud del período</span>'
+        f'<span style="font-size:22px;font-weight:700;color:{hero_value_color}">{salud_str}</span>'
+        f'<span style="font-size:11px;color:var(--color-text-secondary)">'
+        f'{_ar_num(procesadas_ok)} de {_ar_num(total_reporte)} ventas procesadas correctamente.</span>'
+        '</div>'
     )
 
-    # --- Cards de detalle del cruce (grid 2x2) ---
-    ui.html(
-        '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;'
-        'color:var(--color-text-tertiary);padding:0 14px 6px">Detalle del cruce</div>'
-    )
-
+    # --- Cards de detalle del cruce (4 en 1 fila) ---
     categorias = [
-        (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Cruzadas OK",
-         "Coinciden ML y tu BD, montos correctos", "ok"),
-        (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Anuladas",
-         "Devueltas o canceladas, marcadas OK", "anuladas"),
-        (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte ML",
-         "Ventas que ML facturó pero faltan en tu BD", "solo_reporte"),
-        (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias",
-         "Montos o comisiones que no coinciden", "diff"),
+        (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Concretadas", "ok"),
+        (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Canceladas", "anuladas"),
+        (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte", "solo_reporte"),
+        (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias", "diff"),
     ]
 
-    with ui.grid(columns=2).classes("w-full gap-[10px]").style("padding:0 14px 14px"):
-        for count, icono, icon_bg, icon_color, label, desc, tipo in categorias:
+    with ui.grid(columns=4).classes("w-full gap-[6px]").style("padding:0 12px 8px"):
+        for count, icono, icon_bg, icon_color, label, tipo in categorias:
             es_cero = count == 0
             with ui.row().classes(f"cruce-card{' is-zero' if es_cero else ''} items-center"):
                 ui.html(
-                    f'<div style="width:32px;height:32px;flex-shrink:0;border-radius:6px;'
+                    f'<div style="width:26px;height:26px;flex-shrink:0;border-radius:5px;'
                     f'background:{icon_bg};color:{icon_color};display:flex;align-items:center;'
-                    f'justify-content:center"><i class="ti {icono}" style="font-size:17px"></i></div>'
+                    f'justify-content:center"><i class="ti {icono}" style="font-size:13px"></i></div>'
                 )
-                with ui.column().classes("gap-0").style("flex:1"):
-                    ui.label(_ar_num(count)).style("font-size:20px;font-weight:700;font-variant-numeric:tabular-nums")
-                    ui.label(label).style("font-size:11px;color:var(--color-text-secondary);margin-top:2px")
-                    ui.label(desc).style("font-size:10px;color:var(--color-text-tertiary);margin-top:3px;line-height:1.35")
+                with ui.column().classes("gap-0").style("flex:1;min-width:0"):
+                    ui.label(_ar_num(count)).style("font-size:16px;font-weight:700;font-variant-numeric:tabular-nums")
+                    ui.label(label).style("font-size:10px;color:var(--color-text-secondary)")
                 btn_dl = ui.button(on_click=lambda t=tipo: _descargar(t)).props(
-                    "flat dense round icon=download size=sm"
-                ).style(f"color:{_BLUE};opacity:{'0.35' if es_cero else '1'}")
+                    "flat dense round icon=download size=xs"
+                ).style(f"color:{_BLUE};font-size:13px;opacity:{'0.3' if es_cero else '1'}")
                 if es_cero:
                     btn_dl.disable()
 
-    # --- Sub-sección: ventas fuera del período de facturación ML ---
+    # --- Cross-mes: ventas fuera del período de facturación ML, 1 línea ---
     if solo_bd:
         try:
             hasta_dt = datetime.strptime(periodo_ml.get("hasta") or "", "%d/%m/%Y")
@@ -2909,36 +2909,42 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
             else:
                 fin_mes = datetime(inicio_cross.year, inicio_cross.month + 1, 1) - timedelta(days=1)
             mes_siguiente = _MESES_ES[fin_mes.month + 1] if fin_mes.month < 12 else _MESES_ES[1]
-            rango_txt = f"Ventas del {inicio_cross.strftime('%d/%m')} al {fin_mes.strftime('%d/%m')}"
-            mes_txt = f"ML las va a facturar en el próximo Reporte ({mes_siguiente}). No es un error, es información."
+            rango_txt = f"ventas del {inicio_cross.strftime('%d/%m')} al {fin_mes.strftime('%d/%m')} fuera del período ML"
+            mes_txt = f"— ML las facturará en el próximo Reporte ({mes_siguiente})"
         except ValueError:
-            rango_txt = "Ventas fuera del período de facturación ML"
-            mes_txt = "ML las va a facturar en el próximo Reporte. No es un error, es información."
+            rango_txt = "ventas fuera del período de facturación ML"
+            mes_txt = "— ML las facturará en el próximo Reporte"
 
-        ui.html(
-            '<div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;'
-            'color:var(--color-text-tertiary);padding:8px 14px 6px">'
-            'Ventas fuera del período de facturación ML</div>'
-        )
-        with ui.row().classes("cruce-card items-center w-full").style("margin:0 14px 14px"):
+        with ui.row().classes("items-center w-full no-wrap").style(
+            "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary);"
+            "background:var(--color-background-secondary);gap:10px;font-size:11px"
+        ):
             ui.html(
-                '<div style="width:32px;height:32px;flex-shrink:0;border-radius:6px;'
+                '<div style="width:24px;height:24px;flex-shrink:0;border-radius:5px;'
                 'background:#E8F1FA;color:#185FA5;display:flex;align-items:center;'
-                'justify-content:center"><i class="ti ti-clock" style="font-size:17px"></i></div>'
+                'justify-content:center"><i class="ti ti-clock" style="font-size:12px"></i></div>'
             )
-            with ui.column().classes("gap-0").style("flex:1"):
-                ui.label(_ar_num(len(solo_bd))).style("font-size:20px;font-weight:700;font-variant-numeric:tabular-nums")
-                ui.label(rango_txt).style("font-size:11px;color:var(--color-text-secondary);margin-top:2px")
-                ui.label(mes_txt).style("font-size:10px;color:var(--color-text-tertiary);margin-top:3px;line-height:1.35")
+            ui.html(
+                f'<div style="flex:1;min-width:0">'
+                f'<span style="font-weight:700;font-size:13px">{_ar_num(len(solo_bd))}</span>&nbsp;'
+                f'<span style="color:var(--color-text-secondary)">{rango_txt}</span>&nbsp;'
+                f'<span style="color:var(--color-text-tertiary);font-size:10px">{mes_txt}</span>'
+                '</div>'
+            )
             ui.button(on_click=lambda: _descargar("solo_bd")).props(
-                "flat dense round icon=download size=sm"
-            ).style(f"color:{_BLUE}")
+                "flat dense round icon=download size=xs"
+            ).style(f"color:{_BLUE};font-size:13px")
 
-    with ui.row().classes("w-full justify-center").style("padding:10px 14px 14px"):
+    # --- Descargar Excel completo (derecha) ---
+    with ui.row().classes("w-full justify-end").style(
+        "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary)"
+    ):
         ui.button(
             "Descargar Excel completo",
             on_click=lambda: _descargar(None),
-        ).props("icon=download no-caps").style(f"background:{_BLUE};color:white")
+        ).props("icon=download no-caps dense").style(
+            f"background:{_BLUE};color:white;padding:6px 12px;border-radius:5px;font-size:11px"
+        )
 
 
 def _abrir_modal_consolidado(resultado: dict) -> None:
