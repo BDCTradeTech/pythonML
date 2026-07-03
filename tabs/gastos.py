@@ -6,10 +6,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import tempfile
 import unicodedata
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +20,7 @@ from nicegui import app, run, ui
 from db import (
     delete_gastos_archivo,
     get_app_config,
+    get_cotizador_param,
     get_gastos_archivos,
     get_gastos_consolidado,
     get_gastos_prompt,
@@ -28,6 +31,7 @@ from db import (
     upsert_gastos_prompt,
     user_can_access_tab,
 )
+from ml_api import get_ml_access_token, ml_get_orders, ml_get_user_id, ml_get_user_profile
 
 _BLUE       = "#2A7AC7"
 _BLUE_BG    = "#EEF6FD"
@@ -51,6 +55,7 @@ FUENTES_CONSOLIDADO = {
         "color": "var(--color-text-secondary)", "bg": "var(--color-background-secondary)",
         "border": "var(--color-border-secondary)",
     },
+    "ventas_db": {"label": "Ventas propias (BD)", "icon": "ti-database", "color": "#0E6B6B", "bg": "#E3F7F7", "border": "#7FCFCF"},
 }
 
 
@@ -1508,6 +1513,380 @@ def _neto_gravado(fd: dict) -> float:
     return v or 0.0
 
 
+# ---------------------------------------------------------------------------
+# Sección 7 — Cruce Ventas nuestras (BD) vs Reporte de Facturación ML
+# ---------------------------------------------------------------------------
+
+TOLERANCIA_CRUCE_VENTAS_PCT = 0.005  # 0.5%
+
+
+def _rango_fechas_periodo(periodo: str) -> tuple:
+    """(inicio, fin) del mes 'YYYY-MM' como datetime, fin al último segundo del mes."""
+    anio, mes = int(periodo[:4]), int(periodo[5:7])
+    inicio = datetime(anio, mes, 1)
+    fin = (datetime(anio + 1, 1, 1) if mes == 12 else datetime(anio, mes + 1, 1)) - timedelta(seconds=1)
+    return inicio, fin
+
+
+def _parsear_filas_facturacion_ml(path: Path) -> Dict[str, dict]:
+    """Re-lee el Excel de 'Reporte de Facturación ML' directamente del disco (misma
+    estructura que analizar_facturacion_ml: hoja REPORT, headers filas 7-8, detalle
+    desde fila 9) para conservar el detalle por Número de venta — analizar_facturacion_ml
+    lo descarta luego de calcular los agregados, así que para el cruce de la Sección 7
+    hace falta volver a leer el archivo original."""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(path, data_only=True, read_only=True)
+    sheet_name = next(
+        (s for s in wb.sheetnames if _strip_accents(s.strip().lower()) == "report"), None
+    )
+    if sheet_name is None:
+        wb.close()
+        return {}
+    ws = wb[sheet_name]
+
+    def _col(row, idx1: int):
+        j = idx1 - 1
+        return row[j] if j < len(row) else None
+
+    def _num(v) -> float:
+        if v is None or v == "":
+            return 0.0
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def _fecha(v) -> Optional[str]:
+        if v is None or v == "":
+            return None
+        if isinstance(v, datetime):
+            return v.strftime("%Y-%m-%d")
+        try:
+            return datetime.strptime(str(v).strip().split(" ")[0], "%Y-%m-%d").strftime("%Y-%m-%d")
+        except ValueError:
+            return None
+
+    filas = [
+        row for row in ws.iter_rows(min_row=9, values_only=True)
+        if not all(c is None for c in row)
+    ]
+    wb.close()
+
+    ventas: Dict[str, dict] = {}
+    for row in filas:
+        nro = _col(row, 13)
+        if nro is None or str(nro).strip() == "":
+            continue
+        nro = str(nro).strip()
+        v = ventas.setdefault(nro, {
+            "fecha_venta": None, "cliente": None, "total_venta": None,
+            "provincia": None, "categoria": None,
+            "comision_ml": 0.0, "fue_anulada": False,
+        })
+        _fv = _fecha(_col(row, 15))
+        if _fv and not v["fecha_venta"]:
+            v["fecha_venta"] = _fv
+        for campo, idx in (("cliente", 18), ("provincia", 19), ("categoria", 31)):
+            _val = _col(row, idx)
+            if _val and not v[campo]:
+                v[campo] = str(_val).strip()
+        _tv = _num(_col(row, 23))
+        if _tv and not v["total_venta"]:
+            v["total_venta"] = _tv
+
+        detalle = _strip_accents(str(_col(row, 4) or "").strip().lower())
+        valor_cargo = _num(_col(row, 8))
+        if detalle == "cargo por vender":
+            v["comision_ml"] += valor_cargo
+        elif detalle == "anulacion del cargo por vender":
+            v["fue_anulada"] = True
+
+    for v in ventas.values():
+        v["comision_ml"] = round(v["comision_ml"], 2)
+        v["total_venta"] = round(v["total_venta"] or 0.0, 2)
+    return ventas
+
+
+def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
+    """Trae del lado nuestro (API de MercadoLibre, no ml_orders_cache — ese cache solo
+    crece hacia adelante desde que se abrió el Panel por primera vez y no garantiza
+    cobertura de un mes cerrado ya pasado) las órdenes del período, indexadas por
+    order_id. comision_ml_bd es una estimación (tasa ml_comision del cotizador × total),
+    ya que MercadoLibre no persiste la comisión real cobrada en ningún campo que ya
+    usemos en este proyecto. Retorna (ventas_bd, seller_id)."""
+    access_token = get_ml_access_token(user_id)
+    if not access_token:
+        return {}, None
+    profile = ml_get_user_profile(access_token) or {}
+    seller_id = profile.get("id") or ml_get_user_id(access_token)
+    if not seller_id:
+        return {}, None
+
+    inicio, fin = _rango_fechas_periodo(periodo)
+    date_from = inicio.strftime("%Y-%m-%dT00:00:00.000-03:00")
+    date_to = fin.strftime("%Y-%m-%dT23:59:59.999-03:00")
+    orders_data = ml_get_orders(
+        access_token, str(seller_id), limit=5000, offset=0,
+        date_from=date_from, date_to=date_to,
+    )
+    raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
+
+    ml_com = 0.15
+    try:
+        ml_com = float(get_cotizador_param("ml_comision", user_id) or 0.15)
+    except (TypeError, ValueError):
+        pass
+
+    ventas_bd: Dict[str, dict] = {}
+    for o in raw_orders:
+        if not isinstance(o, dict) or not o.get("id"):
+            continue
+        order_id = str(o["id"])
+        total_bd = float(o.get("total_amount") or o.get("paid_amount") or 0.0)
+        status_raw = str(o.get("status") or "").strip().lower()
+        buyer = o.get("buyer") or {}
+        cliente = buyer.get("nickname") or f'{buyer.get("first_name", "")} {buyer.get("last_name", "")}'.strip() or "—"
+        fecha = str(o.get("date_created") or "")[:10]
+        ventas_bd[order_id] = {
+            "fecha": fecha,
+            "cliente": cliente,
+            "total_bd": round(total_bd, 2),
+            "comision_bd": round(total_bd * ml_com, 2),
+            "status_raw": status_raw,
+        }
+    return ventas_bd, str(seller_id)
+
+
+def _cruzar_ventas_reporte_vs_bd(
+    filas_reporte: Dict[str, dict], ventas_bd: Dict[str, dict],
+    tolerancia_pct: float = TOLERANCIA_CRUCE_VENTAS_PCT,
+) -> dict:
+    """Cruza por Número de venta / order_id. Recorre cada diccionario una sola vez
+    (ya indexados por clave) para cumplir el requisito de performance (<2s ante ~1200
+    ventas por lado)."""
+    cruzadas_ok: List[dict] = []
+    con_diferencias: List[dict] = []
+    anuladas: List[dict] = []
+    solo_reporte: List[dict] = []
+
+    for nro, fr in filas_reporte.items():
+        bd = ventas_bd.get(nro)
+        if fr.get("fue_anulada"):
+            marcada_bd = bd is not None and bd["status_raw"] in ("cancelled", "canceled")
+            anuladas.append({
+                "nro_venta": nro, "fecha": fr.get("fecha_venta") or "", "cliente": fr.get("cliente") or "",
+                "total_venta": fr.get("total_venta") or 0.0,
+                "status_bd": (bd or {}).get("status_raw") or "(no encontrada en BD)",
+                "observacion": "OK — marcada como cancelada en BD" if marcada_bd else "⚠ ML la anuló pero no está cancelada en nuestra BD",
+                "_marcada_ok": marcada_bd,
+            })
+            continue
+        if bd is None:
+            solo_reporte.append({
+                "nro_venta": nro, "fecha": fr.get("fecha_venta") or "", "cliente": fr.get("cliente") or "",
+                "total_venta": fr.get("total_venta") or 0.0, "comision_ml": fr.get("comision_ml") or 0.0,
+                "provincia": fr.get("provincia") or "", "categoria": fr.get("categoria") or "",
+            })
+            continue
+
+        total_ml = fr.get("total_venta") or 0.0
+        comision_ml = fr.get("comision_ml") or 0.0
+        diff_total = abs(total_ml - bd["total_bd"]) / total_ml if total_ml else 0.0
+        diff_comision = abs(comision_ml - bd["comision_bd"]) / comision_ml if comision_ml else 0.0
+
+        fila = {
+            "nro_venta": nro, "fecha": fr.get("fecha_venta") or "", "cliente": fr.get("cliente") or "",
+            "total_reporte": total_ml, "total_bd": bd["total_bd"], "diff_total_pct": round(diff_total * 100, 2),
+            "comision_reporte": comision_ml, "comision_bd": bd["comision_bd"], "diff_comision_pct": round(diff_comision * 100, 2),
+            "ganancia_calculada": None,  # No se persiste en ningún lado del proyecto para períodos pasados; requeriría
+                                          # rearmar el costeo por SKU igual que tabs/ventas.py, fuera del alcance del cruce.
+        }
+        if diff_total < tolerancia_pct and diff_comision < tolerancia_pct:
+            cruzadas_ok.append(fila)
+        else:
+            tipos = []
+            if diff_total >= tolerancia_pct:
+                tipos.append("total")
+            if diff_comision >= tolerancia_pct:
+                tipos.append("comision")
+            fila["tipo_diff"] = "+".join(tipos)
+            con_diferencias.append(fila)
+
+    solo_bd = [
+        {
+            "nro_venta": nro, "fecha": bd["fecha"], "cliente": bd["cliente"],
+            "total_venta": bd["total_bd"], "comision_calculada": bd["comision_bd"],
+            "ganancia_calculada": None, "status": bd["status_raw"],
+        }
+        for nro, bd in ventas_bd.items() if nro not in filas_reporte
+    ]
+
+    total_reporte = len(filas_reporte)
+    total_bd = len(ventas_bd)
+    salud = (len(cruzadas_ok) / total_reporte * 100) if total_reporte else 0.0
+
+    return {
+        "cruzadas_ok": cruzadas_ok, "solo_reporte": solo_reporte, "solo_bd": solo_bd,
+        "con_diferencias": con_diferencias, "anuladas": anuladas,
+        "total_reporte": total_reporte, "total_bd": total_bd,
+        "salud_pct": round(salud, 1),
+        "tolerancia_pct": tolerancia_pct * 100,
+    }
+
+
+def _calcular_seccion_cruce_ventas(user_id: int, periodo: str, archivo_facturacion_ml: Optional[dict]) -> dict:
+    """Arma la Sección 7 completa: si no hay Reporte de Facturación ML procesado en el
+    período, devuelve _disponible=False para que el render muestre el aviso pedido."""
+    if not archivo_facturacion_ml or not archivo_facturacion_ml.get("filepath"):
+        return {"_disponible": False}
+    filepath = Path(archivo_facturacion_ml["filepath"])
+    if not filepath.exists():
+        return {"_disponible": False}
+
+    filas_reporte = _parsear_filas_facturacion_ml(filepath)
+    if not filas_reporte:
+        return {"_disponible": False}
+
+    ventas_bd, seller_id = _obtener_ventas_bd_periodo(user_id, periodo)
+    cruce = _cruzar_ventas_reporte_vs_bd(filas_reporte, ventas_bd)
+    cruce["_disponible"] = True
+    cruce["seller_id"] = seller_id or ""
+    return cruce
+
+
+_HOJAS_CRUCE_VENTAS = {
+    "ok": (
+        "Cruzadas OK",
+        ["Nro Venta", "Fecha", "Cliente", "Total Reporte", "Total BD", "Diff Total %",
+         "Comisión Reporte", "Comisión BD", "Diff Comisión %", "Ganancia Calculada"],
+        lambda f: [
+            f["nro_venta"], f["fecha"], f["cliente"], f["total_reporte"], f["total_bd"],
+            f["diff_total_pct"], f["comision_reporte"], f["comision_bd"], f["diff_comision_pct"],
+            f["ganancia_calculada"] if f["ganancia_calculada"] is not None else "N/D",
+        ],
+        {4, 5, 7, 8}, {6, 9},
+    ),
+    "solo_reporte": (
+        "Solo en Reporte ML",
+        ["Nro Venta", "Fecha", "Cliente", "Total Venta", "Comisión ML", "Provincia", "Categoría"],
+        lambda f: [f["nro_venta"], f["fecha"], f["cliente"], f["total_venta"], f["comision_ml"], f["provincia"], f["categoria"]],
+        {4, 5}, set(),
+    ),
+    "solo_bd": (
+        "Solo en nuestra BD",
+        ["Nro Venta", "Fecha", "Cliente", "Total Venta", "Comisión Calculada", "Ganancia Calculada", "Status"],
+        lambda f: [
+            f["nro_venta"], f["fecha"], f["cliente"], f["total_venta"], f["comision_calculada"],
+            f["ganancia_calculada"] if f["ganancia_calculada"] is not None else "N/D", f["status"],
+        ],
+        {4, 5}, set(),
+    ),
+    "diff": (
+        "Con diferencias",
+        ["Nro Venta", "Fecha", "Cliente", "Total Reporte", "Total BD", "Diff Total %",
+         "Comisión Reporte", "Comisión BD", "Diff Comisión %", "Tipo Diff"],
+        lambda f: [
+            f["nro_venta"], f["fecha"], f["cliente"], f["total_reporte"], f["total_bd"],
+            f["diff_total_pct"], f["comision_reporte"], f["comision_bd"], f["diff_comision_pct"], f["tipo_diff"],
+        ],
+        {4, 5, 7, 8}, {6, 9},
+    ),
+    "anuladas": (
+        "Anuladas",
+        ["Nro Venta", "Fecha", "Cliente", "Total Venta", "Status BD", "Observación"],
+        lambda f: [f["nro_venta"], f["fecha"], f["cliente"], f["total_venta"], f["status_bd"], f["observacion"]],
+        {4}, set(),
+    ),
+}
+
+
+def _generar_excel_cruce_ventas(resultado: dict, solo_tipo: Optional[str] = None) -> tuple:
+    """Genera el Excel de la Sección 7 (openpyxl). Sin solo_tipo: Resumen + las 5 hojas
+    de detalle. Con solo_tipo ('ok'/'solo_reporte'/'solo_bd'/'diff'/'anuladas'): Resumen +
+    únicamente esa hoja. Devuelve (path, filename)."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    cr = resultado.get("cruce_ventas") or {}
+    periodo = resultado.get("periodo", "")
+    seller_id = cr.get("seller_id") or "sinid"
+
+    header_fill = PatternFill(start_color="2A7AC7", end_color="2A7AC7", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    alt_fill = PatternFill(start_color="F5F8FB", end_color="F5F8FB", fill_type="solid")
+    thin = Side(border_style="thin", color="D0D0D0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    right_align = Alignment(horizontal="right")
+
+    def _escribir_hoja(ws, headers: list, filas: list, money_cols: set, num_cols: set) -> None:
+        for col, h in enumerate(headers, 1):
+            c = ws.cell(row=1, column=col, value=h)
+            c.fill = header_fill
+            c.font = header_font
+            c.border = border
+            c.alignment = Alignment(horizontal="center", vertical="center")
+        for r_idx, fila in enumerate(filas, 2):
+            for col, val in enumerate(fila, 1):
+                c = ws.cell(row=r_idx, column=col, value=val)
+                c.border = border
+                if r_idx % 2 == 0:
+                    c.fill = alt_fill
+                if col in money_cols:
+                    c.number_format = "$ #,##0"
+                    c.alignment = right_align
+                elif col in num_cols:
+                    c.number_format = "0"
+                    c.alignment = right_align
+        for col_idx, h in enumerate(headers, 1):
+            max_len = max([len(str(h))] + [len(str(f[col_idx - 1])) for f in filas] or [10])
+            ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = min(max(max_len + 2, 10), 40)
+        ws.freeze_panes = "A2"
+
+    wb = Workbook()
+    ws_resumen = wb.active
+    ws_resumen.title = "Resumen"
+    salud = cr.get("salud_pct", 0.0)
+    estado = "Excelente" if salud >= 95 else ("Con observaciones" if salud >= 85 else "Requiere atención")
+    resumen_filas = [
+        ("Período analizado", periodo),
+        ("Salud del período", f"{salud:.1f}%".replace(".", ",")),
+        ("Estado", estado),
+        ("Cruzadas OK", len(cr.get("cruzadas_ok") or [])),
+        ("Solo en Reporte ML", len(cr.get("solo_reporte") or [])),
+        ("Solo en nuestra BD", len(cr.get("solo_bd") or [])),
+        ("Con diferencias en montos", len(cr.get("con_diferencias") or [])),
+        ("Anuladas", len(cr.get("anuladas") or [])),
+        ("Total en Reporte ML", cr.get("total_reporte", 0)),
+        ("Total en nuestra BD", cr.get("total_bd", 0)),
+        ("Fecha del análisis", datetime.now().strftime("%d/%m/%Y %H:%M")),
+        ("Usuario", str(resultado.get("user_id", ""))),
+    ]
+    for r_idx, (label, val) in enumerate(resumen_filas, 1):
+        ws_resumen.cell(row=r_idx, column=1, value=label).font = Font(bold=True)
+        ws_resumen.cell(row=r_idx, column=2, value=val)
+    ws_resumen.column_dimensions["A"].width = 28
+    ws_resumen.column_dimensions["B"].width = 24
+
+    tipos = [solo_tipo] if solo_tipo else ["ok", "solo_reporte", "solo_bd", "diff", "anuladas"]
+    claves_datos = {"ok": "cruzadas_ok", "solo_reporte": "solo_reporte", "solo_bd": "solo_bd",
+                     "diff": "con_diferencias", "anuladas": "anuladas"}
+    for tipo in tipos:
+        filas_datos = cr.get(claves_datos[tipo]) or []
+        if not solo_tipo and tipo == "anuladas" and not filas_datos:
+            continue
+        titulo, headers, mapper, money_cols, num_cols = _HOJAS_CRUCE_VENTAS[tipo]
+        ws = wb.create_sheet(titulo[:31])
+        _escribir_hoja(ws, headers, [mapper(f) for f in filas_datos], money_cols, num_cols)
+
+    fd, path = tempfile.mkstemp(suffix=".xlsx")
+    os.close(fd)
+    wb.save(path)
+    sufijo = f"_{solo_tipo}" if solo_tipo else ""
+    nombre = f"cruce_ventas{sufijo}_{seller_id}_{periodo}.xlsx"
+    return path, nombre
+
+
 def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     """Cruza los datos extraídos de las 6 secciones de Gastos (Facturas ML, Retenciones,
     Percepciones, Pagos ARCA, Reportes ML, Análisis ML) del período dado y arma el reporte
@@ -1951,6 +2330,8 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "recomendacion": recomendacion,
         })
 
+    seccion_cruce_ventas = _calcular_seccion_cruce_ventas(user_id, periodo, reportes["facturacion_ml"])
+
     return {
         "user_id": user_id,
         "periodo": periodo,
@@ -1962,6 +2343,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         "flujo_financiero": seccion_flujo,
         "validaciones": validaciones,
         "panorama_impositivo": panorama,
+        "cruce_ventas": seccion_cruce_ventas,
     }
 
 
@@ -2249,6 +2631,106 @@ def _render_consolidado_html(resultado: dict) -> str:
     return "".join(partes)
 
 
+def _render_seccion_cruce_ventas(resultado: dict) -> None:
+    """Sección 7 — se renderiza con componentes NiceGUI nativos (no HTML estático como
+    las secciones 1-6) porque los íconos de descarga por fila necesitan un callback
+    real de Python (ui.download), algo que un string de HTML inyectado no puede disparar."""
+    cr = resultado.get("cruce_ventas") or {"_disponible": False}
+
+    _sep_style = (
+        "font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
+        f"color:{_HDR_COLOR};background:{_HDR_BG};padding:10px 14px;"
+        f"border-bottom:2px solid {_HDR_BORDER};display:flex;align-items:center;gap:8px"
+    )
+    ui.html(
+        '<style>.cruce-row:hover{background:#fafafa}</style>'
+        f'<div style="{_sep_style}"><i class="ti ti-arrows-exchange"></i>'
+        f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span></div>'
+    )
+
+    if not cr.get("_disponible"):
+        ui.html(
+            '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
+            "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
+            "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el cruce.</div>"
+        )
+        return
+
+    async def _descargar(tipo: Optional[str]) -> None:
+        path, nombre = await run.io_bound(_generar_excel_cruce_ventas, resultado, tipo)
+        ui.download(path, nombre)
+        ui.notify(f"Exportado: {nombre}", color="positive")
+
+        def _cleanup() -> None:
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
+        ui.timer(5.0, _cleanup, once=True)
+
+    salud = cr.get("salud_pct", 0.0)
+    if salud >= 95:
+        estado_txt, estado_color, estado_icono = "Excelente", _GREEN, "✓"
+    elif salud >= 85:
+        estado_txt, estado_color, estado_icono = "Con observaciones", _YELLOW, "⚠"
+    else:
+        estado_txt, estado_color, estado_icono = "Requiere atención", _RED, "✗"
+
+    with ui.row().classes("items-center gap-2").style("padding:6px 14px"):
+        ui.label(f'Salud del período: {salud:.1f}'.replace(".", ",") + "%").style(
+            "font-size:13px;font-weight:700;color:#333"
+        )
+        ui.label(f"{estado_icono} {estado_txt}").style(f"font-size:12px;font-weight:600;color:{estado_color}")
+
+    cruzadas_ok = cr.get("cruzadas_ok") or []
+    solo_reporte = cr.get("solo_reporte") or []
+    solo_bd = cr.get("solo_bd") or []
+    con_diferencias = cr.get("con_diferencias") or []
+    anuladas = cr.get("anuladas") or []
+    anuladas_no_marcadas = [a for a in anuladas if not a.get("_marcada_ok")]
+
+    categorias = [
+        (len(cruzadas_ok), "✓", _GREEN, "Cruzadas OK", "ok"),
+        (len(solo_reporte), "⚠", _YELLOW, "Solo en Reporte ML", "solo_reporte"),
+        (len(solo_bd), "ℹ", _BLUE, "Solo en nuestra BD", "solo_bd"),
+        (len(con_diferencias), "⚠", _YELLOW, "Con diferencias en montos", "diff"),
+    ]
+    if anuladas_no_marcadas:
+        categorias.append((len(anuladas_no_marcadas), "⚠", _YELLOW, "Anuladas por ML no marcadas en BD", "anuladas"))
+
+    with ui.column().classes("w-full gap-0"):
+        for count, icono, color, label, tipo in categorias:
+            with ui.row().classes("items-center justify-between w-full cruce-row").style(
+                "padding:5px 14px;border-bottom:1px solid #f5f5f5"
+            ):
+                with ui.row().classes("items-center gap-3"):
+                    ui.label(str(count)).style("font-size:20px;font-weight:700;color:#222;min-width:50px")
+                    ui.label(icono).style(f"font-size:15px;font-weight:700;min-width:16px;color:{color}")
+                    ui.label(label).style("font-size:12px;color:#555")
+                ui.button(on_click=lambda t=tipo: _descargar(t)).props("flat dense round icon=download size=sm").style(
+                    f"color:{_BLUE}"
+                )
+
+    total_reporte = cr.get("total_reporte", 0)
+    total_bd = cr.get("total_bd", 0)
+    total_anuladas = len(anuladas)
+    with ui.column().classes("w-full gap-1").style("padding:8px 14px;font-size:11px;color:#555"):
+        ui.label(f"Total en Reporte ML: {_ar_num(total_reporte)}")
+        ui.label(f"Total en nuestra BD: {_ar_num(total_bd)}")
+        ui.label(
+            f"Total cruzadas + anuladas: {_ar_num(len(cruzadas_ok))} + {_ar_num(total_anuladas)} = "
+            f"{_ar_num(len(cruzadas_ok) + total_anuladas)}"
+        )
+        ui.label(f"Ventas nuestras cross-mes (esperadas del mes anterior): {_ar_num(len(solo_bd))}")
+
+    with ui.row().classes("w-full justify-center").style("padding:10px 14px 14px"):
+        ui.button(
+            "Descargar Excel completo con todo el detalle",
+            on_click=lambda: _descargar(None),
+        ).props("icon=download no-caps").style(f"background:{_BLUE};color:white")
+
+
 def _abrir_modal_consolidado(resultado: dict) -> None:
     with ui.dialog() as dlg:
         with ui.card().style(
@@ -2265,6 +2747,7 @@ def _abrir_modal_consolidado(resultado: dict) -> None:
 
             with ui.column().classes("w-full flex-1").style("overflow-y:auto;min-height:0;padding:14px 0"):
                 ui.html(_render_consolidado_html(resultado))
+                _render_seccion_cruce_ventas(resultado)
 
             with ui.row().classes("w-full justify-end gap-2 px-4 py-3 flex-shrink-0").style(
                 f"border-top:1px solid {_HDR_BORDER};background:{_HDR_BG}"
