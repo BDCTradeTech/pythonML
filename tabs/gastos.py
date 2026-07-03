@@ -1545,6 +1545,30 @@ def _neto_gravado(fd: dict) -> float:
     return v or 0.0
 
 
+_LOGISTIC_TYPES_CORREO = ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2")
+_LOGISTIC_TYPES_FLEX = ("self_service", "flex")
+
+
+def _contar_envios_por_tipo(user_id: int, periodo: str) -> tuple:
+    """Cuenta envíos por Correo vs Flex en ventas_datos para el mes calendario del período,
+    según logistic_type — mismo criterio de clasificación que el filtro de Envío en
+    tabs/ventas.py. Devuelve (cantidad_correo, cantidad_flex)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT logistic_type, COUNT(*) FROM ventas_datos "
+            "WHERE user_id=? AND order_date LIKE ? GROUP BY logistic_type",
+            (user_id, f"{periodo}%"),
+        )
+        conteo = {(row[0] or "").lower(): row[1] for row in cur.fetchall()}
+    finally:
+        conn.close()
+    correo = sum(v for k, v in conteo.items() if k in _LOGISTIC_TYPES_CORREO)
+    flex = sum(v for k, v in conteo.items() if k in _LOGISTIC_TYPES_FLEX)
+    return correo, flex
+
+
 # ---------------------------------------------------------------------------
 # Sección 7 — Cruce Ventas nuestras (BD) vs Reporte de Facturación ML
 # ---------------------------------------------------------------------------
@@ -2075,36 +2099,44 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     def _lineas_intermedias(fd: dict) -> list:
         return fd.get("lineas_intermedias") or []
 
-    total_facturas_ml = round(sum(fd.get("total") or 0.0 for fd in facturas_data), 2)
-    cantidad_facturas = len(facturas_data)
-    neto_gravado_total = round(sum(_neto_gravado(fd) for fd in facturas_data), 2)
-    iva_21_total = round(sum(
-        l.get("monto") or 0.0
-        for fd in facturas_data for l in _lineas_intermedias(fd)
-        if "iva" in _concepto_norm(l.get("concepto", "")) and "21" in str(l.get("concepto", ""))
-    ), 2)
-    percepciones_ml_total = round(sum(
-        l.get("monto") or 0.0
-        for fd in facturas_data for l in _lineas_intermedias(fd)
-        if "percep" in _strip_accents(str(l.get("concepto", "")).lower())
-    ), 2)
-
-    # Percepciones por provincia según las Facturas ML — excluye Notas de Crédito/Débito:
-    # sus percepciones revierten lo cobrado en facturas previas y rompen el cruce vs Reportes.
-    def _es_factura_para_percepciones(tipo_documento: str) -> bool:
+    # Notas de Crédito/Débito A (PDFs de la sección Facturas ML) corrigen facturas de OTROS
+    # períodos — no están reflejadas en el "Valor del cargo" del Reporte de Facturación ML del
+    # período actual. Sumarlas junto a las Facturas reales infla total_facturas_ml y rompe el
+    # cruce contra el Reporte (ver investigación abril 2026: diff $909.397 = exactamente la suma
+    # de las NC/ND del período, el cruce cierra a la centavo al excluirlas).
+    def _es_factura_real(tipo_documento: str) -> bool:
         t = _strip_accents(str(tipo_documento or "").lower())
         if "nota de" in t or "credito" in t or "debito" in t:
             return False
         return "factura" in t
 
-    perc_facturas: Dict[str, float] = defaultdict(float)
-    perc_facturas_detalle: Dict[str, list] = defaultdict(list)
+    facturas_raw_reales, facturas_data_reales = [], []
     for f_raw, fd in zip(facturas_raw, facturas_data):
         tipo_doc = fd.get("tipo_documento", "")
-        if not _es_factura_para_percepciones(tipo_doc):
-            print(f"[DBG-CONSOL] Excluyendo archivo por tipo='{tipo_doc}': filename={f_raw.get('filename')}", flush=True)
-            continue
-        print(f"[DBG-CONSOL] Incluyendo archivo por tipo='{tipo_doc}': filename={f_raw.get('filename')}", flush=True)
+        if _es_factura_real(tipo_doc):
+            facturas_raw_reales.append(f_raw)
+            facturas_data_reales.append(fd)
+        else:
+            print(f"[DBG-CONSOL] Excluyendo NC/ND de agregados de Facturas ML: tipo='{tipo_doc}' filename={f_raw.get('filename')}", flush=True)
+
+    total_facturas_ml = round(sum(fd.get("total") or 0.0 for fd in facturas_data_reales), 2)
+    cantidad_facturas = len(facturas_data_reales)
+    neto_gravado_total = round(sum(_neto_gravado(fd) for fd in facturas_data_reales), 2)
+    iva_21_total = round(sum(
+        l.get("monto") or 0.0
+        for fd in facturas_data_reales for l in _lineas_intermedias(fd)
+        if "iva" in _concepto_norm(l.get("concepto", "")) and "21" in str(l.get("concepto", ""))
+    ), 2)
+    percepciones_ml_total = round(sum(
+        l.get("monto") or 0.0
+        for fd in facturas_data_reales for l in _lineas_intermedias(fd)
+        if "percep" in _strip_accents(str(l.get("concepto", "")).lower())
+    ), 2)
+
+    # Percepciones por provincia según las Facturas ML (mismo filtro que arriba).
+    perc_facturas: Dict[str, float] = defaultdict(float)
+    perc_facturas_detalle: Dict[str, list] = defaultdict(list)
+    for f_raw, fd in zip(facturas_raw_reales, facturas_data_reales):
         for l in _lineas_intermedias(fd):
             concepto = str(l.get("concepto", ""))
             if "percep" not in _strip_accents(concepto.lower()):
@@ -2128,15 +2160,14 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     print(f"[DBG-CONSOLIDADO] Percepciones extraídas por factura: {_dbg_percs_por_factura}", flush=True)
 
     # --- SECCIÓN 1 — Ventas ---
+    envios_correo, envios_flex = _contar_envios_por_tipo(user_id, periodo)
     seccion_ventas = {
         "total_ingresos_brutos": fact.get("total_ingresos"),
         "cantidad_operaciones": fact.get("cantidad_operaciones"),
         "ticket_promedio": fact.get("ticket_promedio"),
-        "descuentos_aplicados": {
-            "monto": fact.get("total_descuentos"),
-            "cantidad": fact.get("cantidad_descuentos"),
-        },
         "envios_pagados_por_comprador": fact.get("envios_pagados_comprador"),
+        "envios_correo": envios_correo,
+        "envios_flex": envios_flex,
         "notas_credito_ml": nc_ml.get("total"),
         "notas_credito_flex": nc_flex.get("total_bonificado"),
         "notas_debito_flex": nd_flex.get("total_debitado"),
@@ -2154,9 +2185,20 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         round(total_facturas_ml - total_valor_del_cargo, 2)
         if total_valor_del_cargo is not None else None
     )
+    _envio_entry = next(
+        (info for label, info in desglose.items() if "envio" in _strip_accents(label.lower())),
+        None,
+    )
+    envios_ml_cantidad = None
+    envios_ml_promedio = None
+    if _envio_entry:
+        envios_ml_cantidad = (_envio_entry.get("cantidad") or 0) - (_envio_entry.get("anulacion_cantidad") or 0)
+        envios_ml_promedio = round(costos_envio_ml_neto / envios_ml_cantidad, 2) if envios_ml_cantidad else 0.0
     seccion_costos_ml = {
         "comisiones_venta": comisiones_venta,
         "costos_envio_ml_neto": costos_envio_ml_neto,
+        "envios_ml_cantidad": envios_ml_cantidad,
+        "envios_ml_promedio": envios_ml_promedio,
         "cuotas": cuotas,
         "total_valor_del_cargo": total_valor_del_cargo,
         "facturacion_bruta": facturacion_bruta,
@@ -2237,7 +2279,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     iva_debito_fiscal = round(ventas_gravadas * 0.105 / 1.105, 2)
     iva_credito_fiscal_facturas = round(sum(
         l.get("monto") or 0.0
-        for fd in facturas_data for l in _lineas_intermedias(fd)
+        for fd in facturas_data_reales for l in _lineas_intermedias(fd)
         if "iva" in _concepto_norm(l.get("concepto", ""))
         and "percep" not in _concepto_norm(l.get("concepto", ""))
     ), 2)
@@ -2246,18 +2288,51 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         if "iva" in _concepto_norm(r["impuesto"])
     ), 2)
     iva_a_pagar_estimado = round(iva_debito_fiscal - iva_credito_fiscal_facturas - retenciones_iva, 2)
-    iva_pagado_arca = pagos_arca_por_tipo.get("IVA", 0.0)
-    diff_iva = round(iva_a_pagar_estimado - iva_pagado_arca, 2)
-    _umbral_iva = max(abs(iva_pagado_arca), abs(iva_a_pagar_estimado)) * 0.05
+
+    # VEP de IVA: "Total del Débito/Crédito Fiscal del Período" vienen en la lista
+    # determinacion_del_impuesto (extraída por Gemini, ver _PROMPTS_DEFAULT["pagos_arca"]).
+    def _buscar_concepto_vep(lineas: list, *fragmentos_norm: str) -> Optional[float]:
+        for item in lineas or []:
+            c = _strip_accents(str(item.get("concepto", "")).lower())
+            if all(frag in c for frag in fragmentos_norm):
+                return item.get("monto")
+        return None
+
+    vep_debito_fiscal_total: Optional[float] = None
+    vep_credito_fiscal_total: Optional[float] = None
+    for f in archivos.get("pagos_arca", []):
+        d = _ed(f)
+        if (d.get("tipo") or "").strip().upper() != "IVA":
+            continue
+        lineas_det = d.get("determinacion_del_impuesto") or []
+        deb = _buscar_concepto_vep(lineas_det, "debito fiscal", "periodo")
+        cred = _buscar_concepto_vep(lineas_det, "credito fiscal", "periodo")
+        vep_debito_fiscal_total = (vep_debito_fiscal_total or 0.0) + (deb or 0.0)
+        vep_credito_fiscal_total = (vep_credito_fiscal_total or 0.0) + (cred or 0.0)
+    if vep_debito_fiscal_total is not None:
+        vep_debito_fiscal_total = round(vep_debito_fiscal_total, 2)
+    if vep_credito_fiscal_total is not None:
+        vep_credito_fiscal_total = round(vep_credito_fiscal_total, 2)
+
+    iva_a_pagar_arca = (
+        round(vep_debito_fiscal_total - vep_credito_fiscal_total, 2)
+        if vep_debito_fiscal_total is not None and vep_credito_fiscal_total is not None
+        else None
+    )
+    diff_iva = round(iva_a_pagar_estimado - iva_a_pagar_arca, 2) if iva_a_pagar_arca is not None else None
+    _umbral_iva = max(abs(iva_a_pagar_arca or 0.0), abs(iva_a_pagar_estimado)) * 0.05
     iva_analisis = {
         "ventas_gravadas": ventas_gravadas,
         "iva_debito_fiscal": iva_debito_fiscal,
         "iva_credito_fiscal_facturas": iva_credito_fiscal_facturas,
+        "iva_credito_fiscal_arca": vep_credito_fiscal_total,
         "retenciones_iva": retenciones_iva,
         "iva_a_pagar_estimado": iva_a_pagar_estimado,
-        "iva_pagado_arca": iva_pagado_arca,
+        "vep_debito_fiscal_total": vep_debito_fiscal_total,
+        "vep_credito_fiscal_total": vep_credito_fiscal_total,
+        "iva_a_pagar_arca": iva_a_pagar_arca,
         "diff": diff_iva,
-        "ok": abs(diff_iva) <= _umbral_iva,
+        "ok": diff_iva is not None and abs(diff_iva) <= _umbral_iva,
     }
 
     # --- Cruce Impuestos vs Pagos ARCA, por categoría ---
@@ -2566,17 +2641,19 @@ def _render_consolidado_html(resultado: dict) -> str:
             "Datos incompletos</div>"
         )
 
-    def _tabla(headers: list, filas: list) -> str:
+    def _tabla(headers: list, filas: list, aligns: Optional[list] = None, header_align: str = "left") -> str:
+        aligns = aligns or ["left"] * len(headers)
         ths = "".join(
             f'<th style="border:1px solid #d0d0d0;padding:3px 8px;background:#eef3f8;'
-            f'font-size:10px;font-weight:600;color:{_HDR_COLOR};text-align:left">{h}</th>'
+            f'font-size:10px;font-weight:600;color:{_HDR_COLOR};text-align:{header_align}">{h}</th>'
             for h in headers
         )
         body = ""
         for fila in filas:
             tds = "".join(
-                f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333">{c}</td>'
-                for c in fila
+                f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333;'
+                f'text-align:{aligns[i] if i < len(aligns) else "left"}">{c}</td>'
+                for i, c in enumerate(fila)
             )
             body += f"<tr>{tds}</tr>"
         return (
@@ -2612,16 +2689,12 @@ def _render_consolidado_html(resultado: dict) -> str:
     s = [f'<div style="{_WRAP}">', _sec("ti-shopping-cart", "1 · Ventas", "ml")]
     if v["_incompleto"]:
         s.append(_incompleto_html())
-    s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"]), fuentes=["repo"]))
+    s.append(_row("Facturación bruta", _ar_money(v["total_ingresos_brutos"]), fuentes=["repo"]))
     s.append(_row("Cantidad de operaciones", _ar_num(v["cantidad_operaciones"]), fuentes=["repo"]))
     s.append(_row("Ticket promedio", _ar_money(v["ticket_promedio"]), fuentes=["calc"]))
-    desc = v["descuentos_aplicados"]
-    s.append(_row(
-        "Descuentos aplicados",
-        f'{_ar_money(desc["monto"])} ({_ar_num(desc["cantidad"] or 0)} descuentos)',
-        fuentes=["repo"],
-    ))
     s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"]), fuentes=["repo"]))
+    s.append(_row("Envíos por correo", _ar_num(v["envios_correo"]), fuentes=["calc"]))
+    s.append(_row("Envíos por Flex", _ar_num(v["envios_flex"]), fuentes=["calc"]))
     s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"]), fuentes=["repo"]))
     s.append(_row("Notas de crédito EnvíosFlex", _ar_money(v["notas_credito_flex"]), fuentes=["repo"]))
     s.append(_row("Notas de débito EnvíosFlex", _ar_money(v["notas_debito_flex"]), fuentes=["repo"]))
@@ -2633,15 +2706,30 @@ def _render_consolidado_html(resultado: dict) -> str:
     if c["_incompleto"]:
         s.append(_incompleto_html())
     s.append(_row("Comisiones de venta (neto anulaciones)", _ar_money(c["comisiones_venta"]), fuentes=["repo"]))
-    s.append(_row("Costos de envío ML (neto)", _ar_money(c["costos_envio_ml_neto"]), fuentes=["repo"]))
+    _envios_ml_sub = (
+        f'<br><span style="font-size:9px;color:#9e9e9e;font-weight:400">'
+        f'{_ar_num(c["envios_ml_cantidad"])} envíos · promedio {_ar_money(c["envios_ml_promedio"])}</span>'
+        if c["envios_ml_cantidad"] else ""
+    )
+    s.append(_row(
+        "Costos de envío ML (neto)",
+        _ar_money(c["costos_envio_ml_neto"]) + _envios_ml_sub,
+        fuentes=["repo"],
+    ))
     s.append(_row("Cuotas", _ar_money(c["cuotas"]), fuentes=["repo"]))
-    s.append(_row("Total valor del cargo (facturación neta ML)", _ar_money(c["total_valor_del_cargo"]), fuentes=["repo"]))
+    s.append(_row("Total comisiones ML", _ar_money(c["total_valor_del_cargo"]), fuentes=["repo"]))
     s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"]), fuentes=["repo"]))
-    s.append(_row("Total Facturas ML", _ar_money(c["total_facturas_ml"]), fuentes=["fact"]))
+    s.append(_row(
+        'Total facturas ML<br><span style="font-size:9px;color:#9e9e9e;font-weight:400">'
+        'Excluye Notas de Crédito y Débito</span>',
+        _ar_money(c["total_facturas_ml"]), fuentes=["fact"],
+    ))
     s.append(_row("Cantidad de facturas", _ar_num(c["cantidad_facturas"]), fuentes=["fact"]))
     s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"]), fuentes=["fact"]))
     s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"]), fuentes=["fact"]))
     s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"]), fuentes=["fact"]))
+    s.append(_row("Facturado (Facturas ML)", _ar_money(c["total_facturas_ml"]), fuentes=["fact"]))
+    s.append(_row("Facturado (Reporte ML)", _ar_money(c["total_valor_del_cargo"]), fuentes=["repo"]))
     diff_color = _RED if c["diff_alerta"] else _GREEN
     s.append(
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
@@ -2681,7 +2769,11 @@ def _render_consolidado_html(resultado: dict) -> str:
                 r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
                 _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
             ])
-        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas)}</div>')
+        s.append(
+            f'<div style="padding:0 14px">'
+            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center")}'
+            f'</div>'
+        )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
@@ -2690,9 +2782,29 @@ def _render_consolidado_html(resultado: dict) -> str:
     s.append(_row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"]), fuentes=["repo"]))
     s.append(_row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"]), fuentes=["calc"]))
     s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"]), fuentes=["fact"]))
+    s.append(_row("IVA Crédito Fiscal (Pagos ARCA)", _ar_money(iva["iva_credito_fiscal_arca"]), fuentes=["arca"]))
     s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"]), fuentes=["reten"]))
     s.append(_row("IVA a Pagar Estimado", _ar_money(iva["iva_a_pagar_estimado"]), bold=True, fuentes=["calc"]))
-    s.append(_row("IVA Pagado a ARCA", _ar_money(iva["iva_pagado_arca"]), fuentes=["arca"]))
+
+    s.append(
+        '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
+        'letter-spacing:0.04em;color:#9e9e9e;border-top:1px dashed #ddd;margin-top:4px">'
+        "Datos de VEP IVA</div>"
+    )
+    if iva["vep_debito_fiscal_total"] is not None:
+        s.append(_row("Total Débito Fiscal del período (VEP)", _ar_money(iva["vep_debito_fiscal_total"]), fuentes=["arca"]))
+        s.append(_row("Total Crédito Fiscal del período (VEP)", _ar_money(iva["vep_credito_fiscal_total"]), fuentes=["arca"]))
+        s.append(_row("IVA a Pagar (Débito - Crédito)", _ar_money(iva["iva_a_pagar_arca"]), bold=True, fuentes=["calc"]))
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
+
+    s.append(
+        '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
+        'letter-spacing:0.04em;color:#9e9e9e;border-top:1px dashed #ddd;margin-top:4px">'
+        "Comparación</div>"
+    )
+    s.append(_row("IVA a Pagar Estimado (10,5%)", _ar_money(iva["iva_a_pagar_estimado"]), fuentes=["calc"]))
+    s.append(_row("IVA a Pagar según ARCA", _ar_money(iva["iva_a_pagar_arca"]), fuentes=["arca"]))
     _iva_diff_color = _GREEN if iva["ok"] else _RED
     s.append(
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
@@ -2703,8 +2815,9 @@ def _render_consolidado_html(resultado: dict) -> str:
     )
     s.append(
         '<div style="padding:4px 14px 8px;font-size:10px;color:#9e9e9e;font-style:italic">'
-        "El IVA débito fiscal se calcula al 10,5% asumiendo que todas las ventas están gravadas a esa "
-        "alícuota. Puede diferir del real si hay ventas al 21% u otras alícuotas.</div>"
+        "El IVA débito fiscal estimado se calcula al 10,5% asumiendo que todas las ventas están gravadas a esa "
+        "alícuota. El IVA a Pagar según ARCA sale directamente del VEP (Débito Fiscal del período − Crédito "
+        "Fiscal del período), sin estimaciones.</div>"
     )
 
     s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
@@ -2714,7 +2827,11 @@ def _render_consolidado_html(resultado: dict) -> str:
              _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
             for r in imp["retenciones_detalle"]
         ]
-        s.append(f'<div style="padding:0 14px">{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas)}</div>')
+        s.append(
+            f'<div style="padding:0 14px">'
+            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"])}'
+            f'</div>'
+        )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
@@ -2753,7 +2870,7 @@ def _render_consolidado_html(resultado: dict) -> str:
         ])
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom.", "Fuente"], filas)}</div>'
+            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom.", "Fuente"], filas, aligns=["left", "right", "center", "center", "right", "center"])}</div>'
         )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
@@ -2800,7 +2917,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     ]
     s.append(
         f'<div style="padding:6px 14px">'
-        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación", "Fuente"], filas)}'
+        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left", "center"])}'
         f'</div>'
     )
     s.append("</div>")
@@ -2904,14 +3021,14 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
 
     # --- Cards de detalle del cruce (4 en 1 fila) ---
     categorias = [
-        (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Concretadas", "ok"),
-        (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Canceladas", "anuladas"),
-        (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte", "solo_reporte"),
-        (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias", "diff"),
+        (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Concretadas"),
+        (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Canceladas"),
+        (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte"),
+        (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias"),
     ]
 
     with ui.grid(columns=4).classes("w-full gap-[6px]").style("padding:0 12px 8px"):
-        for count, icono, icon_bg, icon_color, label, tipo in categorias:
+        for count, icono, icon_bg, icon_color, label in categorias:
             es_cero = count == 0
             with ui.row().classes(f"cruce-card{' is-zero' if es_cero else ''} items-center"):
                 ui.html(
@@ -2922,11 +3039,6 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
                 with ui.column().classes("gap-0").style("flex:1;min-width:0"):
                     ui.label(_ar_num(count)).style("font-size:16px;font-weight:700;font-variant-numeric:tabular-nums")
                     ui.label(label).style("font-size:10px;color:var(--color-text-secondary)")
-                btn_dl = ui.button(on_click=lambda t=tipo: _descargar(t)).props(
-                    "flat dense round icon=download size=xs"
-                ).style(f"color:{_BLUE};font-size:13px;opacity:{'0.3' if es_cero else '1'}")
-                if es_cero:
-                    btn_dl.disable()
 
     # --- Cross-mes: ventas fuera del período de facturación ML, 1 línea ---
     if solo_bd:
@@ -2960,9 +3072,6 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
                 f'<span style="color:var(--color-text-tertiary);font-size:10px">{mes_txt}</span>'
                 '</div>'
             )
-            ui.button(on_click=lambda: _descargar("solo_bd")).props(
-                "flat dense round icon=download size=xs"
-            ).style(f"color:{_BLUE};font-size:13px")
 
     # --- Descargar Excel completo (derecha) ---
     with ui.row().classes("w-full justify-end").style(
@@ -3233,6 +3342,15 @@ def build_tab_gastos(container) -> None:
 def _build_gastos(user_id: int) -> None:
     now = datetime.now()
 
+    # Default al entrar: mes ANTERIOR al actual (ej. en julio 2026 → default junio 2026).
+    # En enero el mes anterior es diciembre del año previo, así que el año default también rota.
+    _mes_ant_idx = now.month - 2
+    if _mes_ant_idx < 0:
+        _mes_ant_idx = 11
+        _default_ano = now.year - 1
+    else:
+        _default_ano = now.year
+
     # ── Barra superior ────────────────────────────────────────────────────────
     with ui.row().classes("w-full items-center gap-4 flex-wrap").style(
         "background:#f8fafc;border-bottom:1px solid #e0e0e0;padding:10px 16px"
@@ -3240,7 +3358,7 @@ def _build_gastos(user_id: int) -> None:
         with ui.row().classes("items-center gap-2"):
             ui.label("Período:").classes("font-semibold text-sm text-gray-600")
 
-            mes_state = {"value": _MESES[now.month - 1]}
+            mes_state = {"value": _MESES[_mes_ant_idx]}
             with ui.button().props("flat dense no-caps icon-right=expand_more").style(
                 "border:0.5px solid var(--color-border-tertiary);border-radius:6px;"
                 "padding:4px 10px;min-width:150px;justify-content:flex-start;gap:6px"
@@ -3252,8 +3370,8 @@ def _build_gastos(user_id: int) -> None:
             mes_badge = ui.html("")
 
             ano_sel = ui.select(
-                options=[str(y) for y in range(now.year - 2, now.year + 2)],
-                value=str(now.year),
+                options=[str(now.year - 1), str(now.year)],
+                value=str(_default_ano),
             ).style("width:90px")
         progress_lbl = ui.label("").classes("text-sm text-gray-500 ml-2")
         size_lbl     = ui.label("").classes("text-sm text-gray-400")
