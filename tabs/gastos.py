@@ -1501,10 +1501,22 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         if "percep" in _strip_accents(str(l.get("concepto", "")).lower())
     ), 2)
 
-    # Percepciones por provincia según las Facturas ML
+    # Percepciones por provincia según las Facturas ML — excluye Notas de Crédito/Débito:
+    # sus percepciones revierten lo cobrado en facturas previas y rompen el cruce vs Reportes.
+    def _es_factura_para_percepciones(tipo_documento: str) -> bool:
+        t = _strip_accents(str(tipo_documento or "").lower())
+        if "nota de" in t or "credito" in t or "debito" in t:
+            return False
+        return "factura" in t
+
     perc_facturas: Dict[str, float] = defaultdict(float)
     perc_facturas_detalle: Dict[str, list] = defaultdict(list)
-    for fd in facturas_data:
+    for f_raw, fd in zip(facturas_raw, facturas_data):
+        tipo_doc = fd.get("tipo_documento", "")
+        if not _es_factura_para_percepciones(tipo_doc):
+            print(f"[DBG-CONSOL] Excluyendo archivo por tipo='{tipo_doc}': filename={f_raw.get('filename')}", flush=True)
+            continue
+        print(f"[DBG-CONSOL] Incluyendo archivo por tipo='{tipo_doc}': filename={f_raw.get('filename')}", flush=True)
         for l in _lineas_intermedias(fd):
             concepto = str(l.get("concepto", ""))
             if "percep" not in _strip_accents(concepto.lower()):
