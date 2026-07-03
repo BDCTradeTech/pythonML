@@ -1630,10 +1630,11 @@ def _fetch_meli_fee_mp(access_token: str, payment_id: str) -> Optional[float]:
         return None
 
 
-def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
+def _obtener_ventas_bd_periodo(user_id: int, inicio: datetime, fin: datetime) -> tuple:
     """Trae del lado nuestro (API de MercadoLibre, no ml_orders_cache — ese cache solo
     crece hacia adelante desde que se abrió el Panel por primera vez y no garantiza
-    cobertura de un mes cerrado ya pasado) las órdenes del período, indexadas por
+    cobertura de un mes cerrado ya pasado) las órdenes entre [inicio, fin] (el período de
+    corte de ML — ver _calcular_periodo_ml — no el mes calendario), indexadas por
     order_id. comision_bd es la comisión REAL cobrada por ML: primero se busca en
     ventas_datos (ya cacheada si el usuario usó "Completar datos" en Ventas), y para
     las que falten se pide en vivo a la API de pagos de MercadoPago
@@ -1648,7 +1649,6 @@ def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
     if not seller_id:
         return {}, None
 
-    inicio, fin = _rango_fechas_periodo(periodo)
     date_from = inicio.strftime("%Y-%m-%dT00:00:00.000-03:00")
     date_to = fin.strftime("%Y-%m-%dT23:59:59.999-03:00")
     orders_data = ml_get_orders(
@@ -1802,9 +1802,69 @@ def _cruzar_ventas_reporte_vs_bd(
     }
 
 
-def _calcular_seccion_cruce_ventas(user_id: int, periodo: str, archivo_facturacion_ml: Optional[dict]) -> dict:
+def _calcular_periodo_ml(fact: dict, inicio_fiscal: datetime, fin_fiscal: datetime) -> tuple:
+    """Rango del 'período de corte' de ML (ej. mayo = 17/04-16/05 aprox.), tomado del
+    MIN/MAX de fecha de venta del Reporte de Facturación ML del período (fact["fecha_desde"]/
+    ["fecha_hasta"], ya calculados por analizar_facturacion_ml sobre TODAS las ventas del
+    archivo). Si no hay reporte procesado, cae al mes calendario (periodo_fiscal) y lo marca
+    con fallback=True para que el modal avise que está usando el mes calendario en su lugar.
+
+    Devuelve (desde: datetime, hasta: datetime, fallback: bool)."""
+    try:
+        desde = datetime.strptime(fact.get("fecha_desde") or "", "%d/%m/%Y")
+        hasta = datetime.strptime(fact.get("fecha_hasta") or "", "%d/%m/%Y")
+        return desde, hasta, False
+    except ValueError:
+        return inicio_fiscal, fin_fiscal, True
+
+
+def _periodos_del_resultado(resultado: dict) -> tuple:
+    """periodo_fiscal/periodo_ml (dicts con 'desde'/'hasta' en dd/mm/YYYY) ya calculados y
+    guardados en el resultado. Fallback para análisis guardados antes de que existieran estas
+    claves: reconstruye el mes calendario como ambos períodos, marcando periodo_ml como
+    fallback."""
+    periodo_fiscal = resultado.get("periodo_fiscal")
+    periodo_ml = resultado.get("periodo_ml")
+    if periodo_fiscal and periodo_ml:
+        return periodo_fiscal, periodo_ml
+    try:
+        inicio, fin = _rango_fechas_periodo(resultado.get("periodo", ""))
+        _desde, _hasta = inicio.strftime("%d/%m/%Y"), fin.strftime("%d/%m/%Y")
+    except ValueError:
+        _desde, _hasta = "", ""
+    periodo_fiscal = periodo_fiscal or {"desde": _desde, "hasta": _hasta}
+    periodo_ml = periodo_ml or {"desde": _desde, "hasta": _hasta, "fallback": True}
+    return periodo_fiscal, periodo_ml
+
+
+def _render_periodo_badge(tipo: str, periodo_fiscal: dict, periodo_ml: dict) -> str:
+    """Mini-badge '📅 Fiscal/Período ML/Mixto' para el header de una sección, con tooltip
+    mostrando las fechas exactas de ambos períodos."""
+    label = {"fiscal": "Fiscal", "ml": "Período ML", "mixto": "Mixto"}.get(tipo, tipo)
+    tooltip = (
+        f"Período fiscal: {periodo_fiscal.get('desde', '')} - {periodo_fiscal.get('hasta', '')}\n"
+        f"Período ML: {periodo_ml.get('desde', '')} - {periodo_ml.get('hasta', '')}"
+    ).replace('"', "&quot;")
+    return (
+        f'<span title="{tooltip}" style="display:inline-flex;align-items:center;'
+        "background:var(--color-background-secondary);color:var(--color-text-secondary);"
+        'font-size:10px;font-weight:500;padding:2px 6px;border-radius:3px;cursor:help">'
+        f"📅 {label}</span>"
+    )
+
+
+def _calcular_seccion_cruce_ventas(
+    user_id: int, archivo_facturacion_ml: Optional[dict],
+    periodo_ml_desde: datetime, periodo_ml_hasta: datetime,
+) -> dict:
     """Arma la Sección 7 completa: si no hay Reporte de Facturación ML procesado en el
-    período, devuelve _disponible=False para que el render muestre el aviso pedido."""
+    período, devuelve _disponible=False para que el render muestre el aviso pedido.
+
+    Filtra las ventas de nuestra BD por periodo_ml (el período de corte de ML, tomado del
+    propio Reporte de Facturación), NO por el mes calendario — las ventas de nuestra BD y las
+    del reporte deben cubrir la misma ventana de fechas para que el cruce por Número de venta
+    tenga sentido; usar el mes calendario dejaba ~600 ventas de fin de mes "solo en BD" que en
+    realidad pertenecían al período de corte de ML del mes siguiente."""
     if not archivo_facturacion_ml or not archivo_facturacion_ml.get("filepath"):
         return {"_disponible": False}
     filepath = Path(archivo_facturacion_ml["filepath"])
@@ -1815,7 +1875,7 @@ def _calcular_seccion_cruce_ventas(user_id: int, periodo: str, archivo_facturaci
     if not filas_reporte:
         return {"_disponible": False}
 
-    ventas_bd, seller_id = _obtener_ventas_bd_periodo(user_id, periodo)
+    ventas_bd, seller_id = _obtener_ventas_bd_periodo(user_id, periodo_ml_desde, periodo_ml_hasta)
     cruce = _cruzar_ventas_reporte_vs_bd(filas_reporte, ventas_bd)
     cruce["_disponible"] = True
     cruce["seller_id"] = seller_id or ""
@@ -2397,11 +2457,25 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "recomendacion": recomendacion,
         })
 
-    seccion_cruce_ventas = _calcular_seccion_cruce_ventas(user_id, periodo, reportes["facturacion_ml"])
+    # --- Doble período: fiscal (mes calendario, para Impuestos/ARCA) vs ML (período de
+    # corte tomado del propio Reporte de Facturación, para Ventas/Facturación/Cruce) ---
+    inicio_fiscal, fin_fiscal = _rango_fechas_periodo(periodo)
+    ml_desde_dt, ml_hasta_dt, ml_fallback = _calcular_periodo_ml(fact, inicio_fiscal, fin_fiscal)
+    periodo_fiscal = {"desde": inicio_fiscal.strftime("%d/%m/%Y"), "hasta": fin_fiscal.strftime("%d/%m/%Y")}
+    periodo_ml = {
+        "desde": ml_desde_dt.strftime("%d/%m/%Y"), "hasta": ml_hasta_dt.strftime("%d/%m/%Y"),
+        "fallback": ml_fallback,
+    }
+
+    seccion_cruce_ventas = _calcular_seccion_cruce_ventas(
+        user_id, reportes["facturacion_ml"], ml_desde_dt, ml_hasta_dt
+    )
 
     return {
         "user_id": user_id,
         "periodo": periodo,
+        "periodo_fiscal": periodo_fiscal,
+        "periodo_ml": periodo_ml,
         "faltantes": faltantes,
         "ventas": seccion_ventas,
         "costos_ml": seccion_costos_ml,
@@ -2428,6 +2502,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     validaciones = resultado["validaciones"]
     panorama  = resultado["panorama_impositivo"]
     faltantes = resultado["faltantes"]
+    periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
 
     _SEP = (
         f"font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
@@ -2436,8 +2511,9 @@ def _render_consolidado_html(resultado: dict) -> str:
     )
     _WRAP = "border-bottom:1px solid #e5e5e5;padding-bottom:14px;margin-bottom:14px"
 
-    def _sec(icon: str, titulo: str) -> str:
-        return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span></div>'
+    def _sec(icon: str, titulo: str, periodo_tipo: Optional[str] = None) -> str:
+        badge = _render_periodo_badge(periodo_tipo, periodo_fiscal, periodo_ml) if periodo_tipo else ""
+        return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span>{badge}</div>'
 
     def _row(label, value, bold: bool = False, fuentes: Optional[list] = None) -> str:
         w = ";font-weight:700" if bold else ""
@@ -2481,7 +2557,8 @@ def _render_consolidado_html(resultado: dict) -> str:
             '<div style="position:sticky;top:0;z-index:10;'
             "background:var(--color-background-primary);"
             'border-bottom:0.5px solid var(--color-border-tertiary);'
-            'padding:12px 14px;margin:0">'
+            'padding:12px 14px;margin:-1px 0 12px 0;'
+            'box-shadow:0 1px 4px rgba(0,0,0,0.03)">'
             '<div style="text-transform:uppercase;font-size:10px;letter-spacing:0.05em;'
             'color:var(--color-text-tertiary);font-weight:600;margin-bottom:8px">'
             "Íconos de fuente de datos</div>"
@@ -2499,7 +2576,7 @@ def _render_consolidado_html(resultado: dict) -> str:
         )
 
     # 1 — Ventas
-    s = [f'<div style="{_WRAP}">', _sec("ti-shopping-cart", "1 · Ventas")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-shopping-cart", "1 · Ventas", "ml")]
     if v["_incompleto"]:
         s.append(_incompleto_html())
     s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"]), fuentes=["repo"]))
@@ -2519,7 +2596,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 2 — Costos de MercadoLibre
-    s = [f'<div style="{_WRAP}">', _sec("ti-receipt-tax", "2 · Costos de MercadoLibre")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-receipt-tax", "2 · Costos de MercadoLibre", "fiscal")]
     if c["_incompleto"]:
         s.append(_incompleto_html())
     s.append(_row("Comisiones de venta (neto anulaciones)", _ar_money(c["comisiones_venta"]), fuentes=["repo"]))
@@ -2544,7 +2621,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 3 — Impuestos y Retenciones
-    s = [f'<div style="{_WRAP}">', _sec("ti-building-bank", "3 · Impuestos y Retenciones")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-building-bank", "3 · Impuestos y Retenciones", "fiscal")]
     if imp["_incompleto"]:
         s.append(_incompleto_html())
     s.append(
@@ -2622,7 +2699,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 3.5 — Facturación por Provincia
-    s = [f'<div style="{_WRAP}">', _sec("ti-map-pin", "3.5 · Facturación por Provincia")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-map-pin", "3.5 · Facturación por Provincia", "ml")]
     if not fp["disponible"]:
         s.append(
             '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
@@ -2651,7 +2728,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 4 — Flujo Financiero Neto
-    s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto", "mixto")]
     for l in flujo["lineas"]:
         s.append(_row(l["concepto"], _ar_money(l["monto"]), fuentes=l.get("fuentes")))
     cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
@@ -2704,6 +2781,7 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
     las secciones 1-6) porque los íconos de descarga por fila necesitan un callback
     real de Python (ui.download), algo que un string de HTML inyectado no puede disparar."""
     cr = resultado.get("cruce_ventas") or {"_disponible": False}
+    periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
 
     _sep_style = (
         "font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
@@ -2713,7 +2791,8 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
     ui.html(
         '<style>.cruce-row:hover{background:#fafafa}</style>'
         f'<div style="{_sep_style}"><i class="ti ti-arrows-exchange"></i>'
-        f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span></div>'
+        f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span>'
+        f'{_render_periodo_badge("ml", periodo_fiscal, periodo_ml)}</div>'
     )
 
     if not cr.get("_disponible"):
@@ -2800,6 +2879,7 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
 
 
 def _abrir_modal_consolidado(resultado: dict) -> None:
+    periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
     with ui.dialog() as dlg:
         with ui.card().style(
             "width:90vw;max-width:1400px;height:90vh;overflow:hidden;"
@@ -2808,12 +2888,28 @@ def _abrir_modal_consolidado(resultado: dict) -> None:
             with ui.row().classes("items-center justify-between w-full px-4 py-3 flex-shrink-0").style(
                 f"background:{_HDR_BG};border-bottom:1px solid {_HDR_BORDER}"
             ):
-                ui.label(f"Análisis Consolidado del Período — {resultado['periodo']}").style(
-                    f"color:{_HDR_COLOR};font-weight:700;font-size:16px"
-                )
+                with ui.column().classes("gap-0"):
+                    ui.label(f"Análisis Consolidado del Período — {resultado['periodo']}").style(
+                        f"color:{_HDR_COLOR};font-weight:700;font-size:16px"
+                    )
+                    ui.html(
+                        '<div style="font-size:11px;color:var(--color-text-secondary);'
+                        'padding-top:4px;line-height:1.5">'
+                        f"Período fiscal: {periodo_fiscal['desde']} - {periodo_fiscal['hasta']} "
+                        "(Impuestos, ARCA)<br>"
+                        f"Período ML: {periodo_ml['desde']} - {periodo_ml['hasta']} "
+                        "(Facturación, Cruce)</div>"
+                    )
                 ui.button(icon="close", on_click=dlg.close).props("flat round dense")
 
             with ui.column().classes("w-full flex-1").style("overflow-y:auto;min-height:0;padding:14px 0"):
+                if periodo_ml.get("fallback"):
+                    ui.html(
+                        '<div style="background:#FBF1DC;color:#7A5A0E;border:1px solid #E2A93B;'
+                        'border-radius:4px;padding:8px 14px;margin:0 14px 14px;font-size:12px">'
+                        "⚠ No hay Reporte de Facturación ML de este período. Las secciones marcadas "
+                        'como "Período ML" usarán el mes calendario como fallback.</div>'
+                    )
                 ui.html(_render_consolidado_html(resultado))
                 _render_seccion_cruce_ventas(resultado)
 
