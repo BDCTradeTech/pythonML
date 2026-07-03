@@ -890,6 +890,8 @@ def build_tab_ventas(container) -> None:
                         with ui.row().classes("w-full items-center gap-3"):
                             ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
                             ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                            if user["id"] == 1:
+                                ui.button("Completar datos por lote", on_click=lambda: _abrir_dialog_backfill()).props("icon=history no-caps").classes("rounded px-3")
                 else:
                     with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
                         with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
@@ -943,6 +945,8 @@ def build_tab_ventas(container) -> None:
                             with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
                                 ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
                                 ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
+                                if user["id"] == 1:
+                                    ui.button("Completar datos por lote", on_click=lambda: _abrir_dialog_backfill()).props("icon=history no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
@@ -1254,6 +1258,85 @@ def build_tab_ventas(container) -> None:
             background_tasks.create(
                 _enriquecer_ventas_async(context.client, dlg, lbl_progreso, barra, force=True)
             )
+
+        def _abrir_dialog_backfill() -> None:
+            if user["id"] != 1:
+                ui.notify("Completar datos por lote está disponible solo para el administrador.", type="negative")
+                return
+            from ventas_backfill import backfill_ventas_periodo
+
+            hoy_bf = datetime.now().date()
+            with ui.dialog().props("persistent") as dlg_bf, ui.card().classes("w-[420px]"):
+                ui.label("Completar datos por lote").classes("text-base font-semibold mb-2")
+                ui.label(
+                    "Busca todas las ventas del período en la API de ML, trae costos, "
+                    "comisión real y calcula ganancia. Puede tardar varios minutos si son muchas ventas."
+                ).classes("text-sm text-gray-600 mb-3")
+                with ui.row().classes("w-full gap-3"):
+                    inp_desde = ui.input("Fecha desde", value="2026-04-17").props("type=date outlined dense").classes("flex-1")
+                    inp_hasta = ui.input("Fecha hasta", value=hoy_bf.strftime("%Y-%m-%d")).props("type=date outlined dense").classes("flex-1")
+                resumen_area = ui.column().classes("w-full gap-1 mt-2")
+                barra_bf = ui.linear_progress(value=0, show_value=False, size="20px").props("instant-feedback").classes("w-full my-2")
+                barra_bf.set_visibility(False)
+                with ui.row().classes("w-full justify-end gap-2 mt-2"):
+                    btn_cancelar = ui.button("Cancelar", on_click=lambda: dlg_bf.close()).props("flat no-caps")
+                    btn_iniciar = ui.button("Iniciar backfill", color="primary").props("no-caps")
+
+                async def _iniciar() -> None:
+                    fd, fh = inp_desde.value, inp_hasta.value
+                    if not fd or not fh:
+                        ui.notify("Completá ambas fechas.", type="warning")
+                        return
+                    btn_iniciar.disable()
+                    inp_desde.disable()
+                    inp_hasta.disable()
+                    barra_bf.set_visibility(True)
+                    resumen_area.clear()
+                    with resumen_area:
+                        lbl_bf = ui.label("Buscando órdenes en MercadoLibre...").classes("text-sm text-gray-600")
+
+                    estado = {"procesadas": 0, "total": 0, "ya_completas": 0, "errores": 0}
+
+                    def _cb(procesadas: int, total: int, ya_completas: int, errores: int) -> None:
+                        estado.update(procesadas=procesadas, total=total, ya_completas=ya_completas, errores=errores)
+
+                    cl_bf = context.client
+
+                    async def _poll() -> None:
+                        while True:
+                            await asyncio.sleep(0.5)
+                            t = estado["total"]
+                            with cl_bf:
+                                if t > 0:
+                                    barra_bf.set_value(estado["procesadas"] / t)
+                                    lbl_bf.set_text(f"Procesando {estado['procesadas']} de {t}... ({estado['errores']} errores)")
+
+                    poll_task = background_tasks.create(_poll())
+                    try:
+                        resultado = await run.io_bound(backfill_ventas_periodo, user["id"], fd, fh, _cb)
+                    except Exception as e:
+                        poll_task.cancel()
+                        with cl_bf:
+                            resumen_area.clear()
+                            with resumen_area:
+                                ui.label(f"❌ Error: {e}").classes("text-sm text-negative")
+                            btn_cancelar.set_text("Cerrar")
+                        return
+                    poll_task.cancel()
+                    with cl_bf:
+                        barra_bf.set_value(1.0)
+                        resumen_area.clear()
+                        with resumen_area:
+                            ui.label("Backfill completado.").classes("text-sm font-semibold")
+                            ui.label(f"Ventas a procesar: {resultado['a_procesar']}").classes("text-sm")
+                            ui.label(f"Ventas nuevas completadas: {resultado['procesadas']}").classes("text-sm text-positive")
+                            ui.label(f"Ventas ya completas (saltadas): {resultado['ya_completas']}").classes("text-sm")
+                            ui.label(f"Errores: {resultado['errores']}").classes("text-sm" + (" text-negative" if resultado["errores"] else ""))
+                        btn_cancelar.set_text("Cerrar")
+                    _cargar_ventas()
+
+                btn_iniciar.on_click(_iniciar)
+            dlg_bf.open()
 
         async def _enriquecer_ventas_async(
             cl,
