@@ -11,15 +11,18 @@ import re
 import tempfile
 import unicodedata
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import requests
 from nicegui import app, run, ui
 
 from db import (
     delete_gastos_archivo,
     get_app_config,
+    get_connection,
     get_cotizador_param,
     get_gastos_archivos,
     get_gastos_consolidado,
@@ -1608,13 +1611,35 @@ def _parsear_filas_facturacion_ml(path: Path) -> Dict[str, dict]:
     return ventas
 
 
+def _fetch_meli_fee_mp(access_token: str, payment_id: str) -> Optional[float]:
+    """Comisión real cobrada por ML para un pago, vía la misma API que usa
+    tabs/ventas.py en 'Completar datos' (MercadoPago Payments, no un endpoint de ML)."""
+    try:
+        r = requests.get(
+            f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            headers={"Authorization": f"Bearer {access_token}"}, timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        charges = r.json().get("charges_details") or []
+        return sum(
+            float((c.get("amounts") or {}).get("original", 0))
+            for c in charges if c.get("name") == "meli_percentage_fee"
+        )
+    except Exception:
+        return None
+
+
 def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
     """Trae del lado nuestro (API de MercadoLibre, no ml_orders_cache — ese cache solo
     crece hacia adelante desde que se abrió el Panel por primera vez y no garantiza
     cobertura de un mes cerrado ya pasado) las órdenes del período, indexadas por
-    order_id. comision_ml_bd es una estimación (tasa ml_comision del cotizador × total),
-    ya que MercadoLibre no persiste la comisión real cobrada en ningún campo que ya
-    usemos en este proyecto. Retorna (ventas_bd, seller_id)."""
+    order_id. comision_bd es la comisión REAL cobrada por ML: primero se busca en
+    ventas_datos (ya cacheada si el usuario usó "Completar datos" en Ventas), y para
+    las que falten se pide en vivo a la API de pagos de MercadoPago
+    (charges_details -> meli_percentage_fee), igual mecanismo que tabs/ventas.py. Solo
+    si no hay payment_id o falla la consulta se cae a una estimación por tasa plana
+    (ml_comision del cotizador × total). Retorna (ventas_bd, seller_id)."""
     access_token = get_ml_access_token(user_id)
     if not access_token:
         return {}, None
@@ -1638,6 +1663,42 @@ def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
     except (TypeError, ValueError):
         pass
 
+    # payment_ids por orden: TODOS los pagos de la orden, sin filtrar por status. Un
+    # comprador puede dividir el pago en más de uno (p.ej. cuenta + tarjeta) y en
+    # órdenes canceladas/reembolsadas el cargo meli_percentage_fee puede quedar en un
+    # pago "refunded"/"rejected" en vez de uno "approved" — para reconciliar el total
+    # cobrado hace falta sumar el cargo de todos los pagos de la orden, no solo el
+    # "principal" (a diferencia de tabs/ventas.py, que sí necesita uno solo para
+    # calcular la ganancia por venta).
+    pids_por_orden: Dict[str, List[str]] = {}
+    for o in raw_orders:
+        if not isinstance(o, dict) or not o.get("id"):
+            continue
+        pays = o.get("payments") or []
+        pids = [str(p["id"]) for p in pays if p.get("id")]
+        if pids:
+            pids_por_orden[str(o["id"])] = pids
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT payment_id, meli_fee FROM ventas_datos WHERE user_id=?", (user_id,))
+        # meli_fee=0.0 cacheado se descarta: un cargo real de ML nunca es $0 exacto —
+        # 0.0 en ventas_datos indica que "Completar datos" no encontró el cargo en su
+        # momento (p.ej. en una orden que luego se canceló/reembolsó), no que sea gratis.
+        # Se prefiere re-consultar en vivo antes que arrastrar ese valor stale.
+        fee_cache: Dict[str, float] = {r[0]: r[1] for r in cur.fetchall() if r[1]}
+    finally:
+        conn.close()
+
+    todos_pids = sorted({pid for pids in pids_por_orden.values() for pid in pids})
+    faltantes = [pid for pid in todos_pids if pid not in fee_cache]
+    if faltantes:
+        with ThreadPoolExecutor(max_workers=min(16, len(faltantes))) as ex:
+            for pid, fee in zip(faltantes, ex.map(lambda p: _fetch_meli_fee_mp(access_token, p), faltantes)):
+                if fee is not None:
+                    fee_cache[pid] = fee
+
     ventas_bd: Dict[str, dict] = {}
     for o in raw_orders:
         if not isinstance(o, dict) or not o.get("id"):
@@ -1648,11 +1709,17 @@ def _obtener_ventas_bd_periodo(user_id: int, periodo: str) -> tuple:
         buyer = o.get("buyer") or {}
         cliente = buyer.get("nickname") or f'{buyer.get("first_name", "")} {buyer.get("last_name", "")}'.strip() or "—"
         fecha = str(o.get("date_created") or "")[:10]
+
+        pids = pids_por_orden.get(order_id) or []
+        fees = [fee_cache[p] for p in pids if p in fee_cache]
+        fee_real = sum(fees) if pids and len(fees) == len(pids) else None
+        comision_bd = round(fee_real, 2) if fee_real is not None else round(total_bd * ml_com, 2)
+
         ventas_bd[order_id] = {
             "fecha": fecha,
             "cliente": cliente,
             "total_bd": round(total_bd, 2),
-            "comision_bd": round(total_bd * ml_com, 2),
+            "comision_bd": comision_bd,
             "status_raw": status_raw,
         }
     return ventas_bd, str(seller_id)
@@ -2411,9 +2478,10 @@ def _render_consolidado_html(resultado: dict) -> str:
     def _leyenda_fuentes_html() -> str:
         badges = "".join(render_fuente_badge(k, with_label=True) for k in FUENTES_CONSOLIDADO)
         return (
-            '<div style="background:var(--color-background-secondary);'
-            'border:0.5px solid var(--color-border-tertiary);border-radius:8px;'
-            'padding:12px 14px;margin-bottom:16px">'
+            '<div style="position:sticky;top:0;z-index:10;'
+            "background:var(--color-background-primary);"
+            'border-bottom:0.5px solid var(--color-border-tertiary);'
+            'padding:12px 14px;margin:0">'
             '<div style="text-transform:uppercase;font-size:10px;letter-spacing:0.05em;'
             'color:var(--color-text-tertiary);font-weight:600;margin-bottom:8px">'
             "Íconos de fuente de datos</div>"
