@@ -771,6 +771,18 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
         for nombre, info in prov_ordenadas[:5]
     ]
 
+    # --- provincias — TODAS, sin normalizar (para agrupar aguas abajo con
+    # normalizar_jurisdiccion_percepcion en la sección "Facturación por Provincia" del consolidado) ---
+    prov_raw_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+    for v in ventas.values():
+        p = (v["provincia"] or "Sin Provincia").strip()
+        prov_raw_agg[p]["monto"] += v["total_venta"] or 0.0
+        prov_raw_agg[p]["cantidad"] += 1
+    provincias_completas = [
+        {"nombre": nombre, "monto": round(info["monto"], 2), "cantidad_ventas": info["cantidad"]}
+        for nombre, info in sorted(prov_raw_agg.items(), key=lambda kv: kv[1]["monto"], reverse=True)
+    ]
+
     # --- categorías ---
     cat_agg: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
     for v in ventas.values():
@@ -866,6 +878,7 @@ def analizar_facturacion_ml(path: Path) -> Optional[dict]:
         "desglose_cargos": desglose_cargos,
         "ventas_por_dia": ventas_por_dia,
         "top_provincias": top_provincias,
+        "provincias_completas": provincias_completas,
         "top_categorias": top_categorias,
         "top_productos": top_productos,
         "top_clientes_facturacion": top_clientes_facturacion,
@@ -1700,6 +1713,33 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         ),
     }
 
+    # --- SECCIÓN 3.5 — Facturación por Provincia (Reporte Facturación ML) ---
+    facturacion_provincia_disponible = reportes["facturacion_ml"] is not None
+    facturacion_provincia_filas = []
+    if facturacion_provincia_disponible:
+        _prov_agg_consol: Dict[str, dict] = defaultdict(lambda: {"monto": 0.0, "cantidad": 0})
+        for p in fact.get("provincias_completas") or []:
+            jurisdiccion = normalizar_jurisdiccion_percepcion(p.get("nombre", "")) or p.get("nombre") or "Sin identificar"
+            _prov_agg_consol[jurisdiccion]["monto"] += p.get("monto") or 0.0
+            _prov_agg_consol[jurisdiccion]["cantidad"] += p.get("cantidad_ventas") or 0
+        _total_fact_prov = sum(x["monto"] for x in _prov_agg_consol.values())
+        for nombre, info in sorted(_prov_agg_consol.items(), key=lambda kv: kv[1]["monto"], reverse=True):
+            monto = round(info["monto"], 2)
+            cantidad = info["cantidad"]
+            facturacion_provincia_filas.append({
+                "provincia": nombre,
+                "monto": monto,
+                "porcentaje": round(monto / _total_fact_prov * 100, 2) if _total_fact_prov else 0.0,
+                "cantidad_ventas": cantidad,
+                "ticket_promedio": round(monto / cantidad, 2) if cantidad else 0.0,
+            })
+    seccion_facturacion_provincia = {
+        "disponible": facturacion_provincia_disponible,
+        "filas": facturacion_provincia_filas,
+        "total_monto": round(sum(f["monto"] for f in facturacion_provincia_filas), 2),
+        "total_ventas": sum(f["cantidad_ventas"] for f in facturacion_provincia_filas),
+    }
+
     # --- SECCIÓN 4 — Flujo financiero neto ---
     ingresos_brutos = fact.get("total_ingresos") or 0.0
     facturacion_neta = fact.get("facturacion_neta") or 0.0
@@ -1866,6 +1906,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         "ventas": seccion_ventas,
         "costos_ml": seccion_costos_ml,
         "impuestos": seccion_impuestos,
+        "facturacion_provincia": seccion_facturacion_provincia,
         "flujo_financiero": seccion_flujo,
         "validaciones": validaciones,
         "panorama_impositivo": panorama,
@@ -1881,6 +1922,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     v         = resultado["ventas"]
     c         = resultado["costos_ml"]
     imp       = resultado["impuestos"]
+    fp        = resultado["facturacion_provincia"]
     flujo     = resultado["flujo_financiero"]
     validaciones = resultado["validaciones"]
     panorama  = resultado["panorama_impositivo"]
@@ -2051,6 +2093,35 @@ def _render_consolidado_html(resultado: dict) -> str:
             for r in imp["cruce_impuestos_pagos"]
         ]
         s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo"], filas)}</div>')
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+    s.append("</div>")
+    partes.append("".join(s))
+
+    # 3.5 — Facturación por Provincia
+    s = [f'<div style="{_WRAP}">', _sec("ti-map-pin", "3.5 · Facturación por Provincia")]
+    if not fp["disponible"]:
+        s.append(
+            '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
+            "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
+            "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el detalle.</div>"
+        )
+    elif fp["filas"]:
+        filas = [
+            [
+                r["provincia"], _ar_money(r["monto"]), _ar_pct_simple(r["porcentaje"]),
+                _ar_num(r["cantidad_ventas"]), _ar_money(r["ticket_promedio"]),
+            ]
+            for r in fp["filas"]
+        ]
+        filas.append([
+            "<b>TOTAL</b>", f'<b>{_ar_money(fp["total_monto"])}</b>', "<b>100,00 %</b>",
+            f'<b>{_ar_num(fp["total_ventas"])}</b>', "",
+        ])
+        s.append(
+            f'<div style="padding:0 14px">'
+            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom."], filas)}</div>'
+        )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
     s.append("</div>")
@@ -2422,6 +2493,7 @@ def _build_gastos(user_id: int) -> None:
                 data_dict = json.loads(fa.get("extracted_data") or "{}") or {}
             except Exception:
                 data_dict = {}
+            ya_procesado = cur_status == "procesado" or bool(data_dict)
 
             with ui.dialog() as dlg:
                 with ui.card().style(
@@ -2987,7 +3059,7 @@ def _build_gastos(user_id: int) -> None:
                                 cancelar_btn = ui.button("Cancelar").props("outline dense").style(
                                     "font-size:12px"
                                 ).classes("hidden")
-                                _rb = ui.button("Re-procesar", on_click=_reprocesar).style(
+                                _rb = ui.button("Re-procesar" if ya_procesado else "Procesar", on_click=_reprocesar).style(
                                     f"background:{_YELLOW};color:white;font-size:12px"
                                 ).props("dense")
                                 reproc_btn_ref[0] = _rb
