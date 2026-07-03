@@ -39,6 +39,42 @@ _YELLOW     = "#E2A93B"
 _GRAY       = "#9E9E9E"
 _RED        = "#A32D2D"
 
+FUENTES_CONSOLIDADO = {
+    "arca":     {"label": "ARCA (VEPs)",           "icon": "ti-building-bank", "color": "#185FA5", "bg": "#E8F1FA", "border": "#85B7EB"},
+    "fact":     {"label": "Facturas ML",           "icon": "ti-file-invoice",  "color": "#8B4513", "bg": "#FBF0E4", "border": "#D4A574"},
+    "perc":     {"label": "Reportes Percepciones", "icon": "ti-receipt",       "color": "#5B2B8F", "bg": "#F0E4FB", "border": "#B48FE0"},
+    "reten":    {"label": "Reportes Retenciones",  "icon": "ti-receipt-tax",   "color": "#8B0000", "bg": "#FDE4E4", "border": "#E08F8F"},
+    "repo":     {"label": "Reportes ML",           "icon": "ti-report",        "color": "#0F5F2B", "bg": "#E4FBF0", "border": "#7FCFA0"},
+    "analisis": {"label": "Análisis ML",           "icon": "ti-sparkles",      "color": "#7A5A0E", "bg": "#FBF8DC", "border": "#D4B860"},
+    "calc":     {
+        "label": "Cálculo interno", "icon": "ti-calculator",
+        "color": "var(--color-text-secondary)", "bg": "var(--color-background-secondary)",
+        "border": "var(--color-border-secondary)",
+    },
+}
+
+
+def render_fuente_badge(fuente_key: str, with_label: bool = False) -> str:
+    """Badge HTML de una fuente de datos. Por default solo ícono (el label completo
+    queda disponible como tooltip vía title) — con_label=True se usa en la leyenda."""
+    f = FUENTES_CONSOLIDADO.get(fuente_key)
+    if not f:
+        return ""
+    texto = f'<span>{f["label"]}</span>' if with_label else ""
+    return (
+        f'<span title="{f["label"]}" style="display:inline-flex;align-items:center;gap:5px;'
+        f'padding:3px 8px;border-radius:4px;font-size:11px;font-weight:500;line-height:1;'
+        f'color:{f["color"]};background:{f["bg"]};border:0.5px solid {f["border"]}">'
+        f'<i class="ti {f["icon"]}" style="font-size:12px"></i>{texto}</span>'
+    )
+
+
+def render_fuente_badges(fuentes: Optional[list], with_label: bool = False) -> str:
+    """Concatena badges para una línea alimentada por una o varias fuentes."""
+    if not fuentes:
+        return ""
+    return "".join(render_fuente_badge(fk, with_label=with_label) for fk in fuentes)
+
 _DOT = "display:inline-block;width:12px;height:12px;border-radius:9999px;flex-shrink:0;background:{}"
 
 _PROMPT_PRE_STYLE = (
@@ -1749,17 +1785,18 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     nc_ml_total = nc_ml.get("total") or 0.0
     envios_comprador = fact.get("envios_pagados_comprador") or 0.0
 
+    _fuentes_percepciones_flujo = ["fact", "perc"] if (perc_facturas and perc_reportes) else ["repo"]
     lineas_flujo = [
-        {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2)},
-        {"concepto": "Comisiones ML netas", "monto": round(-comisiones_venta, 2)},
-        {"concepto": "Costos de envío ML netos", "monto": round(-costos_envio_ml_neto, 2)},
-        {"concepto": "Cuotas", "monto": round(-cuotas, 2)},
-        {"concepto": "Otros costos ML", "monto": round(-otros_costos_ml, 2)},
-        {"concepto": "Percepciones (van a AFIP)", "monto": round(-total_percepciones_ml, 2)},
-        {"concepto": "Retenciones sufridas", "monto": round(-total_retenciones_neto, 2)},
-        {"concepto": "Notas de débito EnvíosFlex", "monto": round(-nd_flex_total, 2)},
-        {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2)},
-        {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2)},
+        {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2), "fuentes": ["repo"]},
+        {"concepto": "Comisiones ML netas", "monto": round(-comisiones_venta, 2), "fuentes": ["repo"]},
+        {"concepto": "Costos de envío ML netos", "monto": round(-costos_envio_ml_neto, 2), "fuentes": ["repo"]},
+        {"concepto": "Cuotas", "monto": round(-cuotas, 2), "fuentes": ["repo"]},
+        {"concepto": "Otros costos ML", "monto": round(-otros_costos_ml, 2), "fuentes": ["calc"]},
+        {"concepto": "Percepciones (van a AFIP)", "monto": round(-total_percepciones_ml, 2), "fuentes": _fuentes_percepciones_flujo},
+        {"concepto": "Retenciones sufridas", "monto": round(-total_retenciones_neto, 2), "fuentes": ["reten"]},
+        {"concepto": "Notas de débito EnvíosFlex", "monto": round(-nd_flex_total, 2), "fuentes": ["repo"]},
+        {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2), "fuentes": ["repo"]},
+        {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2), "fuentes": ["repo"]},
     ]
     cobrado_neto = round(sum(l["monto"] for l in lineas_flujo), 2)
     seccion_flujo = {"lineas": lineas_flujo, "cobrado_neto": cobrado_neto}
@@ -1771,12 +1808,14 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         validaciones.append({
             "check": "Facturas ML suman coherente con Facturación neta del reporte",
             "status": "warn", "detalle": "Datos incompletos para comparar.",
+            "fuentes": ["fact", "repo"],
         })
     elif abs(diff_facturado_vs_reporte) <= 1000:
         validaciones.append({
             "check": "Facturas ML suman coherente con Facturación neta del reporte",
             "status": "ok",
             "detalle": f"Facturas ML suman {_ar_money(total_facturas_ml)} — coincide con Facturación neta.",
+            "fuentes": ["fact", "repo"],
         })
     else:
         validaciones.append({
@@ -1786,12 +1825,14 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
                 f"Facturas ML ({_ar_money(total_facturas_ml)}) vs Facturación neta "
                 f"({_ar_money(total_valor_del_cargo)}) — diff {_ar_money(diff_facturado_vs_reporte)}"
             ),
+            "fuentes": ["fact", "repo"],
         })
 
     if not cruce_percepciones:
         validaciones.append({
             "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
             "status": "warn", "detalle": "Sin datos de percepciones para cruzar.",
+            "fuentes": ["fact", "perc"],
         })
     else:
         malas = [x for x in cruce_percepciones if not x["ok"]]
@@ -1804,28 +1845,33 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             validaciones.append({
                 "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
                 "status": "error", "detalle": detalle,
+                "fuentes": ["fact", "perc"],
             })
         else:
             validaciones.append({
                 "check": "Percepciones en Facturas ML coinciden con reportes de Percepciones",
                 "status": "ok", "detalle": "Todas las jurisdicciones coinciden.",
+                "fuentes": ["fact", "perc"],
             })
 
     if faltantes:
         validaciones.append({
             "check": "Todos los archivos de las secciones están procesados y aprobados",
             "status": "warn", "detalle": f"Falta procesar: {', '.join(faltantes)}.",
+            "fuentes": ["calc"],
         })
     else:
         validaciones.append({
             "check": "Todos los archivos de las secciones están procesados y aprobados",
             "status": "ok", "detalle": "Las 6 secciones tienen archivos procesados.",
+            "fuentes": ["calc"],
         })
 
     if not cruce_impuestos_pagos:
         validaciones.append({
             "check": "Pagos a ARCA cubren los impuestos declarados",
             "status": "warn", "detalle": "Sin datos suficientes para el cruce.",
+            "fuentes": ["perc", "reten", "arca"],
         })
     else:
         saldos_a_pagar = [x for x in cruce_impuestos_pagos if x["neto"] < 0]
@@ -1836,11 +1882,13 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             validaciones.append({
                 "check": "Pagos a ARCA cubren los impuestos declarados",
                 "status": "error", "detalle": detalle,
+                "fuentes": ["perc", "reten", "arca"],
             })
         else:
             validaciones.append({
                 "check": "Pagos a ARCA cubren los impuestos declarados",
                 "status": "ok", "detalle": "Los pagos a ARCA cubren los impuestos declarados.",
+                "fuentes": ["perc", "reten", "arca"],
             })
 
     if ingresos_brutos:
@@ -1849,11 +1897,13 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "check": "No hay retenciones inusuales (> 15% de la facturación)",
             "status": "warn" if pct_retenciones > 15 else "ok",
             "detalle": f"Retenciones representan {_ar_pct_simple(pct_retenciones)} de la facturación.",
+            "fuentes": ["reten"],
         })
     else:
         validaciones.append({
             "check": "No hay retenciones inusuales (> 15% de la facturación)",
             "status": "warn", "detalle": "Sin facturación para calcular el ratio.",
+            "fuentes": ["reten"],
         })
 
     cargo_venta = next(
@@ -1864,6 +1914,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         validaciones.append({
             "check": "Ratio de anulaciones aceptable (< 10%)",
             "status": "warn", "detalle": "Sin datos de cargos por venta.",
+            "fuentes": ["repo"],
         })
     else:
         prop = cargo_venta.get("proporcion_anulaciones") or 0.0
@@ -1871,6 +1922,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "check": "Ratio de anulaciones aceptable (< 10%)",
             "status": "ok" if prop < 10 else "warn",
             "detalle": f"Anulaciones: {_ar_pct_simple(prop)} de las ventas.",
+            "fuentes": ["repo"],
         })
 
     # --- SECCIÓN 6 — Panorama impositivo ---
@@ -1938,13 +1990,16 @@ def _render_consolidado_html(resultado: dict) -> str:
     def _sec(icon: str, titulo: str) -> str:
         return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span></div>'
 
-    def _row(label, value, bold: bool = False) -> str:
+    def _row(label, value, bold: bool = False, fuentes: Optional[list] = None) -> str:
         w = ";font-weight:700" if bold else ""
+        badges = render_fuente_badges(fuentes)
         return (
-            '<div style="display:flex;justify-content:space-between;padding:3px 14px;'
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 14px;'
             f'border-bottom:1px solid #f5f5f5;font-size:12px{w}">'
             f'<span style="color:#555">{label}</span>'
-            f'<span style="color:{_BLUE};font-variant-numeric:tabular-nums">{value}</span></div>'
+            f'<span style="display:flex;align-items:center;gap:6px">'
+            f'<span style="color:{_BLUE};font-variant-numeric:tabular-nums">{value}</span>'
+            f'{badges}</span></div>'
         )
 
     def _incompleto_html() -> str:
@@ -1971,7 +2026,20 @@ def _render_consolidado_html(resultado: dict) -> str:
             f"<thead><tr>{ths}</tr></thead><tbody>{body}</tbody></table>"
         )
 
-    partes = []
+    def _leyenda_fuentes_html() -> str:
+        badges = "".join(render_fuente_badge(k, with_label=True) for k in FUENTES_CONSOLIDADO)
+        return (
+            '<div style="background:var(--color-background-secondary);'
+            'border:0.5px solid var(--color-border-tertiary);border-radius:8px;'
+            'padding:12px 14px;margin-bottom:16px">'
+            '<div style="text-transform:uppercase;font-size:10px;letter-spacing:0.05em;'
+            'color:var(--color-text-tertiary);font-weight:600;margin-bottom:8px">'
+            "Íconos de fuente de datos</div>"
+            f'<div style="display:flex;flex-wrap:wrap;gap:8px">{badges}</div>'
+            "</div>"
+        )
+
+    partes = [_leyenda_fuentes_html()]
 
     if faltantes:
         partes.append(
@@ -1984,18 +2052,19 @@ def _render_consolidado_html(resultado: dict) -> str:
     s = [f'<div style="{_WRAP}">', _sec("ti-shopping-cart", "1 · Ventas")]
     if v["_incompleto"]:
         s.append(_incompleto_html())
-    s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"])))
-    s.append(_row("Cantidad de operaciones", _ar_num(v["cantidad_operaciones"])))
-    s.append(_row("Ticket promedio", _ar_money(v["ticket_promedio"])))
+    s.append(_row("Ingresos brutos", _ar_money(v["total_ingresos_brutos"]), fuentes=["repo"]))
+    s.append(_row("Cantidad de operaciones", _ar_num(v["cantidad_operaciones"]), fuentes=["repo"]))
+    s.append(_row("Ticket promedio", _ar_money(v["ticket_promedio"]), fuentes=["calc"]))
     desc = v["descuentos_aplicados"]
     s.append(_row(
         "Descuentos aplicados",
         f'{_ar_money(desc["monto"])} ({_ar_num(desc["cantidad"] or 0)} descuentos)',
+        fuentes=["repo"],
     ))
-    s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"])))
-    s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"])))
-    s.append(_row("Notas de crédito EnvíosFlex", _ar_money(v["notas_credito_flex"])))
-    s.append(_row("Notas de débito EnvíosFlex", _ar_money(v["notas_debito_flex"])))
+    s.append(_row("Envíos pagados por comprador", _ar_money(v["envios_pagados_por_comprador"]), fuentes=["repo"]))
+    s.append(_row("Notas de crédito ML", _ar_money(v["notas_credito_ml"]), fuentes=["repo"]))
+    s.append(_row("Notas de crédito EnvíosFlex", _ar_money(v["notas_credito_flex"]), fuentes=["repo"]))
+    s.append(_row("Notas de débito EnvíosFlex", _ar_money(v["notas_debito_flex"]), fuentes=["repo"]))
     s.append("</div>")
     partes.append("".join(s))
 
@@ -2003,21 +2072,23 @@ def _render_consolidado_html(resultado: dict) -> str:
     s = [f'<div style="{_WRAP}">', _sec("ti-receipt-tax", "2 · Costos de MercadoLibre")]
     if c["_incompleto"]:
         s.append(_incompleto_html())
-    s.append(_row("Comisiones de venta (neto anulaciones)", _ar_money(c["comisiones_venta"])))
-    s.append(_row("Costos de envío ML (neto)", _ar_money(c["costos_envio_ml_neto"])))
-    s.append(_row("Cuotas", _ar_money(c["cuotas"])))
-    s.append(_row("Total valor del cargo (facturación neta ML)", _ar_money(c["total_valor_del_cargo"])))
-    s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"])))
-    s.append(_row("Total Facturas ML", _ar_money(c["total_facturas_ml"])))
-    s.append(_row("Cantidad de facturas", _ar_num(c["cantidad_facturas"])))
-    s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"])))
-    s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"])))
-    s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"])))
+    s.append(_row("Comisiones de venta (neto anulaciones)", _ar_money(c["comisiones_venta"]), fuentes=["repo"]))
+    s.append(_row("Costos de envío ML (neto)", _ar_money(c["costos_envio_ml_neto"]), fuentes=["repo"]))
+    s.append(_row("Cuotas", _ar_money(c["cuotas"]), fuentes=["repo"]))
+    s.append(_row("Total valor del cargo (facturación neta ML)", _ar_money(c["total_valor_del_cargo"]), fuentes=["repo"]))
+    s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"]), fuentes=["repo"]))
+    s.append(_row("Total Facturas ML", _ar_money(c["total_facturas_ml"]), fuentes=["fact"]))
+    s.append(_row("Cantidad de facturas", _ar_num(c["cantidad_facturas"]), fuentes=["fact"]))
+    s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"]), fuentes=["fact"]))
+    s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"]), fuentes=["fact"]))
+    s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"]), fuentes=["fact"]))
     diff_color = _RED if c["diff_alerta"] else _GREEN
     s.append(
-        '<div style="display:flex;justify-content:space-between;padding:5px 14px;'
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
         f'font-size:12px;font-weight:700"><span style="color:#555">Diff. Facturado vs Reporte</span>'
-        f'<span style="color:{diff_color}">{_ar_money(c["diff_facturado_vs_reporte"])}</span></div>'
+        f'<span style="display:flex;align-items:center;gap:6px">'
+        f'<span style="color:{diff_color}">{_ar_money(c["diff_facturado_vs_reporte"])}</span>'
+        f'{render_fuente_badges(["calc"])}</span></div>'
     )
     s.append("</div>")
     partes.append("".join(s))
@@ -2048,25 +2119,27 @@ def _render_consolidado_html(resultado: dict) -> str:
                 )
             filas.append([
                 r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
-                _ar_money(r["diff"]), simbolo,
+                _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
             ])
-        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK"], filas)}</div>')
+        s.append(f'<div style="padding:0 14px">{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
     s.append(_sec("ti-percentage", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA"))
     iva = imp["iva_analisis"]
-    s.append(_row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"])))
-    s.append(_row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"])))
-    s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"])))
-    s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"])))
-    s.append(_row("IVA a Pagar Estimado", _ar_money(iva["iva_a_pagar_estimado"]), bold=True))
-    s.append(_row("IVA Pagado a ARCA", _ar_money(iva["iva_pagado_arca"])))
+    s.append(_row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"]), fuentes=["repo"]))
+    s.append(_row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"]), fuentes=["calc"]))
+    s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"]), fuentes=["fact"]))
+    s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"]), fuentes=["reten"]))
+    s.append(_row("IVA a Pagar Estimado", _ar_money(iva["iva_a_pagar_estimado"]), bold=True, fuentes=["calc"]))
+    s.append(_row("IVA Pagado a ARCA", _ar_money(iva["iva_pagado_arca"]), fuentes=["arca"]))
     _iva_diff_color = _GREEN if iva["ok"] else _RED
     s.append(
-        '<div style="display:flex;justify-content:space-between;padding:5px 14px;'
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
         f'font-size:12px;font-weight:700"><span style="color:#555">Diferencia</span>'
-        f'<span style="color:{_iva_diff_color}">{_ar_money(iva["diff"])}</span></div>'
+        f'<span style="display:flex;align-items:center;gap:6px">'
+        f'<span style="color:{_iva_diff_color}">{_ar_money(iva["diff"])}</span>'
+        f'{render_fuente_badges(["calc"])}</span></div>'
     )
     s.append(
         '<div style="padding:4px 14px 8px;font-size:10px;color:#9e9e9e;font-style:italic">'
@@ -2078,10 +2151,10 @@ def _render_consolidado_html(resultado: dict) -> str:
     if imp["retenciones_detalle"]:
         filas = [
             [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
-             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"])]
+             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
             for r in imp["retenciones_detalle"]
         ]
-        s.append(f'<div style="padding:0 14px">{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto"], filas)}</div>')
+        s.append(f'<div style="padding:0 14px">{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
@@ -2089,10 +2162,10 @@ def _render_consolidado_html(resultado: dict) -> str:
     if imp["cruce_impuestos_pagos"]:
         filas = [
             [r["concepto"], _ar_money(r["total_credito"]), _ar_money(r["pagado_arca"]),
-             _ar_money(r["neto"]), r["saldo"]]
+             _ar_money(r["neto"]), r["saldo"], render_fuente_badges(["perc", "reten", "arca"])]
             for r in imp["cruce_impuestos_pagos"]
         ]
-        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo"], filas)}</div>')
+        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas)}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
     s.append("</div>")
@@ -2110,17 +2183,17 @@ def _render_consolidado_html(resultado: dict) -> str:
         filas = [
             [
                 r["provincia"], _ar_money(r["monto"]), _ar_pct_simple(r["porcentaje"]),
-                _ar_num(r["cantidad_ventas"]), _ar_money(r["ticket_promedio"]),
+                _ar_num(r["cantidad_ventas"]), _ar_money(r["ticket_promedio"]), render_fuente_badges(["repo"]),
             ]
             for r in fp["filas"]
         ]
         filas.append([
             "<b>TOTAL</b>", f'<b>{_ar_money(fp["total_monto"])}</b>', "<b>100,00 %</b>",
-            f'<b>{_ar_num(fp["total_ventas"])}</b>', "",
+            f'<b>{_ar_num(fp["total_ventas"])}</b>', "", render_fuente_badges(["repo"]),
         ])
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom."], filas)}</div>'
+            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom.", "Fuente"], filas)}</div>'
         )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
@@ -2130,13 +2203,15 @@ def _render_consolidado_html(resultado: dict) -> str:
     # 4 — Flujo Financiero Neto
     s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto")]
     for l in flujo["lineas"]:
-        s.append(_row(l["concepto"], _ar_money(l["monto"])))
+        s.append(_row(l["concepto"], _ar_money(l["monto"]), fuentes=l.get("fuentes")))
     cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
     s.append(
-        '<div style="display:flex;justify-content:space-between;padding:6px 14px;'
+        '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 14px;'
         f'font-size:13px;font-weight:700;border-top:2px solid {_HDR_BORDER};margin-top:4px">'
         f'<span style="color:#333">Cobrado neto de ML</span>'
-        f'<span style="color:{cobrado_color}">{_ar_money(flujo["cobrado_neto"])}</span></div>'
+        f'<span style="display:flex;align-items:center;gap:6px">'
+        f'<span style="color:{cobrado_color}">{_ar_money(flujo["cobrado_neto"])}</span>'
+        f'{render_fuente_badges(["calc"])}</span></div>'
     )
     s.append("</div>")
     partes.append("".join(s))
@@ -2149,7 +2224,8 @@ def _render_consolidado_html(resultado: dict) -> str:
         s.append(
             '<div style="display:flex;gap:8px;padding:5px 14px;font-size:12px;align-items:flex-start">'
             f'<span style="color:{color};font-weight:700">{icono}</span>'
-            f'<span><b>{chk["check"]}</b> — {chk["detalle"]}</span></div>'
+            f'<span style="flex:1"><b>{chk["check"]}</b> — {chk["detalle"]}</span>'
+            f'<span style="display:flex;gap:3px">{render_fuente_badges(chk.get("fuentes"))}</span></div>'
         )
     s.append("</div>")
     partes.append("".join(s))
@@ -2158,12 +2234,13 @@ def _render_consolidado_html(resultado: dict) -> str:
     s = ['<div>', _sec("ti-scale", "6 · Panorama Impositivo")]
     filas = [
         [p["impuesto"], _ar_money(p["total_percepciones"]), _ar_money(p["total_retenciones"]),
-         _ar_money(p["total_pagado_arca"]), _ar_money(p["saldo"]), p["recomendacion"]]
+         _ar_money(p["total_pagado_arca"]), _ar_money(p["saldo"]), p["recomendacion"],
+         render_fuente_badges(["perc", "reten", "arca"])]
         for p in panorama
     ]
     s.append(
         f'<div style="padding:6px 14px">'
-        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación"], filas)}'
+        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación", "Fuente"], filas)}'
         f'</div>'
     )
     s.append("</div>")
