@@ -1239,9 +1239,9 @@ def ml_get_orders(
     page_size = 50
     date_params: Dict[str, str] = {}
     if date_from:
-        date_params["order_created_from"] = date_from
+        date_params["order.date_created.from"] = date_from
     if date_to:
-        date_params["order_created_to"] = date_to
+        date_params["order.date_created.to"] = date_to
 
     all_flat: List[Dict[str, Any]] = []
     seen_ids: set = set()
