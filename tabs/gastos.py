@@ -1569,29 +1569,49 @@ def _contar_envios_por_tipo(user_id: int, periodo: str) -> tuple:
     return correo, flex
 
 
-def _costo_mercaderia_vendida(user_id: int, periodo: str) -> tuple:
-    """Suma costo_pesos (costo de mercadería vendida, persistido por 'Completar datos'/backfill
+def _costo_mercaderia_vendida(user_id: int, periodo: str) -> dict:
+    """Analiza costo_pesos (costo de mercadería vendida, persistido por 'Completar datos'/backfill
     de ventas.py a partir del deploy 3.26.07.03.13) en ventas_datos para el mes calendario del
-    período. Devuelve (suma o None si no hay ninguna venta con costo persistido en el período,
-    fecha de la primera venta con costo persistido en toda la historia — para el aviso de
-    disponibilidad cuando el período consultado es anterior a esa fecha)."""
+    período. Devuelve dict con:
+      - suma: costo total del período sumando solo las ventas con costo_pesos persistido
+        (None si ninguna venta del período lo tiene)
+      - total_ventas / con_costo: cantidad de ventas del período y cuántas de ellas tienen
+        costo_pesos persistido, para distinguir cálculo completo/parcial/sin datos
+      - fecha_inicio_costo: fecha de la primera venta con costo persistido en TODA la historia
+        (None si nunca se persistió aún) — explica por qué falta el dato en períodos viejos
+      - caso: "completo" | "parcial" | "sin_datos"
+    """
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT SUM(costo_pesos) FROM ventas_datos "
-            "WHERE user_id=? AND order_date LIKE ? AND costo_pesos IS NOT NULL",
+            "SELECT COUNT(*), COUNT(costo_pesos), SUM(costo_pesos) FROM ventas_datos "
+            "WHERE user_id=? AND order_date LIKE ?",
             (user_id, f"{periodo}%"),
         )
-        suma = cur.fetchone()[0]
+        total_ventas, con_costo, suma = cur.fetchone()
         cur.execute(
             "SELECT MIN(order_date) FROM ventas_datos WHERE user_id=? AND costo_pesos IS NOT NULL",
             (user_id,),
         )
-        fecha_primera = cur.fetchone()[0]
+        fecha_inicio_costo = cur.fetchone()[0]
     finally:
         conn.close()
-    return (round(suma, 2) if suma is not None else None), fecha_primera
+    total_ventas = total_ventas or 0
+    con_costo = con_costo or 0
+    if con_costo == 0:
+        caso = "sin_datos"
+    elif con_costo < total_ventas:
+        caso = "parcial"
+    else:
+        caso = "completo"
+    return {
+        "suma": round(suma, 2) if suma is not None else None,
+        "total_ventas": total_ventas,
+        "con_costo": con_costo,
+        "fecha_inicio_costo": fecha_inicio_costo,
+        "caso": caso,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -2425,24 +2445,48 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     envios_comprador = fact.get("envios_pagados_comprador") or 0.0
 
     _fuentes_percepciones_flujo = ["fact", "perc"] if (perc_facturas and perc_reportes) else ["repo"]
-    costo_mercaderia, _fecha_primera_costo = _costo_mercaderia_vendida(user_id, periodo)
-    if costo_mercaderia is not None:
+    _costo_info = _costo_mercaderia_vendida(user_id, periodo)
+    _fecha_inicio_costo_fmt = None
+    if _costo_info["fecha_inicio_costo"]:
+        try:
+            _fecha_inicio_costo_fmt = datetime.strptime(
+                _costo_info["fecha_inicio_costo"][:10], "%Y-%m-%d"
+            ).strftime("%d/%m/%Y")
+        except ValueError:
+            _fecha_inicio_costo_fmt = _costo_info["fecha_inicio_costo"]
+
+    if _costo_info["caso"] == "completo":
         _linea_costo_mercaderia = {
             "concepto": "Costo de mercadería vendida",
-            "monto": round(-costo_mercaderia, 2),
+            "monto": round(-_costo_info["suma"], 2),
             "fuentes": ["calc"],
+            "incluir_en_total": True,
         }
-    else:
+    elif _costo_info["caso"] == "parcial":
+        _linea_costo_mercaderia = {
+            "concepto": "Costo de mercadería vendida",
+            "monto": round(-_costo_info["suma"], 2),
+            "fuentes": ["calc"],
+            "incluir_en_total": False,
+            "nota": (
+                f"Solo {_costo_info['con_costo']} de {_costo_info['total_ventas']} ventas del "
+                f"período tienen costo persistido. Cálculo parcial."
+            ),
+        }
+    else:  # sin_datos
         _nota_costo = (
-            f"Datos disponibles a partir de {_fecha_primera_costo}"
-            if _fecha_primera_costo else
-            "Sin ventas con costo persistido todavía"
+            f'El costo de mercadería se empezó a registrar automáticamente el '
+            f'{_fecha_inicio_costo_fmt}. Los períodos anteriores no tienen este dato.'
+            if _fecha_inicio_costo_fmt else
+            'El costo de mercadería se empezará a registrar automáticamente cuando ejecutes '
+            '"Completar datos" en la tab Ventas.'
         )
         _linea_costo_mercaderia = {
             "concepto": "Costo de mercadería vendida",
             "monto": None,
             "nota": _nota_costo,
             "fuentes": ["calc"],
+            "incluir_en_total": False,
         }
     lineas_flujo = [
         {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2), "fuentes": ["repo"]},
@@ -2457,8 +2501,14 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2), "fuentes": ["repo"]},
         {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2), "fuentes": ["repo"]},
     ]
-    cobrado_neto = round(sum(l["monto"] for l in lineas_flujo if l["monto"] is not None), 2)
-    seccion_flujo = {"lineas": lineas_flujo, "cobrado_neto": cobrado_neto}
+    cobrado_neto = round(sum(
+        l["monto"] for l in lineas_flujo if l["monto"] is not None and l.get("incluir_en_total", True)
+    ), 2)
+    seccion_flujo = {
+        "lineas": lineas_flujo,
+        "cobrado_neto": cobrado_neto,
+        "costo_incluido": _costo_info["caso"] == "completo",
+    }
 
     # --- SECCIÓN 5 — Validaciones y alertas ---
     validaciones = []
@@ -2686,7 +2736,7 @@ def _render_consolidado_html(resultado: dict) -> str:
             "Datos incompletos</div>"
         )
 
-    def _tabla(headers: list, filas: list, aligns: Optional[list] = None, header_align: str = "left") -> str:
+    def _tabla(headers: list, filas: list, aligns: Optional[list] = None, header_align: str = "center") -> str:
         aligns = aligns or ["left"] * len(headers)
         ths = "".join(
             f'<th style="border:1px solid #d0d0d0;padding:3px 8px;background:#eef3f8;'
@@ -2756,11 +2806,8 @@ def _render_consolidado_html(resultado: dict) -> str:
         f'{_ar_num(c["envios_ml_cantidad"])} envíos · promedio {_ar_money(c["envios_ml_promedio"])}</span>'
         if c["envios_ml_cantidad"] else ""
     )
-    s.append(_row(
-        "Costos de envío ML (neto)",
-        _ar_money(c["costos_envio_ml_neto"]) + _envios_ml_sub,
-        fuentes=["repo"],
-    ))
+    _valor_envio_ml = f'<div style="text-align:right">{_ar_money(c["costos_envio_ml_neto"])}{_envios_ml_sub}</div>'
+    s.append(_row("Costos de envío ML (neto)", _valor_envio_ml, fuentes=["repo"]))
     s.append(_row("Cuotas", _ar_money(c["cuotas"]), fuentes=["repo"]))
     s.append(_row("Total comisiones ML", _ar_money(c["total_valor_del_cargo"]), fuentes=["repo"]))
     s.append(_row("Facturación bruta", _ar_money(c["facturacion_bruta"]), fuentes=["repo"]))
@@ -2769,7 +2816,6 @@ def _render_consolidado_html(resultado: dict) -> str:
         'Excluye Notas de Crédito y Débito</span>',
         _ar_money(c["total_facturas_ml"]), fuentes=["fact"],
     ))
-    s.append(_row("Cantidad de facturas", _ar_num(c["cantidad_facturas"]), fuentes=["fact"]))
     s.append(_row("Neto gravado total", _ar_money(c["neto_gravado_total"]), fuentes=["fact"]))
     s.append(_row("IVA 21% total", _ar_money(c["iva_21_total"]), fuentes=["fact"]))
     s.append(_row("Percepciones (Facturas ML) total", _ar_money(c["percepciones_ml_total"]), fuentes=["fact"]))
@@ -2829,7 +2875,6 @@ def _render_consolidado_html(resultado: dict) -> str:
     s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"]), fuentes=["fact"]))
     s.append(_row("IVA Crédito Fiscal (Pagos ARCA)", _ar_money(iva["iva_credito_fiscal_arca"]), fuentes=["arca"]))
     s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"]), fuentes=["reten"]))
-    s.append(_row("IVA a Pagar Estimado", _ar_money(iva["iva_a_pagar_estimado"]), bold=True, fuentes=["calc"]))
 
     s.append(
         '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
@@ -2843,34 +2888,13 @@ def _render_consolidado_html(resultado: dict) -> str:
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
 
-    s.append(
-        '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
-        'letter-spacing:0.04em;color:#9e9e9e;border-top:1px dashed #ddd;margin-top:4px">'
-        "Comparación</div>"
-    )
-    s.append(_row("IVA a Pagar Estimado (10,5%)", _ar_money(iva["iva_a_pagar_estimado"]), fuentes=["calc"]))
-    s.append(_row("IVA a Pagar según ARCA", _ar_money(iva["iva_a_pagar_arca"]), fuentes=["arca"]))
-    _iva_diff_color = _GREEN if iva["ok"] else _RED
-    s.append(
-        '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
-        f'font-size:12px;font-weight:700"><span style="color:#555">Diferencia</span>'
-        f'<span style="display:flex;align-items:center;gap:6px">'
-        f'<span style="color:{_iva_diff_color}">{_ar_money(iva["diff"])}</span>'
-        f'{render_fuente_badges(["calc"])}</span></div>'
-    )
-    s.append(
-        '<div style="padding:4px 14px 8px;font-size:10px;color:#9e9e9e;font-style:italic">'
-        "El IVA débito fiscal estimado se calcula al 10,5% asumiendo que todas las ventas están gravadas a esa "
-        "alícuota. El IVA a Pagar según ARCA sale directamente del VEP (Débito Fiscal del período − Crédito "
-        "Fiscal del período), sin estimaciones.</div>"
-    )
-
     s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
     if imp["retenciones_detalle"]:
+        _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
         filas = [
             [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
              _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
-            for r in imp["retenciones_detalle"]
+            for r in _retenciones_ordenadas
         ]
         s.append(
             f'<div style="padding:0 14px">'
@@ -2887,7 +2911,7 @@ def _render_consolidado_html(resultado: dict) -> str:
              _ar_money(r["neto"]), r["saldo"], render_fuente_badges(["perc", "reten", "arca"])]
             for r in imp["cruce_impuestos_pagos"]
         ]
-        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas)}</div>')
+        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"])}</div>')
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
     s.append("</div>")
@@ -2924,23 +2948,29 @@ def _render_consolidado_html(resultado: dict) -> str:
 
     # 4 — Flujo Financiero Neto
     s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto", "mixto")]
+    _NOTA_STYLE = (
+        "font-size:10px;color:var(--color-text-tertiary);font-style:italic;"
+        "margin-top:2px;line-height:1.4;display:inline-block"
+    )
     for l in flujo["lineas"]:
-        if l["monto"] is None:
-            valor = (
-                'N/D<br><span style="font-size:9px;color:#9e9e9e;font-weight:400">'
-                f'{l.get("nota", "")}</span>'
-            )
-        else:
-            valor = _ar_money(l["monto"])
+        _nota_html = f'<br><span style="{_NOTA_STYLE}">{l["nota"]}</span>' if l.get("nota") else ""
+        valor = ("N/D" if l["monto"] is None else _ar_money(l["monto"])) + _nota_html
         s.append(_row(l["concepto"], valor, fuentes=l.get("fuentes")))
     cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
+    _cobrado_nota = (
+        f'<div style="{_NOTA_STYLE};display:block;text-align:right">'
+        "* No incluye costo de mercadería (dato N/D o parcial)</div>"
+        if not flujo["costo_incluido"] else ""
+    )
     s.append(
-        '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 14px;'
-        f'font-size:13px;font-weight:700;border-top:2px solid {_HDR_BORDER};margin-top:4px">'
+        f'<div style="padding:6px 14px;border-top:2px solid {_HDR_BORDER};margin-top:4px">'
+        '<div style="display:flex;justify-content:space-between;align-items:center;'
+        f'font-size:13px;font-weight:700">'
         f'<span style="color:#333">Cobrado neto de ML</span>'
         f'<span style="display:flex;align-items:center;gap:6px">'
         f'<span style="color:{cobrado_color}">{_ar_money(flujo["cobrado_neto"])}</span>'
         f'{render_fuente_badges(["calc"])}</span></div>'
+        f'{_cobrado_nota}</div>'
     )
     s.append("</div>")
     partes.append("".join(s))
