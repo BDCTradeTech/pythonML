@@ -2554,13 +2554,13 @@ def _render_consolidado_html(resultado: dict) -> str:
     def _leyenda_fuentes_html() -> str:
         badges = "".join(render_fuente_badge(k, with_label=True) for k in FUENTES_CONSOLIDADO)
         return (
-            '<div style="position:sticky;top:0;z-index:10;'
-            "background:var(--color-background-primary);"
-            'border-bottom:0.5px solid var(--color-border-tertiary);'
+            '<div style="position:sticky;top:0;z-index:100;'
+            "background:#FFFFFF !important;background-color:#FFFFFF !important;"
+            'border-bottom:1px solid #E5E7EB;'
             'padding:12px 14px;margin:-1px 0 12px 0;'
-            'box-shadow:0 1px 4px rgba(0,0,0,0.03)">'
+            'box-shadow:0 2px 6px rgba(0,0,0,0.06)">'
             '<div style="text-transform:uppercase;font-size:10px;letter-spacing:0.05em;'
-            'color:var(--color-text-tertiary);font-weight:600;margin-bottom:8px">'
+            f'color:{_GRAY};font-weight:600;margin-bottom:8px">'
             "Íconos de fuente de datos</div>"
             f'<div style="display:flex;flex-wrap:wrap;gap:8px">{badges}</div>'
             "</div>"
