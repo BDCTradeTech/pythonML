@@ -10,6 +10,7 @@ import logging
 import math
 import os
 import tempfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from db import (
     get_sku_catalogos, add_sku_catalogo, delete_sku_catalogo,
     get_catalogo_competidores, upsert_catalogo_competidores,
     get_app_config,
+    get_cached, get_cached_stale_ok, set_cached,
 )
 from ml_api import (
     get_ml_access_token,
@@ -38,6 +40,7 @@ from ml_api import (
     ml_get_catalog_items,
     ml_get_product_detail,
     ml_get_users_multiget,
+    ml_get_active_promo_prices_bulk,
 )
 from tabs.catalogos import _search_catalogs_sync, _sync_one_catalog, _item_url, _fmt_delivery
 from tabs.cuotas import _cuotas_key
@@ -52,6 +55,80 @@ def _require_login() -> Optional[Dict[str, Any]]:
     if not user:
         ui.notify("Debes iniciar sesión para continuar", color="negative")
     return user
+
+
+# ---------------------------------------------------------------------------
+# Cache stale-while-revalidate para el enriquecimiento de la tabla (price_to_win/
+# quality/promo) — mismo patrón que ml_get_my_items en ml_api.py: fresh se sirve
+# directo, stale se sirve YA y dispara un único refresh en background, y solo si
+# no hay ni fresh ni stale se hace la llamada bloqueante. [PERF-PRODUCTOS]
+# ---------------------------------------------------------------------------
+
+_FRESH_MIN = 15
+_STALE_MIN = 60
+
+
+def _cached_or_refresh(cache_key: str, fetch_fn):
+    """Cache de un solo valor global (ej. bulk de promos de todo el vendedor).
+    fetch_fn: callable sin argumentos que hace el trabajo real y devuelve el valor a cachear."""
+    cached = get_cached(cache_key, max_age_minutes=_FRESH_MIN)
+    if cached is not None:
+        return cached
+    stale = get_cached_stale_ok(cache_key, max_age_minutes=_STALE_MIN)
+    if stale is not None:
+        def _refresh_bg() -> None:
+            try:
+                set_cached(cache_key, fetch_fn())
+            except Exception as _e_bg:
+                logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error key={cache_key}: {_e_bg}")
+        threading.Thread(target=_refresh_bg, daemon=True, name="precios_cache_bg_refresh").start()
+        return stale
+    valor = fetch_fn()
+    set_cached(cache_key, valor)
+    return valor
+
+
+def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
+    """Cache individual por id (key = f"{key_prefix}_{id}") para resultados por-item
+    (price_to_win, quality). fetch_fn(ids_a_buscar) hace la llamada real (bulk/paralela) y
+    devuelve dict {id: valor}. Un solo thread de refresh en background por llamada (no uno por
+    id) para no saturar la API cuando hay muchos ids stale a la vez."""
+    out: Dict[str, Any] = {}
+    faltantes_fresh: List[str] = []
+    for iid in ids:
+        cached = get_cached(f"{key_prefix}_{iid}", max_age_minutes=_FRESH_MIN)
+        if cached is not None:
+            out[iid] = cached
+        else:
+            faltantes_fresh.append(iid)
+
+    stale_ids: List[str] = []
+    miss_ids: List[str] = []
+    for iid in faltantes_fresh:
+        stale = get_cached_stale_ok(f"{key_prefix}_{iid}", max_age_minutes=_STALE_MIN)
+        if stale is not None:
+            out[iid] = stale
+            stale_ids.append(iid)
+        else:
+            miss_ids.append(iid)
+
+    if stale_ids:
+        def _refresh_bg() -> None:
+            try:
+                frescos = fetch_fn(stale_ids) or {}
+                for iid, val in frescos.items():
+                    set_cached(f"{key_prefix}_{iid}", val)
+            except Exception as _e_bg:
+                logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error prefix={key_prefix}: {_e_bg}")
+        threading.Thread(target=_refresh_bg, daemon=True, name=f"precios_bg_{key_prefix}").start()
+
+    if miss_ids:
+        frescos_bloqueante = fetch_fn(miss_ids) or {}
+        for iid, val in frescos_bloqueante.items():
+            out[iid] = val
+            set_cached(f"{key_prefix}_{iid}", val)
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -880,7 +957,7 @@ def _mostrar_tabla_precios(
                             res[iid] = None
                 return res
             _t_api_ptw = time.perf_counter()
-            _cat_pos_map = _fetch_catalog_pos(_cat_ids)
+            _cat_pos_map = _cached_or_refresh_bulk(f"enriq_price_to_win_{_uid}", _cat_ids, _fetch_catalog_pos)
             logging.warning(
                 f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
                 f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
@@ -956,7 +1033,7 @@ def _mostrar_tabla_precios(
                         except Exception:
                             res[iid] = {}
                 return res
-            _quality_map = _fetch_quality(_quality_ids)
+            _quality_map = _cached_or_refresh_bulk(f"enriq_quality_{_uid}", _quality_ids, _fetch_quality)
             for r in items_subset:
                 _qid = str(r.get("id") or "")
                 if _qid in _quality_map:
@@ -972,32 +1049,60 @@ def _mostrar_tabla_precios(
         _t_promo = time.perf_counter()
         _sp_item_ids = [str(r["id"]) for r in items_subset if r.get("id")]
         if _sp_item_ids and access_token:
+            def _precio_con_descuento(sp: Optional[Dict[str, Any]]) -> Optional[float]:
+                if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
+                    try:
+                        amt = float(sp["amount"])
+                        if amt < float(sp["regular_amount"]) - 0.01:
+                            return amt
+                    except (TypeError, ValueError):
+                        pass
+                return None
+
             def _fetch_has_promo(ids):
-                def _one(cid):
-                    sp = ml_get_item_sale_price_full(access_token, cid)
-                    if sp and sp.get("amount") is not None and sp.get("regular_amount") is not None:
-                        try:
-                            amt = float(sp["amount"])
-                            if amt < float(sp["regular_amount"]) - 0.01:
-                                return amt
-                        except (TypeError, ValueError):
-                            pass
-                    return None
                 _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
+                _all_cids = list({cid for _, cid in _pairs})
+
+                _t_api_promo_bulk = time.perf_counter()
+                _promo_bulk = (
+                    _cached_or_refresh(
+                        f"enriq_promo_{_uid}",
+                        lambda: ml_get_active_promo_prices_bulk(access_token, seller_id_ref),
+                    ) if seller_id_ref else None
+                )
+                logging.warning(
+                    f"[PERF-PRODUCTOS] fase='api_promo_bulk' user_id={_perf_uid} "
+                    f"tiempo={time.perf_counter() - _t_api_promo_bulk:.3f}s "
+                    f"items={len(_promo_bulk) if _promo_bulk is not None else 0}"
+                )
+
+                # _promo_bulk None = la llamada bulk falló (sin seller_id, red, status!=200) —
+                # no se puede distinguir de "no hay promos activas", así que se usa el fallback
+                # individual como red de seguridad para no perder el dato silenciosamente.
+                sp_lookup: Dict[str, Any] = dict(_promo_bulk) if _promo_bulk is not None else {}
+                if _promo_bulk is None and _all_cids:
+                    _t_api_promo_fallback = time.perf_counter()
+                    with ThreadPoolExecutor(max_workers=min(16, max(1, len(_all_cids)))) as ex:
+                        futures = {ex.submit(ml_get_item_sale_price_full, access_token, cid): cid for cid in _all_cids}
+                        for fut in as_completed(futures):
+                            cid = futures[fut]
+                            try:
+                                sp_lookup[cid] = fut.result()
+                            except Exception:
+                                pass
+                    logging.warning(
+                        f"[PERF-PRODUCTOS] fase='api_promo_fallback_individual' user_id={_perf_uid} "
+                        f"tiempo={time.perf_counter() - _t_api_promo_fallback:.3f}s items={len(_all_cids)}"
+                    )
+
                 res: Dict[str, Optional[float]] = {}
-                with ThreadPoolExecutor(max_workers=min(16, max(1, len(_pairs)))) as ex:
-                    futures = {ex.submit(_one, cid): (rid, cid) for rid, cid in _pairs}
-                    for fut in as_completed(futures):
-                        rid, _ = futures[fut]
-                        try:
-                            price_p = fut.result()
-                        except Exception:
-                            price_p = None
-                        if price_p is not None:
-                            if rid not in res or res[rid] is None:
-                                res[rid] = price_p
-                        elif rid not in res:
-                            res[rid] = None
+                for rid, cid in _pairs:
+                    price_p = _precio_con_descuento(sp_lookup.get(cid))
+                    if price_p is not None:
+                        if rid not in res or res[rid] is None:
+                            res[rid] = price_p
+                    elif rid not in res:
+                        res[rid] = None
                 return res
             _t_api_promo = time.perf_counter()
             _promo_map = _fetch_has_promo(_sp_item_ids)

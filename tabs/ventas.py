@@ -5,7 +5,6 @@ Pestaña Ventas: tabla de ventas desde el 1 del mes actual hasta hoy.
 from __future__ import annotations
 
 import asyncio
-import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
 from datetime import date as _date, datetime, timedelta
@@ -17,6 +16,7 @@ from db import get_connection, get_cotizador_param
 from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
+    get_ml_session,
     ml_get_item_sale_price_full,
     ml_get_items_multiget_with_attributes,
     ml_get_orders,
@@ -410,22 +410,22 @@ def build_tab_ventas(container) -> None:
 
             async def _fetch_real() -> None:
                 def _get_pay(tok, pid):
-                    r = requests.get(f"https://api.mercadopago.com/v1/payments/{pid}",
+                    r = get_ml_session().get(f"https://api.mercadopago.com/v1/payments/{pid}",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
                 def _get_item(tok, iid):
-                    r = requests.get(f"https://api.mercadolibre.com/items/{iid}?attributes=thumbnail,pictures",
+                    r = get_ml_session().get(f"https://api.mercadolibre.com/items/{iid}?attributes=thumbnail,pictures",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
                 def _get_ship(tok, sid):
-                    r = requests.get(f"https://api.mercadolibre.com/shipments/{sid}",
+                    r = get_ml_session().get(f"https://api.mercadolibre.com/shipments/{sid}",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
                 def _get_ship_costs(tok, sid):
-                    r = requests.get(f"https://api.mercadolibre.com/shipments/{sid}/costs",
+                    r = get_ml_session().get(f"https://api.mercadolibre.com/shipments/{sid}/costs",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
                     return r.json() if r.status_code == 200 else {}
 
@@ -1371,7 +1371,7 @@ def build_tab_ventas(container) -> None:
 
             def _fetch_one(pid: str) -> Dict:
                 try:
-                    r = requests.get(
+                    r = get_ml_session().get(
                         f"https://api.mercadopago.com/v1/payments/{pid}",
                         headers={"Authorization": f"Bearer {access_token}"},
                         timeout=15,
@@ -1384,7 +1384,7 @@ def build_tab_ventas(container) -> None:
                 if not sid:
                     return {}
                 try:
-                    r = requests.get(
+                    r = get_ml_session().get(
                         f"https://api.mercadolibre.com/shipments/{sid}",
                         headers={"Authorization": f"Bearer {access_token}"},
                         timeout=15,
@@ -1397,7 +1397,7 @@ def build_tab_ventas(container) -> None:
                 if not sid:
                     return {}
                 try:
-                    r = requests.get(
+                    r = get_ml_session().get(
                         f"https://api.mercadolibre.com/shipments/{sid}/costs",
                         headers={"Authorization": f"Bearer {access_token}"},
                         timeout=15,

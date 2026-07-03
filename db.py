@@ -2216,18 +2216,26 @@ def set_cached(key: str, value: Any) -> None:
     set_app_config(key, _json.dumps(value))
 
 
-def get_cached_stale_ok(key: str) -> Optional[Any]:
-    """Como get_cached pero sin chequear TTL — devuelve el valor cacheado
-    si existe el registro, sin importar su antigüedad. Usado para
-    stale-while-revalidate: servir datos viejos mientras se refresca en bg."""
+def get_cached_stale_ok(key: str, max_age_minutes: Optional[int] = None) -> Optional[Any]:
+    """Como get_cached pero sin chequear el TTL fresh — devuelve el valor cacheado si existe el
+    registro. Usado para stale-while-revalidate: servir datos viejos mientras se refresca en bg.
+    max_age_minutes=None (default, usado por ml_get_my_items): sin techo, devuelve el valor sin
+    importar su antigüedad. Si se pasa un valor, actúa como techo de "stale" — más viejo que eso
+    ya no se considera servible y devuelve None (para forzar una llamada bloqueante en el
+    llamador en vez de servir un dato demasiado viejo)."""
     import json as _json
     conn = get_connection()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT value FROM app_config WHERE key = ?", (key,))
+        cur.execute("SELECT value, updated_at FROM app_config WHERE key = ?", (key,))
         row = cur.fetchone()
         if not row or not row["value"]:
             return None
+        if max_age_minutes is not None and row["updated_at"]:
+            from datetime import datetime as _dt
+            age = (_dt.utcnow() - _dt.fromisoformat(row["updated_at"])).total_seconds() / 60
+            if age > max_age_minutes:
+                return None
         return _json.loads(row["value"])
     except Exception:
         return None

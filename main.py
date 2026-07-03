@@ -53,6 +53,7 @@ from nicegui import app, background_tasks, context, run, ui
 # --- Compatibilidad Fase 1: funciones ML movidas a ml_api.py ---
 from ml_api import (
     get_ml_access_token,
+    get_ml_session,
     _parse_ml_item_body, _cuotas_desde_item, _body_to_precios_item,
     _tipo_publicacion_desde_item, _extraer_color_desde_texto,
     ml_get_my_items, ml_update_item_price, ml_get_one_item_full,
@@ -146,7 +147,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.03.15"
+VERSION = "3.26.07.03.16"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -978,7 +979,7 @@ def index(request: Request) -> None:  # type: ignore[override]
             return
         redirect_uri = (redirect_uri or "").strip() or "http://localhost:8083/ml/callback"
         try:
-            resp = requests.post(
+            resp = get_ml_session().post(
                 "https://api.mercadolibre.com/oauth/token",
                 data={
                     "grant_type": "authorization_code",
@@ -1044,7 +1045,7 @@ def index(request: Request) -> None:  # type: ignore[override]
         _enable_tabs_for_user(user["id"], TABS_ML)
         # Guardar nickname de ML (para activity_log)
         try:
-            me_r = requests.get(
+            me_r = get_ml_session().get(
                 "https://api.mercadolibre.com/users/me",
                 headers={"Authorization": f"Bearer {access_token}"},
                 timeout=5,

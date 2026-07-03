@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from db import get_connection, get_ml_app_credentials
 
@@ -22,6 +24,31 @@ from db import get_connection, get_ml_app_credentials
 # ==========================
 # INTEGRACIÓN MERCADOLIBRE
 # ==========================
+
+_SESSION: Optional[requests.Session] = None
+_SESSION_LOCK = threading.Lock()
+
+
+def get_ml_session() -> requests.Session:
+    """Session HTTP compartida para todas las llamadas a la API de ML/MP: reutiliza el pool de
+    conexiones TCP/TLS en vez de abrir una conexión nueva por request (relevante en los loops de
+    ThreadPoolExecutor de tabs/precios.py y tabs/ventas.py, ver diagnóstico [PERF-PRODUCTOS]).
+    Retry automático para 429/5xx (solo en métodos idempotentes: GET/HEAD/PUT/DELETE/OPTIONS —
+    urllib3 no reintenta POST por default, evitando reenvíos duplicados de operaciones no
+    idempotentes como /oauth/token o /answers)."""
+    global _SESSION
+    if _SESSION is None:
+        with _SESSION_LOCK:
+            if _SESSION is None:
+                s = requests.Session()
+                retry = Retry(
+                    total=3, backoff_factor=0.5,
+                    status_forcelist=[429, 500, 502, 503, 504],
+                )
+                adapter = HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=retry)
+                s.mount("https://", adapter)
+                _SESSION = s
+    return _SESSION
 
 
 def _ml_refresh_token(user_id: int, refresh_token: str) -> Optional[Dict[str, Any]]:
@@ -36,7 +63,7 @@ def _ml_refresh_token(user_id: int, refresh_token: str) -> Optional[Dict[str, An
     if not client_id or not client_secret or not refresh_token:
         return None
     try:
-        resp = requests.post(
+        resp = get_ml_session().post(
             "https://api.mercadolibre.com/oauth/token",
             data={
                 "grant_type": "refresh_token",
@@ -193,7 +220,7 @@ def ml_get_my_items(
 
     # 1. Obtener el user_id de ML del token (necesario para cache key user-scoped)
     _t0 = time.perf_counter()
-    me = requests.get(f"{base}/users/me", headers=headers, timeout=10)
+    me = get_ml_session().get(f"{base}/users/me", headers=headers, timeout=10)
     me.raise_for_status()
     ml_user_id = me.json().get("id")
     logging.warning(
@@ -228,7 +255,7 @@ def ml_get_my_items(
             offset = 0
             limit = 50
             while offset <= MAX_OFFSET:
-                search = requests.get(
+                search = get_ml_session().get(
                     f"{base}/users/{ml_user_id}/items/search",
                     headers=headers,
                     params={"limit": limit, "offset": offset, **extra_params},
@@ -267,7 +294,7 @@ def ml_get_my_items(
         for i in range(0, len(item_ids), 20):
             chunk = item_ids[i : i + 20]
             ids_param = ",".join(chunk)
-            items_resp = requests.get(
+            items_resp = get_ml_session().get(
                 f"{base}/items",
                 params={"ids": ids_param},
                 headers=headers,
@@ -380,7 +407,7 @@ def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    resp = requests.put(
+    resp = get_ml_session().put(
         f"{base}/items/{item_id}",
         headers=headers,
         json={"price": int(round(price))},
@@ -395,13 +422,13 @@ def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:
     base = "https://api.mercadolibre.com"
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
-    me = requests.get(f"{base}/users/me", headers=headers, timeout=10)
+    me = get_ml_session().get(f"{base}/users/me", headers=headers, timeout=10)
     me.raise_for_status()
     ml_user_id = me.json().get("id")
     if not ml_user_id:
         return None
 
-    search = requests.get(
+    search = get_ml_session().get(
         f"{base}/users/{ml_user_id}/items/search",
         headers=headers,
         params={"limit": 1, "offset": 0, "status": "active"},
@@ -413,7 +440,7 @@ def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:
         return None
 
     item_id = item_ids[0]
-    item_resp = requests.get(
+    item_resp = get_ml_session().get(
         f"{base}/items/{item_id}",
         headers=headers,
         timeout=15,
@@ -428,7 +455,7 @@ def ml_get_item_sale_price(access_token: Optional[str], item_id: str) -> Optiona
     if not access_token or not str(item_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/sale_price",
             params={"context": "channel_marketplace"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -454,7 +481,7 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
     if not access_token or not str(item_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/sale_price",
             params={"context": "channel_marketplace"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -489,7 +516,7 @@ def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> 
     if not access_token or not str(item_id).strip():
         return []
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/seller-promotions/items/{item_id}",
             params={"app_version": "v2"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -517,7 +544,7 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     base = "https://api.mercadolibre.com"
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"{base}/seller-promotions/users/{seller_id}",
             params={"app_version": "v2"}, headers=headers, timeout=15,
         )
@@ -539,19 +566,25 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
         ptype = (promo.get("type") or "").upper()
         if not pid or not ptype:
             continue
-        total_items = 9999
-        for offset in range(0, total_items, 50):
+        # BUGFIX [PERF-PRODUCTOS]: /seller-promotions/promotions/{id}/items pagina con el cursor
+        # search_after (paging.searchAfter en la respuesta) — el parámetro offset NO tiene efecto
+        # (la API ignora offset y siempre devuelve la primera página), verificado con llamadas
+        # reales: 6 requests con offset 0/50/100/150/200/250 devolvieron exactamente los mismos
+        # 52 resultados. Con offset, promos grandes (ej. 267 items) solo veían el primer 20%.
+        search_after: Optional[str] = None
+        while True:
             try:
-                r = requests.get(
+                params = {"promotion_type": ptype, "app_version": "v2", "limit": 50}
+                if search_after:
+                    params["search_after"] = search_after
+                r = get_ml_session().get(
                     f"{base}/seller-promotions/promotions/{pid}/items",
-                    params={"promotion_type": ptype, "app_version": "v2", "limit": 50, "offset": offset},
-                    headers=headers, timeout=15,
+                    params=params, headers=headers, timeout=15,
                 )
                 if r.status_code != 200:
                     break
-                idata      = r.json()
-                items      = idata.get("results", [])
-                total_items = idata.get("paging", {}).get("total", len(items))
+                idata = r.json()
+                items = idata.get("results", [])
                 for item in items:
                     if (item.get("status") or "").lower() != "candidate":
                         continue
@@ -574,7 +607,8 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
                             "start_date":    promo.get("start_date") or "",
                             "finish_date":   promo.get("finish_date") or "",
                         }
-                if offset + len(items) >= total_items or not items:
+                search_after = idata.get("paging", {}).get("searchAfter")
+                if not search_after or not items:
                     break
             except Exception:
                 break
@@ -582,12 +616,96 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
     return list(candidates.values())
 
 
+def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Optional[Dict[str, Dict[str, Any]]]:
+    """Reemplaza el patrón de llamar ml_get_item_sale_price_full por cada item individual
+    (diagnóstico [PERF-PRODUCTOS] tab Productos: ~400 llamadas típicas). No existe un endpoint
+    bulk único '/seller-promotions/items?seller_id=X' (verificado: devuelve 404) — se arma
+    combinando:
+      1. GET /seller-promotions/users/{seller_id} — lista de promociones del vendedor (1 llamada).
+      2. Para cada promo con status=started (de CUALQUIER tipo, no solo co-financiadas — cualquier
+         promo activa cambia el precio efectivo del item), paginar
+         /seller-promotions/promotions/{id}/items con el cursor search_after (NO offset, ver
+         bugfix en ml_get_smart_candidates) hasta agotar páginas.
+    Devuelve dict item_id -> {amount, regular_amount, promotion_id, promotion_type, campaign_id}
+    — misma forma que ml_get_item_sale_price_full, solo para items con status='started' (precio
+    con descuento vigente). Items sin promo activa simplemente no aparecen en el dict.
+    Devuelve None (en vez de {}) si la llamada en sí falló (sin access_token/seller_id, error de
+    red, o status != 200) — permite al llamador distinguir "no se pudo verificar" (usar fallback
+    individual) de "se verificó y no hay ninguna promo activa" (dict vacío legítimo)."""
+    if not access_token or not seller_id:
+        return None
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    base = "https://api.mercadolibre.com"
+    try:
+        resp = get_ml_session().get(
+            f"{base}/seller-promotions/users/{seller_id}",
+            params={"app_version": "v2"}, headers=headers, timeout=15,
+        )
+        if resp.status_code != 200:
+            return None
+        promos = resp.json().get("results", [])
+    except Exception:
+        return None
+
+    started = [p for p in promos if (p.get("status") or "").lower() == "started"]
+    out: Dict[str, Dict[str, Any]] = {}
+
+    def _fetch_promo_items(promo: Dict[str, Any]) -> None:
+        pid   = promo.get("id")
+        ptype = (promo.get("type") or "").upper()
+        if not pid or not ptype:
+            return
+        search_after: Optional[str] = None
+        while True:
+            try:
+                params = {"promotion_type": ptype, "app_version": "v2", "limit": 50}
+                if search_after:
+                    params["search_after"] = search_after
+                r = get_ml_session().get(
+                    f"{base}/seller-promotions/promotions/{pid}/items",
+                    params=params, headers=headers, timeout=15,
+                )
+                if r.status_code != 200:
+                    break
+                idata = r.json()
+                items = idata.get("results", [])
+                for item in items:
+                    if (item.get("status") or "").lower() != "started":
+                        continue
+                    iid = str(item.get("id") or "")
+                    amount = item.get("price")
+                    if not iid or amount is None:
+                        continue
+                    try:
+                        reg = item.get("original_price")
+                        out[iid] = {
+                            "amount": float(amount),
+                            "regular_amount": float(reg) if reg is not None else None,
+                            "promotion_id": item.get("offer_id"),
+                            "promotion_type": ptype,
+                            "campaign_id": pid,
+                        }
+                    except (TypeError, ValueError):
+                        pass
+                search_after = idata.get("paging", {}).get("searchAfter")
+                if not search_after or not items:
+                    break
+            except Exception:
+                break
+
+    if started:
+        with ThreadPoolExecutor(max_workers=min(8, len(started))) as ex:
+            list(ex.map(_fetch_promo_items, started))
+
+    return out
+
+
 def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
     """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason, competitors."""
     if not access_token or not str(item_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/price_to_win",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -611,7 +729,7 @@ def ml_get_item_performance(access_token: str, item_id: str) -> Dict[str, Any]:
     if not access_token or not str(item_id).strip():
         return {}
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/item/{item_id}/performance",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -630,7 +748,7 @@ def ml_get_promotion_item_discounts_by_user(
     if not access_token or not item_id or not user_id:
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             "https://api.mercadolibre.com/seller-promotions/users/" + str(user_id),
             params={"app_version": "v2"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -650,7 +768,7 @@ def ml_get_promotion_item_discounts_by_user(
             if not promo_id or not promo_type:
                 continue
             try:
-                items_resp = requests.get(
+                items_resp = get_ml_session().get(
                     f"https://api.mercadolibre.com/seller-promotions/promotions/{promo_id}/items",
                     params={"promotion_type": promo_type, "item_id": item_id, "app_version": "v2"},
                     headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -704,7 +822,7 @@ def ml_get_promotion_item_discounts_by_campaign(
             out = ml_get_promotion_item_discounts(access_token, cid, pt_hint, item_id, total_discount_pct)
             if out:
                 return out
-        resp = requests.get(
+        resp = get_ml_session().get(
             "https://api.mercadolibre.com/seller-promotions/users/" + str(user_id),
             params={"app_version": "v2"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -772,7 +890,7 @@ def ml_get_promotion_item_discounts(
         return None
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}/items",
             params={"promotion_type": promotion_type, "item_id": item_id, "app_version": "v2"},
             headers=headers,
@@ -786,7 +904,7 @@ def ml_get_promotion_item_discounts(
                 return out
             if not results:
                 for offset in range(0, 200, 50):
-                    r2 = requests.get(
+                    r2 = get_ml_session().get(
                         f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}/items",
                         params={"promotion_type": promotion_type, "app_version": "v2", "limit": 50, "offset": offset},
                         headers=headers,
@@ -802,7 +920,7 @@ def ml_get_promotion_item_discounts(
                     total = data2.get("paging", {}).get("total", 0)
                     if offset + len(results2) >= total or not results2:
                         break
-        promo_resp = requests.get(
+        promo_resp = get_ml_session().get(
             f"https://api.mercadolibre.com/seller-promotions/promotions/{promotion_id}",
             params={"promotion_type": promotion_type, "app_version": "v2"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -839,7 +957,7 @@ def ml_get_item_prices(access_token: Optional[str], item_id: str) -> Optional[fl
     if not access_token or not str(item_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/prices",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -870,7 +988,7 @@ def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Op
     if not access_token or not str(item_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/prices",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -933,7 +1051,7 @@ def ml_get_product_detail(access_token: Optional[str], product_id: str) -> Optio
     if not access_token or not str(product_id).strip():
         return None
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/products/{product_id}",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -949,7 +1067,7 @@ def ml_get_catalog_items(access_token: Optional[str], catalog_product_id: str) -
     if not access_token or not str(catalog_product_id).strip():
         return []
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/products/{catalog_product_id}/items",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=15,
@@ -980,7 +1098,7 @@ def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
     if not access_token or not str(item_id).strip():
         return ""
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/descriptions",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=8,
@@ -1011,7 +1129,7 @@ def ml_get_item(access_token: Optional[str], item_id: str) -> Optional[Dict[str,
         tries.insert(0, {"Accept": "application/json", "Authorization": f"Bearer {access_token}"})
     for headers in tries:
         try:
-            resp = requests.get(
+            resp = get_ml_session().get(
                 f"https://api.mercadolibre.com/items/{item_id}",
                 headers=headers,
                 timeout=12,
@@ -1047,7 +1165,7 @@ def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> L
         if not headers:
             continue
         try:
-            resp = requests.get(url, headers=headers, timeout=15)
+            resp = get_ml_session().get(url, headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -1082,7 +1200,7 @@ def ml_get_items_multiget_with_attributes(
     if access_token:
         headers = {"Accept": "application/json", "Authorization": f"Bearer {access_token}"}
         try:
-            resp = requests.get(url, headers=headers, timeout=15)
+            resp = get_ml_session().get(url, headers=headers, timeout=15)
             resp.raise_for_status()
             data = resp.json()
         except Exception:
@@ -1134,7 +1252,7 @@ def ml_get_users_multiget(
     ) + [{"Accept": "application/json"}]
     for h in headers_list:
         try:
-            resp = requests.get(url, headers=h, timeout=12)
+            resp = get_ml_session().get(url, headers=h, timeout=12)
             resp.raise_for_status()
             data = resp.json()
             if isinstance(data, dict) and "body" in data:
@@ -1159,7 +1277,7 @@ def ml_get_users_multiget(
 def ml_get_user_id(access_token: str) -> Optional[str]:
     """Obtiene el user_id de MercadoLibre del token (seller_id)."""
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             "https://api.mercadolibre.com/users/me",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
@@ -1174,13 +1292,13 @@ def ml_get_user_profile(access_token: str) -> Optional[Dict[str, Any]]:
     """Obtiene perfil completo (users/me + users/{id}) con reputación y métricas."""
     try:
         headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
-        me = requests.get("https://api.mercadolibre.com/users/me", headers=headers, timeout=10)
+        me = get_ml_session().get("https://api.mercadolibre.com/users/me", headers=headers, timeout=10)
         me.raise_for_status()
         data = me.json()
         user_id = data.get("id")
         if not user_id:
             return data
-        full = requests.get(f"https://api.mercadolibre.com/users/{user_id}", headers=headers, timeout=10)
+        full = get_ml_session().get(f"https://api.mercadolibre.com/users/{user_id}", headers=headers, timeout=10)
         if full.ok:
             prof = full.json()
             # Si metrics vacíos o todo 0, intentar global seller_reputation (multi-marketplace)
@@ -1193,7 +1311,7 @@ def ml_get_user_profile(access_token: str) -> Optional[Dict[str, Any]]:
             )
             if not has_data:
                 try:
-                    gr = requests.get(
+                    gr = get_ml_session().get(
                         "https://api.mercadolibre.com/global/users/seller_reputation",
                         headers=headers,
                         timeout=10,
@@ -1270,7 +1388,7 @@ def ml_get_orders(
         while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
             params: Dict[str, Any] = {**extra, **date_params, "limit": page_size, "offset": off, "sort": "date_desc"}
             try:
-                resp = requests.get(url, params=params, headers=headers, timeout=25)
+                resp = get_ml_session().get(url, params=params, headers=headers, timeout=25)
                 if not resp.ok:
                     if off == offset:
                         try:
@@ -1288,7 +1406,7 @@ def ml_get_orders(
                 if isinstance(raw[0], (int, float)):
                     for oid in raw[:page_size]:
                         try:
-                            r = requests.get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers=headers, timeout=10)
+                            r = get_ml_session().get(f"https://api.mercadolibre.com/orders/{int(oid)}", headers=headers, timeout=10)
                             if r.status_code == 200:
                                 ob = r.json()
                                 oid_val = ob.get("id")
@@ -1325,7 +1443,7 @@ def ml_get_orders(
             if fetches >= 1000:
                 break
             try:
-                r = requests.get(f"https://api.mercadolibre.com/orders/{o['id']}", headers=headers, timeout=10)
+                r = get_ml_session().get(f"https://api.mercadolibre.com/orders/{o['id']}", headers=headers, timeout=10)
                 if r.status_code == 200:
                     full = r.json()
                     idx = next((i for i, x in enumerate(all_flat) if x.get("id") == o["id"]), -1)
@@ -1350,7 +1468,7 @@ def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, i
         if not ship_id:
             continue
         try:
-            resp = requests.get(
+            resp = get_ml_session().get(
                 f"https://api.mercadolibre.com/shipments/{ship_id}",
                 headers=headers,
                 timeout=10,
@@ -1397,7 +1515,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
     stop = False
     while not stop:
         try:
-            r = requests.get(
+            r = get_ml_session().get(
                 "https://api.mercadolibre.com/orders/search",
                 params={"seller": seller_id, "order.status": "paid",
                         "limit": 50, "offset": offset, "sort": "date_desc"},
@@ -1428,7 +1546,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
 
     def _fetch_shipment(sid: str):
         try:
-            sr = requests.get(
+            sr = get_ml_session().get(
                 f"https://api.mercadolibre.com/shipments/{sid}",
                 headers=headers, timeout=10,
             )
@@ -1462,7 +1580,7 @@ def ml_get_unanswered_questions(access_token: str, seller_id: str) -> List[Dict[
     if not access_token or not seller_id:
         return []
     try:
-        resp = requests.get(
+        resp = get_ml_session().get(
             "https://api.mercadolibre.com/questions/search",
             params={"seller_id": seller_id, "status": "unanswered", "limit": 50},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -1479,7 +1597,7 @@ def ml_delete_question(access_token: str, question_id: int) -> bool:
     if not access_token or not question_id:
         return False
     try:
-        resp = requests.delete(
+        resp = get_ml_session().delete(
             f"https://api.mercadolibre.com/questions/{question_id}",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=15,
@@ -1513,7 +1631,7 @@ def ml_search_similar(
         if not try_headers:
             continue
         try:
-            resp = requests.get(
+            resp = get_ml_session().get(
                 f"{base}/sites/MLA/search",
                 params=search_params,
                 headers=try_headers,
@@ -1540,7 +1658,7 @@ def ml_search_similar(
             {"site_id": "MLA", "q": query[:200], "limit": limit},
         ):
             try:
-                prod_resp = requests.get(
+                prod_resp = get_ml_session().get(
                     f"{base}/products/search",
                     params=params,
                     headers=headers,
@@ -1578,7 +1696,7 @@ def ml_search_similar(
 def ml_get_dispatch_schedule(access_token: str, seller_id: str, logistic_type: str = "xd_drop_off") -> Optional[Dict[str, Any]]:
     url = f"https://api.mercadolibre.com/users/{seller_id}/shipping/schedule/{logistic_type}"
     try:
-        resp = requests.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        resp = get_ml_session().get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
         if resp.status_code == 200:
             return resp.json()
     except Exception:
@@ -1589,7 +1707,7 @@ def ml_get_dispatch_schedule(access_token: str, seller_id: str, logistic_type: s
 def ml_get_shipping_preferences(access_token: str, seller_id: str) -> Optional[Dict[str, Any]]:
     url = f"https://api.mercadolibre.com/users/{seller_id}/shipping_preferences"
     try:
-        resp = requests.get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
+        resp = get_ml_session().get(url, headers={"Authorization": f"Bearer {access_token}"}, timeout=10)
         if resp.status_code == 200:
             return resp.json()
     except Exception:

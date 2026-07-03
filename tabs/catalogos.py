@@ -10,7 +10,6 @@ import re
 from datetime import date as _date, datetime as _datetime
 from typing import Any, Dict, List, Optional, Set
 
-import requests
 from nicegui import app, background_tasks, run, ui
 
 from db import (
@@ -23,6 +22,7 @@ from db import (
 )
 from ml_api import (
     get_ml_access_token,
+    get_ml_session,
     ml_get_catalog_items,
     ml_get_user_id,
     ml_get_users_multiget,
@@ -230,7 +230,7 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[
     async def _fetch_seller_rep(sid: str):
         try:
             resp = await asyncio.to_thread(
-                requests.get,
+                get_ml_session().get,
                 f"https://api.mercadolibre.com/users/{sid}",
                 headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
                 timeout=8,
@@ -270,7 +270,7 @@ def _search_catalogs_sync(access_token: str, query: str) -> List[Dict]:
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     try:
         if q.upper().startswith("MLA"):
-            resp = requests.get(
+            resp = get_ml_session().get(
                 f"https://api.mercadolibre.com/products/{q.upper()}",
                 headers=headers, timeout=10,
             )
@@ -280,7 +280,7 @@ def _search_catalogs_sync(access_token: str, query: str) -> List[Dict]:
                     return [{"id": d["id"], "name": d.get("name", d["id"])}]
             return []
         elif re.match(r"^\d{8,14}$", q):
-            resp = requests.get(
+            resp = get_ml_session().get(
                 "https://api.mercadolibre.com/products/search",
                 params={"product_identifier": q, "site_id": "MLA"},
                 headers=headers, timeout=10,
@@ -290,7 +290,7 @@ def _search_catalogs_sync(access_token: str, query: str) -> List[Dict]:
                 return [{"id": r.get("id", ""), "name": r.get("name", r.get("id", ""))} for r in results]
             return []
         else:
-            resp = requests.get(
+            resp = get_ml_session().get(
                 "https://api.mercadolibre.com/products/search",
                 params={"status": "active", "site_id": "MLA", "q": q, "limit": 10},
                 headers=headers, timeout=10,
@@ -734,7 +734,7 @@ def build_tab_catalogos(container) -> None:
                 async def _fetch_one(iid: str):
                     try:
                         resp = await asyncio.to_thread(
-                            requests.get,
+                            get_ml_session().get,
                             f"https://api.mercadolibre.com/items/{iid}/shipping_options",
                             params={"zip_code": zip_c},
                             headers=req_headers,
