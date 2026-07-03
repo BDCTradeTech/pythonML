@@ -1569,6 +1569,31 @@ def _contar_envios_por_tipo(user_id: int, periodo: str) -> tuple:
     return correo, flex
 
 
+def _costo_mercaderia_vendida(user_id: int, periodo: str) -> tuple:
+    """Suma costo_pesos (costo de mercadería vendida, persistido por 'Completar datos'/backfill
+    de ventas.py a partir del deploy 3.26.07.03.13) en ventas_datos para el mes calendario del
+    período. Devuelve (suma o None si no hay ninguna venta con costo persistido en el período,
+    fecha de la primera venta con costo persistido en toda la historia — para el aviso de
+    disponibilidad cuando el período consultado es anterior a esa fecha)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT SUM(costo_pesos) FROM ventas_datos "
+            "WHERE user_id=? AND order_date LIKE ? AND costo_pesos IS NOT NULL",
+            (user_id, f"{periodo}%"),
+        )
+        suma = cur.fetchone()[0]
+        cur.execute(
+            "SELECT MIN(order_date) FROM ventas_datos WHERE user_id=? AND costo_pesos IS NOT NULL",
+            (user_id,),
+        )
+        fecha_primera = cur.fetchone()[0]
+    finally:
+        conn.close()
+    return (round(suma, 2) if suma is not None else None), fecha_primera
+
+
 # ---------------------------------------------------------------------------
 # Sección 7 — Cruce Ventas nuestras (BD) vs Reporte de Facturación ML
 # ---------------------------------------------------------------------------
@@ -2400,8 +2425,28 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     envios_comprador = fact.get("envios_pagados_comprador") or 0.0
 
     _fuentes_percepciones_flujo = ["fact", "perc"] if (perc_facturas and perc_reportes) else ["repo"]
+    costo_mercaderia, _fecha_primera_costo = _costo_mercaderia_vendida(user_id, periodo)
+    if costo_mercaderia is not None:
+        _linea_costo_mercaderia = {
+            "concepto": "Costo de mercadería vendida",
+            "monto": round(-costo_mercaderia, 2),
+            "fuentes": ["calc"],
+        }
+    else:
+        _nota_costo = (
+            f"Datos disponibles a partir de {_fecha_primera_costo}"
+            if _fecha_primera_costo else
+            "Sin ventas con costo persistido todavía"
+        )
+        _linea_costo_mercaderia = {
+            "concepto": "Costo de mercadería vendida",
+            "monto": None,
+            "nota": _nota_costo,
+            "fuentes": ["calc"],
+        }
     lineas_flujo = [
         {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2), "fuentes": ["repo"]},
+        _linea_costo_mercaderia,
         {"concepto": "Comisiones ML netas", "monto": round(-comisiones_venta, 2), "fuentes": ["repo"]},
         {"concepto": "Costos de envío ML netos", "monto": round(-costos_envio_ml_neto, 2), "fuentes": ["repo"]},
         {"concepto": "Cuotas", "monto": round(-cuotas, 2), "fuentes": ["repo"]},
@@ -2412,7 +2457,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2), "fuentes": ["repo"]},
         {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2), "fuentes": ["repo"]},
     ]
-    cobrado_neto = round(sum(l["monto"] for l in lineas_flujo), 2)
+    cobrado_neto = round(sum(l["monto"] for l in lineas_flujo if l["monto"] is not None), 2)
     seccion_flujo = {"lineas": lineas_flujo, "cobrado_neto": cobrado_neto}
 
     # --- SECCIÓN 5 — Validaciones y alertas ---
@@ -2880,7 +2925,14 @@ def _render_consolidado_html(resultado: dict) -> str:
     # 4 — Flujo Financiero Neto
     s = [f'<div style="{_WRAP}">', _sec("ti-cash", "4 · Flujo Financiero Neto", "mixto")]
     for l in flujo["lineas"]:
-        s.append(_row(l["concepto"], _ar_money(l["monto"]), fuentes=l.get("fuentes")))
+        if l["monto"] is None:
+            valor = (
+                'N/D<br><span style="font-size:9px;color:#9e9e9e;font-weight:400">'
+                f'{l.get("nota", "")}</span>'
+            )
+        else:
+            valor = _ar_money(l["monto"])
+        s.append(_row(l["concepto"], valor, fuentes=l.get("fuentes")))
     cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
     s.append(
         '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 14px;'
