@@ -16,7 +16,7 @@ import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
 from db import get_app_config, set_app_config
-from ml_api import get_ml_access_token, ml_get_user_id, ml_get_user_profile
+from ml_api import get_ml_access_token, get_ml_session, ml_get_user_id, ml_get_user_profile
 
 _DEFAULT_FRASES = [
     "Esperamos tu compra.",
@@ -48,7 +48,7 @@ def _load_json_config(key: str, default: list) -> list:
 
 
 def _ml_get_questions(access_token: str, seller_id: str) -> List[dict]:
-    resp = _requests.get(
+    resp = get_ml_session().get(
         "https://api.mercadolibre.com/questions/search",
         params={"seller_id": seller_id, "status": "UNANSWERED", "api_version": 4, "limit": 50},
         headers={"Authorization": f"Bearer {access_token}"},
@@ -62,7 +62,7 @@ def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict
     info: Dict[str, dict] = {}
     for i in range(0, len(item_ids), 20):
         batch = item_ids[i : i + 20]
-        resp = _requests.get(
+        resp = get_ml_session().get(
             "https://api.mercadolibre.com/items",
             params={"ids": ",".join(batch), "attributes": "id,title,status"},
             headers={"Authorization": f"Bearer {access_token}"},
@@ -80,7 +80,7 @@ def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict
 
 
 def _ml_delete_question(access_token: str, question_id: Any) -> Dict[str, Any]:
-    resp = _requests.delete(
+    resp = get_ml_session().delete(
         f"https://api.mercadolibre.com/questions/{question_id}",
         headers={"Authorization": f"Bearer {access_token}"},
         timeout=15,
@@ -94,7 +94,7 @@ def _ml_delete_question(access_token: str, question_id: Any) -> Dict[str, Any]:
 
 
 def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str, Any]:
-    resp = _requests.post(
+    resp = get_ml_session().post(
         "https://api.mercadolibre.com/answers",
         headers={
             "Authorization": f"Bearer {access_token}",
@@ -137,7 +137,7 @@ def _gemini_generate(api_key: str, prompt: str) -> str:
 
 def _get_user_nickname(access_token: str, user_id: Any) -> str:
     try:
-        resp = _requests.get(
+        resp = get_ml_session().get(
             f"https://api.mercadolibre.com/users/{user_id}",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=10,

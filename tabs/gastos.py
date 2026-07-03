@@ -16,7 +16,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-import requests
 from nicegui import app, run, ui
 
 from db import (
@@ -35,7 +34,7 @@ from db import (
     upsert_gastos_prompt,
     user_can_access_tab,
 )
-from ml_api import get_ml_access_token, ml_get_orders, ml_get_user_id, ml_get_user_profile
+from ml_api import get_ml_access_token, get_ml_session, ml_get_orders, ml_get_user_id, ml_get_user_profile
 
 _BLUE       = "#2A7AC7"
 _BLUE_BG    = "#EEF6FD"
@@ -1713,7 +1712,7 @@ def _fetch_meli_fee_mp(access_token: str, payment_id: str) -> Optional[float]:
     """Comisión real cobrada por ML para un pago, vía la misma API que usa
     tabs/ventas.py en 'Completar datos' (MercadoPago Payments, no un endpoint de ML)."""
     try:
-        r = requests.get(
+        r = get_ml_session().get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers={"Authorization": f"Bearer {access_token}"}, timeout=15,
         )
