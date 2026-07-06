@@ -2737,7 +2737,7 @@ def _render_consolidado_html(resultado: dict) -> str:
 
     def _tabla(
         headers: list, filas: list, aligns: Optional[list] = None,
-        header_align: str = "center", fila_total: bool = False,
+        header_align: str = "center", fila_total: bool = False, fila_pct: bool = False,
     ) -> str:
         aligns = aligns or ["left"] * len(headers)
         ths = "".join(
@@ -2745,14 +2745,23 @@ def _render_consolidado_html(resultado: dict) -> str:
             f'font-size:10px;font-weight:600;color:{_HDR_COLOR};text-align:{header_align}">{h}</th>'
             for h in headers
         )
+        n = len(filas)
+        _idx_pct = n - 1 if fila_pct else -1
+        _idx_total = (n - 2 if fila_pct else n - 1) if fila_total else -1
         body = ""
         for idx, fila in enumerate(filas):
-            _es_total = fila_total and idx == len(filas) - 1
-            _extra = (
-                "font-weight:700;background:var(--color-background-secondary);"
-                "border-top:1px solid var(--color-border-secondary);"
-                if _es_total else ""
-            )
+            if idx == _idx_pct:
+                _extra = (
+                    "color:var(--color-text-secondary);"
+                    "border-top:dashed 0.5px var(--color-border-tertiary);"
+                )
+            elif idx == _idx_total:
+                _extra = (
+                    "font-weight:700;background:var(--color-background-secondary);"
+                    "border-top:1px solid var(--color-border-secondary);"
+                )
+            else:
+                _extra = ""
             tds = "".join(
                 f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333;{_extra}'
                 f'text-align:{aligns[i] if i < len(aligns) else "left"}">{c}</td>'
@@ -2841,6 +2850,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 3 — Impuestos y Retenciones
+    _factbruta = v["total_ingresos_brutos"]
     s = [f'<div style="{_WRAP}">', _sec("ti-building-bank", "3 · Impuestos y Retenciones", "fiscal")]
     if imp["_incompleto"]:
         s.append(_incompleto_html())
@@ -2874,16 +2884,66 @@ def _render_consolidado_html(resultado: dict) -> str:
                 r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
                 _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
             ])
+        _tot_perc_fact = sum(r["facturas_ml"] for r in imp["cruce_percepciones"])
+        _tot_perc_rep = sum(r["reportes"] for r in imp["cruce_percepciones"])
+        _tot_perc_diff = sum(r["diff"] for r in imp["cruce_percepciones"])
         filas.append([
-            "TOTAL",
-            _ar_money(sum(r["facturas_ml"] for r in imp["cruce_percepciones"])),
-            _ar_money(sum(r["reportes"] for r in imp["cruce_percepciones"])),
-            _ar_money(sum(r["diff"] for r in imp["cruce_percepciones"])),
+            "TOTAL", _ar_money(_tot_perc_fact), _ar_money(_tot_perc_rep), _ar_money(_tot_perc_diff),
             "", render_fuente_badges(["fact", "perc"]),
         ])
+        _tabla_kwargs = {"fila_total": True}
+        if _factbruta:
+            filas.append([
+                "% sobre facturación bruta",
+                _ar_pct_simple(_tot_perc_fact / _factbruta * 100),
+                _ar_pct_simple(_tot_perc_rep / _factbruta * 100),
+                _ar_pct_simple(_tot_perc_diff / _factbruta * 100),
+                "", "",
+            ])
+            _tabla_kwargs["fila_pct"] = True
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center", fila_total=True)}'
+            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center", **_tabla_kwargs)}'
+            f'</div>'
+        )
+    else:
+        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+
+    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
+    s.append(
+        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
+        'font-style:italic;line-height:1.5">'
+        "Me las va descontando venta por venta, no las tengo que pagar a fin de mes</div>"
+    )
+    if imp["retenciones_detalle"]:
+        _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
+        filas = [
+            [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
+             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
+            for r in _retenciones_ordenadas
+        ]
+        _tot_ret_base = sum(r["base_imponible"] for r in _retenciones_ordenadas)
+        _tot_ret_retenido = sum(r["importe_retenido"] for r in _retenciones_ordenadas)
+        _tot_ret_devuelto = sum(r["importe_devuelto"] for r in _retenciones_ordenadas)
+        _tot_ret_neto = sum(r["neto"] for r in _retenciones_ordenadas)
+        filas.append([
+            "TOTAL", _ar_money(_tot_ret_base), _ar_money(_tot_ret_retenido),
+            _ar_money(_tot_ret_devuelto), _ar_money(_tot_ret_neto), "",
+        ])
+        _tabla_kwargs = {"fila_total": True}
+        if _factbruta:
+            filas.append([
+                "% sobre facturación bruta",
+                _ar_pct_simple(_tot_ret_base / _factbruta * 100),
+                _ar_pct_simple(_tot_ret_retenido / _factbruta * 100),
+                _ar_pct_simple(_tot_ret_devuelto / _factbruta * 100),
+                _ar_pct_simple(_tot_ret_neto / _factbruta * 100),
+                "",
+            ])
+            _tabla_kwargs["fila_pct"] = True
+        s.append(
+            f'<div style="padding:0 14px">'
+            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"], **_tabla_kwargs)}'
             f'</div>'
         )
     else:
@@ -2908,35 +2968,6 @@ def _render_consolidado_html(resultado: dict) -> str:
         s.append(_row("IVA a Pagar (Débito - Crédito)", _ar_money(iva["iva_a_pagar_arca"]), bold=True, fuentes=["calc"]))
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
-
-    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
-    s.append(
-        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
-        'font-style:italic;line-height:1.5">'
-        "Me las va descontando venta por venta, no las tengo que pagar a fin de mes</div>"
-    )
-    if imp["retenciones_detalle"]:
-        _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
-        filas = [
-            [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
-             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
-            for r in _retenciones_ordenadas
-        ]
-        filas.append([
-            "TOTAL",
-            _ar_money(sum(r["base_imponible"] for r in _retenciones_ordenadas)),
-            _ar_money(sum(r["importe_retenido"] for r in _retenciones_ordenadas)),
-            _ar_money(sum(r["importe_devuelto"] for r in _retenciones_ordenadas)),
-            _ar_money(sum(r["neto"] for r in _retenciones_ordenadas)),
-            "",
-        ])
-        s.append(
-            f'<div style="padding:0 14px">'
-            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"], fila_total=True)}'
-            f'</div>'
-        )
-    else:
-        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
     s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Cruce Impuestos vs Pagos a ARCA</div>')
     if imp["cruce_impuestos_pagos"]:
