@@ -57,6 +57,7 @@ _SECCION_HEADER_STYLE = (
 )
 _SECCION_BORDER = "#D8D8D8"
 _SECCION_WRAP_STYLE = (
+    "width:100%;box-sizing:border-box;max-width:none;"
     f"border:0.5px solid {_SECCION_BORDER};border-radius:8px;overflow:hidden;"
     "margin-bottom:20px;padding-bottom:10px"
 )
@@ -3351,7 +3352,7 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
             "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
             "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el cruce.</div>"
             "</div>"
-        )
+        ).classes("w-full")
         return
 
     cruzadas_ok = cr.get("cruzadas_ok") or []
@@ -3455,7 +3456,7 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
 
     ui.html(
         f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}{_hero_html}{_tabla_html}{_cross_mes_html}</div>'
-    )
+    ).classes("w-full")
 
     async def _descargar(tipo: Optional[str]) -> None:
         path, nombre = await run.io_bound(_generar_excel_cruce_ventas, resultado, tipo)
@@ -3511,7 +3512,7 @@ def _abrir_modal_consolidado(resultado: dict) -> None:
                         "⚠ No hay Reporte de Facturación ML de este período. Las secciones marcadas "
                         'como "Período ML" usarán el mes calendario como fallback.</div>'
                     )
-                ui.html(_render_consolidado_html(resultado))
+                ui.html(_render_consolidado_html(resultado)).classes("w-full")
                 _render_seccion_cruce_ventas(resultado)
 
             with ui.row().classes("w-full justify-end gap-2 px-4 py-3 flex-shrink-0").style(
