@@ -48,18 +48,21 @@ _RED        = "#A32D2D"
 
 # Contenedor de sección compartido por las 7 secciones del Análisis Consolidado del
 # Período (secciones 1-6 lo aplican vía HTML inyectado en _render_consolidado_html;
-# la sección 7 lo aplica vía ui.column() en _render_seccion_cruce_ventas, porque
-# necesita componentes NiceGUI nativos para el callback de descarga).
+# la sección 7 lo arma como HTML propio en _render_seccion_cruce_ventas_html — el único
+# componente NiceGUI nativo de la sección 7 es el botón de descarga, aparte).
+# El header usa _render_seccion_header(), que también arma el PDF (mismo HTML).
 _SECCION_HEADER_STYLE = (
-    "font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
-    f"color:{_HDR_COLOR};background:{_HDR_BG};padding:10px 14px;"
-    f"border-bottom:0.5px solid {_HDR_BORDER};display:flex;align-items:center;gap:8px"
+    "font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
+    "color:#FFFFFF;background:#185FA5;padding:12px 14px;"
+    "border-bottom:3px solid #113F72;display:flex;align-items:center;gap:8px;"
+    "justify-content:space-between"
 )
 _SECCION_BORDER = "#D8D8D8"
 _SECCION_WRAP_STYLE = (
     "width:100%;box-sizing:border-box;max-width:none;"
     f"border:0.5px solid {_SECCION_BORDER};border-radius:8px;overflow:hidden;"
-    "margin-bottom:20px;padding-bottom:10px"
+    "margin-bottom:24px;padding-bottom:10px;"
+    "page-break-inside:avoid;break-inside:avoid"
 )
 
 FUENTES_CONSOLIDADO = {
@@ -1961,10 +1964,33 @@ def _render_periodo_badge(tipo: str, periodo_fiscal: dict, periodo_ml: dict) -> 
         f"Período ML: {periodo_ml.get('desde', '')} - {periodo_ml.get('hasta', '')}"
     ).replace('"', "&quot;")
     return (
-        f'<span title="{tooltip}" style="display:inline-flex;align-items:center;margin-left:auto;'
-        "background:#EDEDED;color:#5A5A5A;"
+        f'<span title="{tooltip}" style="display:inline-flex;align-items:center;'
+        "background:rgba(255,255,255,0.2);color:rgba(255,255,255,0.9);"
         'font-size:10px;font-weight:500;padding:2px 6px;border-radius:3px;cursor:help">'
-        f"📅 {label}</span>"
+        f'<i class="ti ti-calendar" style="font-size:10px"></i> {label}</span>'
+    )
+
+
+def _render_seccion_header(icon: str, titulo: str, badge_html: str = "") -> str:
+    """Header compartido por las 7 secciones del Análisis Consolidado (y por su versión
+    PDF, que reutiliza este mismo HTML). Si 'titulo' tiene forma 'N · Resto', el número
+    se muestra como pill; si no, se muestra el título tal cual (subtítulos internos de
+    una sección, p.ej. dentro de Impuestos y Retenciones)."""
+    partes = titulo.split(" · ", 1)
+    if len(partes) == 2:
+        pill = (
+            '<span style="background:rgba(255,255,255,0.2);border-radius:12px;'
+            'padding:2px 8px;font-size:10px;font-weight:600;margin-right:4px">'
+            f"{partes[0]}</span>"
+        )
+        texto = f"{pill}{partes[1]}"
+    else:
+        texto = titulo
+    return (
+        f'<div style="{_SECCION_HEADER_STYLE}">'
+        f'<span style="display:flex;align-items:center;gap:8px"><i class="ti {icon}"></i>'
+        f"<span>{texto}</span></span>"
+        f"{badge_html}</div>"
     )
 
 
@@ -2765,12 +2791,11 @@ def _render_consolidado_html(resultado: dict) -> str:
     faltantes = resultado["faltantes"]
     periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
 
-    _SEP = _SECCION_HEADER_STYLE
     _WRAP = _SECCION_WRAP_STYLE
 
     def _sec(icon: str, titulo: str, periodo_tipo: Optional[str] = None) -> str:
         badge = _render_periodo_badge(periodo_tipo, periodo_fiscal, periodo_ml) if periodo_tipo else ""
-        return f'<div style="{_SEP}"><i class="ti {icon}"></i><span>{titulo}</span>{badge}</div>'
+        return _render_seccion_header(icon, titulo, badge)
 
     def _row(label, value, bold: bool = False, fuentes: Optional[list] = None) -> str:
         w = ";font-weight:700" if bold else ""
@@ -3328,32 +3353,27 @@ def _fila_cruce_categoria(label: str, count: int, icono: str, icon_bg: str, icon
     )
 
 
-def _render_seccion_cruce_ventas(resultado: dict) -> None:
-    """Sección 7 — mismo lenguaje visual que el resto del consolidado (contenedor en caja
-    + tabla, como Sección 6). Header+hero+tabla+cross-mes se arman como UN SOLO string
-    HTML inyectado en un único ui.html() (igual que las secciones 1-6, que nunca rompieron
-    el render). El botón de descarga queda como ui.button() nativo aparte, en un ui.row()
-    simple e independiente — la misma combinación que ya funcionaba antes de cualquier
-    intento de envolver la sección en un ui.column() contenedor (eso fue lo que rompió el
-    render en el deploy anterior)."""
+def _render_seccion_cruce_ventas_html(resultado: dict) -> str:
+    """Arma el HTML completo de la Sección 7 (header+hero+tabla+cross-mes), como UN SOLO
+    string — igual patrón que las secciones 1-6. Reutilizado tanto por el modal en vivo
+    (_render_seccion_cruce_ventas, vía ui.html()) como por la exportación a PDF
+    (_render_consolidado_pdf_html), para no duplicar esta lógica en dos lugares."""
     cr = resultado.get("cruce_ventas") or {"_disponible": False}
     periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
 
-    _header_html = (
-        f'<div style="{_SECCION_HEADER_STYLE}"><i class="ti ti-arrows-exchange"></i>'
-        f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span>'
-        f'{_render_periodo_badge("ml", periodo_fiscal, periodo_ml)}</div>'
+    _header_html = _render_seccion_header(
+        "ti-arrows-exchange", "7 · Cruce Ventas Nuestras vs Reporte ML",
+        _render_periodo_badge("ml", periodo_fiscal, periodo_ml),
     )
 
     if not cr.get("_disponible"):
-        ui.html(
+        return (
             f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}'
             '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
             "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
             "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el cruce.</div>"
             "</div>"
-        ).classes("w-full")
-        return
+        )
 
     cruzadas_ok = cr.get("cruzadas_ok") or []
     solo_reporte = cr.get("solo_reporte") or []
@@ -3454,9 +3474,16 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
             '</span></div>'
         )
 
-    ui.html(
-        f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}{_hero_html}{_tabla_html}{_cross_mes_html}</div>'
-    ).classes("w-full")
+    return f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}{_hero_html}{_tabla_html}{_cross_mes_html}</div>'
+
+
+def _render_seccion_cruce_ventas(resultado: dict) -> None:
+    """Sección 7 en el modal en vivo: el HTML (_render_seccion_cruce_ventas_html) se
+    inyecta en un único ui.html(). El botón de descarga queda como ui.button() nativo
+    aparte, en un ui.row() simple e independiente — la misma combinación que ya
+    funcionaba antes de cualquier intento de envolver la sección en un ui.column()
+    contenedor (eso fue lo que rompió el render en un deploy anterior)."""
+    ui.html(_render_seccion_cruce_ventas_html(resultado)).classes("w-full")
 
     async def _descargar(tipo: Optional[str]) -> None:
         path, nombre = await run.io_bound(_generar_excel_cruce_ventas, resultado, tipo)
@@ -3478,6 +3505,67 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
         ).props("icon=download no-caps dense").style(
             f"background:{_BLUE};color:white;padding:6px 12px;border-radius:5px;font-size:11px"
         )
+
+
+def _render_consolidado_pdf_html(resultado: dict) -> str:
+    """Documento HTML completo (<html>/<head>/<style>) para exportar el Análisis
+    Consolidado del Período a PDF vía WeasyPrint. Reutiliza el mismo HTML de las 7
+    secciones que arma el modal en vivo (_render_consolidado_html +
+    _render_seccion_cruce_ventas_html) para no duplicar datos ni diseño — solo se le
+    antepone un header de portada y un @page con paginación, pensados para papel."""
+    periodo = resultado.get("periodo", "")
+    periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
+    generado = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    _header_html = (
+        '<div style="display:flex;justify-content:space-between;align-items:flex-end;'
+        'border-bottom:3px solid #113F72;padding-bottom:10px;margin-bottom:18px">'
+        "<div>"
+        '<div style="font-size:19px;font-weight:800;color:#185FA5;letter-spacing:0.02em">'
+        "BDC systems</div>"
+        '<div style="font-size:14px;font-weight:700;color:#222;margin-top:2px">'
+        "Análisis Consolidado del Período</div>"
+        "</div>"
+        '<div style="text-align:right;font-size:10px;color:#555;line-height:1.6">'
+        f'<div style="font-size:13px;font-weight:700;color:#185FA5">{periodo}</div>'
+        f'<div>Período fiscal: {periodo_fiscal["desde"]} – {periodo_fiscal["hasta"]}</div>'
+        f'<div>Período ML: {periodo_ml["desde"]} – {periodo_ml["hasta"]}</div>'
+        "</div></div>"
+    )
+
+    _style = (
+        "@page {"
+        "size: A4;"
+        "margin: 15mm 12mm 18mm 12mm;"
+        '@bottom-center { content: "Página " counter(page) " de " counter(pages); '
+        "font-size: 9px; color: #999; }"
+        f'@bottom-left {{ content: "Generado el {generado}"; font-size: 8px; color: #AAA; }}'
+        "}"
+        "body { font-family: \"Segoe UI\", Arial, sans-serif; color: #222; font-size: 11px; margin: 0; }"
+        "table { font-size: 11px; }"
+    )
+
+    _tabler_css = (
+        '<link rel="stylesheet" '
+        'href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">'
+    )
+    body = _header_html + _render_consolidado_html(resultado) + _render_seccion_cruce_ventas_html(resultado)
+    return f"<html><head>{_tabler_css}<style>{_style}</style></head><body>{body}</body></html>"
+
+
+def _generar_pdf_consolidado(resultado: dict) -> tuple:
+    """Genera el PDF completo (7 secciones) del Análisis Consolidado del Período vía
+    WeasyPrint. Devuelve (path, filename)."""
+    from weasyprint import HTML
+
+    periodo = resultado.get("periodo", "")
+    user_id = resultado.get("user_id", "")
+    html = _render_consolidado_pdf_html(resultado)
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    HTML(string=html).write_pdf(path)
+    nombre = f"consolidado_{user_id}_{periodo}.pdf"
+    return path, nombre
 
 
 def _abrir_modal_consolidado(resultado: dict) -> None:
@@ -3515,17 +3603,36 @@ def _abrir_modal_consolidado(resultado: dict) -> None:
                 ui.html(_render_consolidado_html(resultado)).classes("w-full")
                 _render_seccion_cruce_ventas(resultado)
 
-            with ui.row().classes("w-full justify-end gap-2 px-4 py-3 flex-shrink-0").style(
+            with ui.row().classes("w-full justify-end items-center gap-2 px-4 py-3 flex-shrink-0").style(
                 f"border-top:1px solid {_HDR_BORDER};background:{_HDR_BG}"
             ):
-                ui.button(
-                    "Exportar PDF",
-                    on_click=lambda: ui.notify("Exportar PDF: próximamente", color="info"),
-                ).props("flat no-caps")
-                ui.button(
-                    "Exportar Excel",
-                    on_click=lambda: ui.notify("Exportar Excel: próximamente", color="info"),
-                ).props("flat no-caps")
+                pdf_spinner = ui.spinner(size="sm").classes("hidden")
+                pdf_btn = ui.button("Exportar PDF").props("flat no-caps")
+
+                async def _exportar_pdf() -> None:
+                    pdf_btn.props("disable")
+                    pdf_btn.set_text("Generando PDF...")
+                    pdf_spinner.classes(remove="hidden")
+                    try:
+                        path, nombre = await run.io_bound(_generar_pdf_consolidado, resultado)
+                        ui.download(path, nombre)
+                        ui.notify(f"Exportado: {nombre}", color="positive")
+
+                        def _cleanup() -> None:
+                            try:
+                                if path and os.path.exists(path):
+                                    os.unlink(path)
+                            except Exception:
+                                pass
+                        ui.timer(5.0, _cleanup, once=True)
+                    except Exception as ex:
+                        ui.notify(f"Error generando PDF: {ex}", color="negative")
+                    finally:
+                        pdf_spinner.classes(add="hidden")
+                        pdf_btn.set_text("Exportar PDF")
+                        pdf_btn.props(remove="disable")
+
+                pdf_btn.on_click(_exportar_pdf)
                 ui.button("Cerrar", on_click=dlg.close).style(
                     f"background:{_BLUE};color:white"
                 ).props("no-caps")

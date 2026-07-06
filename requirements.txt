@@ -7,3 +7,4 @@ pymupdf>=1.24.0
 bcrypt>=4.0.0
 cryptography>=40.0.0
 google-generativeai>=0.8.0
+weasyprint>=69.0
