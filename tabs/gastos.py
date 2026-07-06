@@ -2694,6 +2694,13 @@ def _ar_pct_simple(n: float) -> str:
     return f"{n:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".") + " %"
 
 
+def _ar_pct_con_monto(pct: float, monto: float) -> str:
+    return (
+        f'{_ar_pct_simple(pct)} '
+        f'<span style="font-size:10px;color:var(--color-text-secondary)">({_ar_money(monto)})</span>'
+    )
+
+
 def _render_consolidado_html(resultado: dict) -> str:
     """Arma el HTML de las 6 secciones del análisis consolidado para el modal."""
     v         = resultado["ventas"]
@@ -2895,9 +2902,9 @@ def _render_consolidado_html(resultado: dict) -> str:
         if _factbruta:
             filas.append([
                 "% sobre facturación bruta",
-                _ar_pct_simple(_tot_perc_fact / _factbruta * 100),
-                _ar_pct_simple(_tot_perc_rep / _factbruta * 100),
-                _ar_pct_simple(_tot_perc_diff / _factbruta * 100),
+                _ar_pct_con_monto(_tot_perc_fact / _factbruta * 100, _tot_perc_fact),
+                _ar_pct_con_monto(_tot_perc_rep / _factbruta * 100, _tot_perc_rep),
+                _ar_pct_con_monto(_tot_perc_diff / _factbruta * 100, _tot_perc_diff),
                 "", "",
             ])
             _tabla_kwargs["fila_pct"] = True
@@ -2934,10 +2941,8 @@ def _render_consolidado_html(resultado: dict) -> str:
         if _factbruta:
             filas.append([
                 "% sobre facturación bruta",
-                _ar_pct_simple(_tot_ret_base / _factbruta * 100),
-                _ar_pct_simple(_tot_ret_retenido / _factbruta * 100),
-                _ar_pct_simple(_tot_ret_devuelto / _factbruta * 100),
-                _ar_pct_simple(_tot_ret_neto / _factbruta * 100),
+                "", "", "",
+                _ar_pct_con_monto(_tot_ret_neto / _factbruta * 100, _tot_ret_neto),
                 "",
             ])
             _tabla_kwargs["fila_pct"] = True
