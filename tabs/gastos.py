@@ -53,11 +53,7 @@ FUENTES_CONSOLIDADO = {
     "reten":    {"label": "Reportes Retenciones",  "icon": "ti-receipt-tax",   "color": "#8B0000", "bg": "#FDE4E4", "border": "#E08F8F"},
     "repo":     {"label": "Reportes ML",           "icon": "ti-report",        "color": "#0F5F2B", "bg": "#E4FBF0", "border": "#7FCFA0"},
     "analisis": {"label": "Análisis ML",           "icon": "ti-sparkles",      "color": "#7A5A0E", "bg": "#FBF8DC", "border": "#D4B860"},
-    "calc":     {
-        "label": "Cálculo interno", "icon": "ti-calculator",
-        "color": "var(--color-text-secondary)", "bg": "var(--color-background-secondary)",
-        "border": "var(--color-border-secondary)",
-    },
+    "calc":     {"label": "Cálculo interno", "icon": "ti-calculator", "color": "#5A5A5A", "bg": "#EDEDED", "border": "#BEBEBE"},
     "ventas_db": {"label": "Ventas propias (BD)", "icon": "ti-database", "color": "#0E6B6B", "bg": "#E3F7F7", "border": "#7FCFCF"},
 }
 
@@ -2466,17 +2462,19 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "concepto": "Costo de mercadería vendida",
             "monto": round(-_costo_info["suma"], 2),
             "fuentes": ["calc"],
-            "incluir_en_total": True,
         }
     elif _costo_info["caso"] == "parcial":
+        _pct_cobertura = (
+            round(_costo_info["con_costo"] / _costo_info["total_ventas"] * 100)
+            if _costo_info["total_ventas"] else 0
+        )
         _linea_costo_mercaderia = {
             "concepto": "Costo de mercadería vendida",
             "monto": round(-_costo_info["suma"], 2),
             "fuentes": ["calc"],
-            "incluir_en_total": False,
             "nota": (
-                f"Solo {_costo_info['con_costo']} de {_costo_info['total_ventas']} ventas del "
-                f"período tienen costo persistido. Cálculo parcial."
+                f"{_costo_info['con_costo']} de {_costo_info['total_ventas']} ventas con costo "
+                f"persistido — cálculo parcial {_pct_cobertura}%"
             ),
         }
     else:  # sin_datos
@@ -2492,28 +2490,52 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "monto": None,
             "nota": _nota_costo,
             "fuentes": ["calc"],
-            "incluir_en_total": False,
         }
-    lineas_flujo = [
-        {"concepto": "Ingresos brutos por ventas", "monto": round(ingresos_brutos, 2), "fuentes": ["repo"]},
-        _linea_costo_mercaderia,
+
+    _costo_suma_efectiva = (
+        -_linea_costo_mercaderia["monto"] if _linea_costo_mercaderia["monto"] is not None else 0.0
+    )
+    ganancia_bruta = round(ingresos_brutos - _costo_suma_efectiva, 2)
+
+    _lineas_costos_ml = [
         {"concepto": "Comisiones ML netas", "monto": round(-comisiones_venta, 2), "fuentes": ["repo"]},
         {"concepto": "Costos de envío ML netos", "monto": round(-costos_envio_ml_neto, 2), "fuentes": ["repo"]},
         {"concepto": "Cuotas", "monto": round(-cuotas, 2), "fuentes": ["repo"]},
         {"concepto": "Otros costos ML", "monto": round(-otros_costos_ml, 2), "fuentes": ["calc"]},
-        {"concepto": "Percepciones (van a AFIP)", "monto": round(-total_percepciones_ml, 2), "fuentes": _fuentes_percepciones_flujo},
-        {"concepto": "Retenciones sufridas", "monto": round(-total_retenciones_neto, 2), "fuentes": ["reten"]},
+    ]
+    total_costos_ml = round(sum(l["monto"] for l in _lineas_costos_ml), 2)
+
+    _lineas_impuestos_anticipados = [
+        {
+            "concepto": "Percepciones (anticipadas a AFIP)", "monto": round(-total_percepciones_ml, 2),
+            "fuentes": _fuentes_percepciones_flujo, "nota": "Crédito fiscal — se recupera en DDJJ",
+        },
+        {
+            "concepto": "Retenciones sufridas", "monto": round(-total_retenciones_neto, 2),
+            "fuentes": ["reten"], "nota": "Crédito fiscal — se recupera en DDJJ",
+        },
+    ]
+    total_impuestos_anticipados = round(sum(l["monto"] for l in _lineas_impuestos_anticipados), 2)
+
+    _lineas_ajustes = [
         {"concepto": "Notas de débito EnvíosFlex", "monto": round(-nd_flex_total, 2), "fuentes": ["repo"]},
         {"concepto": "Notas de crédito ML", "monto": round(nc_ml_total, 2), "fuentes": ["repo"]},
         {"concepto": "Envíos pagados por comprador", "monto": round(envios_comprador, 2), "fuentes": ["repo"]},
     ]
-    cobrado_neto = round(sum(
-        l["monto"] for l in lineas_flujo if l["monto"] is not None and l.get("incluir_en_total", True)
-    ), 2)
+    ajustes_neto = round(sum(l["monto"] for l in _lineas_ajustes), 2)
+
+    ganancia_neta = round(ganancia_bruta + total_costos_ml + total_impuestos_anticipados + ajustes_neto, 2)
+
     seccion_flujo = {
-        "lineas": lineas_flujo,
-        "cobrado_neto": cobrado_neto,
-        "costo_incluido": _costo_info["caso"] == "completo",
+        "ingresos_brutos": round(ingresos_brutos, 2),
+        "costo_mercaderia": _linea_costo_mercaderia,
+        "ganancia_bruta": ganancia_bruta,
+        "costos_ml": _lineas_costos_ml,
+        "total_costos_ml": total_costos_ml,
+        "impuestos_anticipados": _lineas_impuestos_anticipados,
+        "total_impuestos_anticipados": total_impuestos_anticipados,
+        "ajustes": _lineas_ajustes,
+        "ganancia_neta": ganancia_neta,
     }
 
     # --- SECCIÓN 5 — Validaciones y alertas ---
@@ -3153,25 +3175,67 @@ def _render_consolidado_html(resultado: dict) -> str:
         "font-size:10px;color:var(--color-text-tertiary);font-style:italic;"
         "margin-top:2px;line-height:1.4;display:inline-block"
     )
-    for l in flujo["lineas"]:
-        _nota_html = f'<br><span style="{_NOTA_STYLE}">{l["nota"]}</span>' if l.get("nota") else ""
-        valor = ("N/D" if l["monto"] is None else _ar_money(l["monto"])) + _nota_html
-        s.append(_row(l["concepto"], valor, fuentes=l.get("fuentes")))
-    cobrado_color = _GREEN if flujo["cobrado_neto"] >= 0 else _RED
-    _cobrado_nota = (
-        f'<div style="{_NOTA_STYLE};display:block;text-align:right">'
-        "* No incluye costo de mercadería (dato N/D o parcial)</div>"
-        if not flujo["costo_incluido"] else ""
-    )
+
+    def _subheader_flujo(titulo: str) -> str:
+        return (
+            '<div style="padding:12px 14px 3px;font-size:10px;font-weight:600;'
+            'text-transform:uppercase;letter-spacing:0.05em;'
+            f'color:{_GRAY}">{titulo}</div>'
+        )
+
+    def _money_flujo(monto: Optional[float]) -> str:
+        if monto is None:
+            return "N/D"
+        if monto < 0:
+            return f'<span style="color:{_RED}">$ ({_ar_money(monto)[3:]})</span>'
+        return _ar_money(monto)
+
+    def _fila_flujo(concepto, monto, fuentes=None, nota=None) -> str:
+        _prefijo = "" if monto is None else ("(–) " if monto < 0 else "(+) " if monto > 0 else "")
+        _nota_html = f'<br><span style="{_NOTA_STYLE}">{nota}</span>' if nota else ""
+        valor = _money_flujo(monto) + _nota_html
+        return _row(f"{_prefijo}{concepto}", valor, fuentes=fuentes)
+
+    def _subtotal_flujo(label, monto, fuentes=None) -> str:
+        badges = render_fuente_badges(fuentes)
+        return (
+            '<div style="display:flex;justify-content:space-between;align-items:center;padding:5px 14px;'
+            'background:#F2F2F2;font-weight:600;font-size:12px;'
+            'border-top:dashed 0.5px #CCCCCC;border-bottom:1px solid #f5f5f5">'
+            f'<span style="color:#333">{label}</span>'
+            f'<span style="display:flex;align-items:center;gap:6px">'
+            f'<span style="font-variant-numeric:tabular-nums">{_money_flujo(monto)}</span>'
+            f'{badges}</span></div>'
+        )
+
+    s.append(_row("Ingresos brutos por ventas", _ar_money(flujo["ingresos_brutos"]), fuentes=["repo"]))
+
+    s.append(_subheader_flujo("Costo directo del producto"))
+    _cm = flujo["costo_mercaderia"]
+    s.append(_fila_flujo(_cm["concepto"], _cm["monto"], fuentes=_cm.get("fuentes"), nota=_cm.get("nota")))
+    s.append(_subtotal_flujo("Ganancia bruta", flujo["ganancia_bruta"], fuentes=["calc"]))
+
+    s.append(_subheader_flujo("Costos de MercadoLibre"))
+    for l in flujo["costos_ml"]:
+        s.append(_fila_flujo(l["concepto"], l["monto"], fuentes=l.get("fuentes")))
+    s.append(_subtotal_flujo("Total costos ML", flujo["total_costos_ml"], fuentes=["calc"]))
+
+    s.append(_subheader_flujo("Impuestos anticipados"))
+    for l in flujo["impuestos_anticipados"]:
+        s.append(_fila_flujo(l["concepto"], l["monto"], fuentes=l.get("fuentes"), nota=l.get("nota")))
+    s.append(_subtotal_flujo("Total impuestos anticipados", flujo["total_impuestos_anticipados"], fuentes=["calc"]))
+
+    s.append(_subheader_flujo("Ajustes"))
+    for l in flujo["ajustes"]:
+        s.append(_fila_flujo(l["concepto"], l["monto"], fuentes=l.get("fuentes")))
+
     s.append(
-        f'<div style="padding:6px 14px;border-top:2px solid {_HDR_BORDER};margin-top:4px">'
+        '<div style="padding:10px 14px;margin-top:4px;background:#EAF3DE;border-top:2px solid #7FCFA0">'
         '<div style="display:flex;justify-content:space-between;align-items:center;'
-        f'font-size:13px;font-weight:700">'
-        f'<span style="color:#333">Cobrado neto de ML</span>'
-        f'<span style="display:flex;align-items:center;gap:6px">'
-        f'<span style="color:{cobrado_color}">{_ar_money(flujo["cobrado_neto"])}</span>'
-        f'{render_fuente_badges(["calc"])}</span></div>'
-        f'{_cobrado_nota}</div>'
+        'font-size:14px;font-weight:700;color:#27500A">'
+        '<span>GANANCIA NETA DEL PERÍODO</span>'
+        f'<span style="display:flex;align-items:center;gap:6px">{_money_flujo(flujo["ganancia_neta"])}'
+        f'{render_fuente_badges(["calc"])}</span></div></div>'
     )
     s.append("</div>")
     partes.append("".join(s))
