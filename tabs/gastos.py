@@ -3307,158 +3307,158 @@ def _render_seccion_cruce_ventas(resultado: dict) -> None:
     """Sección 7 — se renderiza con componentes NiceGUI nativos (no HTML estático como
     las secciones 1-6) porque los íconos de descarga por card necesitan un callback
     real de Python (ui.download), algo que un string de HTML inyectado no puede disparar.
-    Usa el mismo contenedor de sección (ancho completo, border-bottom, padding-bottom)
-    que las secciones 1-6 para no verse con un layout distinto al resto del modal."""
+    Nota: NO se envuelve en un with ui.column() con estilo de caja (se probó y la sección
+    dejaba de renderizarse por completo) — queda con el layout suelto original, con los
+    mismos colores de header/badge que el resto de secciones donde es seguro aplicarlos."""
     cr = resultado.get("cruce_ventas") or {"_disponible": False}
     periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
 
-    with ui.column().classes("w-full gap-0").style(_SECCION_WRAP_STYLE):
+    ui.html(
+        '<style>.cruce-card{background:var(--color-background-secondary);'
+        'border:0.5px solid var(--color-border-tertiary);border-radius:5px;'
+        'padding:8px 10px;display:flex;align-items:center;gap:8px}'
+        '.cruce-card.is-zero{opacity:0.5}</style>'
+        f'<div style="{_SECCION_HEADER_STYLE}"><i class="ti ti-arrows-exchange"></i>'
+        f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span>'
+        f'{_render_periodo_badge("ml", periodo_fiscal, periodo_ml)}</div>'
+    )
+
+    if not cr.get("_disponible"):
         ui.html(
-            '<style>.cruce-card{background:var(--color-background-secondary);'
-            'border:0.5px solid var(--color-border-tertiary);border-radius:5px;'
-            'padding:8px 10px;display:flex;align-items:center;gap:8px}'
-            '.cruce-card.is-zero{opacity:0.5}</style>'
-            f'<div style="{_SECCION_HEADER_STYLE}"><i class="ti ti-arrows-exchange"></i>'
-            f'<span>7 · Cruce Ventas Nuestras vs Reporte ML</span>'
-            f'{_render_periodo_badge("ml", periodo_fiscal, periodo_ml)}</div>'
+            '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
+            "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
+            "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el cruce.</div>"
         )
+        return
 
-        if not cr.get("_disponible"):
-            ui.html(
-                '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
-                "⚠ No hay Reporte de Facturación MercadoLibre procesado en este período. "
-                "Subir el archivo en la tarjeta Reportes MercadoLibre para ver el cruce.</div>"
-            )
-            return
+    async def _descargar(tipo: Optional[str]) -> None:
+        path, nombre = await run.io_bound(_generar_excel_cruce_ventas, resultado, tipo)
+        ui.download(path, nombre)
+        ui.notify(f"Exportado: {nombre}", color="positive")
 
-        async def _descargar(tipo: Optional[str]) -> None:
-            path, nombre = await run.io_bound(_generar_excel_cruce_ventas, resultado, tipo)
-            ui.download(path, nombre)
-            ui.notify(f"Exportado: {nombre}", color="positive")
-
-            def _cleanup() -> None:
-                try:
-                    if path and os.path.exists(path):
-                        os.unlink(path)
-                except Exception:
-                    pass
-            ui.timer(5.0, _cleanup, once=True)
-
-        cruzadas_ok = cr.get("cruzadas_ok") or []
-        solo_reporte = cr.get("solo_reporte") or []
-        solo_bd = cr.get("solo_bd") or []
-        con_diferencias = cr.get("con_diferencias") or []
-        anuladas = cr.get("anuladas") or []
-        total_reporte = cr.get("total_reporte", 0)
-        anuladas_ok = cr.get("anuladas_ok_count")
-        if anuladas_ok is None:
-            anuladas_ok = sum(1 for a in anuladas if a.get("_marcada_ok"))
-
-        # --- Hero de salud del período (compacto, 1 línea) ---
-        salud = cr.get("salud_pct", 0.0)
-        if salud >= 100:
-            hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
-            hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
-            hero_icon = "ti-mood-happy"
-        elif salud >= 95:
-            hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
-            hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
-            hero_icon = "ti-mood-neutral"
-        elif salud >= 85:
-            hero_bg1, hero_bg2, hero_border = "#FBF1DC", "#FCFAF4", "#E9C77B"
-            hero_icon_color, hero_value_color, hero_title_color = "#7A5A0E", "#6B4A08", "#8A6B2E"
-            hero_icon = "ti-mood-neutral"
-        else:
-            hero_bg1, hero_bg2, hero_border = "#F8DFDD", "#FBF4F3", "#E39B94"
-            hero_icon_color, hero_value_color, hero_title_color = "#A32D2D", "#7A1F1F", "#A85C56"
-            hero_icon = "ti-mood-sad"
-
-        salud_str = f"{int(salud)}%" if salud == int(salud) else f"{salud:.1f}".replace(".", ",") + "%"
-        procesadas_ok = len(cruzadas_ok) + anuladas_ok
-        ui.html(
-            f'<div style="padding:10px 14px;background:linear-gradient(135deg,{hero_bg1},{hero_bg2});'
-            f'border:0.5px solid {hero_border};border-radius:8px;margin:12px 14px;'
-            'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">'
-            f'<i class="ti {hero_icon}" style="font-size:22px;color:{hero_icon_color}"></i>'
-            f'<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;'
-            f'color:{hero_title_color}">Salud del período</span>'
-            f'<span style="font-size:22px;font-weight:700;color:{hero_value_color}">{salud_str}</span>'
-            f'<span style="font-size:11px;color:var(--color-text-secondary)">'
-            f'{_ar_num(procesadas_ok)} de {_ar_num(total_reporte)} ventas procesadas correctamente.</span>'
-            '</div>'
-        )
-
-        # --- Cards de detalle del cruce (4 en 1 fila) ---
-        categorias = [
-            (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Concretadas"),
-            (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Canceladas"),
-            (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte"),
-            (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias"),
-        ]
-
-        with ui.grid(columns=4).classes("w-full gap-[6px]").style("padding:0 12px 8px"):
-            for count, icono, icon_bg, icon_color, label in categorias:
-                es_cero = count == 0
-                with ui.row().classes(f"cruce-card{' is-zero' if es_cero else ''} items-center"):
-                    ui.html(
-                        f'<div style="width:26px;height:26px;flex-shrink:0;border-radius:5px;'
-                        f'background:{icon_bg};color:{icon_color};display:flex;align-items:center;'
-                        f'justify-content:center"><i class="ti {icono}" style="font-size:13px"></i></div>'
-                    )
-                    with ui.column().classes("gap-0").style("flex:1;min-width:0"):
-                        ui.label(_ar_num(count)).style("font-size:16px;font-weight:700;font-variant-numeric:tabular-nums")
-                        ui.label(label).style("font-size:10px;color:var(--color-text-secondary)")
-
-        # --- Cross-mes: ventas fuera del período de facturación ML, 1 línea ---
-        if solo_bd:
+        def _cleanup() -> None:
             try:
-                hasta_dt = datetime.strptime(periodo_ml.get("hasta") or "", "%d/%m/%Y")
-                inicio_cross = hasta_dt + timedelta(days=1)
-                if inicio_cross.month == 12:
-                    fin_mes = datetime(inicio_cross.year, 12, 31)
-                else:
-                    fin_mes = datetime(inicio_cross.year, inicio_cross.month + 1, 1) - timedelta(days=1)
-                mes_siguiente = _MESES_ES[fin_mes.month + 1] if fin_mes.month < 12 else _MESES_ES[1]
-                rango_txt = f"ventas del {inicio_cross.strftime('%d/%m')} al {fin_mes.strftime('%d/%m')} fuera del período ML"
-                mes_txt = f"— ML las facturará en el próximo Reporte ({mes_siguiente})"
-            except ValueError:
-                rango_txt = "ventas fuera del período de facturación ML"
-                mes_txt = "— ML las facturará en el próximo Reporte"
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
+        ui.timer(5.0, _cleanup, once=True)
 
-            with ui.row().classes("items-center w-full no-wrap").style(
-                "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary);"
-                "background:var(--color-background-secondary);gap:10px;font-size:11px"
-            ):
-                ui.html(
-                    '<div style="width:24px;height:24px;flex-shrink:0;border-radius:5px;'
-                    'background:#E8F1FA;color:#185FA5;display:flex;align-items:center;'
-                    'justify-content:center"><i class="ti ti-clock" style="font-size:12px"></i></div>'
-                )
-                ui.html(
-                    f'<div style="flex:1;min-width:0">'
-                    f'<span style="font-weight:700;font-size:13px">{_ar_num(len(solo_bd))}</span>&nbsp;'
-                    f'<span style="color:var(--color-text-secondary)">{rango_txt}</span>&nbsp;'
-                    f'<span style="color:var(--color-text-tertiary);font-size:10px">{mes_txt}</span>'
-                    '</div>'
-                )
+    cruzadas_ok = cr.get("cruzadas_ok") or []
+    solo_reporte = cr.get("solo_reporte") or []
+    solo_bd = cr.get("solo_bd") or []
+    con_diferencias = cr.get("con_diferencias") or []
+    anuladas = cr.get("anuladas") or []
+    total_reporte = cr.get("total_reporte", 0)
+    anuladas_ok = cr.get("anuladas_ok_count")
+    if anuladas_ok is None:
+        anuladas_ok = sum(1 for a in anuladas if a.get("_marcada_ok"))
 
-        # --- Descargar Excel completo (derecha) ---
-        with ui.row().classes("w-full justify-end").style(
-            "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary)"
+    # --- Hero de salud del período (compacto, 1 línea) ---
+    salud = cr.get("salud_pct", 0.0)
+    if salud >= 100:
+        hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
+        hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
+        hero_icon = "ti-mood-happy"
+    elif salud >= 95:
+        hero_bg1, hero_bg2, hero_border = "#EAF3DE", "#F7F9F2", "#7FCFA0"
+        hero_icon_color, hero_value_color, hero_title_color = "#3B6D11", "#27500A", "#5A7A3F"
+        hero_icon = "ti-mood-neutral"
+    elif salud >= 85:
+        hero_bg1, hero_bg2, hero_border = "#FBF1DC", "#FCFAF4", "#E9C77B"
+        hero_icon_color, hero_value_color, hero_title_color = "#7A5A0E", "#6B4A08", "#8A6B2E"
+        hero_icon = "ti-mood-neutral"
+    else:
+        hero_bg1, hero_bg2, hero_border = "#F8DFDD", "#FBF4F3", "#E39B94"
+        hero_icon_color, hero_value_color, hero_title_color = "#A32D2D", "#7A1F1F", "#A85C56"
+        hero_icon = "ti-mood-sad"
+
+    salud_str = f"{int(salud)}%" if salud == int(salud) else f"{salud:.1f}".replace(".", ",") + "%"
+    procesadas_ok = len(cruzadas_ok) + anuladas_ok
+    ui.html(
+        f'<div style="padding:10px 14px;background:linear-gradient(135deg,{hero_bg1},{hero_bg2});'
+        f'border:0.5px solid {hero_border};border-radius:8px;margin:12px 14px;'
+        'display:flex;align-items:baseline;gap:12px;flex-wrap:wrap">'
+        f'<i class="ti {hero_icon}" style="font-size:22px;color:{hero_icon_color}"></i>'
+        f'<span style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:0.04em;'
+        f'color:{hero_title_color}">Salud del período</span>'
+        f'<span style="font-size:22px;font-weight:700;color:{hero_value_color}">{salud_str}</span>'
+        f'<span style="font-size:11px;color:var(--color-text-secondary)">'
+        f'{_ar_num(procesadas_ok)} de {_ar_num(total_reporte)} ventas procesadas correctamente.</span>'
+        '</div>'
+    )
+
+    # --- Cards de detalle del cruce (4 en 1 fila) ---
+    categorias = [
+        (len(cruzadas_ok), "ti-check", "#EAF3DE", "#3B6D11", "Concretadas"),
+        (len(anuladas), "ti-refresh-alert", "#EAF3DE", "#3B6D11", "Canceladas"),
+        (len(solo_reporte), "ti-alert-triangle", "#FBF1DC", "#7A5A0E", "Solo en Reporte"),
+        (len(con_diferencias), "ti-scale", "#FBF1DC", "#7A5A0E", "Con diferencias"),
+    ]
+
+    with ui.grid(columns=4).classes("w-full gap-[6px]").style("padding:0 12px 8px"):
+        for count, icono, icon_bg, icon_color, label in categorias:
+            es_cero = count == 0
+            with ui.row().classes(f"cruce-card{' is-zero' if es_cero else ''} items-center"):
+                ui.html(
+                    f'<div style="width:26px;height:26px;flex-shrink:0;border-radius:5px;'
+                    f'background:{icon_bg};color:{icon_color};display:flex;align-items:center;'
+                    f'justify-content:center"><i class="ti {icono}" style="font-size:13px"></i></div>'
+                )
+                with ui.column().classes("gap-0").style("flex:1;min-width:0"):
+                    ui.label(_ar_num(count)).style("font-size:16px;font-weight:700;font-variant-numeric:tabular-nums")
+                    ui.label(label).style("font-size:10px;color:var(--color-text-secondary)")
+
+    # --- Cross-mes: ventas fuera del período de facturación ML, 1 línea ---
+    if solo_bd:
+        try:
+            hasta_dt = datetime.strptime(periodo_ml.get("hasta") or "", "%d/%m/%Y")
+            inicio_cross = hasta_dt + timedelta(days=1)
+            if inicio_cross.month == 12:
+                fin_mes = datetime(inicio_cross.year, 12, 31)
+            else:
+                fin_mes = datetime(inicio_cross.year, inicio_cross.month + 1, 1) - timedelta(days=1)
+            mes_siguiente = _MESES_ES[fin_mes.month + 1] if fin_mes.month < 12 else _MESES_ES[1]
+            rango_txt = f"ventas del {inicio_cross.strftime('%d/%m')} al {fin_mes.strftime('%d/%m')} fuera del período ML"
+            mes_txt = f"— ML las facturará en el próximo Reporte ({mes_siguiente})"
+        except ValueError:
+            rango_txt = "ventas fuera del período de facturación ML"
+            mes_txt = "— ML las facturará en el próximo Reporte"
+
+        with ui.row().classes("items-center w-full no-wrap").style(
+            "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary);"
+            "background:var(--color-background-secondary);gap:10px;font-size:11px"
         ):
-            ui.button(
-                "Descargar Excel completo",
-                on_click=lambda: _descargar(None),
-            ).props("icon=download no-caps dense").style(
-                f"background:{_BLUE};color:white;padding:6px 12px;border-radius:5px;font-size:11px"
+            ui.html(
+                '<div style="width:24px;height:24px;flex-shrink:0;border-radius:5px;'
+                'background:#E8F1FA;color:#185FA5;display:flex;align-items:center;'
+                'justify-content:center"><i class="ti ti-clock" style="font-size:12px"></i></div>'
             )
+            ui.html(
+                f'<div style="flex:1;min-width:0">'
+                f'<span style="font-weight:700;font-size:13px">{_ar_num(len(solo_bd))}</span>&nbsp;'
+                f'<span style="color:var(--color-text-secondary)">{rango_txt}</span>&nbsp;'
+                f'<span style="color:var(--color-text-tertiary);font-size:10px">{mes_txt}</span>'
+                '</div>'
+            )
+
+    # --- Descargar Excel completo (derecha) ---
+    with ui.row().classes("w-full justify-end").style(
+        "padding:8px 12px;border-top:0.5px solid var(--color-border-tertiary)"
+    ):
+        ui.button(
+            "Descargar Excel completo",
+            on_click=lambda: _descargar(None),
+        ).props("icon=download no-caps dense").style(
+            f"background:{_BLUE};color:white;padding:6px 12px;border-radius:5px;font-size:11px"
+        )
 
 
 def _abrir_modal_consolidado(resultado: dict) -> None:
     periodo_fiscal, periodo_ml = _periodos_del_resultado(resultado)
     with ui.dialog() as dlg:
         with ui.card().style(
-            "width:90vw;max-width:1400px;height:90vh;overflow:hidden;"
+            "width:1200px;max-width:90vw;height:90vh;overflow:hidden;"
             "display:flex;flex-direction:column;padding:0"
         ):
             with ui.row().classes("items-center justify-between w-full px-4 py-3 flex-shrink-0").style(
