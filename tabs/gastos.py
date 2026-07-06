@@ -205,6 +205,8 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         "condicion_fiscal (ej: 'Responsable Inscripto', tal como aparece en la cabecera), "
         "fecha_desde (del campo 'Intervalo de fechas consultadas', formato DD/MM/AAAA), "
         "fecha_hasta (del mismo campo, formato DD/MM/AAAA). "
+        "Si en la cabecera o la tabla aparece 'Coeficiente RG 116/10' (un número como 0.5, 0.6 o 1.0), "
+        "extraelo como coeficiente_rg_116_10 (número). Si no aparece esa columna/dato, usá null. "
         "De la TABLA de detalle, mirá la columna 'Alícuota': "
         "si el valor es el MISMO en todas las filas, extraé ese valor único. "
         "Si varía, extraé el rango como 'min-max'. "
@@ -218,7 +220,7 @@ _PROMPTS_DEFAULT: Dict[str, str] = {
         'Ejemplo: {"usuario":"NORTHTECHNOLOGY","impuesto":"Impuesto a los IIBB Corrientes",'
         '"condicion_fiscal":"Responsable Inscripto",'
         '"fecha_desde":"01/04/2026","fecha_hasta":"01/05/2026","alicuota":"2,00 %",'
-        '"base_imponible":869973.24,"monto_percibido":17399.46}'
+        '"base_imponible":869973.24,"monto_percibido":17399.46,"coeficiente_rg_116_10":0.5}'
     ),
     "pagos_arca": (
         "Analizá este comprobante de pago ARCA/AFIP. Identificá el tipo de documento y extraé en JSON puro "
@@ -2259,6 +2261,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
     # --- Percepciones (reportes de Percepciones), por provincia ---
     perc_reportes: Dict[str, float] = defaultdict(float)
     perc_reportes_detalle: Dict[str, list] = defaultdict(list)
+    perc_reportes_coefs: Dict[str, set] = defaultdict(set)
     for f in archivos.get("percepciones", []):
         d = _ed(f)
         etiqueta = _extraer_impuesto_percepciones(f.get("filename", "")) or d.get("impuesto") or ""
@@ -2266,6 +2269,9 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
         jurisdiccion = normalizar_jurisdiccion_percepcion(etiqueta) or "Sin identificar"
         perc_reportes[jurisdiccion] += monto
         perc_reportes_detalle[jurisdiccion].append(f"{etiqueta or f.get('filename', '')}: {_ar_money(round(monto, 2))}")
+        _coef = d.get("coeficiente_rg_116_10")
+        if _coef is not None:
+            perc_reportes_coefs[jurisdiccion].add(_coef)
     perc_reportes = {k: round(v, 2) for k, v in perc_reportes.items()}
 
     print(f"[DBG-CONSOLIDADO] percepciones_por_jurisdiccion_facturas = {perc_facturas}", flush=True)
@@ -2284,6 +2290,7 @@ def analizar_periodo_consolidado(user_id: int, periodo: str) -> dict:
             "diff": round(a - b, 2), "ok": ok,
             "detalle_facturas": perc_facturas_detalle.get(prov, []) if not ok else [],
             "detalle_reportes": perc_reportes_detalle.get(prov, []) if not ok else [],
+            "coeficientes": sorted(perc_reportes_coefs.get(prov, set())),
         })
 
     # --- Retenciones sufridas ---
@@ -2701,6 +2708,13 @@ def _ar_pct_con_monto(pct: float, monto: float) -> str:
     )
 
 
+def _fmt_coef(c) -> str:
+    try:
+        return f"{float(c):g}"
+    except (TypeError, ValueError):
+        return str(c)
+
+
 def _render_consolidado_html(resultado: dict) -> str:
     """Arma el HTML de las 6 secciones del análisis consolidado para el modal."""
     v         = resultado["ventas"]
@@ -2887,8 +2901,16 @@ def _render_consolidado_html(resultado: dict) -> str:
                     f'<div style="text-align:center" title="{_tt_esc}">'
                     f'<i class="ti ti-x" style="color:{_RED};font-size:16px;cursor:help"></i></div>'
                 )
+            _coefs = r.get("coeficientes") or []
+            _prov_label = r["provincia"]
+            if _coefs:
+                _coefs_str = ", ".join(_fmt_coef(c) for c in _coefs)
+                _prov_label = (
+                    f'{r["provincia"]} '
+                    f'<span style="font-size:11px;color:var(--color-text-tertiary)">({_coefs_str})</span>'
+                )
             filas.append([
-                r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
+                _prov_label, _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
                 _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
             ])
         _tot_perc_fact = sum(r["facturas_ml"] for r in imp["cruce_percepciones"])
@@ -2955,12 +2977,31 @@ def _render_consolidado_html(resultado: dict) -> str:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
 
     # --- Anticipos IIBB por provincia (percepciones + retenciones) ---
+    # Retenciones que no matchean ninguna provincia se sub-clasifican: SIRTAC queda agrupado
+    # como una fila más de esta tabla (a cuenta de IIBB); Créditos y Débitos se excluye por
+    # completo (no es anticipo de IIBB sino de IVA/Ganancias) y pasa a su propia tabla más abajo.
     _perc_por_prov: Dict[str, float] = {r["provincia"]: r["reportes"] for r in imp["cruce_percepciones"]}
     _ret_por_prov: Dict[str, float] = defaultdict(float)
+    _ret_credeb_neto = 0.0
+    _ret_sin_identificar_log = []
     for r in imp["retenciones_detalle"]:
-        _juris = normalizar_jurisdiccion_percepcion(r["impuesto"] or "") or "Sin identificar"
+        _impuesto = r["impuesto"] or ""
+        _juris = normalizar_jurisdiccion_percepcion(_impuesto)
+        if _juris is None:
+            _norm = _concepto_norm(_impuesto)
+            if "sirtac" in _norm:
+                _juris = "SIRTAC"
+            elif "cred" in _norm and "deb" in _norm:
+                _ret_credeb_neto += r["neto"] or 0.0
+                continue
+            else:
+                _juris = "Sin identificar"
+                _ret_sin_identificar_log.append(_impuesto)
         _ret_por_prov[_juris] += r["neto"] or 0.0
     _ret_por_prov = {k: round(v, 2) for k, v in _ret_por_prov.items()}
+    _ret_credeb_neto = round(_ret_credeb_neto, 2)
+    if _ret_sin_identificar_log:
+        print(f"[DBG-CONSOLIDADO] Retenciones sin jurisdicción identificada (revisar mapeo): {_ret_sin_identificar_log}", flush=True)
 
     _anticipos = []
     for prov in set(_perc_por_prov) | set(_ret_por_prov):
@@ -2993,8 +3034,14 @@ def _render_consolidado_html(resultado: dict) -> str:
             if x["retenciones"]:
                 _badges += ["reten"]
             _pct_fila = _ar_pct_simple(x["total"] / _factbruta * 100) if _factbruta else "N/D"
+            _prov_label = x["provincia"]
+            if _prov_label == "SIRTAC":
+                _prov_label = (
+                    'SIRTAC<br><span style="font-size:10px;color:var(--color-text-tertiary)">'
+                    'se toma a cuenta de IIBB</span>'
+                )
             filas.append([
-                x["provincia"], _ar_money(x["percepciones"]), _ar_money(x["retenciones"]),
+                _prov_label, _ar_money(x["percepciones"]), _ar_money(x["retenciones"]),
                 f'<b>{_ar_money(x["total"])}</b>', _pct_fila,
                 render_fuente_badges(_badges) if _badges else "",
             ])
@@ -3019,6 +3066,24 @@ def _render_consolidado_html(resultado: dict) -> str:
             f'{_tabla(["Provincia", "Percepciones", "Retenciones", "Total", "% s/ facturación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "center"], header_align="center", **_tabla_kwargs)}'
             f'</div>'
         )
+
+    # --- Impuesto sobre Créditos y Débitos (excluido de Anticipos IIBB: es a cuenta de IVA/Ganancias) ---
+    # Las percepciones de ML son siempre IIBB por construcción (línea "Percepción IIBB {provincia}"
+    # de la factura), así que este impuesto no aparece nunca del lado de percepciones en la práctica.
+    _perc_credeb_neto = 0.0
+    _tot_credeb = round(_perc_credeb_neto + _ret_credeb_neto, 2)
+    if _tot_credeb:
+        s.append(_sec("ti-arrows-right-left", "Impuesto sobre Créditos y Débitos"))
+        s.append(
+            '<div style="padding:6px 14px 10px;font-size:11px;color:var(--color-text-secondary);'
+            'font-style:italic;line-height:1.5">'
+            "Se toma a cuenta de IVA/Ganancias — no es anticipo de IIBB, por eso no está en la tabla anterior</div>"
+        )
+        s.append(_row("Percepciones", _ar_money(_perc_credeb_neto), fuentes=["perc"]))
+        s.append(_row("Retenciones", _ar_money(_ret_credeb_neto), fuentes=["reten"]))
+        s.append(_row("Total", _ar_money(_tot_credeb), bold=True, fuentes=["calc"]))
+        if _factbruta:
+            s.append(_row("% sobre facturación bruta", _ar_pct_con_monto(_tot_credeb / _factbruta * 100, _tot_credeb)))
 
     s.append(_sec("ti-percentage", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA"))
     iva = imp["iva_analisis"]
