@@ -2831,15 +2831,9 @@ def _render_consolidado_html(resultado: dict) -> str:
         body = ""
         for idx, fila in enumerate(filas):
             if idx == _idx_pct:
-                _extra = (
-                    "color:var(--color-text-secondary);"
-                    "border-top:dashed 0.5px var(--color-border-tertiary);"
-                )
+                _extra = f"color:{_GRAY};border-top:dashed 0.5px #D8D8D8;"
             elif idx == _idx_total:
-                _extra = (
-                    "font-weight:700;background:var(--color-background-secondary);"
-                    "border-top:1px solid var(--color-border-secondary);"
-                )
+                _extra = "font-weight:700;background:#F5F5F5;border-top:1px solid #BEBEBE;"
             else:
                 _extra = ""
             tds = "".join(
@@ -2851,6 +2845,26 @@ def _render_consolidado_html(resultado: dict) -> str:
         return (
             '<table style="border-collapse:collapse;width:100%;margin-top:4px">'
             f"<thead><tr>{ths}</tr></thead><tbody>{body}</tbody></table>"
+        )
+
+    def _subsec(icon: str, titulo: str, descripcion: str, contenido: str) -> str:
+        """Card interna para cada sub-tabla del punto 3 (Impuestos y Retenciones), que
+        agrupa varios temas distintos dentro del mismo contenedor de sección."""
+        desc_html = (
+            f'<div style="font-size:10px;color:{_GRAY};font-style:italic;margin-top:3px;'
+            f'line-height:1.4">{descripcion}</div>'
+            if descripcion else ""
+        )
+        return (
+            f'<div style="border:0.5px solid {_SECCION_BORDER};border-radius:6px;overflow:hidden;'
+            'margin:12px 14px;background:#ffffff">'
+            f'<div style="background:#F7F8FA;padding:10px 12px;border-bottom:0.5px solid {_SECCION_BORDER}">'
+            '<div style="font-size:11px;font-weight:700;color:#333;display:flex;align-items:center;gap:6px">'
+            f'<i class="ti {icon}"></i>{titulo}</div>'
+            f'{desc_html}'
+            "</div>"
+            f'<div style="overflow-x:auto">{contenido}</div>'
+            "</div>"
         )
 
     def _leyenda_fuentes_html() -> str:
@@ -2934,16 +2948,8 @@ def _render_consolidado_html(resultado: dict) -> str:
     s = [f'<div style="{_WRAP}">', _sec("ti-building-bank", "3 · Impuestos y Retenciones", "fiscal")]
     if imp["_incompleto"]:
         s.append(_incompleto_html())
-    s.append(
-        '<div style="padding:6px 14px 0;font-size:11px;font-weight:700;color:#555">'
-        "Percepciones por provincia — Facturas ML vs Reportes</div>"
-    )
-    s.append(
-        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
-        'font-style:italic;line-height:1.5">'
-        "Cuando MercadoLibre me factura las comisiones a fin de mes, las provincias me perciben "
-        "a cuenta de IIBB. Suma importes de facturas de MercadoLibre y de MercadoEnvíos.</div>"
-    )
+
+    # --- a. Percepciones por provincia ---
     if imp["cruce_percepciones"]:
         filas = []
         for r in imp["cruce_percepciones"]:
@@ -2966,7 +2972,7 @@ def _render_consolidado_html(resultado: dict) -> str:
                 _coefs_str = ", ".join(_fmt_coef(c) for c in _coefs)
                 _prov_label = (
                     f'{r["provincia"]} '
-                    f'<span style="font-size:11px;color:var(--color-text-tertiary)">({_coefs_str})</span>'
+                    f'<span style="font-size:11px;color:{_GRAY}">({_coefs_str})</span>'
                 )
             filas.append([
                 _prov_label, _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
@@ -2989,20 +2995,20 @@ def _render_consolidado_html(resultado: dict) -> str:
                 "", "",
             ])
             _tabla_kwargs["fila_pct"] = True
-        s.append(
-            f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center", **_tabla_kwargs)}'
-            f'</div>'
+        _contenido_perc = _tabla(
+            ["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas,
+            aligns=["left", "right", "right", "right", "center", "center"], header_align="center", **_tabla_kwargs,
         )
     else:
-        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+        _contenido_perc = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
+    s.append(_subsec(
+        "ti-file-invoice", "Percepciones por provincia — Facturas ML vs Reportes",
+        "Cuando MercadoLibre me factura las comisiones a fin de mes, las provincias me perciben "
+        "a cuenta de IIBB. Suma importes de facturas de MercadoLibre y de MercadoEnvíos.",
+        _contenido_perc,
+    ))
 
-    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
-    s.append(
-        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
-        'font-style:italic;line-height:1.5">'
-        "Me las va descontando venta por venta, no las tengo que pagar a fin de mes</div>"
-    )
+    # --- b. Retenciones sufridas ---
     if imp["retenciones_detalle"]:
         _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
         filas = [
@@ -3027,15 +3033,19 @@ def _render_consolidado_html(resultado: dict) -> str:
                 "",
             ])
             _tabla_kwargs["fila_pct"] = True
-        s.append(
-            f'<div style="padding:0 14px">'
-            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"], **_tabla_kwargs)}'
-            f'</div>'
+        _contenido_ret = _tabla(
+            ["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas,
+            aligns=["left", "right", "right", "right", "right", "left"], **_tabla_kwargs,
         )
     else:
-        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+        _contenido_ret = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
+    s.append(_subsec(
+        "ti-receipt-tax", "Retenciones sufridas",
+        "Me las va descontando venta por venta, no las tengo que pagar a fin de mes",
+        _contenido_ret,
+    ))
 
-    # --- Anticipos IIBB por provincia (percepciones + retenciones) ---
+    # --- c. Anticipos IIBB por provincia (percepciones + retenciones) ---
     # Retenciones que no matchean ninguna provincia se sub-clasifican: SIRTAC queda agrupado
     # como una fila más de esta tabla (a cuenta de IIBB); Créditos y Débitos se excluye por
     # completo (no es anticipo de IIBB sino de IVA/Ganancias) y pasa a su propia tabla más abajo.
@@ -3075,16 +3085,6 @@ def _render_consolidado_html(resultado: dict) -> str:
     _tot_anticipos_total = round(_tot_anticipos_perc + _tot_anticipos_ret, 2)
 
     if _anticipos and _tot_anticipos_total:
-        s.append(
-            '<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">'
-            "Anticipos IIBB por provincia (percepciones + retenciones)</div>"
-        )
-        s.append(
-            '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
-            'font-style:italic;line-height:1.5">'
-            "Total de anticipos fiscales sufridos por provincia — plata ya pagada a cuenta del IIBB "
-            "del mes que se descuenta en la DDJJ</div>"
-        )
         filas = []
         for x in _anticipos:
             _badges = []
@@ -3096,7 +3096,7 @@ def _render_consolidado_html(resultado: dict) -> str:
             _prov_label = x["provincia"]
             if _prov_label == "SIRTAC":
                 _prov_label = (
-                    'SIRTAC<br><span style="font-size:10px;color:var(--color-text-tertiary)">'
+                    f'SIRTAC<br><span style="font-size:10px;color:{_GRAY}">'
                     'se toma a cuenta de IIBB</span>'
                 )
             filas.append([
@@ -3120,60 +3120,77 @@ def _render_consolidado_html(resultado: dict) -> str:
                 "", "",
             ])
             _tabla_kwargs["fila_pct"] = True
-        s.append(
-            f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Percepciones", "Retenciones", "Total", "% s/ facturación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "center"], header_align="center", **_tabla_kwargs)}'
-            f'</div>'
+        _contenido_ant = _tabla(
+            ["Provincia", "Percepciones", "Retenciones", "Total", "% s/ facturación", "Fuente"], filas,
+            aligns=["left", "right", "right", "right", "right", "center"], header_align="center", **_tabla_kwargs,
         )
+        s.append(_subsec(
+            "ti-receipt", "Anticipos IIBB por provincia (percepciones + retenciones)",
+            "Total de anticipos fiscales sufridos por provincia — plata ya pagada a cuenta del IIBB "
+            "del mes que se descuenta en la DDJJ",
+            _contenido_ant,
+        ))
 
-    # --- Impuesto sobre Créditos y Débitos (excluido de Anticipos IIBB: es a cuenta de IVA/Ganancias) ---
+    # --- d. Impuesto sobre Créditos y Débitos (excluido de Anticipos IIBB: es a cuenta de IVA/Ganancias) ---
     # Las percepciones de ML son siempre IIBB por construcción (línea "Percepción IIBB {provincia}"
     # de la factura), así que este impuesto no aparece nunca del lado de percepciones en la práctica.
     _perc_credeb_neto = 0.0
     _tot_credeb = round(_perc_credeb_neto + _ret_credeb_neto, 2)
     if _tot_credeb:
-        s.append(_sec("ti-arrows-right-left", "Impuesto sobre Créditos y Débitos"))
-        s.append(
-            '<div style="padding:6px 14px 10px;font-size:11px;color:var(--color-text-secondary);'
-            'font-style:italic;line-height:1.5">'
-            "Se toma a cuenta de IVA/Ganancias — no es anticipo de IIBB, por eso no está en la tabla anterior</div>"
-        )
-        s.append(_row("Percepciones", _ar_money(_perc_credeb_neto), fuentes=["perc"]))
-        s.append(_row("Retenciones", _ar_money(_ret_credeb_neto), fuentes=["reten"]))
-        s.append(_row("Total", _ar_money(_tot_credeb), bold=True, fuentes=["calc"]))
+        _rows_credeb = [
+            _row("Percepciones", _ar_money(_perc_credeb_neto), fuentes=["perc"]),
+            _row("Retenciones", _ar_money(_ret_credeb_neto), fuentes=["reten"]),
+            _row("Total", _ar_money(_tot_credeb), bold=True, fuentes=["calc"]),
+        ]
         if _factbruta:
-            s.append(_row("% sobre facturación bruta", _ar_pct_con_monto(_tot_credeb / _factbruta * 100, _tot_credeb)))
+            _rows_credeb.append(
+                _row("% sobre facturación bruta", _ar_pct_con_monto(_tot_credeb / _factbruta * 100, _tot_credeb))
+            )
+        s.append(_subsec(
+            "ti-building-bank", "Impuesto sobre Créditos y Débitos",
+            "Se toma a cuenta de IVA/Ganancias — no es anticipo de IIBB, por eso no está en la tabla anterior",
+            "".join(_rows_credeb),
+        ))
 
-    s.append(_sec("ti-percentage", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA"))
+    # --- e. IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA ---
     iva = imp["iva_analisis"]
-    s.append(_row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"]), fuentes=["repo"]))
-    s.append(_row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"]), fuentes=["calc"]))
-    s.append(_row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"]), fuentes=["fact"]))
-    s.append(_row("IVA Crédito Fiscal (Pagos ARCA)", _ar_money(iva["iva_credito_fiscal_arca"]), fuentes=["arca"]))
-    s.append(_row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"]), fuentes=["reten"]))
-
-    s.append(
-        '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
-        'letter-spacing:0.04em;color:#9e9e9e;border-top:1px dashed #ddd;margin-top:4px">'
-        "Datos de VEP IVA</div>"
-    )
+    _rows_iva = [
+        _row("Ventas gravadas (aprox.)", _ar_money(iva["ventas_gravadas"]), fuentes=["repo"]),
+        _row("IVA Débito Fiscal (10,5% estimado)", _ar_money(iva["iva_debito_fiscal"]), fuentes=["calc"]),
+        _row("IVA Crédito Fiscal (Facturas ML)", _ar_money(iva["iva_credito_fiscal_facturas"]), fuentes=["fact"]),
+        _row("IVA Crédito Fiscal (Pagos ARCA)", _ar_money(iva["iva_credito_fiscal_arca"]), fuentes=["arca"]),
+        _row("Retenciones IVA sufridas", _ar_money(iva["retenciones_iva"]), fuentes=["reten"]),
+        (
+            '<div style="padding:8px 14px 2px;font-size:10px;font-weight:700;text-transform:uppercase;'
+            'letter-spacing:0.04em;color:#9e9e9e;border-top:1px dashed #ddd;margin-top:4px">'
+            "Datos de VEP IVA</div>"
+        ),
+    ]
     if iva["vep_debito_fiscal_total"] is not None:
-        s.append(_row("Total Débito Fiscal del período (VEP)", _ar_money(iva["vep_debito_fiscal_total"]), fuentes=["arca"]))
-        s.append(_row("Total Crédito Fiscal del período (VEP)", _ar_money(iva["vep_credito_fiscal_total"]), fuentes=["arca"]))
-        s.append(_row("IVA a Pagar (Débito - Crédito)", _ar_money(iva["iva_a_pagar_arca"]), bold=True, fuentes=["calc"]))
+        _rows_iva.append(_row("Total Débito Fiscal del período (VEP)", _ar_money(iva["vep_debito_fiscal_total"]), fuentes=["arca"]))
+        _rows_iva.append(_row("Total Crédito Fiscal del período (VEP)", _ar_money(iva["vep_credito_fiscal_total"]), fuentes=["arca"]))
+        _rows_iva.append(_row("IVA a Pagar (Débito - Crédito)", _ar_money(iva["iva_a_pagar_arca"]), bold=True, fuentes=["calc"]))
     else:
-        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
+        _rows_iva.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
+    s.append(_subsec(
+        "ti-calculator", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA", "", "".join(_rows_iva),
+    ))
 
-    s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Cruce Impuestos vs Pagos a ARCA</div>')
+    # --- f. Cruce Impuestos vs Pagos a ARCA ---
     if imp["cruce_impuestos_pagos"]:
         filas = [
             [r["concepto"], _ar_money(r["total_credito"]), _ar_money(r["pagado_arca"]),
              _ar_money(r["neto"]), r["saldo"], render_fuente_badges(["perc", "reten", "arca"])]
             for r in imp["cruce_impuestos_pagos"]
         ]
-        s.append(f'<div style="padding:0 14px">{_tabla(["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"])}</div>')
+        _contenido_cruce = _tabla(
+            ["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas,
+            aligns=["left", "right", "right", "right", "center", "center"],
+        )
     else:
-        s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+        _contenido_cruce = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
+    s.append(_subsec("ti-arrows-exchange", "Cruce Impuestos vs Pagos a ARCA", "", _contenido_cruce))
+
     s.append("</div>")
     partes.append("".join(s))
 
