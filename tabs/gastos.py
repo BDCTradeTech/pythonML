@@ -2735,7 +2735,10 @@ def _render_consolidado_html(resultado: dict) -> str:
             "Datos incompletos</div>"
         )
 
-    def _tabla(headers: list, filas: list, aligns: Optional[list] = None, header_align: str = "center") -> str:
+    def _tabla(
+        headers: list, filas: list, aligns: Optional[list] = None,
+        header_align: str = "center", fila_total: bool = False,
+    ) -> str:
         aligns = aligns or ["left"] * len(headers)
         ths = "".join(
             f'<th style="border:1px solid #d0d0d0;padding:3px 8px;background:#eef3f8;'
@@ -2743,9 +2746,15 @@ def _render_consolidado_html(resultado: dict) -> str:
             for h in headers
         )
         body = ""
-        for fila in filas:
+        for idx, fila in enumerate(filas):
+            _es_total = fila_total and idx == len(filas) - 1
+            _extra = (
+                "font-weight:700;background:var(--color-background-secondary);"
+                "border-top:1px solid var(--color-border-secondary);"
+                if _es_total else ""
+            )
             tds = "".join(
-                f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333;'
+                f'<td style="border:1px solid #e8e8e8;padding:3px 8px;font-size:11px;color:#333;{_extra}'
                 f'text-align:{aligns[i] if i < len(aligns) else "left"}">{c}</td>'
                 for i, c in enumerate(fila)
             )
@@ -2839,6 +2848,12 @@ def _render_consolidado_html(resultado: dict) -> str:
         '<div style="padding:6px 14px 0;font-size:11px;font-weight:700;color:#555">'
         "Percepciones por provincia — Facturas ML vs Reportes</div>"
     )
+    s.append(
+        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
+        'font-style:italic;line-height:1.5">'
+        "Cuando MercadoLibre me factura las comisiones a fin de mes, las provincias me perciben "
+        "a cuenta de IIBB</div>"
+    )
     if imp["cruce_percepciones"]:
         filas = []
         for r in imp["cruce_percepciones"]:
@@ -2859,9 +2874,16 @@ def _render_consolidado_html(resultado: dict) -> str:
                 r["provincia"], _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
                 _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
             ])
+        filas.append([
+            "TOTAL",
+            _ar_money(sum(r["facturas_ml"] for r in imp["cruce_percepciones"])),
+            _ar_money(sum(r["reportes"] for r in imp["cruce_percepciones"])),
+            _ar_money(sum(r["diff"] for r in imp["cruce_percepciones"])),
+            "", render_fuente_badges(["fact", "perc"]),
+        ])
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center")}'
+            f'{_tabla(["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas, aligns=["left", "right", "right", "right", "center", "center"], header_align="center", fila_total=True)}'
             f'</div>'
         )
     else:
@@ -2888,6 +2910,11 @@ def _render_consolidado_html(resultado: dict) -> str:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin VEP de IVA procesado en este período</div>')
 
     s.append('<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">Retenciones sufridas</div>')
+    s.append(
+        '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
+        'font-style:italic;line-height:1.5">'
+        "Me las va descontando venta por venta, no las tengo que pagar a fin de mes</div>"
+    )
     if imp["retenciones_detalle"]:
         _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
         filas = [
@@ -2895,9 +2922,17 @@ def _render_consolidado_html(resultado: dict) -> str:
              _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
             for r in _retenciones_ordenadas
         ]
+        filas.append([
+            "TOTAL",
+            _ar_money(sum(r["base_imponible"] for r in _retenciones_ordenadas)),
+            _ar_money(sum(r["importe_retenido"] for r in _retenciones_ordenadas)),
+            _ar_money(sum(r["importe_devuelto"] for r in _retenciones_ordenadas)),
+            _ar_money(sum(r["neto"] for r in _retenciones_ordenadas)),
+            "",
+        ])
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"])}'
+            f'{_tabla(["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left"], fila_total=True)}'
             f'</div>'
         )
     else:
