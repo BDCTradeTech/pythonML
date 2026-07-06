@@ -2869,7 +2869,7 @@ def _render_consolidado_html(resultado: dict) -> str:
         '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
         'font-style:italic;line-height:1.5">'
         "Cuando MercadoLibre me factura las comisiones a fin de mes, las provincias me perciben "
-        "a cuenta de IIBB</div>"
+        "a cuenta de IIBB. Suma importes de facturas de MercadoLibre y de MercadoEnvíos.</div>"
     )
     if imp["cruce_percepciones"]:
         filas = []
@@ -2953,6 +2953,72 @@ def _render_consolidado_html(resultado: dict) -> str:
         )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
+
+    # --- Anticipos IIBB por provincia (percepciones + retenciones) ---
+    _perc_por_prov: Dict[str, float] = {r["provincia"]: r["reportes"] for r in imp["cruce_percepciones"]}
+    _ret_por_prov: Dict[str, float] = defaultdict(float)
+    for r in imp["retenciones_detalle"]:
+        _juris = normalizar_jurisdiccion_percepcion(r["impuesto"] or "") or "Sin identificar"
+        _ret_por_prov[_juris] += r["neto"] or 0.0
+    _ret_por_prov = {k: round(v, 2) for k, v in _ret_por_prov.items()}
+
+    _anticipos = []
+    for prov in set(_perc_por_prov) | set(_ret_por_prov):
+        _p, _r = _perc_por_prov.get(prov, 0.0), _ret_por_prov.get(prov, 0.0)
+        if not _p and not _r:
+            continue
+        _anticipos.append({"provincia": prov, "percepciones": _p, "retenciones": _r, "total": round(_p + _r, 2)})
+    _anticipos.sort(key=lambda x: x["total"], reverse=True)
+
+    _tot_anticipos_perc = round(sum(x["percepciones"] for x in _anticipos), 2)
+    _tot_anticipos_ret = round(sum(x["retenciones"] for x in _anticipos), 2)
+    _tot_anticipos_total = round(_tot_anticipos_perc + _tot_anticipos_ret, 2)
+
+    if _anticipos and _tot_anticipos_total:
+        s.append(
+            '<div style="padding:10px 14px 0;font-size:11px;font-weight:700;color:#555">'
+            "Anticipos IIBB por provincia (percepciones + retenciones)</div>"
+        )
+        s.append(
+            '<div style="padding:8px 14px 12px;font-size:11px;color:var(--color-text-secondary);'
+            'font-style:italic;line-height:1.5">'
+            "Total de anticipos fiscales sufridos por provincia — plata ya pagada a cuenta del IIBB "
+            "del mes que se descuenta en la DDJJ</div>"
+        )
+        filas = []
+        for x in _anticipos:
+            _badges = []
+            if x["percepciones"]:
+                _badges += ["fact", "perc"]
+            if x["retenciones"]:
+                _badges += ["reten"]
+            _pct_fila = _ar_pct_simple(x["total"] / _factbruta * 100) if _factbruta else "N/D"
+            filas.append([
+                x["provincia"], _ar_money(x["percepciones"]), _ar_money(x["retenciones"]),
+                f'<b>{_ar_money(x["total"])}</b>', _pct_fila,
+                render_fuente_badges(_badges) if _badges else "",
+            ])
+        filas.append([
+            "TOTAL", _ar_money(_tot_anticipos_perc), _ar_money(_tot_anticipos_ret),
+            _ar_money(_tot_anticipos_total),
+            _ar_pct_simple(_tot_anticipos_total / _factbruta * 100) if _factbruta else "N/D",
+            render_fuente_badges(["calc"]),
+        ])
+        _tabla_kwargs = {"fila_total": True}
+        if _factbruta:
+            filas.append([
+                "% sobre facturación bruta",
+                _ar_pct_con_monto(_tot_anticipos_perc / _factbruta * 100, _tot_anticipos_perc),
+                _ar_pct_con_monto(_tot_anticipos_ret / _factbruta * 100, _tot_anticipos_ret),
+                _ar_pct_con_monto(_tot_anticipos_total / _factbruta * 100, _tot_anticipos_total),
+                "", "",
+            ])
+            _tabla_kwargs["fila_pct"] = True
+        s.append(
+            f'<div style="padding:0 14px">'
+            f'{_tabla(["Provincia", "Percepciones", "Retenciones", "Total", "% s/ facturación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "center"], header_align="center", **_tabla_kwargs)}'
+            f'</div>'
+        )
 
     s.append(_sec("ti-percentage", "IVA — Débito Fiscal vs Crédito Fiscal vs Pago a ARCA"))
     iva = imp["iva_analisis"]
