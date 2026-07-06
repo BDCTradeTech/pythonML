@@ -9,7 +9,7 @@ import json
 import logging
 import os
 import traceback
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List, Optional
 
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
@@ -1113,7 +1113,9 @@ def _rebuild_tabla(
     parsed_ref: list,
     sort_state: list,
     filtros: dict | None = None,
+    recien: set | None = None,
 ) -> None:
+    recien = recien if recien is not None else set()
     tabla_container.clear()
     rows = _list_guias(user_id, filtros)
     sort_col, sort_dir = sort_state
@@ -1150,7 +1152,7 @@ def _rebuild_tabla(
                         def _sort_click(col=h):
                             sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
                             sort_state[0] = col
-                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros)
+                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros, recien=recien)
                         _h_nowrap = ";white-space:nowrap" if h == "Almacenaje" else ""
                         with ui.element("div").style(
                             _hs_base + f";color:{_hc};cursor:pointer;user-select:none{_h_nowrap}"
@@ -1161,13 +1163,14 @@ def _rebuild_tabla(
 
                 # ── Filas de datos ─────────────────────────────────────────────
                 _sep = "border-bottom:0.5px solid #f1f5f9"
-                _ct = f"padding:3px 5px;font-size:10px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;{_sep}"
 
                 for r in rows:
                     rid = r["id"]
                     tf_comps = r["tf_components"]
                     traida_bd = r["traida_breakdown"]
                     iv21 = r["iva_21_val"]
+                    _row_bg = "background:#F0FDF4;" if rid in recien else ""
+                    _ct = f"padding:3px 5px;font-size:10px;color:#374151;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;{_sep};{_row_bg}"
 
                     det_id = f"guia-det-{rid}"
                     ico_id = f"guia-ico-{rid}"
@@ -1193,7 +1196,7 @@ def _rebuild_tabla(
                     # IA
                     _ia_val = r.get("ia_usada") or ""
                     with ui.element("div").style(
-                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                     ):
                         if _ia_val == "Grok":
                             ui.html(
@@ -1233,11 +1236,11 @@ def _rebuild_tabla(
                     )
                     # PA — chip clickeable para editar
                     with ui.element("div").style(
-                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
+                        f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                     ):
                         def _pa_click(rid=rid, hawb=r["hawb"], pa=r["pa"]):
                             _show_edit_pa_dialog(
-                                rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
                             )
                         with ui.element("div").classes("pa-chip").style("min-width:60px").on("click", _pa_click):
                             ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:10px;color:#0C447C;white-space:nowrap")
@@ -1249,11 +1252,11 @@ def _rebuild_tabla(
                     _is_lhs = (r.get("courier") or "").upper() == "LHS"
                     if _is_lhs:
                         with ui.element("div").style(
-                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                         ):
                             def _origen_click(rid=rid, hawb=r["hawb"], origen=r["pais_procedencia"]):
                                 _show_edit_origen_dialog(
-                                    rid, hawb, origen, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                    rid, hawb, origen, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
                                 )
                             with ui.element("div").classes("pa-chip").style("min-width:50px").on("click", _origen_click):
                                 ui.label(_origen_raw or "—").style(
@@ -1277,13 +1280,13 @@ def _rebuild_tabla(
                     # Peso Total — chip editable para LHS, label estático para NC/Sixtar
                     if _is_lhs:
                         with ui.element("div").style(
-                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep}"
+                            f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                         ):
                             _kgs_val = _to_float(r["kgs"])
                             _kgs_disp = f"{_kgs_val:.1f} kg" if _kgs_val is not None else "—"
                             def _kgs_click(rid=rid, hawb=r["hawb"], kgs=r["kgs"]):
                                 _show_edit_kgs_dialog(
-                                    rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                    rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
                                 )
                             with ui.element("div").classes("pa-chip").style("min-width:55px").on("click", _kgs_click):
                                 ui.label(_kgs_disp).style(
@@ -1316,7 +1319,7 @@ def _rebuild_tabla(
                     # Total Factura — clickeable sin subrayado
                     with ui.element("div").style(
                         f"display:flex;justify-content:flex-end;align-items:center;"
-                        f"padding:3px 4px;{_sep}"
+                        f"padding:3px 4px;{_sep};{_row_bg}"
                     ):
                         ui.button(
                             _fmt_ars(r["total_factura"]),
@@ -1373,7 +1376,7 @@ def _rebuild_tabla(
                     _r_fac = r.get("nro_factura") or ""
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
-                        f"gap:3px;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;{_sep};padding:4px 4px"
+                        f"gap:3px;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;{_sep};padding:4px 4px;{_row_bg}"
                     ):
                         with ui.element("div").classes(ico_id).style("display:inline-flex"):
                             ui.button(
@@ -1401,7 +1404,7 @@ def _rebuild_tabla(
                                 lambda rid=rid, c=_r_courier, fac=_r_fac, f=filtros:
                                     _show_upload_pdf_dialog(
                                         rid, user_id, c, fac,
-                                        tabla_container, filas_ref, parsed_ref, sort_state, f
+                                        tabla_container, filas_ref, parsed_ref, sort_state, f, recien
                                     ),
                             ).style(
                                 "background:none;border:0.5px dashed var(--color-border-secondary);"
@@ -1413,7 +1416,7 @@ def _rebuild_tabla(
                         ui.button(
                             icon="delete",
                             on_click=lambda rid=rid: _show_del_dialog(
-                                rid, user_id, tabla_container, filas_ref, parsed_ref, sort_state
+                                rid, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
                             ),
                         ).props("flat dense").style("color:#dc2626;min-width:20px")
                     # Fila expandible — abarca todas las columnas del grid
@@ -1526,7 +1529,8 @@ def _show_ver_dialog(guia_id: int, user_id: int) -> None:
 
 
 def _show_del_dialog(
-    rid: int, user_id: int, tabla_container, filas_ref: list, parsed_ref: list, sort_state: list
+    rid: int, user_id: int, tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:280px"):
         ui.label("¿Eliminar esta guía?").style(
@@ -1538,7 +1542,7 @@ def _show_del_dialog(
                 d.close()
                 _delete_guia(rid, user_id)
                 ui.notify("Guía eliminada", color="info")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
             ui.button("Eliminar", on_click=_confirm).props("flat").style("color:#dc2626")
     d.open()
 
@@ -1564,6 +1568,7 @@ def _show_upload_pdf_dialog(
     rid: int, user_id: int, courier: str, nro_factura: str,
     tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
     filtros: dict | None = None,
+    recien: set | None = None,
 ) -> None:
     from datetime import datetime as _dt
     is_lhs = courier.upper() == "LHS"
@@ -1627,7 +1632,7 @@ def _show_upload_pdf_dialog(
                     _update_pdf_path(rid, p1, p2)
                     d.close()
                     ui.notify("PDF guardado", color="positive")
-                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros)
+                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros, recien=recien)
                 except Exception as exc:
                     ui.notify(f"Error: {exc}", color="negative")
 
@@ -1757,6 +1762,7 @@ def _show_traida_dialog(breakdown: dict) -> None:
 def _show_edit_pa_dialog(
     rid: int, hawb: str, pa_current: str, user_id: int,
     tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    recien: set | None = None,
 ) -> None:
     pa_val = _to_float(pa_current) or 0.0
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
@@ -1782,7 +1788,9 @@ def _show_edit_pa_dialog(
                 _update_pa(rid, user_id, new_val)
                 d.close()
                 ui.notify("PA actualizado", color="positive")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                if recien is not None:
+                    recien.add(rid)
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
             ui.button("Guardar y recalcular", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1792,6 +1800,7 @@ def _show_edit_pa_dialog(
 def _show_edit_origen_dialog(
     rid: int, hawb: str, origen_current: str, user_id: int,
     tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
         ui.label(f"Editar Origen — {hawb}").style(
@@ -1812,7 +1821,9 @@ def _show_edit_origen_dialog(
                 _update_origen(rid, user_id, new_val)
                 d.close()
                 ui.notify("Origen actualizado", color="positive")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                if recien is not None:
+                    recien.add(rid)
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
             ui.button("Guardar", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1822,6 +1833,7 @@ def _show_edit_origen_dialog(
 def _show_edit_kgs_dialog(
     rid: int, hawb: str, kgs_current: str, user_id: int,
     tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
         ui.label(f"Editar Peso Total — {hawb}").style(
@@ -1840,7 +1852,9 @@ def _show_edit_kgs_dialog(
                 _update_kgs(rid, user_id, new_val)
                 d.close()
                 ui.notify("Peso Total actualizado", color="positive")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+                if recien is not None:
+                    recien.add(rid)
+                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
             ui.button("Guardar", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1858,6 +1872,7 @@ def _build_courier_panel(
     filas_ref: list,
     parsed_ref: list,
     sort_state: list,
+    recien: set,
     pa_default: int = 200,
 ) -> None:
     logger.warning("[DBG] _build_courier_panel START courier=%s", courier_key)
@@ -1952,6 +1967,7 @@ def _build_courier_panel(
                     filas_ref[0].clear()
                     logger.warning("[DBG] Llamando _save_guia courier=%s", courier_key)
                     _guia_id = _save_guia(user_id, parsed)
+                    recien.add(_guia_id)
                     logger.warning("[DBG] _save_guia OK courier=%s id=%s", courier_key, _guia_id)
                     if archivo_data[0]:
                         try:
@@ -1964,7 +1980,7 @@ def _build_courier_panel(
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error courier=%s: %s", courier_key, _pe)
                     logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, recien=recien)
                     logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
@@ -2069,6 +2085,7 @@ def _build_lhs_panel(
     filas_ref: list,
     parsed_ref: list,
     sort_state: list,
+    recien: set,
 ) -> None:
     archivo_data_lhs1: list = [None]
     archivo_mime_lhs1: list = [None]
@@ -2176,6 +2193,7 @@ def _build_lhs_panel(
                 else:
                     filas_ref[0].clear()
                     _guia_id = _save_guia(user_id, parsed)
+                    recien.add(_guia_id)
                     if archivo_data_lhs1[0] and archivo_data_lhs2[0]:
                         try:
                             _p1, _p2 = _save_pdf_files(
@@ -2186,7 +2204,7 @@ def _build_lhs_panel(
                             _update_pdf_path(_guia_id, _p1, _p2)
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error LHS: %s", _pe)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, recien=recien)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
                         "color:'positive',position:'bottom'})"
@@ -2301,11 +2319,11 @@ def _build_lhs_panel(
 
 # ── Tab principal ─────────────────────────────────────────────────────────────
 
-def build_tab_guias() -> None:
+def build_tab_guias() -> Optional[Callable[[], None]]:
     user = app.storage.user.get("user")
     if not user:
         ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
-        return
+        return None
 
     user_id = user["id"]
     ui.add_css("""
@@ -2323,12 +2341,13 @@ def build_tab_guias() -> None:
     tabla_ref: list = [None]
     sort_state: list = [None, "asc"]
     parsed_ref: list = [None]
+    guias_recien: set = set()
     _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Este mes", "busqueda": ""}
 
     def _filter_change(key: str, val: str) -> None:
         _filtros[key] = val
         if tabla_ref[0] is not None:
-            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros)
+            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien)
 
     # ── Panel superior: couriers colapsable ───────────────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
@@ -2359,18 +2378,18 @@ def build_tab_guias() -> None:
             logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
             _build_courier_panel(
                 "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
-                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
                 pa_default=250,
             )
             logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
             _build_courier_panel(
                 "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
-                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
                 pa_default=150,
             )
             logger.warning("[DBG] build_tab_guias: panel LHS...")
             _build_lhs_panel(
-                user_id, tabla_ref, filas_ref, parsed_ref, sort_state,
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
             )
     logger.warning("[DBG] build_tab_guias: paneles OK")
 
@@ -2416,7 +2435,7 @@ def build_tab_guias() -> None:
         with ui.element("button").on(
             "click",
             lambda: _rebuild_tabla(
-                user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros
+                user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien
             ),
         ).style(
             "height:34px;font-size:12px;font-weight:500;"
@@ -2435,4 +2454,13 @@ def build_tab_guias() -> None:
     with ui.element("div").style("padding:16px 0 24px"):
         tabla_container = ui.element("div").style("width:100%")
         tabla_ref[0] = tabla_container
-        _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state)
+        _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=guias_recien)
+
+    def _limpiar_recien_cargadas() -> None:
+        if not guias_recien:
+            return
+        guias_recien.clear()
+        if tabla_ref[0] is not None:
+            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien)
+
+    return _limpiar_recien_cargadas
