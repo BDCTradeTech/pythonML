@@ -53,9 +53,13 @@ _RED        = "#A32D2D"
 _SECCION_HEADER_STYLE = (
     "font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:0.06em;"
     f"color:{_HDR_COLOR};background:{_HDR_BG};padding:10px 14px;"
-    f"border-bottom:2px solid {_HDR_BORDER};display:flex;align-items:center;gap:8px"
+    f"border-bottom:0.5px solid {_HDR_BORDER};display:flex;align-items:center;gap:8px"
 )
-_SECCION_WRAP_STYLE = "border-bottom:1px solid #e5e5e5;padding-bottom:14px;margin-bottom:14px"
+_SECCION_BORDER = "#D8D8D8"
+_SECCION_WRAP_STYLE = (
+    f"border:0.5px solid {_SECCION_BORDER};border-radius:8px;overflow:hidden;"
+    "margin-bottom:20px;padding-bottom:10px"
+)
 
 FUENTES_CONSOLIDADO = {
     "arca":     {"label": "ARCA (VEPs)",           "icon": "ti-building-bank", "color": "#185FA5", "bg": "#E8F1FA", "border": "#85B7EB"},
@@ -1956,8 +1960,8 @@ def _render_periodo_badge(tipo: str, periodo_fiscal: dict, periodo_ml: dict) -> 
         f"Período ML: {periodo_ml.get('desde', '')} - {periodo_ml.get('hasta', '')}"
     ).replace('"', "&quot;")
     return (
-        f'<span title="{tooltip}" style="display:inline-flex;align-items:center;'
-        "background:var(--color-background-secondary);color:var(--color-text-secondary);"
+        f'<span title="{tooltip}" style="display:inline-flex;align-items:center;margin-left:auto;'
+        "background:#EDEDED;color:#5A5A5A;"
         'font-size:10px;font-weight:500;padding:2px 6px;border-radius:3px;cursor:help">'
         f"📅 {label}</span>"
     )
@@ -3275,7 +3279,7 @@ def _render_consolidado_html(resultado: dict) -> str:
     partes.append("".join(s))
 
     # 6 — Panorama Impositivo
-    s = ['<div>', _sec("ti-scale", "6 · Panorama Impositivo")]
+    s = [f'<div style="{_WRAP}">', _sec("ti-scale", "6 · Panorama Impositivo")]
     filas = [
         [p["impuesto"], _ar_money(p["total_percepciones"]), _ar_money(p["total_retenciones"]),
          _ar_money(p["total_pagado_arca"]), _ar_money(p["saldo"]), p["recomendacion"],
