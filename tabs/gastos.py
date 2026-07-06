@@ -98,6 +98,20 @@ def render_fuente_badges(fuentes: Optional[list], with_label: bool = False) -> s
         return ""
     return "".join(render_fuente_badge(fk, with_label=with_label) for fk in fuentes)
 
+
+def _fuente_badges_td(fuentes: Optional[list]) -> str:
+    """Badges de fuente para la columna 'Fuente' de una tabla: agrupa el badge (o los
+    varios apilados) en un único inline-flex con gap consistente, para que la columna
+    quede pegada al borde derecho de la celda en vez de flotar en el medio."""
+    badges = render_fuente_badges(fuentes)
+    if not badges:
+        return ""
+    return (
+        '<span class="fuente-badges" style="display:inline-flex;align-items:center;'
+        'justify-content:flex-end;gap:3px">'
+        f'{badges}</span>'
+    )
+
 _DOT = "display:inline-block;width:12px;height:12px;border-radius:9999px;flex-shrink:0;background:{}"
 
 _PROMPT_PRE_STYLE = (
@@ -2976,14 +2990,14 @@ def _render_consolidado_html(resultado: dict) -> str:
                 )
             filas.append([
                 _prov_label, _ar_money(r["facturas_ml"]), _ar_money(r["reportes"]),
-                _ar_money(r["diff"]), simbolo, render_fuente_badges(["fact", "perc"]),
+                _ar_money(r["diff"]), simbolo, _fuente_badges_td(["fact", "perc"]),
             ])
         _tot_perc_fact = sum(r["facturas_ml"] for r in imp["cruce_percepciones"])
         _tot_perc_rep = sum(r["reportes"] for r in imp["cruce_percepciones"])
         _tot_perc_diff = sum(r["diff"] for r in imp["cruce_percepciones"])
         filas.append([
             "TOTAL", _ar_money(_tot_perc_fact), _ar_money(_tot_perc_rep), _ar_money(_tot_perc_diff),
-            "", render_fuente_badges(["fact", "perc"]),
+            "", _fuente_badges_td(["fact", "perc"]),
         ])
         _tabla_kwargs = {"fila_total": True}
         if _factbruta:
@@ -2997,7 +3011,7 @@ def _render_consolidado_html(resultado: dict) -> str:
             _tabla_kwargs["fila_pct"] = True
         _contenido_perc = _tabla(
             ["Provincia", "Facturas ML", "Reportes Perc.", "Diff", "OK", "Fuente"], filas,
-            aligns=["left", "right", "right", "right", "center", "center"], header_align="center", **_tabla_kwargs,
+            aligns=["left", "right", "right", "right", "center", "right"], header_align="center", **_tabla_kwargs,
         )
     else:
         _contenido_perc = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
@@ -3013,7 +3027,7 @@ def _render_consolidado_html(resultado: dict) -> str:
         _retenciones_ordenadas = sorted(imp["retenciones_detalle"], key=lambda r: r["impuesto"])
         filas = [
             [r["impuesto"], _ar_money(r["base_imponible"]), _ar_money(r["importe_retenido"]),
-             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), render_fuente_badges(["reten"])]
+             _ar_money(r["importe_devuelto"]), _ar_money(r["neto"]), _fuente_badges_td(["reten"])]
             for r in _retenciones_ordenadas
         ]
         _tot_ret_base = sum(r["base_imponible"] for r in _retenciones_ordenadas)
@@ -3035,7 +3049,7 @@ def _render_consolidado_html(resultado: dict) -> str:
             _tabla_kwargs["fila_pct"] = True
         _contenido_ret = _tabla(
             ["Impuesto", "Base Imponible", "Retenido", "Devuelto", "Neto", "Fuente"], filas,
-            aligns=["left", "right", "right", "right", "right", "left"], **_tabla_kwargs,
+            aligns=["left", "right", "right", "right", "right", "right"], **_tabla_kwargs,
         )
     else:
         _contenido_ret = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
@@ -3102,13 +3116,13 @@ def _render_consolidado_html(resultado: dict) -> str:
             filas.append([
                 _prov_label, _ar_money(x["percepciones"]), _ar_money(x["retenciones"]),
                 f'<b>{_ar_money(x["total"])}</b>', _pct_fila,
-                render_fuente_badges(_badges) if _badges else "",
+                _fuente_badges_td(_badges),
             ])
         filas.append([
             "TOTAL", _ar_money(_tot_anticipos_perc), _ar_money(_tot_anticipos_ret),
             _ar_money(_tot_anticipos_total),
             _ar_pct_simple(_tot_anticipos_total / _factbruta * 100) if _factbruta else "N/D",
-            render_fuente_badges(["calc"]),
+            _fuente_badges_td(["calc"]),
         ])
         _tabla_kwargs = {"fila_total": True}
         if _factbruta:
@@ -3122,7 +3136,7 @@ def _render_consolidado_html(resultado: dict) -> str:
             _tabla_kwargs["fila_pct"] = True
         _contenido_ant = _tabla(
             ["Provincia", "Percepciones", "Retenciones", "Total", "% s/ facturación", "Fuente"], filas,
-            aligns=["left", "right", "right", "right", "right", "center"], header_align="center", **_tabla_kwargs,
+            aligns=["left", "right", "right", "right", "right", "right"], header_align="center", **_tabla_kwargs,
         )
         s.append(_subsec(
             "ti-receipt", "Anticipos IIBB por provincia (percepciones + retenciones)",
@@ -3180,12 +3194,12 @@ def _render_consolidado_html(resultado: dict) -> str:
     if imp["cruce_impuestos_pagos"]:
         filas = [
             [r["concepto"], _ar_money(r["total_credito"]), _ar_money(r["pagado_arca"]),
-             _ar_money(r["neto"]), r["saldo"], render_fuente_badges(["perc", "reten", "arca"])]
+             _ar_money(r["neto"]), r["saldo"], _fuente_badges_td(["perc", "reten", "arca"])]
             for r in imp["cruce_impuestos_pagos"]
         ]
         _contenido_cruce = _tabla(
             ["Concepto", "Total Crédito", "Pagado ARCA", "Neto", "Saldo", "Fuente"], filas,
-            aligns=["left", "right", "right", "right", "center", "center"],
+            aligns=["left", "right", "right", "right", "center", "right"],
         )
     else:
         _contenido_cruce = '<div style="padding:10px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>'
@@ -3206,17 +3220,17 @@ def _render_consolidado_html(resultado: dict) -> str:
         filas = [
             [
                 r["provincia"], _ar_money(r["monto"]), _ar_pct_simple(r["porcentaje"]),
-                _ar_num(r["cantidad_ventas"]), _ar_money(r["ticket_promedio"]), render_fuente_badges(["repo"]),
+                _ar_num(r["cantidad_ventas"]), _ar_money(r["ticket_promedio"]), _fuente_badges_td(["repo"]),
             ]
             for r in fp["filas"]
         ]
         filas.append([
             "<b>TOTAL</b>", f'<b>{_ar_money(fp["total_monto"])}</b>', "<b>100,00 %</b>",
-            f'<b>{_ar_num(fp["total_ventas"])}</b>', "", render_fuente_badges(["repo"]),
+            f'<b>{_ar_num(fp["total_ventas"])}</b>', "", _fuente_badges_td(["repo"]),
         ])
         s.append(
             f'<div style="padding:0 14px">'
-            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom.", "Fuente"], filas, aligns=["left", "right", "center", "center", "right", "center"])}</div>'
+            f'{_tabla(["Provincia", "Facturación", "%", "Ventas", "Ticket Prom.", "Fuente"], filas, aligns=["left", "right", "center", "center", "right", "right"])}</div>'
         )
     else:
         s.append('<div style="padding:4px 14px;font-size:11px;color:#9e9e9e">Sin datos</div>')
@@ -3326,12 +3340,12 @@ def _render_consolidado_html(resultado: dict) -> str:
     filas = [
         [p["impuesto"], _ar_money(p["total_percepciones"]), _ar_money(p["total_retenciones"]),
          _ar_money(p["total_pagado_arca"]), _ar_money(p["saldo"]), p["recomendacion"],
-         render_fuente_badges(["perc", "reten", "arca"])]
+         _fuente_badges_td(["perc", "reten", "arca"])]
         for p in panorama
     ]
     s.append(
         f'<div style="padding:6px 14px">'
-        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left", "center"])}'
+        f'{_tabla(["Impuesto", "Percepciones", "Retenciones", "Pagado ARCA", "Saldo", "Recomendación", "Fuente"], filas, aligns=["left", "right", "right", "right", "right", "left", "right"])}'
         f'</div>'
     )
     s.append("</div>")
