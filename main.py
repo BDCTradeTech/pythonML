@@ -147,7 +147,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.03.16"
+VERSION = "3.26.07.03.17"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -428,6 +428,7 @@ def show_main_layout(container) -> None:
         gastos_cargado = [False]
         actividad_cargado = [False]
         guias_cargado = [False]
+        guias_clear_ref: List[Any] = [None]
 
         def _lazy_load(val: str) -> None:
             if val == "Invoices" and not compras_cargado[0]:
@@ -484,7 +485,7 @@ def show_main_layout(container) -> None:
             elif val == "Guias" and not guias_cargado[0]:
                 guias_cargado[0] = True
                 with guias_container:
-                    build_tab_guias()
+                    guias_clear_ref[0] = build_tab_guias()
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -832,6 +833,8 @@ def show_main_layout(container) -> None:
         def on_tab_change(e) -> None:
             new_val = getattr(e, "value", None)
             old_val = app.storage.user.get("last_tab")
+            if old_val == "Guias" and new_val != "Guias" and guias_clear_ref[0]:
+                guias_clear_ref[0]()
             if old_val and old_val != new_val and old_val in tab_enter_times:
                 elapsed = int((datetime.now() - tab_enter_times[old_val]).total_seconds())
                 if elapsed >= 1:
