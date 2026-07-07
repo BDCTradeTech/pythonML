@@ -157,6 +157,13 @@ def _init_transferencias_db() -> None:
             created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Migración: agregar columnas que pueden no existir en tablas previas
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(transferencias)")}
+    for col in ("banco", "operacion", "importe_moneda", "importe_valor",
+                "pagador_gastos_exterior", "concepto", "banco_beneficiario",
+                "importe_pesos", "fecha_liquidacion", "facturas", "ia_usada"):
+        if col not in existing:
+            conn.execute(f"ALTER TABLE transferencias ADD COLUMN {col} TEXT")
     conn.commit()
     conn.close()
 
@@ -710,7 +717,7 @@ def build_tab_transferencias() -> None:
             with ui.element("div").style(
                 "background:#EEF6FD;border-bottom:1px solid #D0E8F8;padding:7px 10px"
             ):
-                ui.label("Subir comprobante").style(
+                ui.label("Subir una Transferencia al Exterior").style(
                     "font-size:11px;font-weight:600;color:#185FA5"
                 )
             with ui.element("div").style(
