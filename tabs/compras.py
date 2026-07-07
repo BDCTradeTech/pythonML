@@ -681,7 +681,7 @@ def build_tab_compras(container) -> None:
 
                 btn_desc = ui.button(
                     "Descargar invoices",
-                    on_click=lambda: background_tasks.create(_descargar_zip_async(), name="descarga_zip_invoices"),
+                    on_click=_descargar_zip_async,
                     color="primary",
                 ).props("dense no-caps icon=download disabled").classes("ml-2")
                 btn_descarga_ref["btn"] = btn_desc
