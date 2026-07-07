@@ -963,8 +963,7 @@ def build_tab_ventas(container) -> None:
                             with ui.element("div").classes("flex items-center gap-2 px-3 py-2 shrink-0"):
                                 ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
                                 ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
-                                if user["id"] == 1:
-                                    ui.button("Completar datos por lote", on_click=lambda: _abrir_dialog_backfill()).props("icon=history no-caps").classes("rounded px-3")
+                                ui.button("Completar datos por lote", on_click=lambda: _abrir_dialog_backfill()).props("icon=history no-caps").classes("rounded px-3")
             result_area.clear()
             with result_area:
                 if not ventas_raw:
@@ -1278,9 +1277,6 @@ def build_tab_ventas(container) -> None:
             )
 
         def _abrir_dialog_backfill() -> None:
-            if user["id"] != 1:
-                ui.notify("Completar datos por lote está disponible solo para el administrador.", type="negative")
-                return
             from ventas_backfill import backfill_ventas_periodo
 
             hoy_bf = datetime.now().date()
