@@ -321,14 +321,18 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     iva_impor = 0.09 * costo_usd * dolar * cantidad
     iva_total = iva_venta - iva_meli - iva_impor
     shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+    buyer_shipping = float(pay_data.get("shipping_amount") or 0)
     logistic_type = v.get("logistic_type") or ""
     if logistic_type in ("self_service", "flex"):
         _flex_t, _ = _get_flex_zona(user_id, zip_code)
         envio_real = _flex_t
+        comprador_envio = 0.0
     elif shp_xd > 0:
-        envio_real = shp_xd
+        envio_real = max(0.0, shp_xd - buyer_shipping)
+        comprador_envio = buyer_shipping
     else:
         envio_real = float(p.get("ml_envios") or 5823)
+        comprador_envio = 0.0
     ml_env_grat_c = float(p.get("ml_envios_gratuitos") or 33000)
     envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
     gan_pesos = gan_vta_pct = gan_cos_pct = None
@@ -340,7 +344,8 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
         "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
         "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
         "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
-        "envio_real": envio_real, "logistic_type": logistic_type, "net_rcv": net_rcv,
+        "envio_real": envio_real, "comprador_envio": comprador_envio,
+        "logistic_type": logistic_type, "net_rcv": net_rcv,
         "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
         "_skip_overwrite": is_cancelled or has_refund_v,
     }
@@ -375,16 +380,17 @@ def _save_batch(db_rows: List[Dict]) -> None:
         for rd in db_rows:
             cols = ("payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                    "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas")
+                    "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas")
             vals = (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                      rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                      rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
                      rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
-                     rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
+                     rd.get("envio_real"), rd.get("comprador_envio"),
+                     rd.get("logistic_type"), rd.get("net_rcv"),
                      rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
                      rd.get("cuotas"))
             verb = "INSERT OR IGNORE" if rd.get("_skip_overwrite") else "INSERT OR REPLACE"
-            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
             if rd.get("_skip_overwrite") and rd.get("pay_status"):
                 cur.execute(
                     "UPDATE ventas_datos SET pay_status=? WHERE payment_id=? AND user_id=? AND pay_status IS NULL",
