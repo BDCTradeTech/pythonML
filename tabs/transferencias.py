@@ -556,6 +556,19 @@ def _update_pdf_path_transferencia(tid: int, pdf_path: str) -> None:
 
 
 
+def _exists_operacion(user_id: int, operacion: str) -> bool:
+    if not operacion:
+        return False
+    conn = get_connection()
+    count = conn.execute(
+        "SELECT COUNT(*) FROM transferencias WHERE user_id=? AND operacion=? COLLATE NOCASE",
+        (user_id, operacion.strip()),
+    ).fetchone()[0]
+    conn.close()
+    return count > 0
+
+
+def _confirm_delete(rid, user_id, tabla_container, sort_state, filtros, recien):
     with ui.dialog() as d_confirm, ui.card().style("padding:20px;min-width:300px"):
         ui.label("¿Eliminar esta transferencia?").style(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
@@ -714,6 +727,14 @@ def build_tab_transferencias() -> None:
             raw = _clean_json(raw)
             parsed = json.loads(raw)
             parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
+            nro_op = (parsed.get("operacion") or "").strip()
+            if nro_op and _exists_operacion(user_id, nro_op):
+                _msg_dup = json.dumps(f"La operación {nro_op} ya fue ingresada.")
+                client.run_javascript(
+                    f"Quasar.Notify.create({{message:{_msg_dup},"
+                    "color:'warning',icon:'warning',position:'bottom'})"
+                )
+                return
             _id = _save_transferencia(user_id, parsed)
             recien.add(_id)
             # Guardar PDF en disco
@@ -766,7 +787,7 @@ def build_tab_transferencias() -> None:
             with ui.element("div").style(
                 "background:#EEF6FD;border-bottom:1px solid #D0E8F8;padding:7px 10px"
             ):
-                ui.label("Subir una Transferencia al Exterior").style(
+                ui.label("Transferencias BBVA").style(
                     "font-size:11px;font-weight:600;color:#185FA5"
                 )
             with ui.element("div").style(
