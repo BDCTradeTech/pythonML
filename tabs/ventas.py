@@ -879,7 +879,7 @@ def build_tab_ventas(container) -> None:
                             "dias_15": "Últimos 15 días", "dias_21": "Últimos 21 días",
                             "dias_30": "Últimos 30 días", "mes_actual": "Mes actual",
                         }
-                        for _i_m in range(1, 4):
+                        for _i_m in range(1, 7):
                             _om_m -= 1
                             if _om_m == 0:
                                 _om_m = 12; _oy_m -= 1
@@ -2108,7 +2108,7 @@ def build_tab_ventas(container) -> None:
                     "dias_30": "Últimos 30 días",
                     "mes_actual": "Mes actual",
                 }
-                for _i in range(1, 4):
+                for _i in range(1, 7):
                     _om -= 1
                     if _om == 0:
                         _om = 12
