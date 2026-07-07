@@ -892,8 +892,24 @@ def build_tab_ventas(container) -> None:
                         with ui.row().classes("w-full items-center gap-3"):
                             ui.button("Actualizar", on_click=lambda: _cargar_ventas(), color="primary").props("icon=refresh no-caps").classes("rounded px-3")
                             ui.button("Completar datos", on_click=lambda: _abrir_dialog_enriquecer()).props("icon=download no-caps").classes("rounded px-3")
-                            if user["id"] == 1:
-                                ui.button("Completar datos por lote", on_click=lambda: _abrir_dialog_backfill()).props("icon=history no-caps").classes("rounded px-3")
+                        with ui.row().classes("w-full flex-wrap gap-x-4 gap-y-1 px-1 py-1"):
+                            with ui.column().classes("gap-0"):
+                                ui.label("Facturación").classes("text-xs text-gray-500")
+                                ui.label(f"$ {total_monto_ok:,.0f}".replace(",", ".")).classes("text-base font-bold text-primary")
+                            with ui.column().classes("gap-0"):
+                                ui.label("Ventas").classes("text-xs text-gray-500")
+                                ui.label(str(n_ventas_ok)).classes("text-base font-bold text-primary")
+                            with ui.column().classes("gap-0"):
+                                ui.label("Ganancia").classes("text-xs text-gray-500")
+                                _gt_cls_m = "text-positive" if ganancia_total >= 0 else "text-negative"
+                                ui.label(f"$ {ganancia_total:,.0f}".replace(",", ".")).classes(f"text-base font-bold {_gt_cls_m}")
+                            with ui.column().classes("gap-0"):
+                                ui.label("Gan. prom. %").classes("text-xs text-gray-500")
+                                if gan_prom_pct is not None:
+                                    _gpp_cls_m = "text-positive" if gan_prom_pct >= 0 else "text-negative"
+                                    ui.label(f"{gan_prom_pct:.2f}%".replace(".", ",")).classes(f"text-base font-bold {_gpp_cls_m}")
+                                else:
+                                    ui.label("—").classes("text-base font-bold text-gray-400")
                 else:
                     with ui.card().classes("w-full p-0 bg-grey-2").style("border: 1px solid rgba(0,0,0,0.1); border-radius: 8px; overflow: hidden;"):
                         with ui.row().classes("w-full gap-0 items-stretch").style("flex-wrap: nowrap;"):
