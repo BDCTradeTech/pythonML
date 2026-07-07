@@ -129,8 +129,6 @@ def build_tab_balance(container) -> None:
             ui.spinner(size="xl")
             ui.label("Cargando Balance...").classes("text-xl text-gray-700")
     ingresos_ref: Dict[str, Any] = {"data": None}
-    orders_balance_ref: Dict[str, Any] = {"data": {}}
-    filtro_fecha_balance_ref: Dict[str, str] = {"val": "mes_actual"}
 
     async def _cargar_y_pintar() -> None:
         orders_data: Dict[str, Any] = {}
@@ -140,15 +138,11 @@ def build_tab_balance(container) -> None:
                 seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
                 if seller_id:
                     orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
-                orders_balance_ref["data"] = orders_data
-                periodo = filtro_fecha_balance_ref.get("val", "mes_actual")
-                ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid, periodo)
+                ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid, "mes_actual")
             except Exception:
                 ingresos_ref["data"] = None
-                orders_balance_ref["data"] = {}
         else:
             ingresos_ref["data"] = None
-            orders_balance_ref["data"] = {}
         _pintar_contenido()
 
     def _pintar_contenido() -> None:
@@ -209,29 +203,7 @@ def build_tab_balance(container) -> None:
             with header_card:
                 with ui.card().classes("w-full p-4 bg-grey-2"):
                     with ui.row().classes("w-full gap-6 flex-wrap"):
-                        # 1. Periodo (fecha)
-                        with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
-                            ui.label("Fecha").classes("text-xs text-gray-600 font-semibold mb-1")
-                            _val_fecha = filtro_fecha_balance_ref.get("val", "mes_actual")
-                            if _val_fecha not in ("mes_actual", "mes_anterior"):
-                                _val_fecha = "mes_actual"
-                            sel_fecha = ui.select(
-                                {"mes_actual": "Mes actual", "mes_anterior": "Mes anterior"},
-                                value=_val_fecha,
-                                label="",
-                            ).classes("w-36").props("dense outlined")
-
-                            def on_fecha_balance_change(e):
-                                filtro_fecha_balance_ref["val"] = getattr(e, "value", "mes_actual")
-                                od = orders_balance_ref.get("data") or {}
-                                if od:
-                                    ingresos_ref["data"] = _compute_ingresos_from_orders(od, uid, filtro_fecha_balance_ref["val"])
-                                    _pintar_header()
-                                    _pintar_ingresos()
-                                    _pintar_resultados()
-
-                            sel_fecha.on_value_change(on_fecha_balance_change)
-                        # 2. Datos Actuales Pesos
+                        # 1. Datos Actuales Pesos
                         with ui.column().classes("gap-0 border-r border-gray-300 pr-4"):
                             ui.label("Datos Actuales (pesos)").classes("text-xs text-gray-600 font-semibold mb-1")
                             with ui.row().classes("gap-4 flex-wrap"):

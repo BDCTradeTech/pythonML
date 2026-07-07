@@ -142,6 +142,7 @@ from tabs.home import build_tab_home_welcome
 from tabs.compras_lista import build_tab_compras_lista
 from tabs.activity import build_tab_actividad
 from tabs.guias import build_tab_guias
+from tabs.transferencias import build_tab_transferencias
 from helpers.activity_logger import log_event
 
 DB_PATH = Path(__file__).with_name("app.db")
@@ -367,6 +368,7 @@ def show_main_layout(container) -> None:
                 tab_busqueda = ui.tab("Búsqueda")
                 tab_importacion = ui.tab("Importacion")
                 tab_guias = ui.tab("Guias")
+                tab_transferencias = ui.tab("Transferencias")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
                 tab_arca = ui.tab("ARCA")
@@ -394,6 +396,7 @@ def show_main_layout(container) -> None:
             "Búsqueda": tab_busqueda,
             "Importacion": tab_importacion,
             "Guias": tab_guias,
+            "Transferencias": tab_transferencias,
             "Datos": tab_datos,
             "Pesos": tab_pesos,
             "ARCA": tab_arca,
@@ -407,7 +410,7 @@ def show_main_layout(container) -> None:
             "Admin": tab_admin,
             "Actividad": tab_actividad,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock": "stock", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -429,6 +432,7 @@ def show_main_layout(container) -> None:
         actividad_cargado = [False]
         guias_cargado = [False]
         guias_clear_ref: List[Any] = [None]
+        transferencias_cargado = [False]
 
         def _lazy_load(val: str) -> None:
             if val == "Invoices" and not compras_cargado[0]:
@@ -486,6 +490,10 @@ def show_main_layout(container) -> None:
                 guias_cargado[0] = True
                 with guias_container:
                     guias_clear_ref[0] = build_tab_guias()
+            elif val == "Transferencias" and not transferencias_cargado[0]:
+                transferencias_cargado[0] = True
+                with transferencias_container:
+                    build_tab_transferencias()
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -583,6 +591,12 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_guias
                                         app.storage.user["last_tab"] = "Guias"
                                     ui.menu_item("GUÍAS", _guias_click)
+                                if perms.get("transferencias", True):
+                                    def _transferencias_click():
+                                        _lazy_load("Transferencias")
+                                        tab_panels.value = tab_transferencias
+                                        app.storage.user["last_tab"] = "Transferencias"
+                                    ui.menu_item("TRANSFERENCIAS", _transferencias_click)
                                 if perms.get("pesos", True):
                                     def _pesos_click():
                                         _lazy_load("Pesos")
@@ -732,6 +746,7 @@ def show_main_layout(container) -> None:
             "Históricos":    ("BDC", "Históricos"),
             "Importacion":   ("Comex", "Importación"),
             "Guias":         ("Comex", "Guías"),
+            "Transferencias": ("Comex", "Transferencias"),
             "Pesos":         ("Comex", "Pesos"),
             "ARCA":          ("Impuestos", "ARCA"),
             "Gastos":        ("Impuestos", "Gastos"),
@@ -788,6 +803,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_guias):
                 guias_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_transferencias):
+                transferencias_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_datos):
                 build_tab_datos()
