@@ -159,9 +159,10 @@ def _init_transferencias_db() -> None:
     """)
     # Migración: agregar columnas que pueden no existir en tablas previas
     existing = {row[1] for row in conn.execute("PRAGMA table_info(transferencias)")}
-    for col in ("banco", "operacion", "importe_moneda", "importe_valor",
+    for col in ("banco", "operacion", "importe", "importe_moneda", "importe_valor",
                 "pagador_gastos_exterior", "concepto", "banco_beneficiario",
-                "importe_pesos", "fecha_liquidacion", "facturas", "ia_usada"):
+                "importe_pesos", "fecha_liquidacion", "facturas", "ia_usada",
+                "beneficiario", "tipo_cambio", "estado", "fecha"):
         if col not in existing:
             conn.execute(f"ALTER TABLE transferencias ADD COLUMN {col} TEXT")
     conn.commit()
