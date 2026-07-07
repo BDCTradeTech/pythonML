@@ -97,6 +97,8 @@ def build_tab_compras(container) -> None:
         filtro_estado_ref: Dict[str, str] = {"val": "Todos"}
         filtro_courier_ref: Dict[str, str] = {"val": "Todas"}
         filtro_trimestre_ref: Dict[str, str] = {"val": "Todos"}
+        seleccionados_ref: Dict[str, Any] = {"ids": set()}
+        btn_descarga_ref: Dict[str, Any] = {"btn": None}
         invoice_bdc_qsel_css_done: Dict[str, bool] = {"done": False}
         _desp_hex_palette = [
             "#1d4ed8",
@@ -463,6 +465,18 @@ def build_tab_compras(container) -> None:
             except Exception as e:
                 return (None, None, str(e))
 
+        def _actualizar_descarga_btn() -> None:
+            btn = btn_descarga_ref.get("btn")
+            if not btn:
+                return
+            n = len(seleccionados_ref["ids"])
+            if n > 0:
+                btn.props(remove="disabled")
+                btn.set_text(f"Descargar invoices ({n})")
+            else:
+                btn.props("disabled")
+                btn.set_text("Descargar invoices")
+
         def _pintar_compras() -> None:
             header_card.clear()
             filtro_row.clear()
@@ -636,6 +650,43 @@ def build_tab_compras(container) -> None:
                         ui.timer(5.0, _cleanup, once=True)
                 ui.button("Imprimir invoices", on_click=_imprimir_invoices_async, color="primary").props("dense no-caps icon=print").classes("ml-4")
 
+                async def _descargar_zip_async() -> None:
+                    ids = list(seleccionados_ref["ids"])
+                    if not ids:
+                        return
+                    inv_map = {inv.get("id"): inv for inv in invoices_ref["data"]}
+                    import zipfile, io as _io
+                    buf = _io.BytesIO()
+                    errores: List[str] = []
+                    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for inv_id in ids:
+                            inv = inv_map.get(inv_id, {})
+                            pdf_bytes, err = await run.io_bound(fetch_qb_invoice_pdf, user["id"], inv_id)
+                            if err or not pdf_bytes:
+                                errores.append(str(inv.get("doc", inv_id)))
+                                continue
+                            nombre = _qb_invoice_pdf_download_basename(inv.get("doc", str(inv_id)))
+                            zf.writestr(nombre, pdf_bytes)
+                    buf.seek(0)
+                    fd, path = tempfile.mkstemp(suffix=".zip")
+                    os.write(fd, buf.read())
+                    os.close(fd)
+                    fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    ui.download(path, f"invoices_{fecha_str}.zip")
+                    if errores:
+                        ui.notify(f"No se pudo descargar: {', '.join(errores)}", color="warning")
+                    else:
+                        ui.notify(f"{len(ids)} invoice(s) descargadas en ZIP", color="positive")
+                    ui.timer(10.0, lambda: os.path.exists(path) and os.unlink(path), once=True)
+
+                btn_desc = ui.button(
+                    "Descargar invoices",
+                    on_click=lambda: background_tasks.create(_descargar_zip_async(), name="descarga_zip_invoices"),
+                    color="primary",
+                ).props("dense no-caps icon=download disabled").classes("ml-2")
+                btn_descarga_ref["btn"] = btn_desc
+                _actualizar_descarga_btn()
+
             with result_area:
                 _ensure_invoice_bdc_qsel_css()
 
@@ -673,6 +724,22 @@ def build_tab_compras(container) -> None:
                             with ui.element("thead"):
                                 with ui.element("tr").classes("bg-primary text-white font-semibold"):
                                     estado_opts = {"En USA": "En USA", "Viajando": "Viajando", "Recibida": "Recibida"}
+                                    row_chks: List[Any] = []
+
+                                    def _select_all(e: Any, chks: List[Any] = []) -> None:
+                                        val = getattr(e, "value", False)
+                                        for chk, iid in chks:
+                                            chk.set_value(val)
+                                            if val:
+                                                seleccionados_ref["ids"].add(iid)
+                                            else:
+                                                seleccionados_ref["ids"].discard(iid)
+                                        _actualizar_descarga_btn()
+
+                                    with ui.element("th").classes("px-1 py-2 border text-center bg-primary").style("width:36px"):
+                                        chk_all = ui.checkbox().props("dense color=white").classes("scale-90")
+                                        chk_all.on_value_change(lambda e: _select_all(e, row_chks))
+
                                     cols = [
                                         ("numero", "Numero"),
                                         ("txn_date", "Fecha"),
@@ -698,6 +765,17 @@ def build_tab_compras(container) -> None:
                                 for idx, inv in enumerate(invs_sorted, 1):
                                     row_el = ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50")
                                     with row_el:
+                                        with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
+                                            inv_id = inv.get("id", "")
+                                            chk_row = ui.checkbox(value=inv_id in seleccionados_ref["ids"]).props("dense").classes("scale-90")
+                                            def _on_chk(e: Any, iid: str = inv_id) -> None:
+                                                if getattr(e, "value", False):
+                                                    seleccionados_ref["ids"].add(iid)
+                                                else:
+                                                    seleccionados_ref["ids"].discard(iid)
+                                                _actualizar_descarga_btn()
+                                            chk_row.on_value_change(_on_chk)
+                                            row_chks.append((chk_row, inv_id))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(str(idx))
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
@@ -811,6 +889,8 @@ def build_tab_compras(container) -> None:
                                             ui.label(f"u$ {amt_str}")
                                         with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center"):
                                             ui.label(inv.get("status", "—"))
+
+                _actualizar_descarga_btn()
 
         def _cargar_compras() -> None:
             qb_cust = get_user_qb_customer(user["id"])
