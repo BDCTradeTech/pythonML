@@ -64,7 +64,7 @@ Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
 _TABLE_HEADERS = [
-    "IA", "Fecha", "Banco", "Operación", "Importe", "Pagador",
+    "IA", "Fecha", "Banco", "Operación", "Importe", "Gastos pagados",
     "Beneficiario", "Banco Benef.", "T/C", "Equiv. $", "Estado", "Acciones",
 ]
 
@@ -154,6 +154,7 @@ def _init_transferencias_db() -> None:
             fecha_liquidacion     TEXT,
             facturas              TEXT,
             ia_usada              TEXT,
+            pdf_path              TEXT,
             created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -162,7 +163,7 @@ def _init_transferencias_db() -> None:
     for col in ("banco", "operacion", "importe", "importe_moneda", "importe_valor",
                 "pagador_gastos_exterior", "concepto", "banco_beneficiario",
                 "importe_pesos", "fecha_liquidacion", "facturas", "ia_usada",
-                "beneficiario", "tipo_cambio", "estado", "fecha"):
+                "beneficiario", "tipo_cambio", "estado", "fecha", "pdf_path"):
         if col not in existing:
             conn.execute(f"ALTER TABLE transferencias ADD COLUMN {col} TEXT")
     conn.commit()
@@ -455,6 +456,7 @@ def _rebuild_tabla(
                                 ui.label("—").style("font-size:10px;color:#9ca3af")
 
                         # Acciones
+                        _r_pdf = r.get("pdf_path") or ""
                         with ui.element("div").style(
                             f"display:flex;align-items:center;justify-content:center;"
                             f"gap:2px;padding:3px 4px;{_sep};{_row_bg}"
@@ -476,6 +478,19 @@ def _rebuild_tabla(
                             ui.button(icon="visibility", on_click=_ver).props("flat dense").style(
                                 "color:#1d4ed8;min-width:20px"
                             )
+                            if _r_pdf:
+                                import os as _os
+                                def _descargar(p=_r_pdf):
+                                    if _os.path.exists(p):
+                                        ui.download(p, _os.path.basename(p))
+                                    else:
+                                        ui.notify("Archivo no encontrado", color="warning")
+                                with ui.element("button").on("click", _descargar).style(
+                                    "background:none;border:none;cursor:pointer;color:#2A7AC7;"
+                                    "padding:2px;min-width:20px;display:inline-flex;"
+                                    "align-items:center;justify-content:center"
+                                ).tooltip("Descargar PDF"):
+                                    ui.html('<i class="ti ti-file-type-pdf" style="font-size:12px;pointer-events:none"></i>')
                             ui.button(icon="delete", on_click=_borrar).props("flat dense").style(
                                 "color:#dc2626;min-width:20px"
                             )
@@ -498,11 +513,12 @@ def _rebuild_tabla(
                                     with ui.element("thead"):
                                         with ui.element("tr"):
                                             for hdr in ["Número", "Emisión", "Moneda", "Monto"]:
-                                                ui.element("th").style(
+                                                with ui.element("th").style(
                                                     "padding:3px 10px;background:#E6F1FB;"
                                                     "color:#0C447C;font-weight:600;"
                                                     "border:0.5px solid #C5D9F0;text-align:center"
-                                                ).text = hdr
+                                                ):
+                                                    ui.html(hdr)
                                     with ui.element("tbody"):
                                         for fac in facturas:
                                             with ui.element("tr"):
@@ -512,13 +528,34 @@ def _rebuild_tabla(
                                                     (str(fac.get("moneda") or "—"), "center"),
                                                     (_fmt_usd(fac.get("monto")), "right"),
                                                 ]:
-                                                    ui.element("td").style(
+                                                    with ui.element("td").style(
                                                         f"padding:3px 10px;border:0.5px solid #E2E8F0;"
                                                         f"color:#374151;text-align:{align}"
-                                                    ).text = val
+                                                    ):
+                                                        ui.html(val)
 
 
-def _confirm_delete(rid, user_id, tabla_container, sort_state, filtros, recien):
+def _save_pdf_transferencia(user_id: int, operacion: str, data: bytes) -> str:
+    import os
+    from datetime import datetime as _dt
+    now = _dt.now()
+    base = f"/opt/pythonml/pdfs_transferencias/{user_id}/{now.year}/{now.month:02d}"
+    os.makedirs(base, exist_ok=True)
+    op_safe = (operacion or "sin_op").replace("/", "-").replace("\\", "-")
+    path = os.path.join(base, f"transferencia_{op_safe}_{now.strftime('%Y%m%d_%H%M%S')}.pdf")
+    with open(path, "wb") as f:
+        f.write(data)
+    return path
+
+
+def _update_pdf_path_transferencia(tid: int, pdf_path: str) -> None:
+    conn = get_connection()
+    conn.execute("UPDATE transferencias SET pdf_path=? WHERE id=?", (pdf_path or None, tid))
+    conn.commit()
+    conn.close()
+
+
+
     with ui.dialog() as d_confirm, ui.card().style("padding:20px;min-width:300px"):
         ui.label("¿Eliminar esta transferencia?").style(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
@@ -579,10 +616,11 @@ def _show_ver_dialog(row: Dict[str, Any]) -> None:
                 with ui.element("thead"):
                     with ui.element("tr"):
                         for hdr in ["Número", "Emisión", "Moneda", "Monto"]:
-                            ui.element("th").style(
+                            with ui.element("th").style(
                                 "padding:4px 8px;background:#E6F1FB;color:#0C447C;"
                                 "font-weight:600;border:0.5px solid #C5D9F0;text-align:center"
-                            ).text = hdr
+                            ):
+                                ui.html(hdr)
                 with ui.element("tbody"):
                     for fac in facturas:
                         with ui.element("tr"):
@@ -592,10 +630,11 @@ def _show_ver_dialog(row: Dict[str, Any]) -> None:
                                 (str(fac.get("moneda") or "—"), "center"),
                                 (_fmt_usd(fac.get("monto")), "right"),
                             ]:
-                                ui.element("td").style(
+                                with ui.element("td").style(
                                     f"padding:4px 8px;border:0.5px solid #E2E8F0;"
                                     f"color:#374151;text-align:{align}"
-                                ).text = val
+                                ):
+                                    ui.html(val)
 
         ui.button("Cerrar", on_click=d.close).props("flat").style("margin-top:16px;color:#374151")
     d.open()
@@ -677,6 +716,15 @@ def build_tab_transferencias() -> None:
             parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
             _id = _save_transferencia(user_id, parsed)
             recien.add(_id)
+            # Guardar PDF en disco
+            if archivo_data[0]:
+                try:
+                    _pdf_path = _save_pdf_transferencia(
+                        user_id, parsed.get("operacion") or "", archivo_data[0]
+                    )
+                    _update_pdf_path_transferencia(_id, _pdf_path)
+                except Exception as _pe:
+                    logger.warning("PDF save error transferencia: %s", _pe)
             _rebuild_tabla(user_id, tabla_ref[0], sort_state, _filtros, recien)
             client.run_javascript(
                 "Quasar.Notify.create({message:'Transferencia guardada',"
