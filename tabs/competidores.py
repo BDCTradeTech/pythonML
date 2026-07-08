@@ -1,7 +1,7 @@
 """
 tabs/competidores.py
 Ranking global de competidores: 5 tablas por periodo, full width.
-Sin selector. Todos los vendedores unificados de todos los catalogos.
+# = rank por ventas, fijo independiente del orden de visualizacion.
 """
 from __future__ import annotations
 from datetime import date, timedelta
@@ -47,7 +47,6 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
         fecha_desde = (date.today() - timedelta(days=dias)).isoformat()
         rows = conn.execute(f"""
             SELECT s1.seller_id, s1.seller_nickname, s1.seller_level_id,
-                   s1.snapshot_date,
                    s1.ventas_hoy - COALESCE(s0.ventas_antes, s1.ventas_hoy) as ventas
             FROM (
                 SELECT seller_id, seller_nickname, seller_level_id,
@@ -65,18 +64,24 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
             ORDER BY ventas DESC NULLS LAST
         """, (user_id, user_id, user_id, fecha_desde)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    # Agregar rank_ventas fijo (posicion por ventas, no cambia al ordenar)
+    result = []
+    for i, r in enumerate(rows, 1):
+        d = dict(r)
+        d["rank_ventas"] = i
+        result.append(d)
+    return result
 
 
 def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
-    con_datos = any((r.get("ventas") or 0) > 0 for r in rows_orig)
     total = len(rows_orig)
 
-    # Calcular posicion del usuario en orden por ventas DESC (orden original)
+    # Posicion del usuario (siempre por rank_ventas)
     mi_puesto = None
-    for i, r in enumerate(rows_orig, 1):
+    for r in rows_orig:
         if str(r.get("seller_id") or "") in mis_ids:
-            mi_puesto = i
+            mi_puesto = r.get("rank_ventas")
             break
 
     sort_state = {"col": "ventas", "asc": False}
@@ -88,6 +93,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             return sorted(rows_orig,
                           key=lambda r: (r.get("seller_nickname") or "").lower(),
                           reverse=not asc)
+        # default: ventas DESC
         return sorted(rows_orig,
                       key=lambda r: (r.get("ventas") if r.get("ventas") is not None else -1),
                       reverse=not asc)
@@ -95,22 +101,25 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
     def _render_body():
         tbody_ref[0].clear()
         with tbody_ref[0]:
-            for i, r in enumerate(_sorted(), 1):
+            for r in _sorted():
                 sid    = str(r.get("seller_id") or "")
                 es_mio = sid in mis_ids
                 ventas = r.get("ventas")
+                rank   = r.get("rank_ventas", "—")   # rank fijo por ventas
                 nick   = (r.get("seller_nickname") or f"ID {sid}")[:28]
                 icon   = _LVL_ICON.get(r.get("seller_level_id") or "", "")
-                bg     = "background:#EEF6FD;" if es_mio else ("background:#fafafa;" if i%2==0 else "")
-                pc     = "#ca6d00" if i==1 else "#7c6514" if i==2 else "#6b7280" if i==3 else ("#166534" if es_mio else "#9ca3af")
-                fw     = "700" if es_mio else ("600" if i<=3 else "400")
+                bg     = "background:#EEF6FD;" if es_mio else ("background:#fafafa;" if int(rank)%2==0 else "") if isinstance(rank, int) else ""
+                pc     = "#ca6d00" if rank==1 else "#7c6514" if rank==2 else "#6b7280" if rank==3 else ("#166534" if es_mio else "#9ca3af")
+                fw     = "700" if es_mio else ("600" if isinstance(rank, int) and rank<=3 else "400")
 
                 with ui.element("tr").style(bg):
+                    # # fijo por ventas
                     with ui.element("td").style(
                         f"padding:3px 5px;text-align:center;border-bottom:0.5px solid #f1f5f9;"
                         f"font-weight:{fw};color:{pc};font-size:10px;white-space:nowrap"
                     ):
-                        ui.html(str(i))
+                        ui.html(str(rank))
+                    # Vendedor
                     with ui.element("td").style(
                         f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;"
                         f"font-size:10px;font-weight:{fw};"
@@ -121,6 +130,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                         ).style(
                             "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
                         )
+                    # Ventas
                     with ui.element("td").style(
                         f"padding:3px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;"
                         f"font-size:10px;font-weight:{fw};"
@@ -136,13 +146,13 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             sort_state["asc"] = not sort_state["asc"]
         else:
             sort_state["col"] = col
-            sort_state["asc"] = col == "nick"
+            sort_state["asc"] = (col == "nick")
         _render_body()
 
-    # Posicion y color del puesto
+    # Color del puesto en header
     if mi_puesto and total:
         pct = mi_puesto / total
-        pos_color = "#86EFAC" if pct < 0.1 else "#FDE68A" if pct < 0.3 else "rgba(255,255,255,.8)"
+        pos_color = "#86EFAC" if pct <= 0.1 else "#FDE68A" if pct <= 0.3 else "rgba(255,255,255,.85)"
         pos_txt = f"#{mi_puesto} / {total}"
     else:
         pos_color = "rgba(255,255,255,.45)"
@@ -151,22 +161,21 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
     TH = (
         "padding:4px 8px;background:#EEF6FD;color:#185FA5;font-size:9px;"
         "font-weight:600;position:sticky;top:0;z-index:2;"
-        "border-bottom:0.5px solid #d0e8f8;cursor:pointer;user-select:none;"
-        "white-space:nowrap"
+        "border-bottom:0.5px solid #d0e8f8;cursor:pointer;user-select:none;white-space:nowrap"
     )
 
     with ui.element("div").style(
         "flex:1;min-width:180px;border:0.5px solid #e2e8f0;border-radius:8px;"
         "overflow:hidden;display:flex;flex-direction:column"
     ):
-        # Header tabla
+        # Header con posicion
         with ui.element("div").style("background:#2A7AC7;padding:8px 10px;flex-shrink:0"):
             with ui.element("div").style("display:flex;justify-content:space-between;align-items:flex-start"):
                 with ui.element("div"):
                     ui.label(titulo).style("font-size:12px;font-weight:500;color:#fff;display:block")
                     ui.label(nota).style("font-size:9px;color:rgba(255,255,255,.65);display:block")
                 ui.label(pos_txt).style(
-                    f"font-size:12px;font-weight:700;color:{pos_color};white-space:nowrap;margin-left:6px"
+                    f"font-size:12px;font-weight:700;color:{pos_color};white-space:nowrap;margin-left:8px;align-self:center"
                 )
 
         if not rows_orig:
@@ -175,12 +184,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             )
             return
 
-        if not con_datos and titulo != "Historica":
-            with ui.element("div").style("padding:14px;text-align:center"):
-                ui.label("Disponible manana").style("font-size:10px;color:#9ca3af;display:block")
-                ui.label("(necesita 2 snapshots)").style("font-size:9px;color:#d1d5db;display:block;margin-top:2px")
-            return
-
+        # Siempre mostrar la tabla — incluso si todas las ventas son 0
         with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 230px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
@@ -199,6 +203,15 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                 tbody = ui.element("tbody")
                 tbody_ref[0] = tbody
                 _render_body()
+
+        # Nota al pie si todos son 0
+        hay_datos = any((r.get("ventas") or 0) > 0 for r in rows_orig)
+        if not hay_datos and titulo != "Historica":
+            with ui.element("div").style(
+                "padding:4px 10px;background:#F8FAFC;border-top:0.5px solid #e2e8f0;"
+                "font-size:9px;color:#9ca3af;flex-shrink:0"
+            ):
+                ui.html("Sin diferencias detectadas aun — los valores iran apareciendo a medida que se acumulen snapshots")
 
 
 def build_tab_competidores() -> None:
