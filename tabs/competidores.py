@@ -349,6 +349,91 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
     return result
 
 
+def _actualizar_ventas_db(user_id: int, progress_label) -> Dict:
+    """
+    Actualiza seller_total_ventas de todos los sellers únicos en competidores_snapshots.
+    No escanea catálogos. Solo llama /users/{seller_id} por cada seller ya en la DB.
+    """
+    try:
+        from ml_api import get_ml_access_token as _get_tok
+    except ImportError:
+        from db import get_ml_access_token as _get_tok
+
+    token = _get_tok(user_id) or ""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    today = date.today().isoformat()
+
+    conn = get_connection()
+    sellers = conn.execute("""
+        SELECT DISTINCT seller_id, seller_nickname
+        FROM competidores_snapshots
+        WHERE user_id=?
+    """, (user_id,)).fetchall()
+    conn.close()
+
+    total = len(sellers)
+    actualizados = 0
+    sin_ventas = 0
+
+    for i, row in enumerate(sellers, 1):
+        sid, nick = row[0], row[1]
+        try:
+            progress_label.set_text(f"Leyendo {i} / {total}...")
+            r = requests.get(f"{_ML_API}/users/{sid}", headers=headers, timeout=8)
+            if r.status_code == 200:
+                d = r.json()
+                rep = d.get("seller_reputation") or {}
+                txn = rep.get("transactions") or {}
+                total_ventas = txn.get("total")
+                nick_nuevo = d.get("nickname") or nick
+
+                if not total_ventas:
+                    sin_ventas += 1
+                    conn = get_connection()
+                    try:
+                        conn.execute(
+                            "DELETE FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
+                            (user_id, sid)
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+                    continue
+
+                conn = get_connection()
+                try:
+                    conn.execute("""
+                        INSERT INTO competidores_snapshots
+                            (user_id, catalog_product_id, seller_id, seller_nickname,
+                             seller_total_ventas, seller_level_id, seller_power_status,
+                             snapshot_date)
+                        VALUES (?, 'MANUAL', ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, catalog_product_id, seller_id, snapshot_date)
+                        DO UPDATE SET
+                            seller_total_ventas=excluded.seller_total_ventas,
+                            seller_nickname=excluded.seller_nickname,
+                            seller_level_id=excluded.seller_level_id,
+                            seller_power_status=excluded.seller_power_status
+                    """, (
+                        user_id, sid, nick_nuevo, total_ventas,
+                        rep.get("level_id") or "",
+                        rep.get("power_seller_status") or "",
+                        today
+                    ))
+                    conn.commit()
+                finally:
+                    conn.close()
+                actualizados += 1
+        except Exception:
+            pass
+
+    return {
+        "total": total,
+        "actualizados": actualizados,
+        "sin_ventas": sin_ventas,
+    }
+
+
 def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
     total   = len(rows_orig)
     mi_puesto = None
@@ -579,28 +664,52 @@ def build_tab_competidores() -> None:
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
-        # Buscador
-        with ui.element("div").style(
-            "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
-            "border-radius:8px;padding:8px 12px;margin-bottom:8px;flex-shrink:0;max-width:50%"
-        ):
-            with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
-                with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
-                    inp = ui.input(
-                        placeholder="Link de una publicación de catálogo..."
-                    ).props("dense outlined").style(
-                        "flex:1;font-size:12px;border-radius:4px 0 0 4px"
+        # Buscador + boton actualizar ventas (fuera de la caja del buscador)
+        with ui.row().style("gap:8px;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap"):
+            with ui.element("div").style(
+                "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
+                "border-radius:8px;padding:8px 12px;flex-shrink:0;max-width:50%"
+            ):
+                with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
+                    with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
+                        inp = ui.input(
+                            placeholder="Link de una publicación de catálogo..."
+                        ).props("dense outlined").style(
+                            "flex:1;font-size:12px;border-radius:4px 0 0 4px"
+                        )
+                        with ui.element("button").on(
+                            "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
+                        ).style(
+                            "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
+                            "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
+                        ):
+                            ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
+                    notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
+                    notif_ref[0] = notif
+                resultado_area = ui.element("div").style("margin-top:4px")
+
+            async def _lanzar_actualizacion():
+                with ui.dialog() as dlg, ui.card().style("min-width:320px;padding:24px;text-align:center"):
+                    ui.label("Actualizando ventas históricas").style(
+                        "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
                     )
-                    with ui.element("button").on(
-                        "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
-                    ).style(
-                        "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
-                        "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
-                    ):
-                        ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
-                notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
-                notif_ref[0] = notif
-            resultado_area = ui.element("div").style("margin-top:4px")
+                    ui.spinner(size="xl", color="#2A7AC7")
+                    prog = ui.label("Iniciando...").style("font-size:12px;color:#6b7280;margin-top:12px;display:block")
+                dlg.open()
+                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog)
+                dlg.close()
+                ui.notify(
+                    f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
+                    color="positive", timeout=4000
+                )
+                _recargar_tablas()
+
+            ui.button("↻ Actualizar ventas", on_click=_lanzar_actualizacion).props(
+                "unelevated no-caps"
+            ).style(
+                "background:#185FA5;color:#fff;font-size:12px;padding:0 14px;"
+                "height:36px;border-radius:4px;white-space:nowrap;flex-shrink:0"
+            )
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
