@@ -3,7 +3,7 @@ tabs/competidores.py
 Ranking global de competidores con buscador por nickname/URL/ID.
 """
 from __future__ import annotations
-import json, requests
+import json, re, requests
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 from nicegui import app, run, ui
@@ -126,6 +126,25 @@ def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
         try:
             nick = query.split("/pagina/")[1].split("#")[0].split("?")[0].strip()
             query = nick
+        except Exception:
+            pass
+
+    # Extraer item_id de URL de publicación o input directo
+    item_match = re.search(r'(MLA|MLB|MLM|MCO|MLC|MLU)\d{7,}', query.upper())
+    if item_match:
+        item_id = item_match.group(0)
+        try:
+            r = requests.get(
+                f"{_ML_API}/items/{item_id}",
+                params={"attributes": "seller_id,title"},
+                headers=headers, timeout=8
+            )
+            if r.status_code == 200:
+                seller_id = str(r.json().get("seller_id") or "")
+                if seller_id:
+                    r2 = requests.get(f"{_ML_API}/users/{seller_id}", headers=headers, timeout=8)
+                    if r2.status_code == 200:
+                        return _parse_user(r2.json())
         except Exception:
             pass
 
@@ -343,12 +362,9 @@ def build_tab_competidores() -> None:
     def _recargar_tablas():
         tablas_ref[0].clear()
         with tablas_ref[0]:
-            with ui.element("div").style(
-                "display:flex;flex-direction:column;align-items:center;justify-content:center;"
-                "gap:10px;width:100%;padding:30px"
-            ):
-                ui.spinner(size="md", color="#2A7AC7")
-                ui.label("Actualizando...").style("font-size:12px;color:#9ca3af")
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Actualizando...").classes("text-xl text-gray-700")
 
         async def _reload():
             all_data = []
@@ -437,12 +453,9 @@ def build_tab_competidores() -> None:
         tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:200px")
         tablas_ref[0] = tablas
         with tablas:
-            with ui.element("div").style(
-                "display:flex;flex-direction:column;align-items:center;justify-content:center;"
-                "gap:12px;width:100%;padding:40px"
-            ):
-                ui.spinner(size="lg", color="#2A7AC7")
-                ui.label("Cargando competidores...").style("font-size:13px;color:#9ca3af")
+            with ui.card().classes("w-full p-8 items-center gap-4"):
+                ui.spinner(size="xl")
+                ui.label("Cargando competidores...").classes("text-xl text-gray-700")
 
         async def _cargar_tablas():
             all_data = []
