@@ -399,8 +399,9 @@ def build_tab_competidores() -> None:
         if not v:
             with resultado_area:
                 ui.label(
-                    "No encontrado en tus catalogos. Pega el seller_id numerico directamente "
-                    "para buscarlo por perfil publico."
+                    "No encontrado. Si el vendedor no está en tus catálogos, ingresá su seller ID "
+                    "numérico directamente (lo encontrás en el código fuente de su perfil en ML o "
+                    "en las requests de red del browser)."
                 ).style("font-size:11px;color:#dc2626")
             return
         with resultado_area:
@@ -408,7 +409,16 @@ def build_tab_competidores() -> None:
             nick     = v["nickname"]
             icon     = _LVL_ICON.get(v.get("level_id") or "", "")
             ventas   = v.get("total_ventas")
-            ya_sigo  = any(s["seller_id"] == sid for s in _get_seguidos(uid))
+            conn = get_connection()
+            try:
+                ya_en_snapshots = conn.execute(
+                    "SELECT 1 FROM competidores_snapshots WHERE user_id=? AND seller_id=? LIMIT 1",
+                    (uid, sid)
+                ).fetchone() is not None
+            finally:
+                conn.close()
+            ya_en_seguidos = any(s["seller_id"] == sid for s in _get_seguidos(uid))
+            ya_sigo = ya_en_snapshots or ya_en_seguidos
             with ui.element("div").style(
                 "display:flex;align-items:center;gap:10px;background:#EEF6FD;"
                 "border:0.5px solid #85B7EB;border-radius:8px;padding:8px 12px"
@@ -418,7 +428,7 @@ def build_tab_competidores() -> None:
                     ui.label(f"{int(ventas):,} ventas hist.".replace(",",".")).style("font-size:11px;color:#374151")
                 ui.label(f"ID: {sid}").style("font-size:10px;color:#9ca3af")
                 ui.element("div").style("flex:1")
-                if ya_sigo:
+                if ya_en_seguidos:
                     def _quitar():
                         _remove_seguido(uid, sid)
                         ui.notify(f"{nick} quitado del seguimiento", color="warning", timeout=2000)
@@ -427,6 +437,10 @@ def build_tab_competidores() -> None:
                     ui.button("Quitar seguimiento", on_click=_quitar).props(
                         "dense no-caps unelevated"
                     ).style("background:#FEE2E2;color:#991B1B;font-size:11px;padding:4px 10px;border-radius:4px")
+                elif ya_sigo:
+                    ui.label("Ya en seguimiento").style(
+                        "background:#F3F4F6;color:#6B7280;font-size:11px;padding:4px 10px;border-radius:4px"
+                    )
                 else:
                     def _agregar():
                         _add_seguido(uid, sid, nick)
