@@ -160,63 +160,41 @@ def build_tab_stock() -> None:
                                         ui.html(str(val))
                             prev_stock = stock
 
-            # Gráfico (Chart.js via ui.html)
-            labels = [r['snapshot_date'] for r in rows]
+            # Gráfico con ui.echart (nativo NiceGUI)
+            labels  = [r['snapshot_date'] for r in rows]
             valores = [r['stock'] or 0 for r in rows]
-            chart_id = f"chart_{user_id}"
-            ui.html(f"""
-<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);
-border-radius:8px;padding:12px 14px;margin-top:4px">
-  <div style="font-size:11px;font-weight:500;color:#185FA5;margin-bottom:8px">
-    Evolución de stock — {sku}
-  </div>
-  <canvas id="{chart_id}" style="width:100%;height:160px"></canvas>
-</div>
-<script>
-(function(){{
-  function _initChart(){{
-    var existing = Chart.getChart("{chart_id}");
-    if (existing) existing.destroy();
-    var ctx = document.getElementById("{chart_id}");
-    if (!ctx) return;
-    new Chart(ctx.getContext("2d"), {{
-      type: "line",
-      data: {{
-        labels: {json.dumps(labels)},
-        datasets: [{{
-          label: "Stock",
-          data: {json.dumps(valores)},
-          borderColor: "#378ADD",
-          backgroundColor: "rgba(55,138,221,0.08)",
-          fill: true,
-          tension: 0.3,
-          pointRadius: 4,
-          pointBackgroundColor: "#378ADD",
-          borderWidth: 2
-        }}]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{ legend: {{ display: false }} }},
-        scales: {{
-          x: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }},
-          y: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }}
-        }}
-      }}
-    }});
-  }}
-  if (typeof Chart !== "undefined") {{
-    _initChart();
-  }} else {{
-    var s = document.createElement("script");
-    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js";
-    s.onload = _initChart;
-    document.head.appendChild(s);
-  }}
-}})();
-</script>
-""")
+            with ui.element("div").style(
+                "background:var(--color-background-secondary);"
+                "border:0.5px solid var(--color-border-tertiary);"
+                "border-radius:8px;padding:12px 14px;margin-top:4px"
+            ):
+                ui.label(f"Evolución de stock — {sku}").style(
+                    "font-size:11px;font-weight:500;color:#185FA5;margin-bottom:8px;display:block"
+                )
+                ui.echart({
+                    "grid": {"top": 20, "bottom": 30, "left": 50, "right": 16},
+                    "xAxis": {
+                        "type": "category",
+                        "data": labels,
+                        "axisLabel": {"fontSize": 10},
+                        "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+                    },
+                    "yAxis": {
+                        "type": "value",
+                        "axisLabel": {"fontSize": 10},
+                        "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
+                    },
+                    "series": [{
+                        "type": "line",
+                        "data": valores,
+                        "smooth": True,
+                        "lineStyle": {"color": "#378ADD", "width": 2},
+                        "itemStyle": {"color": "#378ADD"},
+                        "areaStyle": {"color": "rgba(55,138,221,0.08)"},
+                        "symbolSize": 6,
+                    }],
+                    "tooltip": {"trigger": "axis"},
+                }).style("height:180px;width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
