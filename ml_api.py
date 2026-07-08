@@ -684,6 +684,7 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
                             "promotion_id": item.get("offer_id"),
                             "promotion_type": ptype,
                             "campaign_id": pid,
+                            "meli_percentage": float(item.get("meli_percentage") or item.get("meli_percent") or 0),
                         }
                     except (TypeError, ValueError):
                         pass
