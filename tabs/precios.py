@@ -117,7 +117,8 @@ def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
             try:
                 frescos = fetch_fn(stale_ids) or {}
                 for iid, val in frescos.items():
-                    set_cached(f"{key_prefix}_{iid}", val)
+                    if val is not None:
+                        set_cached(f"{key_prefix}_{iid}", val)
             except Exception as _e_bg:
                 logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error prefix={key_prefix}: {_e_bg}")
         threading.Thread(target=_refresh_bg, daemon=True, name=f"precios_bg_{key_prefix}").start()
@@ -126,7 +127,8 @@ def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
         frescos_bloqueante = fetch_fn(miss_ids) or {}
         for iid, val in frescos_bloqueante.items():
             out[iid] = val
-            set_cached(f"{key_prefix}_{iid}", val)
+            if val is not None:
+                set_cached(f"{key_prefix}_{iid}", val)
 
     return out
 
@@ -823,7 +825,9 @@ def _mostrar_tabla_precios(
             _env_c  = ml_envios_p if _pc_c >= ml_envios_grat_p else 0.0
             _ccuot_c = _pc_c * _tasa_c if _tasa_c else 0.0
             _cp_c   = _costo_c * dolar_oficial
-            _mgn_c  = _cob_c - _cp_c - _ivat_c - _iibb_c - _deb_c - _env_c - _ccuot_c
+            _promo_ml_pct_c = float(i.get("promo_ml_pct") or 0)
+            _bonif_ml_c = (float(i.get("price_original") or _pc_c) * _promo_ml_pct_c / 100) if _promo_ml_pct_c > 0 else 0.0
+            _mgn_c  = _cob_c - _cp_c - _ivat_c - _iibb_c - _deb_c - _env_c - _ccuot_c + _bonif_ml_c
             _mvta_c = _mgn_c / _pc_c * 100
         else:
             _mgn_c  = None
@@ -1059,6 +1063,8 @@ def _mostrar_tabla_precios(
                         pass
                 return None
 
+            _meli_pct_map: Dict[str, float] = {}
+
             def _fetch_has_promo(ids):
                 _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
                 _all_cids = list({cid for _, cid in _pairs})
@@ -1101,6 +1107,7 @@ def _mostrar_tabla_precios(
                     if price_p is not None:
                         if rid not in res or res[rid] is None:
                             res[rid] = price_p
+                            _meli_pct_map[rid] = float((sp_lookup.get(cid) or {}).get("meli_percentage") or 0)
                     elif rid not in res:
                         res[rid] = None
                 return res
@@ -1134,7 +1141,10 @@ def _mostrar_tabla_precios(
                             _env_rp   = ml_envios_p if _pp >= ml_envios_grat_p else 0.0
                             _ccuot_rp = _pp * _tasa_rp if _tasa_rp else 0.0
                             _cp_rp    = _costo_rp * dolar_oficial
-                            _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp
+                            _meli_pct_rp  = _meli_pct_map.get(_rid, 0.0)
+                            _price_orig_rp = float(r.get("precio") or _pp)
+                            _bonif_ml_rp  = _price_orig_rp * _meli_pct_rp / 100
+                            _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp + _bonif_ml_rp
                             r["margen_pesos"]     = _mgn_rp
                             r["margen_venta_pct"] = (_mgn_rp / _pp * 100) if _pp > 0 else 0.0
                             if r.get("seller_sku"):
@@ -1388,7 +1398,7 @@ def _mostrar_tabla_precios(
                                         nick_p = comp_p.get("seller_nickname") or f"ID {comp_p.get('seller_id', '')}"
                                         tv_p   = comp_p.get("seller_total_ventas")
                                         lvl_p  = comp_p.get("seller_level_id") or ""
-                                        np_p   = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
+                                        np_p = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
                                         rep_p  = _LVL_P.get(lvl_p, "") if lvl_p else ""
                                         lbl_p  = f"{np_p}  {rep_p}".strip() if rep_p else np_p
                                         if is_ours_p:

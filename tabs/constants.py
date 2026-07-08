@@ -25,6 +25,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("balance", "Balance"),
     ("dashboard", "Dashboard"),
     ("compras", "Invoices"),
+    ("stock_bdc", "Stock BDC"),
     ("stock", "Stock"),
     ("compras_lista", "Compras"),
     ("pedidos", "Pedidos"),
@@ -41,7 +42,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "preguntas", "flex", "historicos", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "preguntas", "flex", "historicos", "stock_bdc", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -59,7 +60,8 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "preguntas": "ver y responder preguntas sin responder recibidas en MercadoLibre.",
     "flex": "gestión de zonas de envíos Flex con tarifas y códigos postales.",
     "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
-    "stock": "inventario de QuickBooks (Items con cantidad disponible).",
+    "stock_bdc": "inventario de QuickBooks (Items con cantidad disponible).",
+    "stock": "evolución histórica de stock por SKU en MercadoLibre.",
     "compras_lista": "cargar y gestionar compras a cotizar (marca, producto, SKU, cantidad, precio).",
     "pedidos": "ver consolidado de compras de todos los clientes.",
     "importacion": "cargar datos desde archivos.",
@@ -83,6 +85,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "flex": "Flex",
     "catalogos": "Catálogos",
     "compras": "Invoices",
+    "stock_bdc": "Stock BDC",
     "stock": "Stock",
     "compras_lista": "Compras",
     "pedidos": "Pedidos",
