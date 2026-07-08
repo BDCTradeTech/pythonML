@@ -582,12 +582,12 @@ def build_tab_competidores() -> None:
         # Buscador
         with ui.element("div").style(
             "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
-            "border-radius:8px;padding:8px 12px;margin-bottom:8px;flex-shrink:0"
+            "border-radius:8px;padding:8px 12px;margin-bottom:8px;flex-shrink:0;max-width:50%"
         ):
             with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
                 with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
                     inp = ui.input(
-                        placeholder="Nickname, URL de perfil ML o seller ID..."
+                        placeholder="Link de una publicación de catálogo..."
                     ).props("dense outlined").style(
                         "flex:1;font-size:12px;border-radius:4px 0 0 4px"
                     )
