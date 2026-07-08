@@ -44,6 +44,9 @@ def save_snapshot(user_id: int, catalog_product_id: str, items: list) -> int:
     conn = get_connection()
     saved = 0
     for it in items:
+        # Ignorar sellers sin ventas históricas
+        if not it.get("seller_total_ventas"):
+            continue
         try:
             conn.execute("""
                 INSERT OR IGNORE INTO competidores_snapshots
