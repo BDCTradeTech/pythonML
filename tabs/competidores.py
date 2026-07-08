@@ -307,9 +307,25 @@ def build_tab_competidores() -> None:
     def _recargar_tablas():
         tablas_ref[0].clear()
         with tablas_ref[0]:
+            with ui.element("div").style(
+                "display:flex;flex-direction:column;align-items:center;justify-content:center;"
+                "gap:10px;width:100%;padding:30px"
+            ):
+                ui.spinner(size="md", color="#2A7AC7")
+                ui.label("Actualizando...").style("font-size:12px;color:#9ca3af")
+
+        async def _reload():
+            all_data = []
             for titulo, dias, nota in PERIODOS:
-                rows = _get_ranking_global(uid, dias)
-                _render_tabla(rows, mis_ids, titulo, nota)
+                rows = await run.io_bound(_get_ranking_global, uid, dias)
+                all_data.append((titulo, dias, nota, rows))
+            tablas_ref[0].clear()
+            with tablas_ref[0]:
+                for titulo, dias, nota, rows in all_data:
+                    _render_tabla(rows, mis_ids, titulo, nota)
+
+        from nicegui import background_tasks
+        background_tasks.create(_reload(), name="comp_reload")
 
     async def _buscar(query: str):
         notif_ref[0].set_text("Buscando...")
@@ -381,10 +397,26 @@ def build_tab_competidores() -> None:
                 notif_ref[0] = notif
             resultado_area = ui.element("div").style("margin-top:4px")
 
-        # 5 tablas
+        # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:200px")
         tablas_ref[0] = tablas
         with tablas:
+            with ui.element("div").style(
+                "display:flex;flex-direction:column;align-items:center;justify-content:center;"
+                "gap:12px;width:100%;padding:40px"
+            ):
+                ui.spinner(size="lg", color="#2A7AC7")
+                ui.label("Cargando competidores...").style("font-size:13px;color:#9ca3af")
+
+        async def _cargar_tablas():
+            all_data = []
             for titulo, dias, nota in PERIODOS:
-                rows = _get_ranking_global(uid, dias)
-                _render_tabla(rows, mis_ids, titulo, nota)
+                rows = await run.io_bound(_get_ranking_global, uid, dias)
+                all_data.append((titulo, dias, nota, rows))
+            tablas.clear()
+            with tablas:
+                for titulo, dias, nota, rows in all_data:
+                    _render_tabla(rows, mis_ids, titulo, nota)
+
+        from nicegui import background_tasks
+        background_tasks.create(_cargar_tablas(), name="comp_load")
