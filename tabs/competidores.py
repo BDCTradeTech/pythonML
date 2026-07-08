@@ -436,6 +436,22 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
     }
 
 
+def _get_ultima_actualizacion(user_id: int) -> str:
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT MAX(created_at) FROM competidores_snapshots WHERE user_id=?
+    """, (user_id,)).fetchone()
+    conn.close()
+    if row and row[0]:
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(str(row[0]))
+            return dt.strftime("%d/%m/%Y %H:%M")
+        except Exception:
+            return str(row[0])[:16]
+    return "—"
+
+
 def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
     total   = len(rows_orig)
     mi_puesto = None
@@ -550,9 +566,10 @@ def build_tab_competidores() -> None:
     ]
 
     # resultado del buscador
-    buscar_ref:  list = [None]
-    tablas_ref:  list = [None]
-    notif_ref:   list = [None]
+    buscar_ref:     list = [None]
+    tablas_ref:     list = [None]
+    notif_ref:      list = [None]
+    ultima_act_ref: list = [None]
 
     def _recargar_tablas():
         tablas_ref[0].clear()
@@ -730,17 +747,23 @@ def build_tab_competidores() -> None:
                         color="positive", timeout=4000
                     )
                     _recargar_tablas()
+                ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
 
-            with ui.button(on_click=_lanzar_actualizacion).props(
-                "unelevated no-caps"
-            ).style(
-                "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
-                "flex-shrink:0;min-width:36px"
-            ).tooltip("Actualizar ventas históricas"):
-                ui.html('''
-                    <i class="ti ti-refresh" style="font-size:16px"></i>
-                    <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
-                ''')
+            with ui.element("div").style("display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"):
+                with ui.button(on_click=_lanzar_actualizacion).props(
+                    "unelevated no-caps"
+                ).style(
+                    "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
+                    "flex-shrink:0;min-width:36px"
+                ).tooltip("Actualizar ventas históricas"):
+                    ui.html('''
+                        <i class="ti ti-refresh" style="font-size:16px"></i>
+                        <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
+                    ''')
+                lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
+                    "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
+                )
+                ultima_act_ref[0] = lbl_ultima
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
