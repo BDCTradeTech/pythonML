@@ -82,13 +82,44 @@ def _remove_seguido(user_id: int, seller_id: str):
         conn.close()
 
 
+def _buscar_en_db(query: str) -> Optional[Dict]:
+    """Busca un vendedor por nickname en los snapshots locales."""
+    conn = get_connection()
+    try:
+        rows = conn.execute("""
+            SELECT seller_id, seller_nickname, seller_level_id,
+                   MAX(seller_total_ventas) as ventas
+            FROM competidores_snapshots
+            WHERE LOWER(seller_nickname) LIKE LOWER(?)
+            GROUP BY seller_id
+            ORDER BY ventas DESC NULLS LAST
+            LIMIT 1
+        """, (f"%{query}%",)).fetchall()
+        if rows:
+            r = dict(rows[0])
+            return {
+                "seller_id":    r["seller_id"],
+                "nickname":     r["seller_nickname"] or "",
+                "level_id":     r.get("seller_level_id") or "",
+                "power_status": "",
+                "total_ventas": r.get("ventas"),
+                "registration": "",
+                "fuente":       "db",
+            }
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return None
+
+
 def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
     """Busca un vendedor por URL de ML, nickname o seller_id."""
     query = query.strip()
     if not query:
         return None
 
-    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"} if access_token else {}
 
     # Extraer nickname de URL: mercadolibre.com.ar/pagina/{nickname}
     if "mercadolibre.com" in query.lower() and "/pagina/" in query.lower():
@@ -98,7 +129,12 @@ def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
         except Exception:
             pass
 
-    # Si es numérico, buscar por seller_id directo
+    # 1. Buscar en DB local primero (rápido, sin restricciones de IP)
+    local = _buscar_en_db(query)
+    if local:
+        return local
+
+    # 2. Si es numérico, buscar por seller_id directo en API
     if query.isdigit():
         try:
             r = requests.get(f"{_ML_API}/users/{query}", headers=headers, timeout=8)
@@ -108,7 +144,7 @@ def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
             pass
         return None
 
-    # Buscar por nickname (requiere token desde DO)
+    # 3. Buscar por nickname via API (requiere token, puede fallar desde DO)
     try:
         r = requests.get(f"{_ML_API}/users/search",
                          params={"nickname": query},
