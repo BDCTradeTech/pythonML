@@ -128,155 +128,143 @@ def build_tab_stock() -> None:
                     repo, vend = 0, max(0, stock_ayer - stock_hoy)
                 data.append({**r, 'vend': vend, 'repo': repo})
 
-            # ── Tabla con scroll ───────────────────────────────────────────
+            # ── Layout: tabla izquierda + gráfico derecha ─────────────────
+            MESES_CORTO = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
             with ui.element("div").style(
-                "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:10px"
+                "display:grid;grid-template-columns:320px 1fr;gap:12px;align-items:start"
             ):
-                with ui.element("div").style("overflow-y:auto;max-height:260px"):
-                    with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
-                        with ui.element("thead"):
-                            with ui.element("tr"):
-                                for h in ["Día", "Stock", "Vendidas", "Vel. día", "Precio"]:
-                                    with ui.element("th").style(
-                                        "padding:5px 10px;background:#2A7AC7;color:#fff;"
-                                        "font-weight:500;text-align:center;white-space:nowrap;"
-                                        "border-right:0.5px solid rgba(255,255,255,0.15);"
-                                        "position:sticky;top:0;z-index:2"
-                                    ):
-                                        ui.html(h)
-                        with ui.element("tbody"):
-                            cur_mes = None
-                            es_primera = True
-                            for r in reversed(data):
-                                fecha_str = r['snapshot_date']
-                                try:
-                                    d = _dt.strptime(fecha_str, "%Y-%m-%d")
-                                    mes_key   = f"{d.year}-{d.month:02d}"
-                                    mes_label = f"{MESES[d.month-1]} {d.year}"
-                                    dia_label = str(d.day)
-                                except Exception:
-                                    mes_key = mes_label = fecha_str
-                                    dia_label = fecha_str
+                # ── Tabla ─────────────────────────────────────────────────
+                with ui.element("div").style(
+                    "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden"
+                ):
+                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 320px)"):
+                        with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
+                            with ui.element("thead"):
+                                with ui.element("tr"):
+                                    for h in ["Día", "Stock", "Vendidas", "Vel. día", "Precio"]:
+                                        with ui.element("th").style(
+                                            "padding:5px 8px;background:#2A7AC7;color:#fff;"
+                                            "font-weight:500;text-align:center;white-space:nowrap;"
+                                            "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                            "position:sticky;top:0;z-index:2"
+                                        ):
+                                            ui.html(h)
+                            with ui.element("tbody"):
+                                from datetime import datetime as _dt2
+                                cur_mes = None
+                                es_primera = True
+                                for r in reversed(data):
+                                    fecha_str = r['snapshot_date']
+                                    try:
+                                        d = _dt2.strptime(fecha_str, "%Y-%m-%d")
+                                        mes_key   = f"{d.year}-{d.month:02d}"
+                                        mes_label = f"{MESES_CORTO[d.month-1]} {d.year}"
+                                        dia_label = str(d.day)
+                                    except Exception:
+                                        mes_key = mes_label = fecha_str
+                                        dia_label = fecha_str
 
-                                # Separador de mes
-                                if mes_key != cur_mes:
-                                    cur_mes = mes_key
-                                    with ui.element("tr"):
-                                        with ui.element("td").style(
-                                            "colspan:5;padding:3px 10px;"
-                                            "background:#EEF6FD;border-bottom:0.5px solid #d0e8f8;"
-                                            "font-size:10px;font-weight:600;color:#185FA5"
-                                        ).props('colspan="5"'):
-                                            ui.html(mes_label)
+                                    if mes_key != cur_mes:
+                                        cur_mes = mes_key
+                                        with ui.element("tr"):
+                                            with ui.element("td").style(
+                                                "padding:3px 8px;background:#EEF6FD;"
+                                                "border-bottom:0.5px solid #d0e8f8;"
+                                                "font-size:10px;font-weight:600;color:#185FA5"
+                                            ).props('colspan="5"'):
+                                                ui.html(mes_label)
 
-                                stock = r.get('stock') or 0
-                                vend  = r['vend']
-                                repo  = r['repo']
-                                precio = _fmt_precio(r.get('price'))
+                                    stock  = r.get('stock') or 0
+                                    vend   = r['vend']
+                                    repo   = r['repo']
+                                    precio = _fmt_precio(r.get('price'))
 
-                                # Días restantes solo en la fila más reciente
-                                if es_primera:
-                                    dias_rest_txt = str(dias_r) if dias_r else "—"
-                                    dias_rest_color = dias_col
+                                    bg = "background:#F0FDF4;" if repo > 0 else ""
+                                    with ui.element("tr").style(bg):
+                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:center;color:#6b7280"):
+                                            ui.html(dia_label)
+                                        with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
+                                            ui.html(str(stock))
+                                        if repo > 0:
+                                            vc, vt = "#166534", f"+{repo}"
+                                        elif vend > 0:
+                                            vc, vt = "#dc2626", f"−{vend}"
+                                        else:
+                                            vc, vt = "#9ca3af", "—"
+                                        with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
+                                            ui.html(vt)
+                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#9ca3af"):
+                                            ui.html(f"{vend}/d" if vend > 0 else "—")
+                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
+                                            ui.html(precio)
                                     es_primera = False
-                                else:
-                                    dias_rest_txt = None  # no mostrar
 
-                                bg = "background:#EEF6FD;" if repo > 0 else ""
-                                with ui.element("tr").style(bg):
-                                    # Día
-                                    with ui.element("td").style(
-                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        "text-align:center;color:#6b7280;font-size:11px"
-                                    ):
-                                        ui.html(dia_label)
-                                    # Stock
-                                    with ui.element("td").style(
-                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        f"text-align:right;font-weight:500;font-size:11px;"
-                                        f"color:{'#166534' if stock > 0 else '#9ca3af'}"
-                                    ):
-                                        ui.html(str(stock))
-                                    # Vendidas / repo
-                                    if repo > 0:
-                                        vend_txt   = f"+{repo}"
-                                        vend_color = "#166534"
-                                    elif vend > 0:
-                                        vend_txt   = f"−{vend}"
-                                        vend_color = "#dc2626"
-                                    else:
-                                        vend_txt   = "—"
-                                        vend_color = "#9ca3af"
-                                    with ui.element("td").style(
-                                        f"padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        f"text-align:right;font-weight:500;font-size:11px;color:{vend_color}"
-                                    ):
-                                        ui.html(vend_txt)
-                                    # Vel. día
-                                    vel_txt = f"{vend}/d" if vend > 0 else "—"
-                                    with ui.element("td").style(
-                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        "text-align:right;color:#9ca3af;font-size:11px"
-                                    ):
-                                        ui.html(vel_txt)
-                                    # Precio
-                                    with ui.element("td").style(
-                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        "text-align:right;font-size:11px;color:#374151"
-                                    ):
-                                        ui.html(precio)
+                # ── Gráfico ────────────────────────────────────────────────
+                with ui.element("div").style("display:flex;flex-direction:column;gap:8px"):
+                    # Días restantes
+                    if dias_r:
+                        ui.label(
+                            f"Con el stock actual ({metricas.get('stock_actual')} uds.) "
+                            f"y una vel. de {vel}/día → quedan estimados {dias_r} días de stock."
+                        ).style(f"font-size:11px;color:{dias_col};display:block")
 
-            # ── Días restantes inline bajo la tabla ───────────────────────
-            if dias_r:
-                ui.label(f"📦 Con el stock actual ({metricas.get('stock_actual')} uds.) y una vel. de {vel}/día → quedan estimados {dias_r} días de stock.").style(
-                    f"font-size:11px;color:{dias_col};margin-bottom:8px;display:block"
-                )
+                    # Pre-procesar etiquetas: mostrar solo cada N días
+                    total_pts = len(rows)
+                    intervalo = max(1, total_pts // 10)
+                    chart_labels = []
+                    for i, r in enumerate(rows):
+                        if i % intervalo == 0 or i == total_pts - 1:
+                            try:
+                                d = _dt.strptime(r['snapshot_date'], "%Y-%m-%d")
+                                chart_labels.append(f"{d.day} {MESES_CORTO[d.month-1]}")
+                            except Exception:
+                                chart_labels.append(r['snapshot_date'])
+                        else:
+                            chart_labels.append("")
 
-            # ── Gráfico ancho completo ─────────────────────────────────────
-            labels  = [r['snapshot_date'] for r in rows]
-            valores = [r.get('stock') or 0 for r in rows]
-            ui.echart({
-                "grid": {"top": 20, "bottom": 40, "left": 46, "right": 12},
-                "xAxis": {
-                    "type": "category",
-                    "data": labels,
-                    "axisLabel": {
-                        "fontSize": 10, "color": "#9ca3af",
-                        "formatter": "function(v){var p=v.split('-');return p[2]+'/'+p[1];}",
-                        "interval": max(0, len(labels) // 12 - 1),
-                        "rotate": 0,
-                    },
-                    "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
-                    "axisTick": {"show": False},
-                },
-                "yAxis": {
-                    "type": "value",
-                    "axisLabel": {"fontSize": 10, "color": "#9ca3af"},
-                    "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
-                    "min": 0,
-                },
-                "series": [{
-                    "type": "line",
-                    "data": valores,
-                    "smooth": 0.3,
-                    "lineStyle": {"color": "#2A7AC7", "width": 2},
-                    "itemStyle": {"color": "#2A7AC7"},
-                    "areaStyle": {
-                        "color": {
-                            "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
-                            "colorStops": [
-                                {"offset": 0, "color": "rgba(42,122,199,0.18)"},
-                                {"offset": 1, "color": "rgba(42,122,199,0.01)"},
-                            ]
-                        }
-                    },
-                    "symbolSize": 4,
-                }],
-                "tooltip": {
-                    "trigger": "axis",
-                    "formatter": "{b}<br/>Stock: <b>{c}</b>",
-                },
-            }).style("height:220px;width:100%")
+                    valores = [r.get('stock') or 0 for r in rows]
+                    ui.echart({
+                        "grid": {"top": 16, "bottom": 32, "left": 42, "right": 8},
+                        "xAxis": {
+                            "type": "category",
+                            "data": chart_labels,
+                            "axisLabel": {
+                                "fontSize": 10,
+                                "color": "#9ca3af",
+                                "interval": 0,
+                                "rotate": 0,
+                            },
+                            "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+                            "axisTick": {"show": False},
+                        },
+                        "yAxis": {
+                            "type": "value",
+                            "axisLabel": {"fontSize": 10, "color": "#9ca3af"},
+                            "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
+                            "min": 0,
+                        },
+                        "series": [{
+                            "type": "line",
+                            "data": valores,
+                            "smooth": 0.2,
+                            "lineStyle": {"color": "#2A7AC7", "width": 2},
+                            "itemStyle": {"color": "#2A7AC7"},
+                            "areaStyle": {
+                                "color": {
+                                    "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
+                                    "colorStops": [
+                                        {"offset": 0, "color": "rgba(42,122,199,0.20)"},
+                                        {"offset": 1, "color": "rgba(42,122,199,0.01)"},
+                                    ]
+                                }
+                            },
+                            "symbolSize": 4,
+                        }],
+                        "tooltip": {
+                            "trigger": "axis",
+                            "formatter": "{b}<br/>Stock: <b>{c}</b>",
+                        },
+                    }).style("height:calc(100vh - 320px);width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
