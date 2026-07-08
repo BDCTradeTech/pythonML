@@ -417,7 +417,8 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                             seller_total_ventas=excluded.seller_total_ventas,
                             seller_nickname=excluded.seller_nickname,
                             seller_level_id=excluded.seller_level_id,
-                            seller_power_status=excluded.seller_power_status
+                            seller_power_status=excluded.seller_power_status,
+                            created_at=CURRENT_TIMESTAMP
                     """, (
                         user_id, sid, nick_nuevo, total_ventas,
                         rep.get("level_id") or "",
