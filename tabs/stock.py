@@ -118,65 +118,55 @@ def build_tab_stock() -> None:
 
             vel    = metricas.get("vel_diaria", 0)
             dias_r = metricas.get("dias_restantes")
-            dc = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
-            _sp = "font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px;display:block"
+            dc     = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+            dc_bg  = "#FEE2E2" if dias_r and dias_r < 7 else "#FEF3C7" if dias_r and dias_r < 20 else "#DCFCE7"
+            dc_br  = "#FCA5A5" if dias_r and dias_r < 7 else "#FDE68A" if dias_r and dias_r < 20 else "#86EFAC"
 
-            # ── Fila 1: KPIs operativos ──────────────────────────────────
+            p_min  = _fmt_precio(metricas.get("precio_min"))
+            p_max  = _fmt_precio(metricas.get("precio_max"))
+            p_prom = _fmt_precio(metricas.get("precio_prom"))
+            p_iguales = p_min == p_max
+
+            # ── Opcion C: pills de colores + linea de detalle ────────────
             with ui.element("div").style(
-                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px 8px 0 0;"
-                "overflow:hidden;background:var(--color-background-primary)"
+                "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
+                "border-radius:8px;padding:8px 12px;margin-bottom:8px"
             ):
-                for i, (lbl, val, color) in enumerate([
-                    ("Stock actual",          str(metricas.get("stock_actual", "\u2014")), "#185FA5"),
-                    ("Vendidas en periodo",    str(metricas.get("ventas_total", "\u2014")), "#dc2626"),
-                    ("Vel. venta promedio",    f"{vel}/d",                                  "#374151"),
-                    ("Dias de stock rest.",    str(dias_r or "\u2014"),                     dc),
-                    ("Precio actual",          _fmt_precio(metricas.get("precio_actual")),  "#374151"),
-                ]):
-                    brd = "border-left:0.5px solid #e2e8f0;" if i else ""
-                    with ui.element("div").style(f"flex:1;padding:6px 10px;text-align:center;{brd}"):
-                        ui.label(val).style(f"font-size:14px;font-weight:500;color:{color};display:block;line-height:1.2")
-                        ui.label(lbl).style(_sp)
+                # Fila 1: pills
+                with ui.element("div").style("display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px"):
+                    for icon, val, lbl, bg, border, color in [
+                        ("ti-package",      str(metricas.get("stock_actual", "\u2014")), "stock",    "#E6F1FB", "#85B7EB", "#0C447C"),
+                        ("ti-shopping-cart",str(metricas.get("ventas_total", "\u2014")), "vendidas", "#FEE2E2", "#FCA5A5", "#991B1B"),
+                        ("ti-trending-up",  f"{vel}/d",                                 "vel.",     "var(--color-background-secondary)", "#e2e8f0", "#374151"),
+                        ("ti-clock",        str(dias_r or "\u2014"),                    "dias rest.",dc_bg,    dc_br,     dc),
+                        ("ti-tag",          _fmt_precio(metricas.get("precio_actual")), "",         "var(--color-background-secondary)", "#e2e8f0", "#374151"),
+                    ]:
+                        with ui.element("div").style(
+                            f"display:inline-flex;align-items:center;gap:4px;"
+                            f"background:{bg};border:0.5px solid {border};"
+                            f"border-radius:20px;padding:4px 10px"
+                        ):
+                            ui.html(f'<i class="ti {icon}" style="font-size:12px;color:{color}" aria-hidden="true"></i>')
+                            ui.label(val).style(f"font-size:12px;font-weight:500;color:{color}")
+                            if lbl:
+                                ui.label(lbl).style(f"font-size:10px;color:{color};opacity:.7")
 
-            # ── Fila 2: analytics agrupados (colapsa si min=max=prom) ─────
-            with ui.element("div").style(
-                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-top:0;"
-                "border-radius:0 0 8px 8px;overflow:hidden;margin-bottom:8px;"
-                "background:var(--color-background-secondary)"
-            ):
-                p_min  = _fmt_precio(metricas.get("precio_min"))
-                p_max  = _fmt_precio(metricas.get("precio_max"))
-                p_prom = _fmt_precio(metricas.get("precio_prom"))
-                p_iguales = p_min == p_max == p_prom
-
-                for gi, (glbl, items) in enumerate([
-                    ("PRECIO", (
-                        [("Min → Max", f"{p_min} → {p_max}", "#374151")] if p_iguales else
-                        [("Min", p_min, "#374151"), ("Max", p_max, "#374151"), ("Prom.", p_prom, "#374151")]
-                    ) if not p_iguales else [("Precio", p_min, "#374151")]),
-                    ("STOCK", [
-                        ("Max",       str(metricas.get("stock_max", 0)),      "#185FA5"),
-                        ("Prom.",     str(metricas.get("stock_prom", 0)),     "#374151"),
-                        ("Vel. max.", f"{metricas.get('vel_max_dia', 0)}/d",  "#dc2626"),
-                    ]),
-                    ("DIAS", [
-                        ("Con stock", str(metricas.get("dias_con_stock", 0)), "#166534"),
-                        ("Sin stock", str(metricas.get("dias_sin_stock", 0)), "#dc2626"),
-                        ("Repos.",    str(metricas.get("n_reposiciones", 0)), "#185FA5"),
-                    ]),
-                ]):
-                    gbrd = "border-left:1px solid #d0e8f8;" if gi else ""
-                    with ui.element("div").style(f"flex:1;{gbrd}"):
-                        ui.label(glbl).style(
-                            "font-size:9px;font-weight:600;color:#185FA5;"
-                            "padding:3px 10px 0;display:block;letter-spacing:0.06em"
-                        )
-                        with ui.element("div").style("display:flex"):
-                            for ii, (lbl, val, color) in enumerate(items):
-                                ibrd = "border-left:0.5px solid #e2e8f0;" if ii else ""
-                                with ui.element("div").style(f"flex:1;padding:2px 8px 5px;text-align:center;{ibrd}"):
-                                    ui.label(val).style(f"font-size:12px;font-weight:500;color:{color};display:block")
-                                    ui.label(lbl).style("font-size:9px;color:#9ca3af;display:block")
+                # Fila 2: detalle compacto
+                p_detalle = p_min if p_iguales else f"{p_min} min \u00b7 {p_max} max \u00b7 {p_prom} prom"
+                s_detalle = f"{metricas.get('stock_max',0)} max \u00b7 {metricas.get('stock_prom',0)} prom \u00b7 <span style='color:#dc2626'>{metricas.get('vel_max_dia',0)}/d max</span>"
+                d_detalle = f"<span style='color:#166534'>{metricas.get('dias_con_stock',0)}</span> c/stock \u00b7 <span style='color:#dc2626'>{metricas.get('dias_sin_stock',0)}</span> sin \u00b7 <span style='color:#185FA5'>{metricas.get('n_reposiciones',0)}</span> repos"
+                ui.html(
+                    f'<div style="font-size:10px;color:#9ca3af;display:flex;flex-wrap:wrap;gap:4px;align-items:center">'
+                    f'<span style="font-weight:500;color:#185FA5">Precio:</span>'
+                    f'<span style="color:#374151">{p_detalle}</span>'
+                    f'<span style="color:#d0d0d0">\u00b7\u00b7</span>'
+                    f'<span style="font-weight:500;color:#185FA5">Stock:</span>'
+                    f'<span style="color:#374151">{s_detalle}</span>'
+                    f'<span style="color:#d0d0d0">\u00b7\u00b7</span>'
+                    f'<span style="font-weight:500;color:#185FA5">Dias:</span>'
+                    f'<span>{d_detalle}</span>'
+                    f'</div>'
+                )
 
             # Calcular ventas/repos + vel acumulada
             data = []
