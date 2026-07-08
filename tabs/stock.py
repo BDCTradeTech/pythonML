@@ -385,7 +385,7 @@ def build_tab_stock() -> None:
                         ],
                         "tooltip": {
                             "trigger": "axis",
-                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+x.value+'k':x.value+' unidades';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
+                            "formatter": "{b}<br/>Stock: <b>{c0}</b> unidades<br/>Precio: ${c1}k",
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
