@@ -444,8 +444,8 @@ def _get_ultima_actualizacion(user_id: int) -> str:
     conn.close()
     if row and row[0]:
         try:
-            from datetime import datetime
-            dt = datetime.fromisoformat(str(row[0]))
+            from datetime import datetime, timedelta
+            dt = datetime.fromisoformat(str(row[0])) - timedelta(hours=3)
             return dt.strftime("%d/%m/%y — %H:%M")
         except Exception:
             return str(row[0])[:16]
