@@ -422,7 +422,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 260px)"):
+        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 320px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
@@ -599,7 +599,7 @@ def build_tab_competidores() -> None:
             resultado_area = ui.element("div").style("margin-top:4px")
 
         # 5 tablas — spinner inmediato, datos en background
-        tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:200px")
+        tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:0;max-height:calc(100vh - 200px)")
         tablas_ref[0] = tablas
         with tablas:
             with ui.card().classes("w-full p-8 items-center gap-4"):
