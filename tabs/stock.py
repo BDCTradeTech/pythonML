@@ -238,6 +238,7 @@ border-radius:8px;padding:12px 14px;margin-top:4px">
                 )
                 def _on_sku(e):
                     estado["sku"] = e.value
+                    ui.timer(0.05, _cargar, once=True)
                 sel_sku.on_value_change(_on_sku)
 
             with ui.column().style("gap:3px"):
