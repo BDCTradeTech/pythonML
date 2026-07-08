@@ -138,27 +138,31 @@ def build_tab_stock() -> None:
                         ui.label(val).style(f"font-size:14px;font-weight:500;color:{color};display:block;line-height:1.2")
                         ui.label(lbl).style(_sp)
 
-            # ── Fila 2: analytics agrupados ──────────────────────────────
+            # ── Fila 2: analytics agrupados (colapsa si min=max=prom) ─────
             with ui.element("div").style(
                 "display:flex;gap:0;border:0.5px solid #e2e8f0;border-top:0;"
                 "border-radius:0 0 8px 8px;overflow:hidden;margin-bottom:8px;"
                 "background:var(--color-background-secondary)"
             ):
+                p_min  = _fmt_precio(metricas.get("precio_min"))
+                p_max  = _fmt_precio(metricas.get("precio_max"))
+                p_prom = _fmt_precio(metricas.get("precio_prom"))
+                p_iguales = p_min == p_max == p_prom
+
                 for gi, (glbl, items) in enumerate([
-                    ("PRECIO", [
-                        ("Min",    _fmt_precio(metricas.get("precio_min")),  "#374151"),
-                        ("Max",    _fmt_precio(metricas.get("precio_max")),  "#374151"),
-                        ("Prom.",  _fmt_precio(metricas.get("precio_prom")), "#374151"),
-                    ]),
+                    ("PRECIO", (
+                        [("Min → Max", f"{p_min} → {p_max}", "#374151")] if p_iguales else
+                        [("Min", p_min, "#374151"), ("Max", p_max, "#374151"), ("Prom.", p_prom, "#374151")]
+                    ) if not p_iguales else [("Precio", p_min, "#374151")]),
                     ("STOCK", [
-                        ("Max",      str(metricas.get("stock_max", 0)),          "#185FA5"),
-                        ("Prom.",    str(metricas.get("stock_prom", 0)),         "#374151"),
-                        ("Vel. max.",f"{metricas.get('vel_max_dia', 0)}/d",      "#dc2626"),
+                        ("Max",       str(metricas.get("stock_max", 0)),      "#185FA5"),
+                        ("Prom.",     str(metricas.get("stock_prom", 0)),     "#374151"),
+                        ("Vel. max.", f"{metricas.get('vel_max_dia', 0)}/d",  "#dc2626"),
                     ]),
                     ("DIAS", [
-                        ("Con stock", str(metricas.get("dias_con_stock", 0)),    "#166534"),
-                        ("Sin stock", str(metricas.get("dias_sin_stock", 0)),    "#dc2626"),
-                        ("Repos.",    str(metricas.get("n_reposiciones", 0)),    "#185FA5"),
+                        ("Con stock", str(metricas.get("dias_con_stock", 0)), "#166534"),
+                        ("Sin stock", str(metricas.get("dias_sin_stock", 0)), "#dc2626"),
+                        ("Repos.",    str(metricas.get("n_reposiciones", 0)), "#185FA5"),
                     ]),
                 ]):
                     gbrd = "border-left:1px solid #d0e8f8;" if gi else ""
@@ -214,6 +218,29 @@ def build_tab_stock() -> None:
 
             valores  = [r.get("stock") or 0 for r in rows]
             precios  = [round(float(r["price"])/1000, 1) if r.get("price") else None for r in rows]
+
+            # Serie de precio: etiquetar solo cuando cambia el valor
+            precio_serie = []
+            prev_p = None
+            for p in precios:
+                if p is not None and p != prev_p:
+                    precio_serie.append({
+                        "value": p,
+                        "label": {
+                            "show": True,
+                            "formatter": f"${p}k",
+                            "color": "#EF9F27",
+                            "fontSize": 10,
+                            "fontWeight": "bold",
+                            "position": "insideEndTop",
+                            "backgroundColor": "rgba(255,255,255,0.85)",
+                            "padding": [2, 4],
+                            "borderRadius": 3,
+                        }
+                    })
+                    prev_p = p
+                else:
+                    precio_serie.append({"value": p, "label": {"show": False}})
 
             # Grid: tabla fija izquierda + grafico ancho completo derecha
             with ui.element("div").style(
@@ -304,8 +331,6 @@ def build_tab_stock() -> None:
                         "yAxis": [
                             {
                                 "type": "value",
-                                "name": "Uds.",
-                                "nameTextStyle": {"color": "#2A7AC7", "fontSize": 10},
                                 "axisLabel": {"fontSize": 10, "color": "#2A7AC7"},
                                 "axisLine": {"show": True, "lineStyle": {"color": "#2A7AC7"}},
                                 "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
@@ -313,8 +338,6 @@ def build_tab_stock() -> None:
                             },
                             {
                                 "type": "value",
-                                "name": "Precio ($k)",
-                                "nameTextStyle": {"color": "#EF9F27", "fontSize": 10},
                                 "position": "right",
                                 "axisLabel": {
                                     "fontSize": 10,
@@ -344,18 +367,20 @@ def build_tab_stock() -> None:
                                     }
                                 },
                                 "symbolSize": 4,
+                                "label": {"show": False},
                             },
                             {
-                                "name": "Precio ($k)",
+                                "name": "Precio",
                                 "type": "line",
                                 "yAxisIndex": 1,
-                                "data": precios,
+                                "data": precio_serie,
                                 "smooth": False,
                                 "lineStyle": {"color": "#EF9F27", "width": 2, "type": "dashed"},
                                 "itemStyle": {"color": "#EF9F27"},
                                 "symbolSize": 3,
                                 "areaStyle": None,
                                 "connectNulls": True,
+                                "label": {"show": False},
                             },
                         ],
                         "tooltip": {
