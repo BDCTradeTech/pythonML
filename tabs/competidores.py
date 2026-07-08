@@ -405,7 +405,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
 
     TH = "padding:4px 6px;background:#EEF6FD;color:#185FA5;font-size:9px;font-weight:600;position:sticky;top:0;z-index:2;border-bottom:0.5px solid #d0e8f8;cursor:pointer;user-select:none;white-space:nowrap"
 
-    with ui.element("div").style("flex:1;min-width:160px;border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;display:flex;flex-direction:column;height:100%"):
+    with ui.element("div").style("flex:1;min-width:160px;border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;display:flex;flex-direction:column"):
         with ui.element("div").style("background:#2A7AC7;padding:7px 10px;flex-shrink:0"):
             with ui.element("div").style("display:flex;justify-content:space-between;align-items:center"):
                 with ui.element("div"):
@@ -419,7 +419,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").style("overflow-y:auto;flex:1;min-height:0;max-height:calc(100vh - 430px)"):
+        with ui.element("div").classes("comp-tabla-scroll").style("overflow-y:auto;max-height:calc(100vh - 340px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
@@ -439,6 +439,13 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
 
 
 def build_tab_competidores() -> None:
+    ui.add_css("""
+        @media (max-width: 768px) {
+            .comp-tablas { flex-direction: column !important; }
+            .comp-tablas > div { min-width: 100% !important; flex: none !important; }
+            .comp-tabla-scroll { max-height: 60vh !important; }
+        }
+    """)
     user = app.storage.user.get("user")
     if not user:
         ui.label("Debes iniciar sesion").classes("text-red-500 p-4")
@@ -571,7 +578,7 @@ def build_tab_competidores() -> None:
                         "dense no-caps unelevated"
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
-    with ui.element("div").style("padding:8px 16px 0;display:flex;flex-direction:column;height:calc(100vh - 130px);overflow:hidden"):
+    with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
         # Buscador
         with ui.element("div").style(
             "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
@@ -596,7 +603,7 @@ def build_tab_competidores() -> None:
             resultado_area = ui.element("div").style("margin-top:4px")
 
         # 5 tablas — spinner inmediato, datos en background
-        tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:0;overflow:hidden")
+        tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
         tablas_ref[0] = tablas
         with tablas:
             with ui.card().classes("w-full p-8 items-center gap-4"):
