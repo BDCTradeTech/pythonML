@@ -157,11 +157,12 @@ def build_tab_stock() -> None:
                 chart_labels.append(lbl)
                 prev_m, prev_y = d.month, d.year
 
-            valores = [r.get("stock") or 0 for r in rows]
+            valores  = [r.get("stock") or 0 for r in rows]
+            precios  = [r.get("price") for r in rows]
 
             # Grid: tabla fija izquierda + grafico ancho completo derecha
             with ui.element("div").style(
-                "display:grid;grid-template-columns:340px 1fr;gap:0;align-items:start;width:100%"
+                "display:grid;grid-template-columns:390px 1fr;gap:0;align-items:start;width:100%"
             ):
                 # Tabla
                 with ui.element("div").style(
@@ -171,7 +172,7 @@ def build_tab_stock() -> None:
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
-                                    for h in ["Dia", "Stock", "Vendidas", "Vel. acum.", "Precio"]:
+                                    for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Precio"]:
                                         with ui.element("th").style(
                                             "padding:5px 8px;background:#2A7AC7;color:#fff;"
                                             "font-weight:500;text-align:center;white-space:nowrap;"
@@ -214,24 +215,30 @@ def build_tab_stock() -> None:
                                         if repo > 0:
                                             vc, vt = "#166534", f"+{repo}"
                                         elif vend > 0:
-                                            vc, vt = "#dc2626", f"−{vend}"
+                                            vc, vt = "#dc2626", f"\u2212{vend}"
                                         else:
-                                            vc, vt = "#9ca3af", "—"
+                                            vc, vt = "#9ca3af", "\u2014"
                                         with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
                                             ui.html(vt)
                                         with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
-                                            ui.html(f"{va}/d" if va is not None else "—")
-                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
+                                            ui.html(f"{va}/d" if va is not None else "\u2014")
+                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151;min-width:80px"):
                                             ui.html(precio)
 
-                # Grafico: ocupa todo el ancho restante hasta el borde
+                # Grafico dual: stock (izq) + precio (der)
                 with ui.element("div").style("display:flex;flex-direction:column;gap:4px;min-width:0"):
                     if dias_r:
                         ui.label(
                             f"Con {metricas.get('stock_actual')} uds. y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
                         ).style(f"font-size:11px;color:{dc};display:block")
                     ui.echart({
-                        "grid": {"top": 16, "bottom": 40, "left": 42, "right": 4},
+                        "grid": {"top": 20, "bottom": 40, "left": 46, "right": 60},
+                        "legend": {
+                            "data": ["Stock", "Precio"],
+                            "top": 0, "right": 65,
+                            "textStyle": {"fontSize": 10, "color": "#9ca3af"},
+                            "itemWidth": 16, "itemHeight": 8,
+                        },
                         "xAxis": {
                             "type": "category",
                             "data": chart_labels,
@@ -239,31 +246,68 @@ def build_tab_stock() -> None:
                             "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
                             "axisTick": {"show": False},
                         },
-                        "yAxis": {
-                            "type": "value",
-                            "axisLabel": {"fontSize": 10, "color": "#9ca3af"},
-                            "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
-                            "min": 0,
-                        },
-                        "series": [{
-                            "type": "line",
-                            "data": valores,
-                            "smooth": 0.2,
-                            "lineStyle": {"color": "#2A7AC7", "width": 2},
-                            "itemStyle": {"color": "#2A7AC7"},
-                            "areaStyle": {
-                                "color": {
-                                    "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
-                                    "colorStops": [
-                                        {"offset": 0, "color": "rgba(42,122,199,0.20)"},
-                                        {"offset": 1, "color": "rgba(42,122,199,0.01)"},
-                                    ]
-                                }
+                        "yAxis": [
+                            {
+                                "type": "value",
+                                "name": "Uds.",
+                                "nameTextStyle": {"color": "#2A7AC7", "fontSize": 10},
+                                "axisLabel": {"fontSize": 10, "color": "#2A7AC7"},
+                                "axisLine": {"show": True, "lineStyle": {"color": "#2A7AC7"}},
+                                "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
+                                "min": 0,
                             },
-                            "symbolSize": 5,
-                        }],
-                        "tooltip": {"trigger": "axis", "formatter": "{b}<br/>Stock: <b>{c}</b>"},
-                    }).style("height:calc(100vh - 260px);width:100%")
+                            {
+                                "type": "value",
+                                "name": "Precio",
+                                "nameTextStyle": {"color": "#EF9F27", "fontSize": 10},
+                                "position": "right",
+                                "axisLabel": {
+                                    "fontSize": 10,
+                                    "color": "#EF9F27",
+                                    "formatter": "function(v){return '$'+(v/1000).toFixed(0)+'k';}",
+                                },
+                                "axisLine": {"show": True, "lineStyle": {"color": "#EF9F27"}},
+                                "splitLine": {"show": False},
+                            },
+                        ],
+                        "series": [
+                            {
+                                "name": "Stock",
+                                "type": "line",
+                                "yAxisIndex": 0,
+                                "data": valores,
+                                "smooth": 0.2,
+                                "lineStyle": {"color": "#2A7AC7", "width": 2},
+                                "itemStyle": {"color": "#2A7AC7"},
+                                "areaStyle": {
+                                    "color": {
+                                        "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
+                                        "colorStops": [
+                                            {"offset": 0, "color": "rgba(42,122,199,0.20)"},
+                                            {"offset": 1, "color": "rgba(42,122,199,0.01)"},
+                                        ]
+                                    }
+                                },
+                                "symbolSize": 4,
+                            },
+                            {
+                                "name": "Precio",
+                                "type": "line",
+                                "yAxisIndex": 1,
+                                "data": precios,
+                                "smooth": False,
+                                "lineStyle": {"color": "#EF9F27", "width": 2, "type": "dashed"},
+                                "itemStyle": {"color": "#EF9F27"},
+                                "symbolSize": 3,
+                                "areaStyle": None,
+                                "connectNulls": True,
+                            },
+                        ],
+                        "tooltip": {
+                            "trigger": "axis",
+                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+parseInt(x.value).toLocaleString('es-AR'):x.value+' uds.';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
+                        },
+                    }).style("height:calc(100vh - 380px);width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
