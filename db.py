@@ -92,6 +92,37 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def init_competidores_snapshots_db() -> None:
+    """Crea la tabla competidores_snapshots si no existe (snapshots diarios de competidores por catálogo, para ranking por período)."""
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS competidores_snapshots (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            catalog_product_id  TEXT NOT NULL,
+            seller_id           TEXT NOT NULL,
+            seller_nickname     TEXT,
+            seller_total_ventas INTEGER,
+            seller_level_id     TEXT,
+            seller_power_status TEXT,
+            price               REAL,
+            item_id             TEXT,
+            snapshot_date       DATE NOT NULL,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_comp_snapshot
+        ON competidores_snapshots(user_id, catalog_product_id, seller_id, snapshot_date)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_db() -> None:
     """Crea las tablas si no existen."""
     conn = get_connection()
@@ -695,6 +726,8 @@ def init_db() -> None:
         conn.execute("ALTER TABLE sku_catalogos_new RENAME TO sku_catalogos")
         conn.commit()
 
+    init_competidores_snapshots_db()
+
     # Cache de competidores por catálogo ML
     cur.execute(
         """
@@ -729,6 +762,14 @@ def init_db() -> None:
         pass
     try:
         cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_total_ventas INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_ventas_60d INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_period_60d TEXT")
     except sqlite3.OperationalError:
         pass
 
@@ -987,8 +1028,9 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                 """INSERT INTO catalogo_competidores
                    (catalog_product_id, item_id, seller_id, seller_nickname, price,
                     listing_type, logistica, free_shipping, updated_at, origen,
-                    seller_level_id, seller_power_status, seller_total_ventas)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    seller_level_id, seller_power_status, seller_total_ventas,
+                    seller_ventas_60d, seller_period_60d)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     catalog_product_id,
                     it.get("item_id", ""),
@@ -1003,6 +1045,8 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                     it.get("seller_level_id") or None,
                     it.get("seller_power_status") or None,
                     it.get("seller_total_ventas") if it.get("seller_total_ventas") is not None else None,
+                    it.get("seller_ventas_60d") if it.get("seller_ventas_60d") is not None else None,
+                    it.get("seller_period_60d") or None,
                 ),
             )
         conn.commit()
