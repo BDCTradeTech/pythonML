@@ -422,7 +422,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 320px)"):
+        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 290px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
@@ -574,7 +574,7 @@ def build_tab_competidores() -> None:
                         "dense no-caps unelevated"
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
-    with ui.element("div").style("padding:10px 16px 0;display:flex;flex-direction:column;height:calc(100vh - 82px)"):
+    with ui.element("div").style("padding:10px 16px 0;display:flex;flex-direction:column;height:calc(100vh - 82px);overflow:hidden"):
         # Buscador
         with ui.element("div").style(
             "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
