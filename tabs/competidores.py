@@ -349,7 +349,7 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
     return result
 
 
-def _actualizar_ventas_db(user_id: int, progress_label) -> Dict:
+def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> Dict:
     """
     Actualiza seller_total_ventas de todos los sellers únicos en competidores_snapshots.
     No escanea catálogos. Solo llama /users/{seller_id} por cada seller ya en la DB.
@@ -376,6 +376,8 @@ def _actualizar_ventas_db(user_id: int, progress_label) -> Dict:
     sin_ventas = 0
 
     for i, row in enumerate(sellers, 1):
+        if cancelar_ref[0]:
+            break
         sid, nick = row[0], row[1]
         try:
             progress_label.set_text(f"Leyendo {i} / {total}...")
@@ -689,20 +691,35 @@ def build_tab_competidores() -> None:
                 resultado_area = ui.element("div").style("margin-top:4px")
 
             async def _lanzar_actualizacion():
-                with ui.dialog() as dlg, ui.card().style("min-width:320px;padding:24px;text-align:center"):
+                cancelar_ref = [False]
+
+                with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
                     ui.label("Actualizando ventas históricas").style(
                         "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
                     )
                     ui.spinner(size="xl", color="#2A7AC7")
-                    prog = ui.label("Iniciando...").style("font-size:12px;color:#6b7280;margin-top:12px;display:block")
+                    prog = ui.label("Iniciando...").style(
+                        "font-size:12px;color:#6b7280;margin-top:12px;display:block"
+                    )
+
+                    def _cancelar():
+                        cancelar_ref[0] = True
+                        dlg.close()
+                        ui.notify("Actualización cancelada", color="warning", timeout=2000)
+
+                    ui.button("Cancelar", on_click=_cancelar).props(
+                        "flat no-caps"
+                    ).style("color:#dc2626;font-size:12px;margin-top:16px")
+
                 dlg.open()
-                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog)
-                dlg.close()
-                ui.notify(
-                    f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
-                    color="positive", timeout=4000
-                )
-                _recargar_tablas()
+                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
+                if not cancelar_ref[0]:
+                    dlg.close()
+                    ui.notify(
+                        f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
+                        color="positive", timeout=4000
+                    )
+                    _recargar_tablas()
 
             ui.button("↻ Actualizar ventas", on_click=_lanzar_actualizacion).props(
                 "unelevated no-caps"
