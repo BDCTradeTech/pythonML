@@ -245,7 +245,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                 ui.label(pos_txt).style(f"font-size:12px;font-weight:700;color:{pos_color};white-space:nowrap;margin-left:8px")
 
         if not rows_orig:
-            ui.label("Sin datos").style("font-size:10px;color:#9ca3af;padding:14px;text-align:center;display:block")
+            ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
         with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 260px)"):
@@ -354,18 +354,19 @@ def build_tab_competidores() -> None:
                     ).props("dense outlined").style(
                         "flex:1;font-size:12px;border-radius:4px 0 0 4px"
                     )
-                    ui.element("button").on(
+                    with ui.element("button").on(
                         "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
                     ).style(
                         "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
                         "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
-                    ).add(ui.html('<i class="ti ti-search" style="font-size:13px"></i>'))
+                    ):
+                        ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
                 notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
                 notif_ref[0] = notif
             resultado_area = ui.element("div").style("margin-top:4px")
 
         # 5 tablas
-        tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:0")
+        tablas = ui.element("div").style("display:flex;gap:8px;flex:1;min-height:200px")
         tablas_ref[0] = tablas
         with tablas:
             for titulo, dias, nota in PERIODOS:
