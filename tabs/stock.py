@@ -39,21 +39,23 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     if not rows:
         return {}
     ventas_total = 0
+    dias_con_stock = 0
     for i in range(1, len(rows)):
-        diff = (rows[i-1]['stock'] or 0) - (rows[i]['stock'] or 0)
-        if diff > 0:
-            ventas_total += diff
-    dias = len(rows)
-    vel = round(ventas_total / dias, 2) if dias > 0 else 0
-    stock_actual = rows[-1]['stock'] or 0
-    dias_restantes = round(stock_actual / vel) if vel > 0 else None
-    precio_actual = rows[-1].get('price')
+        stock_prev = rows[i-1].get('stock') or 0
+        stock_curr = rows[i].get('stock') or 0
+        if stock_prev > stock_curr:
+            ventas_total += stock_prev - stock_curr
+        if stock_prev > 0:
+            dias_con_stock += 1
+    vel = round(ventas_total / dias_con_stock, 1) if dias_con_stock > 0 else 0
+    stock_actual = rows[-1].get('stock') or 0
+    dias_restantes = round(stock_actual / vel) if vel > 0 and stock_actual > 0 else None
     return {
         'ventas_total': ventas_total,
         'vel_diaria': vel,
         'dias_restantes': dias_restantes,
         'stock_actual': stock_actual,
-        'precio_actual': precio_actual,
+        'precio_actual': rows[-1].get('price'),
     }
 
 
@@ -83,6 +85,7 @@ def build_tab_stock() -> None:
     default_hasta = hoy.isoformat()
 
     def _pintar(rows: List[Dict], metricas: Dict, sku: str):
+        from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not rows:
@@ -91,51 +94,49 @@ def build_tab_stock() -> None:
                 )
                 return
 
-            # ── Stats compactas (una fila, estilo header Ventas) ──────────
-            vel = metricas.get('vel_diaria', 0)
-            dias_r = metricas.get('dias_restantes')
-            dias_color = (
-                "#dc2626" if dias_r and dias_r < 7
-                else "#ca6d00" if dias_r and dias_r < 20
-                else "#166534"
-            )
+            vel       = metricas.get('vel_diaria', 0)
+            dias_r    = metricas.get('dias_restantes')
+            dias_col  = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+
+            # ── Stats ──────────────────────────────────────────────────────
             stats = [
-                ("Stock actual",       str(metricas.get('stock_actual', '—')), "#185FA5"),
-                ("Vendidas en período", str(metricas.get('ventas_total', '—')), "#dc2626"),
-                ("Vel. promedio",      f"{vel}/día",                           "#374151"),
-                ("Días restantes",     str(dias_r or '—'),                     dias_color),
-                ("Precio actual",      _fmt_precio(metricas.get('precio_actual')), "#374151"),
+                ("Stock actual",        str(metricas.get('stock_actual', '—')), "#185FA5"),
+                ("Vendidas en período",  str(metricas.get('ventas_total', '—')), "#dc2626"),
+                ("Vel. promedio",       f"{vel}/día",                            "#374151"),
+                ("Días restantes",      str(dias_r or '—'),                      dias_col),
+                ("Precio actual",       _fmt_precio(metricas.get('precio_actual')), "#374151"),
             ]
             with ui.element("div").style(
                 "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px;"
                 "overflow:hidden;margin-bottom:10px;background:var(--color-background-primary)"
             ):
                 for i, (lbl, val, color) in enumerate(stats):
-                    border = "" if i == 0 else "border-left:0.5px solid #e2e8f0;"
-                    with ui.element("div").style(
-                        f"flex:1;padding:8px 12px;text-align:center;{border}"
-                    ):
-                        ui.label(val).style(
-                            f"font-size:16px;font-weight:500;color:{color};display:block;line-height:1.2"
-                        )
-                        ui.label(lbl).style(
-                            "font-size:9px;color:#9ca3af;text-transform:uppercase;"
-                            "letter-spacing:0.04em;margin-top:2px;display:block"
-                        )
+                    brd = "border-left:0.5px solid #e2e8f0;" if i else ""
+                    with ui.element("div").style(f"flex:1;padding:8px 12px;text-align:center;{brd}"):
+                        ui.label(val).style(f"font-size:16px;font-weight:500;color:{color};display:block;line-height:1.2")
+                        ui.label(lbl).style("font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-top:2px;display:block")
 
-            # ── Tabla con scroll interno ───────────────────────────────────
+            # ── Calcular ventas/repos en orden cronológico ─────────────────
+            MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+            data = []
+            for i, r in enumerate(rows):
+                stock_hoy  = r.get('stock') or 0
+                stock_ayer = rows[i-1].get('stock') or 0 if i > 0 else stock_hoy
+                if stock_hoy > stock_ayer:
+                    repo, vend = stock_hoy - stock_ayer, 0
+                else:
+                    repo, vend = 0, max(0, stock_ayer - stock_hoy)
+                data.append({**r, 'vend': vend, 'repo': repo})
+
+            # ── Tabla con scroll ───────────────────────────────────────────
             with ui.element("div").style(
                 "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:10px"
             ):
-                with ui.element("div").style(
-                    "overflow-y:auto;max-height:calc(100vh - 420px)"
-                ):
-                    with ui.element("table").style(
-                        "width:100%;border-collapse:collapse;font-size:11px"
-                    ):
+                with ui.element("div").style("overflow-y:auto;max-height:260px"):
+                    with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                         with ui.element("thead"):
                             with ui.element("tr"):
-                                for h in ["Fecha", "Stock", "Vendidas", "Vel. día", "Precio", "Días rest."]:
+                                for h in ["Día", "Stock", "Vendidas", "Vel. día", "Precio"]:
                                     with ui.element("th").style(
                                         "padding:5px 10px;background:#2A7AC7;color:#fff;"
                                         "font-weight:500;text-align:center;white-space:nowrap;"
@@ -144,53 +145,107 @@ def build_tab_stock() -> None:
                                     ):
                                         ui.html(h)
                         with ui.element("tbody"):
-                            prev_stock = None
-                            for i, r in enumerate(reversed(rows)):
-                                stock = r.get('stock') or 0
-                                vendidas = (prev_stock - stock) if prev_stock is not None and prev_stock > stock else 0
-                                precio = _fmt_precio(r.get('price'))
-                                dias_rest = round(stock / vel) if vel > 0 and stock > 0 else None
-                                # Detectar reposición
-                                es_repo = prev_stock is not None and stock > prev_stock
-                                _bg = "background:#EEF6FD;" if es_repo else ("background:#f9fafb;" if i % 2 == 1 else "")
-                                with ui.element("tr").style(_bg):
-                                    for val_d, sty in [
-                                        (r['snapshot_date'], "text-align:center;color:#6b7280"),
-                                        (
-                                            f"▲ {stock}" if es_repo else str(stock),
-                                            f"text-align:right;font-weight:500;color:{'#166534' if es_repo else '#374151'}"
-                                        ),
-                                        (
-                                            f"−{vendidas}" if vendidas > 0 else ("▲ repo" if es_repo else "—"),
-                                            f"text-align:right;color:{'#dc2626' if vendidas > 0 else ('#166534' if es_repo else '#9ca3af')}"
-                                        ),
-                                        (
-                                            f"{vendidas}/d" if vendidas > 0 else "—",
-                                            "text-align:right;color:#9ca3af"
-                                        ),
-                                        (precio, "text-align:right"),
-                                        (
-                                            str(dias_rest) if dias_rest else "—",
-                                            f"text-align:center;font-weight:500;color:{dias_color if dias_rest and dias_rest < 20 else '#166534'}"
-                                        ),
-                                    ]:
+                            cur_mes = None
+                            es_primera = True
+                            for r in reversed(data):
+                                fecha_str = r['snapshot_date']
+                                try:
+                                    d = _dt.strptime(fecha_str, "%Y-%m-%d")
+                                    mes_key   = f"{d.year}-{d.month:02d}"
+                                    mes_label = f"{MESES[d.month-1]} {d.year}"
+                                    dia_label = str(d.day)
+                                except Exception:
+                                    mes_key = mes_label = fecha_str
+                                    dia_label = fecha_str
+
+                                # Separador de mes
+                                if mes_key != cur_mes:
+                                    cur_mes = mes_key
+                                    with ui.element("tr"):
                                         with ui.element("td").style(
-                                            f"padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                            f"font-size:11px;{sty}"
-                                        ):
-                                            ui.html(str(val_d))
-                                prev_stock = stock
+                                            "colspan:5;padding:3px 10px;"
+                                            "background:#EEF6FD;border-bottom:0.5px solid #d0e8f8;"
+                                            "font-size:10px;font-weight:600;color:#185FA5"
+                                        ).props('colspan="5"'):
+                                            ui.html(mes_label)
+
+                                stock = r.get('stock') or 0
+                                vend  = r['vend']
+                                repo  = r['repo']
+                                precio = _fmt_precio(r.get('price'))
+
+                                # Días restantes solo en la fila más reciente
+                                if es_primera:
+                                    dias_rest_txt = str(dias_r) if dias_r else "—"
+                                    dias_rest_color = dias_col
+                                    es_primera = False
+                                else:
+                                    dias_rest_txt = None  # no mostrar
+
+                                bg = "background:#EEF6FD;" if repo > 0 else ""
+                                with ui.element("tr").style(bg):
+                                    # Día
+                                    with ui.element("td").style(
+                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        "text-align:center;color:#6b7280;font-size:11px"
+                                    ):
+                                        ui.html(dia_label)
+                                    # Stock
+                                    with ui.element("td").style(
+                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        f"text-align:right;font-weight:500;font-size:11px;"
+                                        f"color:{'#166534' if stock > 0 else '#9ca3af'}"
+                                    ):
+                                        ui.html(str(stock))
+                                    # Vendidas / repo
+                                    if repo > 0:
+                                        vend_txt   = f"+{repo}"
+                                        vend_color = "#166534"
+                                    elif vend > 0:
+                                        vend_txt   = f"−{vend}"
+                                        vend_color = "#dc2626"
+                                    else:
+                                        vend_txt   = "—"
+                                        vend_color = "#9ca3af"
+                                    with ui.element("td").style(
+                                        f"padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        f"text-align:right;font-weight:500;font-size:11px;color:{vend_color}"
+                                    ):
+                                        ui.html(vend_txt)
+                                    # Vel. día
+                                    vel_txt = f"{vend}/d" if vend > 0 else "—"
+                                    with ui.element("td").style(
+                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        "text-align:right;color:#9ca3af;font-size:11px"
+                                    ):
+                                        ui.html(vel_txt)
+                                    # Precio
+                                    with ui.element("td").style(
+                                        "padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        "text-align:right;font-size:11px;color:#374151"
+                                    ):
+                                        ui.html(precio)
+
+            # ── Días restantes inline bajo la tabla ───────────────────────
+            if dias_r:
+                ui.label(f"📦 Con el stock actual ({metricas.get('stock_actual')} uds.) y una vel. de {vel}/día → quedan estimados {dias_r} días de stock.").style(
+                    f"font-size:11px;color:{dias_col};margin-bottom:8px;display:block"
+                )
 
             # ── Gráfico ancho completo ─────────────────────────────────────
             labels  = [r['snapshot_date'] for r in rows]
-            valores = [r['stock'] or 0 for r in rows]
+            valores = [r.get('stock') or 0 for r in rows]
             ui.echart({
-                "grid": {"top": 24, "bottom": 36, "left": 46, "right": 12},
+                "grid": {"top": 20, "bottom": 40, "left": 46, "right": 12},
                 "xAxis": {
                     "type": "category",
                     "data": labels,
-                    "axisLabel": {"fontSize": 10, "color": "#9ca3af",
-                                  "interval": max(0, len(labels)//10 - 1)},
+                    "axisLabel": {
+                        "fontSize": 10, "color": "#9ca3af",
+                        "formatter": "function(v){var p=v.split('-');return p[2]+'/'+p[1];}",
+                        "interval": max(0, len(labels) // 12 - 1),
+                        "rotate": 0,
+                    },
                     "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
                     "axisTick": {"show": False},
                 },
@@ -215,14 +270,13 @@ def build_tab_stock() -> None:
                             ]
                         }
                     },
-                    "symbolSize": 5,
-                    "symbol": "circle",
+                    "symbolSize": 4,
                 }],
                 "tooltip": {
                     "trigger": "axis",
                     "formatter": "{b}<br/>Stock: <b>{c}</b>",
                 },
-            }).style("height:200px;width:100%")
+            }).style("height:220px;width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
