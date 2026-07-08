@@ -82,6 +82,75 @@ def _remove_seguido(user_id: int, seller_id: str):
         conn.close()
 
 
+def _buscar_y_agregar_catalogo(catalog_id: str, user_id: int, access_token: str) -> Dict:
+    """
+    Trae todos los sellers de un catálogo ML y los agrega a competidores_seguidos.
+    Retorna dict con resultados: total, agregados, ya_existian.
+    """
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+
+    # Traer todos los sellers del catálogo
+    r = requests.get(
+        f"{_ML_API}/products/{catalog_id}/items",
+        headers=headers, timeout=15
+    )
+    if r.status_code != 200:
+        return {"error": f"No se pudo consultar el catálogo ({r.status_code})"}
+
+    seller_ids = list({str(it.get("seller_id","")) for it in r.json().get("results",[]) if it.get("seller_id")})
+
+    agregados = 0
+    ya_existian = 0
+
+    conn = get_connection()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS competidores_seguidos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                seller_id TEXT NOT NULL,
+                seller_nickname TEXT,
+                agregado_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(user_id, seller_id)
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+    for sid in seller_ids:
+        # Verificar si ya está en snapshots o seguidos
+        conn = get_connection()
+        en_snap = conn.execute(
+            "SELECT 1 FROM competidores_snapshots WHERE user_id=? AND seller_id=? LIMIT 1",
+            (user_id, sid)
+        ).fetchone()
+        en_seg = conn.execute(
+            "SELECT 1 FROM competidores_seguidos WHERE user_id=? AND seller_id=? LIMIT 1",
+            (user_id, sid)
+        ).fetchone()
+        conn.close()
+
+        if en_snap or en_seg:
+            ya_existian += 1
+            continue
+
+        # Traer perfil del seller
+        r2 = requests.get(f"{_ML_API}/users/{sid}", headers=headers, timeout=8)
+        if r2.status_code == 200:
+            d = r2.json()
+            nick = d.get("nickname") or f"ID {sid}"
+            _add_seguido(user_id, sid, nick)
+            agregados += 1
+
+    return {
+        "catalog_id": catalog_id,
+        "total": len(seller_ids),
+        "agregados": agregados,
+        "ya_existian": ya_existian,
+    }
+
+
 def _buscar_en_db(query: str) -> Optional[Dict]:
     """Busca un vendedor por nickname en los snapshots locales."""
     conn = get_connection()
@@ -392,6 +461,30 @@ def build_tab_competidores() -> None:
         except ImportError:
             from db import get_ml_access_token as _get_tok_fresh
         _token_fresh = _get_tok_fresh(uid) or ""
+
+        # Detectar URL o ID de catálogo ML (/p/MLA... o /up/MLAU...)
+        catalog_match = re.search(r'/p/(MLA\d+)', query) or re.search(r'/up/(MLAU\d+)', query)
+
+        if catalog_match:
+            cid = catalog_match.group(1)
+            notif_ref[0].set_text(f"Cargando catálogo {cid}...")
+            resultado_area.clear()
+            resultado = await run.io_bound(_buscar_y_agregar_catalogo, cid, uid, _token_fresh)
+            notif_ref[0].set_text("")
+            resultado_area.clear()
+            with resultado_area:
+                if "error" in resultado:
+                    ui.label(resultado["error"]).style("font-size:11px;color:#dc2626")
+                else:
+                    msg = (f"Catálogo {resultado['catalog_id']}: "
+                           f"{resultado['total']} vendedores encontrados — "
+                           f"{resultado['agregados']} agregados, "
+                           f"{resultado['ya_existian']} ya estaban en seguimiento.")
+                    ui.label(msg).style("font-size:11px;color:#166534;font-weight:500")
+                    if resultado['agregados'] > 0:
+                        _recargar_tablas()
+            return
+
         v = await run.io_bound(_buscar_vendedor, query, _token_fresh)
         buscar_ref[0] = v
         notif_ref[0].set_text("")
