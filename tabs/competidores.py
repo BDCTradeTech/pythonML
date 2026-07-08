@@ -19,7 +19,7 @@ _ML_API = "https://api.mercadolibre.com"
 def _get_mis_seller_ids(user_id: int) -> set:
     """IDs de ML de las cuentas propias — usa user_id del OAuth token en raw_data."""
     conn = get_connection()
-    rows = conn.execute("SELECT raw_data FROM ml_credentials WHERE raw_data IS NOT NULL").fetchall()
+    rows = conn.execute("SELECT raw_data FROM ml_credentials WHERE user_id=? AND raw_data IS NOT NULL", (user_id,)).fetchall()
     conn.close()
     ids = set()
     for r in rows:
@@ -126,6 +126,15 @@ def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
         try:
             nick = query.split("/pagina/")[1].split("#")[0].split("?")[0].strip()
             query = nick
+        except Exception:
+            pass
+
+    # Extraer seller_id numérico de URL de perfil: mercadolibre.com.ar/perfil/{id}
+    if "mercadolibre.com" in query.lower() and "/perfil/" in query.lower():
+        try:
+            sid = query.split("/perfil/")[1].split("#")[0].split("?")[0].split("/")[0].strip()
+            if sid.isdigit():
+                query = sid
         except Exception:
             pass
 
@@ -389,7 +398,10 @@ def build_tab_competidores() -> None:
         resultado_area.clear()
         if not v:
             with resultado_area:
-                ui.label("No encontrado").style("font-size:11px;color:#dc2626")
+                ui.label(
+                    "No encontrado en tus catalogos. Pega el seller_id numerico directamente "
+                    "para buscarlo por perfil publico."
+                ).style("font-size:11px;color:#dc2626")
             return
         with resultado_area:
             sid      = v["seller_id"]
