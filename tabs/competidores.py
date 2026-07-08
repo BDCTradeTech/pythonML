@@ -82,11 +82,13 @@ def _remove_seguido(user_id: int, seller_id: str):
         conn.close()
 
 
-def _buscar_vendedor(query: str) -> Optional[Dict]:
+def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
     """Busca un vendedor por URL de ML, nickname o seller_id."""
     query = query.strip()
     if not query:
         return None
+
+    headers = {"Authorization": f"Bearer {access_token}"} if access_token else {}
 
     # Extraer nickname de URL: mercadolibre.com.ar/pagina/{nickname}
     if "mercadolibre.com" in query.lower() and "/pagina/" in query.lower():
@@ -99,21 +101,23 @@ def _buscar_vendedor(query: str) -> Optional[Dict]:
     # Si es numérico, buscar por seller_id directo
     if query.isdigit():
         try:
-            r = requests.get(f"{_ML_API}/users/{query}", timeout=8)
+            r = requests.get(f"{_ML_API}/users/{query}", headers=headers, timeout=8)
             if r.status_code == 200:
                 return _parse_user(r.json())
         except Exception:
             pass
         return None
 
-    # Buscar por nickname
+    # Buscar por nickname (requiere token desde DO)
     try:
-        r = requests.get(f"{_ML_API}/users/search", params={"nickname": query}, timeout=8)
+        r = requests.get(f"{_ML_API}/users/search",
+                         params={"nickname": query},
+                         headers=headers, timeout=8)
         if r.status_code == 200:
             results = r.json().get("results", [])
             if results:
                 uid = results[0].get("id")
-                r2 = requests.get(f"{_ML_API}/users/{uid}", timeout=8)
+                r2 = requests.get(f"{_ML_API}/users/{uid}", headers=headers, timeout=8)
                 if r2.status_code == 200:
                     return _parse_user(r2.json())
     except Exception:
@@ -280,6 +284,13 @@ def build_tab_competidores() -> None:
     uid     = user["id"]
     mis_ids = _get_mis_seller_ids(uid)
 
+    # Token ML para búsqueda autenticada
+    try:
+        from ml_api import get_ml_access_token as _get_tok
+    except ImportError:
+        from db import get_ml_access_token as _get_tok
+    _token = _get_tok(uid) or ""
+
     PERIODOS = [
         ("Historica", None, "acumulado de por vida"),
         ("Anual",     365,  "ultimos 365 dias"),
@@ -289,9 +300,9 @@ def build_tab_competidores() -> None:
     ]
 
     # resultado del buscador
-    buscar_ref:  list = [None]   # dict del vendedor encontrado
-    tablas_ref:  list = [None]   # contenedor de las 5 tablas
-    notif_ref:   list = [None]   # label de estado
+    buscar_ref:  list = [None]
+    tablas_ref:  list = [None]
+    notif_ref:   list = [None]
 
     def _recargar_tablas():
         tablas_ref[0].clear()
@@ -304,7 +315,7 @@ def build_tab_competidores() -> None:
         notif_ref[0].set_text("Buscando...")
         resultado_area.clear()
         buscar_ref[0] = None
-        v = await run.io_bound(_buscar_vendedor, query)
+        v = await run.io_bound(_buscar_vendedor, query, _token)
         buscar_ref[0] = v
         notif_ref[0].set_text("")
         resultado_area.clear()
