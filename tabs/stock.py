@@ -161,13 +161,13 @@ def build_tab_stock() -> None:
 
             # Grid: tabla fija izquierda + grafico ancho completo derecha
             with ui.element("div").style(
-                "display:grid;grid-template-columns:290px 1fr;gap:0;align-items:start;width:100%"
+                "display:grid;grid-template-columns:340px 1fr;gap:0;align-items:start;width:100%"
             ):
                 # Tabla
                 with ui.element("div").style(
                     "border:0.5px solid #e2e8f0;border-radius:8px 0 0 8px;overflow:hidden;margin-right:10px"
                 ):
-                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 260px)"):
+                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 380px)"):
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
