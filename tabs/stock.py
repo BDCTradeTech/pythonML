@@ -91,110 +91,138 @@ def build_tab_stock() -> None:
                 )
                 return
 
-            # Métricas
-            with ui.row().style("gap:8px;margin-bottom:12px;flex-wrap:wrap"):
-                for lbl, val, color in [
-                    ("Stock actual", str(metricas.get('stock_actual', '—')), "#185FA5"),
-                    ("Vendidas en período", str(metricas.get('ventas_total', '—')), "#dc2626"),
-                    ("Vel. promedio", f"{metricas.get('vel_diaria', 0)}/día", "#374151"),
-                    ("Días restantes", str(metricas.get('dias_restantes') or '—'), "#166534"),
-                    ("Precio actual", _fmt_precio(metricas.get('precio_actual')), "#374151"),
-                ]:
-                    with ui.element("div").style(
-                        "background:var(--color-background-secondary);"
-                        "border:0.5px solid var(--color-border-tertiary);"
-                        "border-radius:6px;padding:6px 12px;text-align:center"
-                    ):
-                        ui.label(val).style(f"font-size:15px;font-weight:500;color:{color};display:block")
-                        ui.label(lbl).style("font-size:10px;color:#6b7280")
-
-            # Tabla
+            # ── Stats compactas (una fila, estilo header Ventas) ──────────
+            vel = metricas.get('vel_diaria', 0)
+            dias_r = metricas.get('dias_restantes')
+            dias_color = (
+                "#dc2626" if dias_r and dias_r < 7
+                else "#ca6d00" if dias_r and dias_r < 20
+                else "#166534"
+            )
+            stats = [
+                ("Stock actual",       str(metricas.get('stock_actual', '—')), "#185FA5"),
+                ("Vendidas en período", str(metricas.get('ventas_total', '—')), "#dc2626"),
+                ("Vel. promedio",      f"{vel}/día",                           "#374151"),
+                ("Días restantes",     str(dias_r or '—'),                     dias_color),
+                ("Precio actual",      _fmt_precio(metricas.get('precio_actual')), "#374151"),
+            ]
             with ui.element("div").style(
-                "border:0.5px solid var(--color-border-secondary);"
-                "border-radius:8px;overflow:hidden;margin-bottom:16px"
+                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px;"
+                "overflow:hidden;margin-bottom:10px;background:var(--color-background-primary)"
             ):
-                with ui.element("table").style(
-                    "width:100%;border-collapse:collapse;font-size:11px"
-                ):
-                    with ui.element("thead"):
-                        with ui.element("tr"):
-                            for h in ["Fecha", "Stock", "Vendidas", "Vel. diaria", "Precio", "Días restantes"]:
-                                with ui.element("th").style(
-                                    "padding:6px 10px;background:#2A7AC7;color:#fff;"
-                                    "font-weight:500;text-align:center;border-right:0.5px solid rgba(255,255,255,0.15)"
-                                ):
-                                    ui.html(h)
-                    with ui.element("tbody"):
-                        prev_stock = None
-                        for i, r in enumerate(reversed(rows)):
-                            stock = r.get('stock') or 0
-                            vendidas = (prev_stock - stock) if prev_stock is not None and prev_stock > stock else 0
-                            prev_stock_next = rows[-(i+2)]['stock'] if i < len(rows)-1 else None
-                            vel_dia = vendidas
-                            precio = _fmt_precio(r.get('price'))
-                            vel = rows[len(rows)-1-i].get('vel') if False else vel_dia
-                            dias_rest = round(stock / metricas['vel_diaria']) if metricas.get('vel_diaria', 0) > 0 else None
-                            _bg = "background:#f9fafb" if i % 2 == 1 else ""
-                            with ui.element("tr").style(_bg):
-                                for val, extra in [
-                                    (r['snapshot_date'], "text-align:center"),
-                                    (str(stock), "text-align:right;font-weight:500"),
-                                    (
-                                        f"−{vendidas}" if vendidas > 0 else "—",
-                                        f"text-align:right;color:{'#dc2626' if vendidas > 0 else '#9ca3af'}"
-                                    ),
-                                    (
-                                        f"{vendidas}/día" if vendidas > 0 else "—",
-                                        "text-align:right;color:#6b7280"
-                                    ),
-                                    (precio, "text-align:right"),
-                                    (
-                                        str(dias_rest) if dias_rest else "—",
-                                        "text-align:center;color:#166534;font-weight:500"
-                                    ),
-                                ]:
-                                    with ui.element("td").style(
-                                        f"padding:4px 10px;border-bottom:0.5px solid #f1f5f9;"
-                                        f"font-size:11px;color:#374151;{extra}"
-                                    ):
-                                        ui.html(str(val))
-                            prev_stock = stock
+                for i, (lbl, val, color) in enumerate(stats):
+                    border = "" if i == 0 else "border-left:0.5px solid #e2e8f0;"
+                    with ui.element("div").style(
+                        f"flex:1;padding:8px 12px;text-align:center;{border}"
+                    ):
+                        ui.label(val).style(
+                            f"font-size:16px;font-weight:500;color:{color};display:block;line-height:1.2"
+                        )
+                        ui.label(lbl).style(
+                            "font-size:9px;color:#9ca3af;text-transform:uppercase;"
+                            "letter-spacing:0.04em;margin-top:2px;display:block"
+                        )
 
-            # Gráfico con ui.echart (nativo NiceGUI)
+            # ── Tabla con scroll interno ───────────────────────────────────
+            with ui.element("div").style(
+                "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-bottom:10px"
+            ):
+                with ui.element("div").style(
+                    "overflow-y:auto;max-height:calc(100vh - 420px)"
+                ):
+                    with ui.element("table").style(
+                        "width:100%;border-collapse:collapse;font-size:11px"
+                    ):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for h in ["Fecha", "Stock", "Vendidas", "Vel. día", "Precio", "Días rest."]:
+                                    with ui.element("th").style(
+                                        "padding:5px 10px;background:#2A7AC7;color:#fff;"
+                                        "font-weight:500;text-align:center;white-space:nowrap;"
+                                        "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                        "position:sticky;top:0;z-index:2"
+                                    ):
+                                        ui.html(h)
+                        with ui.element("tbody"):
+                            prev_stock = None
+                            for i, r in enumerate(reversed(rows)):
+                                stock = r.get('stock') or 0
+                                vendidas = (prev_stock - stock) if prev_stock is not None and prev_stock > stock else 0
+                                precio = _fmt_precio(r.get('price'))
+                                dias_rest = round(stock / vel) if vel > 0 and stock > 0 else None
+                                # Detectar reposición
+                                es_repo = prev_stock is not None and stock > prev_stock
+                                _bg = "background:#EEF6FD;" if es_repo else ("background:#f9fafb;" if i % 2 == 1 else "")
+                                with ui.element("tr").style(_bg):
+                                    for val_d, sty in [
+                                        (r['snapshot_date'], "text-align:center;color:#6b7280"),
+                                        (
+                                            f"▲ {stock}" if es_repo else str(stock),
+                                            f"text-align:right;font-weight:500;color:{'#166534' if es_repo else '#374151'}"
+                                        ),
+                                        (
+                                            f"−{vendidas}" if vendidas > 0 else ("▲ repo" if es_repo else "—"),
+                                            f"text-align:right;color:{'#dc2626' if vendidas > 0 else ('#166534' if es_repo else '#9ca3af')}"
+                                        ),
+                                        (
+                                            f"{vendidas}/d" if vendidas > 0 else "—",
+                                            "text-align:right;color:#9ca3af"
+                                        ),
+                                        (precio, "text-align:right"),
+                                        (
+                                            str(dias_rest) if dias_rest else "—",
+                                            f"text-align:center;font-weight:500;color:{dias_color if dias_rest and dias_rest < 20 else '#166534'}"
+                                        ),
+                                    ]:
+                                        with ui.element("td").style(
+                                            f"padding:3px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                            f"font-size:11px;{sty}"
+                                        ):
+                                            ui.html(str(val_d))
+                                prev_stock = stock
+
+            # ── Gráfico ancho completo ─────────────────────────────────────
             labels  = [r['snapshot_date'] for r in rows]
             valores = [r['stock'] or 0 for r in rows]
-            with ui.element("div").style(
-                "background:var(--color-background-secondary);"
-                "border:0.5px solid var(--color-border-tertiary);"
-                "border-radius:8px;padding:12px 14px;margin-top:4px"
-            ):
-                ui.label(f"Evolución de stock — {sku}").style(
-                    "font-size:11px;font-weight:500;color:#185FA5;margin-bottom:8px;display:block"
-                )
-                ui.echart({
-                    "grid": {"top": 20, "bottom": 30, "left": 50, "right": 16},
-                    "xAxis": {
-                        "type": "category",
-                        "data": labels,
-                        "axisLabel": {"fontSize": 10},
-                        "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+            ui.echart({
+                "grid": {"top": 24, "bottom": 36, "left": 46, "right": 12},
+                "xAxis": {
+                    "type": "category",
+                    "data": labels,
+                    "axisLabel": {"fontSize": 10, "color": "#9ca3af",
+                                  "interval": max(0, len(labels)//10 - 1)},
+                    "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
+                    "axisTick": {"show": False},
+                },
+                "yAxis": {
+                    "type": "value",
+                    "axisLabel": {"fontSize": 10, "color": "#9ca3af"},
+                    "splitLine": {"lineStyle": {"color": "#f1f5f9", "type": "dashed"}},
+                    "min": 0,
+                },
+                "series": [{
+                    "type": "line",
+                    "data": valores,
+                    "smooth": 0.3,
+                    "lineStyle": {"color": "#2A7AC7", "width": 2},
+                    "itemStyle": {"color": "#2A7AC7"},
+                    "areaStyle": {
+                        "color": {
+                            "type": "linear", "x": 0, "y": 0, "x2": 0, "y2": 1,
+                            "colorStops": [
+                                {"offset": 0, "color": "rgba(42,122,199,0.18)"},
+                                {"offset": 1, "color": "rgba(42,122,199,0.01)"},
+                            ]
+                        }
                     },
-                    "yAxis": {
-                        "type": "value",
-                        "axisLabel": {"fontSize": 10},
-                        "splitLine": {"lineStyle": {"color": "#f1f5f9"}},
-                    },
-                    "series": [{
-                        "type": "line",
-                        "data": valores,
-                        "smooth": True,
-                        "lineStyle": {"color": "#378ADD", "width": 2},
-                        "itemStyle": {"color": "#378ADD"},
-                        "areaStyle": {"color": "rgba(55,138,221,0.08)"},
-                        "symbolSize": 6,
-                    }],
-                    "tooltip": {"trigger": "axis"},
-                }).style("height:180px;width:100%")
+                    "symbolSize": 5,
+                    "symbol": "circle",
+                }],
+                "tooltip": {
+                    "trigger": "axis",
+                    "formatter": "{b}<br/>Stock: <b>{c}</b>",
+                },
+            }).style("height:200px;width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
