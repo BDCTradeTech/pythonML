@@ -446,7 +446,7 @@ def _get_ultima_actualizacion(user_id: int) -> str:
         try:
             from datetime import datetime
             dt = datetime.fromisoformat(str(row[0]))
-            return dt.strftime("%d/%m/%Y %H:%M")
+            return dt.strftime("%d/%m/%y — %H:%M")
         except Exception:
             return str(row[0])[:16]
     return "—"
