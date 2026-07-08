@@ -117,7 +117,8 @@ def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
             try:
                 frescos = fetch_fn(stale_ids) or {}
                 for iid, val in frescos.items():
-                    set_cached(f"{key_prefix}_{iid}", val)
+                    if val is not None:
+                        set_cached(f"{key_prefix}_{iid}", val)
             except Exception as _e_bg:
                 logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error prefix={key_prefix}: {_e_bg}")
         threading.Thread(target=_refresh_bg, daemon=True, name=f"precios_bg_{key_prefix}").start()
@@ -126,7 +127,8 @@ def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
         frescos_bloqueante = fetch_fn(miss_ids) or {}
         for iid, val in frescos_bloqueante.items():
             out[iid] = val
-            set_cached(f"{key_prefix}_{iid}", val)
+            if val is not None:
+                set_cached(f"{key_prefix}_{iid}", val)
 
     return out
 
