@@ -729,6 +729,14 @@ def init_db() -> None:
         pass
     try:
         cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_total_ventas INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_ventas_60d INTEGER")
+    except Exception:
+        pass
+    try:
+        cur.execute("ALTER TABLE catalogo_competidores ADD COLUMN seller_period_60d TEXT")
     except sqlite3.OperationalError:
         pass
 
@@ -987,8 +995,9 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                 """INSERT INTO catalogo_competidores
                    (catalog_product_id, item_id, seller_id, seller_nickname, price,
                     listing_type, logistica, free_shipping, updated_at, origen,
-                    seller_level_id, seller_power_status, seller_total_ventas)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    seller_level_id, seller_power_status, seller_total_ventas,
+                    seller_ventas_60d, seller_period_60d)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     catalog_product_id,
                     it.get("item_id", ""),
@@ -1003,6 +1012,8 @@ def upsert_catalogo_competidores(catalog_product_id: str, items: List[Dict]) -> 
                     it.get("seller_level_id") or None,
                     it.get("seller_power_status") or None,
                     it.get("seller_total_ventas") if it.get("seller_total_ventas") is not None else None,
+                    it.get("seller_ventas_60d") if it.get("seller_ventas_60d") is not None else None,
+                    it.get("seller_period_60d") or None,
                 ),
             )
         conn.commit()
