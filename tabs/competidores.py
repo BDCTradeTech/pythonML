@@ -400,13 +400,8 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             sort_state["asc"] = (col == "nick")
         _render_body()
 
-    if mi_puesto and total:
-        pct = mi_puesto / total
-        pos_color = "#86EFAC" if pct <= 0.1 else "#FDE68A" if pct <= 0.3 else "rgba(255,255,255,.85)"
-        pos_txt   = f"#{mi_puesto} / {total}"
-    else:
-        pos_color = "rgba(255,255,255,.45)"
-        pos_txt   = f"— / {total}"
+    pos_color = "#ffffff"
+    pos_txt   = f"#{mi_puesto} / {total}" if mi_puesto else f"— / {total}"
 
     TH = "padding:4px 6px;background:#EEF6FD;color:#185FA5;font-size:9px;font-weight:600;position:sticky;top:0;z-index:2;border-bottom:0.5px solid #d0e8f8;cursor:pointer;user-select:none;white-space:nowrap"
 
@@ -416,13 +411,15 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                 with ui.element("div"):
                     ui.label(titulo).style("font-size:12px;font-weight:500;color:#fff;display:block")
                     ui.label(nota).style("font-size:9px;color:rgba(255,255,255,.65);display:block")
-                ui.label(pos_txt).style(f"font-size:12px;font-weight:700;color:{pos_color};white-space:nowrap;margin-left:8px")
+                ui.label(pos_txt).style(
+                    f"font-size:12px;font-weight:700;color:#ffffff;white-space:nowrap;margin-left:8px"
+                )
 
         if not rows_orig:
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").style("overflow-y:auto;flex:1;min-height:0"):
+        with ui.element("div").style("overflow-y:auto;flex:1;min-height:0;max-height:calc(100vh - 430px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
