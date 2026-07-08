@@ -531,6 +531,7 @@ def build_tab_competidores() -> None:
             .comp-tablas { flex-direction: column !important; }
             .comp-tablas > div { min-width: 100% !important; flex: none !important; }
             .comp-tabla-scroll { max-height: 60vh !important; }
+            .comp-btn-texto { display: none !important; }
         }
     """)
     user = app.storage.user.get("user")
@@ -730,12 +731,16 @@ def build_tab_competidores() -> None:
                     )
                     _recargar_tablas()
 
-            ui.button("↻ Actualizar ventas", on_click=_lanzar_actualizacion).props(
+            with ui.button(on_click=_lanzar_actualizacion).props(
                 "unelevated no-caps"
             ).style(
-                "background:#185FA5;color:#fff;font-size:12px;padding:0 14px;"
-                "height:36px;border-radius:4px;white-space:nowrap;flex-shrink:0"
-            )
+                "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
+                "flex-shrink:0;min-width:36px"
+            ).tooltip("Actualizar ventas históricas"):
+                ui.html('''
+                    <i class="ti ti-refresh" style="font-size:16px"></i>
+                    <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
+                ''')
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
