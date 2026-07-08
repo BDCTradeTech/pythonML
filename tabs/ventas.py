@@ -450,7 +450,8 @@ def build_tab_ventas(container) -> None:
                     iibb_ret    = float(_cached.get("iibb_ret") or 0)
                     sirtac      = float(_cached.get("sirtac") or 0)
                     net_rcv     = _cached.get("net_rcv")
-                    envio_real  = float(_cached.get("envio_real") or 0)
+                    envio_real      = float(_cached.get("envio_real") or 0)
+                    comprador_envio = float(_cached.get("comprador_envio") or 0)
                     _lt         = _cached.get("logistic_type") or ""
                     if _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2"):
                         envio_lbl = "Envío Correo"
@@ -503,11 +504,14 @@ def build_tab_ventas(container) -> None:
                     iva_total  = iva_venta - iva_meli - iva_impor
 
                     shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                    buyer_shipping = float(pay_data.get("shipping_amount") or 0)
                     if shp_xd > 0:
-                        envio_real = shp_xd
+                        comprador_envio = buyer_shipping
+                        envio_real = max(0.0, shp_xd - buyer_shipping)
                         envio_lbl  = "Envío Correo"
                         _lt = "cross_docking"
                     elif has_api:
+                        comprador_envio = 0.0
                         _lt = "self_service"
                         _flex_tarifa, _flex_zona = _get_flex_zona(user["id"], zip_code)
                         envio_real = _flex_tarifa
@@ -516,6 +520,7 @@ def build_tab_ventas(container) -> None:
                         _senders   = ship_costs_data.get("senders") or []
                         bonif_flex = float((_senders[0].get("save") if _senders else 0) or 0)
                     else:
+                        comprador_envio = 0.0
                         envio_real = 0.0
                         envio_lbl  = None
                         _lt = ""
@@ -534,7 +539,8 @@ def build_tab_ventas(container) -> None:
                             "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
                             "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
                             "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
-                            "envio_real": envio_real, "logistic_type": _lt, "net_rcv": net_rcv,
+                            "envio_real": envio_real, "comprador_envio": comprador_envio,
+                            "logistic_type": _lt, "net_rcv": net_rcv,
                             "fetched_at": _now,
                             "pay_status": "rejected" if is_rejected else None,
                             "order_date": row["dt"].strftime("%Y-%m-%d") if row.get("dt") else None,
@@ -557,14 +563,15 @@ def build_tab_ventas(container) -> None:
                                     "INSERT OR REPLACE INTO ventas_datos "
                                     "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                                    "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
+                                    "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
                                     "costo_pesos) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                     (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
                                      _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
                                      _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
                                      _ce.get("deb_cred"), _ce.get("iibb_ret"), _ce.get("sirtac"),
-                                     _ce.get("envio_real"), _ce.get("logistic_type"), _ce.get("net_rcv"),
+                                     _ce.get("envio_real"), _ce.get("comprador_envio"),
+                                     _ce.get("logistic_type"), _ce.get("net_rcv"),
                                      _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date"),
                                      _ce.get("cuotas"), _ce.get("costo_pesos")),
                                 )
@@ -753,6 +760,10 @@ def build_tab_ventas(container) -> None:
                                     with ui.row().classes("w-full justify-between items-center py-0.5"):
                                         _lbl(envio_lbl or "Envío", False if _lt in ("self_service", "flex") else envio_es_real)
                                         ui.label(fmt_moneda(envio_efectivo)).classes("text-sm text-negative")
+                                    if comprador_envio > 0:
+                                        with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                            _lbl("Comprador pagó envío", True)
+                                            ui.label(f"+{fmt_moneda(comprador_envio)}").classes("text-sm text-positive")
                                     if bonif_flex > 0:
                                         with ui.row().classes("w-full justify-between items-center py-0.5"):
                                             _lbl("Bonificación envío", True)
@@ -1449,14 +1460,18 @@ def build_tab_ventas(container) -> None:
                 iva_impor  = 0.09 * costo_usd * dolar * cantidad
                 iva_total  = iva_venta - iva_meli - iva_impor
                 shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                buyer_shipping = float(pay_data.get("shipping_amount") or 0)
                 logistic_type = v.get("logistic_type") or ""
                 if logistic_type in ("self_service", "flex"):
                     _flex_t, _ = _get_flex_zona(_uid, zip_code)
                     envio_real = _flex_t
+                    comprador_envio = 0.0
                 elif shp_xd > 0:
-                    envio_real = shp_xd
+                    envio_real = max(0.0, shp_xd - buyer_shipping)
+                    comprador_envio = buyer_shipping
                 else:
                     envio_real = float(p.get("ml_envios") or 5823)
+                    comprador_envio = 0.0
                 ml_env_grat_c  = float(p.get("ml_envios_gratuitos") or 33000)
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
@@ -1468,7 +1483,8 @@ def build_tab_ventas(container) -> None:
                     "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
                     "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
                     "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
-                    "envio_real": envio_real, "logistic_type": logistic_type, "net_rcv": net_rcv,
+                    "envio_real": envio_real, "comprador_envio": comprador_envio,
+                    "logistic_type": logistic_type, "net_rcv": net_rcv,
                     "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
                     "costo_pesos": total_costo if (not is_rejected and not is_cancelled and not has_refund_v and has_calc) else None,
                     "_skip_overwrite": is_cancelled or has_refund_v,
@@ -1484,14 +1500,15 @@ def build_tab_ventas(container) -> None:
                                 "INSERT OR IGNORE INTO ventas_datos "
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                                "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
+                                "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
                                 "costo_pesos) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
                                  rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
-                                 rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
+                                 rd.get("envio_real"), rd.get("comprador_envio"),
+                                 rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
                                  rd.get("cuotas"), rd.get("costo_pesos")),
                             )
@@ -1505,14 +1522,15 @@ def build_tab_ventas(container) -> None:
                                 "INSERT OR REPLACE INTO ventas_datos "
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                                "envio_real, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
+                                "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
                                 "costo_pesos) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
                                  rd.get("deb_cred"), rd.get("iibb_ret"), rd.get("sirtac"),
-                                 rd.get("envio_real"), rd.get("logistic_type"), rd.get("net_rcv"),
+                                 rd.get("envio_real"), rd.get("comprador_envio"),
+                                 rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
                                  rd.get("cuotas"), rd.get("costo_pesos")),
                             )
