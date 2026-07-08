@@ -693,77 +693,79 @@ def build_tab_competidores() -> None:
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
-        # Buscador + boton actualizar ventas (fuera de la caja del buscador)
-        with ui.row().style("gap:8px;align-items:flex-start;margin-bottom:8px;flex-wrap:wrap"):
-            with ui.element("div").style(
-                "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
-                "border-radius:8px;padding:8px 12px;flex-shrink:0;max-width:50%"
-            ):
-                with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
-                    with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
-                        inp = ui.input(
-                            placeholder="Link de una publicación de catálogo..."
-                        ).props("dense outlined").style(
-                            "flex:1;font-size:12px;border-radius:4px 0 0 4px"
+        # Buscador (input + lupa + boton actualizar ventas, todo en la misma fila)
+        with ui.element("div").style(
+            "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
+            "border-radius:8px;padding:8px 12px;margin-bottom:8px;flex-shrink:0;max-width:60%"
+        ):
+            with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
+                with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
+                    inp = ui.input(
+                        placeholder="Link de una publicación de catálogo..."
+                    ).props("dense outlined").style(
+                        "flex:1;font-size:12px;border-radius:4px 0 0 4px"
+                    )
+                    with ui.element("button").on(
+                        "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
+                    ).style(
+                        "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
+                        "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
+                    ):
+                        ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
+
+                async def _lanzar_actualizacion():
+                    cancelar_ref = [False]
+
+                    with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
+                        ui.label("Actualizando ventas históricas").style(
+                            "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
                         )
-                        with ui.element("button").on(
-                            "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
-                        ).style(
-                            "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
-                            "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
-                        ):
-                            ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
-                    notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
-                    notif_ref[0] = notif
-                resultado_area = ui.element("div").style("margin-top:4px")
+                        ui.spinner(size="xl", color="#2A7AC7")
+                        prog = ui.label("Iniciando...").style(
+                            "font-size:12px;color:#6b7280;margin-top:12px;display:block"
+                        )
 
-            async def _lanzar_actualizacion():
-                cancelar_ref = [False]
+                        def _cancelar():
+                            cancelar_ref[0] = True
+                            dlg.close()
+                            ui.notify("Actualización cancelada", color="warning", timeout=2000)
 
-                with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
-                    ui.label("Actualizando ventas históricas").style(
-                        "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
-                    )
-                    ui.spinner(size="xl", color="#2A7AC7")
-                    prog = ui.label("Iniciando...").style(
-                        "font-size:12px;color:#6b7280;margin-top:12px;display:block"
-                    )
+                        ui.button("Cancelar", on_click=_cancelar).props(
+                            "flat no-caps"
+                        ).style("color:#dc2626;font-size:12px;margin-top:16px")
 
-                    def _cancelar():
-                        cancelar_ref[0] = True
+                    dlg.open()
+                    resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
+                    if not cancelar_ref[0]:
                         dlg.close()
-                        ui.notify("Actualización cancelada", color="warning", timeout=2000)
+                        ui.notify(
+                            f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
+                            color="positive", timeout=4000
+                        )
+                        _recargar_tablas()
+                    ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
 
-                    ui.button("Cancelar", on_click=_cancelar).props(
-                        "flat no-caps"
-                    ).style("color:#dc2626;font-size:12px;margin-top:16px")
-
-                dlg.open()
-                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
-                if not cancelar_ref[0]:
-                    dlg.close()
-                    ui.notify(
-                        f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
-                        color="positive", timeout=4000
+                with ui.element("div").style(
+                    "display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0;margin-left:8px"
+                ):
+                    with ui.button(on_click=_lanzar_actualizacion).props(
+                        "unelevated no-caps"
+                    ).style(
+                        "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
+                        "flex-shrink:0;min-width:36px"
+                    ).tooltip("Actualizar ventas históricas"):
+                        ui.html('''
+                            <i class="ti ti-refresh" style="font-size:16px"></i>
+                            <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
+                        ''')
+                    lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
+                        "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
                     )
-                    _recargar_tablas()
-                ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
+                    ultima_act_ref[0] = lbl_ultima
 
-            with ui.element("div").style("display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0"):
-                with ui.button(on_click=_lanzar_actualizacion).props(
-                    "unelevated no-caps"
-                ).style(
-                    "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
-                    "flex-shrink:0;min-width:36px"
-                ).tooltip("Actualizar ventas históricas"):
-                    ui.html('''
-                        <i class="ti ti-refresh" style="font-size:16px"></i>
-                        <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
-                    ''')
-                lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
-                    "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
-                )
-                ultima_act_ref[0] = lbl_ultima
+                notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
+                notif_ref[0] = notif
+            resultado_area = ui.element("div").style("margin-top:4px")
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
