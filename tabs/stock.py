@@ -213,7 +213,7 @@ def build_tab_stock() -> None:
                 prev_m, prev_y = d.month, d.year
 
             valores  = [r.get("stock") or 0 for r in rows]
-            precios  = [r.get("price") for r in rows]
+            precios  = [round(float(r["price"])/1000, 1) if r.get("price") else None for r in rows]
 
             # Grid: tabla fija izquierda + grafico ancho completo derecha
             with ui.element("div").style(
@@ -313,13 +313,13 @@ def build_tab_stock() -> None:
                             },
                             {
                                 "type": "value",
-                                "name": "Precio",
+                                "name": "Precio ($k)",
                                 "nameTextStyle": {"color": "#EF9F27", "fontSize": 10},
                                 "position": "right",
                                 "axisLabel": {
                                     "fontSize": 10,
                                     "color": "#EF9F27",
-                                    "formatter": "function(v){return '$'+(v/1000).toFixed(0)+'k';}",
+                                    "formatter": "${value}k",
                                 },
                                 "axisLine": {"show": True, "lineStyle": {"color": "#EF9F27"}},
                                 "splitLine": {"show": False},
@@ -346,7 +346,7 @@ def build_tab_stock() -> None:
                                 "symbolSize": 4,
                             },
                             {
-                                "name": "Precio",
+                                "name": "Precio ($k)",
                                 "type": "line",
                                 "yAxisIndex": 1,
                                 "data": precios,
@@ -360,7 +360,7 @@ def build_tab_stock() -> None:
                         ],
                         "tooltip": {
                             "trigger": "axis",
-                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+parseInt(x.value).toLocaleString('es-AR'):x.value+' uds.';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
+                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+x.value+'k':x.value+' uds.';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
