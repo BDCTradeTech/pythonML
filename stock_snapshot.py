@@ -28,8 +28,15 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
-ATTRIBUTES = "id,available_quantity,status"
+ATTRIBUTES = "id,available_quantity,status,attributes"
 MULTIWAREHOUSE_SELLER_IDS = {"1848533798"}  # NORTHTECHNOLOGY (warehouse_management/multiwarehouse)
+
+
+def get_seller_sku(item: dict) -> str | None:
+    for attr in item.get('attributes') or []:
+        if attr.get('id') == 'SELLER_SKU':
+            return attr.get('value_name')
+    return None
 
 
 def get_seller_id(raw_data: str) -> str | None:
@@ -121,12 +128,13 @@ def run_snapshot():
                 try:
                     conn.execute("""
                         INSERT OR IGNORE INTO ml_stock_snapshots
-                            (user_id, seller_id, item_id, available_qty, status, is_multiwarehouse, snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                            (user_id, seller_id, item_id, seller_sku, available_qty, status, is_multiwarehouse, snapshot_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         user_id,
                         seller_id,
                         item['id'],
+                        get_seller_sku(item),
                         item.get('available_quantity'),
                         item.get('status'),
                         1 if is_multiwarehouse else 0,
