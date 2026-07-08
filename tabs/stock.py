@@ -174,38 +174,48 @@ border-radius:8px;padding:12px 14px;margin-top:4px">
 </div>
 <script>
 (function(){{
-  var existing = Chart.getChart("{chart_id}");
-  if (existing) existing.destroy();
-  var ctx = document.getElementById("{chart_id}").getContext("2d");
-  new Chart(ctx, {{
-    type: "line",
-    data: {{
-      labels: {json.dumps(labels)},
-      datasets: [{{
-        label: "Stock",
-        data: {json.dumps(valores)},
-        borderColor: "#378ADD",
-        backgroundColor: "rgba(55,138,221,0.08)",
-        fill: true,
-        tension: 0.3,
-        pointRadius: 4,
-        pointBackgroundColor: "#378ADD",
-        borderWidth: 2
-      }}]
-    }},
-    options: {{
-      responsive: true,
-      maintainAspectRatio: false,
-      plugins: {{ legend: {{ display: false }} }},
-      scales: {{
-        x: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }},
-        y: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }}
+  function _initChart(){{
+    var existing = Chart.getChart("{chart_id}");
+    if (existing) existing.destroy();
+    var ctx = document.getElementById("{chart_id}");
+    if (!ctx) return;
+    new Chart(ctx.getContext("2d"), {{
+      type: "line",
+      data: {{
+        labels: {json.dumps(labels)},
+        datasets: [{{
+          label: "Stock",
+          data: {json.dumps(valores)},
+          borderColor: "#378ADD",
+          backgroundColor: "rgba(55,138,221,0.08)",
+          fill: true,
+          tension: 0.3,
+          pointRadius: 4,
+          pointBackgroundColor: "#378ADD",
+          borderWidth: 2
+        }}]
+      }},
+      options: {{
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {{ legend: {{ display: false }} }},
+        scales: {{
+          x: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }},
+          y: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }}
+        }}
       }}
-    }}
-  }});
+    }});
+  }}
+  if (typeof Chart !== "undefined") {{
+    _initChart();
+  }} else {{
+    var s = document.createElement("script");
+    s.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js";
+    s.onload = _initChart;
+    document.head.appendChild(s);
+  }}
 }})();
 </script>
-<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 """)
 
     async def _cargar():
