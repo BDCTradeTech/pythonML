@@ -410,7 +410,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
 
     TH = "padding:4px 6px;background:#EEF6FD;color:#185FA5;font-size:9px;font-weight:600;position:sticky;top:0;z-index:2;border-bottom:0.5px solid #d0e8f8;cursor:pointer;user-select:none;white-space:nowrap"
 
-    with ui.element("div").style("flex:1;min-width:160px;border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;display:flex;flex-direction:column"):
+    with ui.element("div").style("flex:1;min-width:160px;border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;display:flex;flex-direction:column;height:100%"):
         with ui.element("div").style("background:#2A7AC7;padding:7px 10px;flex-shrink:0"):
             with ui.element("div").style("display:flex;justify-content:space-between;align-items:center"):
                 with ui.element("div"):
@@ -422,7 +422,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 380px)"):
+        with ui.element("div").style("overflow-y:auto;flex:1;min-height:0"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
