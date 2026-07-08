@@ -1,234 +1,271 @@
 """
-Fase 3 — tabs/stock.py
-Pestaña Stock: inventario de QuickBooks (Items con QtyOnHand > 0).
-Funciones exportadas: build_tab_stock
+tabs/stock.py
+Página Stock: evolución histórica de stock por SKU.
 """
 from __future__ import annotations
-
-import tempfile
+import json
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
-
-from nicegui import app, background_tasks, run, ui
-
-from db import get_qb_app_credentials, get_qb_tokens
-from qb_api import fetch_qb_items, fetch_qb_item_history, fetch_qb_invoice_pdf
+from nicegui import app, run, ui
+from db import get_connection
 
 
-# ---------------------------------------------------------------------------
-# Helper de sesión (mismo patrón que otros tabs; se unificará en auth.py Fase 4)
-# ---------------------------------------------------------------------------
+def _get_skus(user_id: int) -> List[str]:
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT DISTINCT seller_sku FROM ml_stock_snapshots
+        WHERE user_id=? AND seller_sku IS NOT NULL AND seller_sku != ''
+        ORDER BY seller_sku
+    """, (user_id,)).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
 
-def _require_login() -> Optional[Dict[str, Any]]:
+
+def _get_stock_history(user_id: int, sku: str, fecha_desde: str, fecha_hasta: str) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT snapshot_date, MAX(available_qty) as stock, MAX(price) as price
+        FROM ml_stock_snapshots
+        WHERE user_id=? AND seller_sku=?
+          AND snapshot_date BETWEEN ? AND ?
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date ASC
+    """, (user_id, sku, fecha_desde, fecha_hasta)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
+    if not rows:
+        return {}
+    ventas_total = 0
+    for i in range(1, len(rows)):
+        diff = (rows[i-1]['stock'] or 0) - (rows[i]['stock'] or 0)
+        if diff > 0:
+            ventas_total += diff
+    dias = len(rows)
+    vel = round(ventas_total / dias, 2) if dias > 0 else 0
+    stock_actual = rows[-1]['stock'] or 0
+    dias_restantes = round(stock_actual / vel) if vel > 0 else None
+    precio_actual = rows[-1].get('price')
+    return {
+        'ventas_total': ventas_total,
+        'vel_diaria': vel,
+        'dias_restantes': dias_restantes,
+        'stock_actual': stock_actual,
+        'precio_actual': precio_actual,
+    }
+
+
+def _fmt_precio(v):
+    if v is None:
+        return '—'
+    try:
+        return f"${int(float(v)):,}".replace(',', '.')
+    except Exception:
+        return str(v)
+
+
+def build_tab_stock() -> None:
     user = app.storage.user.get("user")
     if not user:
-        ui.notify("Debes iniciar sesión para continuar", color="negative")
-    return user
-
-
-# ---------------------------------------------------------------------------
-# Helper QB (copiado de main.py — se unificará en utils.py Fase 4)
-# ---------------------------------------------------------------------------
-
-def _qb_invoice_pdf_download_basename(doc: Any) -> str:
-    """Nombre de archivo sugerido para PDF de invoice."""
-    base = str(doc or "invoice").strip().replace(" ", "_")
-    for c in '<>:"/\\|?*':
-        base = base.replace(c, "_")
-    return f"{base[:80]}.pdf"
-
-
-# ---------------------------------------------------------------------------
-# Función exportada
-# ---------------------------------------------------------------------------
-
-def build_tab_stock(container) -> None:
-    """Pestaña Stock: inventario de QuickBooks (Items con QtyOnHand > 0)."""
-    user = _require_login()
-    if not user:
+        ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
         return
+    user_id = user["id"]
 
-    qb_creds = get_qb_app_credentials(user["id"])
-    qb_tokens = get_qb_tokens(user["id"])
+    estado = {"sku": None, "desde": None, "hasta": None}
+    contenido_ref: list = [None]
 
-    with container:
-        if not qb_creds:
-            ui.label(
-                "Configurá QuickBooks en Configuración (Client ID, Client Secret, Redirect URI) y conectá tu cuenta."
-            ).classes("text-gray-600")
-            return
+    skus = _get_skus(user_id)
 
-        if not qb_tokens:
-            ui.label(
-                "Credenciales configuradas. Andá a Configuración → QuickBooks y hacé clic en 'Conectar cuenta' para autorizar."
-            ).classes("text-warning")
-            return
+    hoy = date.today()
+    default_desde = (hoy - timedelta(days=29)).isoformat()
+    default_hasta = hoy.isoformat()
 
-        header_card = ui.column().classes("w-full mb-2")
-        result_area = ui.column().classes("w-full gap-2")
-        items_ref: List[Dict[str, Any]] = []
-        sort_col_ref: Dict[str, str] = {"val": "producto"}
-        sort_asc_ref: Dict[str, bool] = {"val": True}
+    def _pintar(rows: List[Dict], metricas: Dict, sku: str):
+        contenido_ref[0].clear()
+        with contenido_ref[0]:
+            if not rows:
+                ui.label("No hay datos para este SKU y período.").style(
+                    "font-size:13px;color:#9ca3af;padding:24px"
+                )
+                return
 
-        with result_area:
-            with ui.card().classes("w-full p-8 items-center gap-4"):
-                ui.spinner(size="xl")
-                ui.label("Cargando stock de QuickBooks...").classes("text-xl text-gray-700")
+            # Métricas
+            with ui.row().style("gap:8px;margin-bottom:12px;flex-wrap:wrap"):
+                for lbl, val, color in [
+                    ("Stock actual", str(metricas.get('stock_actual', '—')), "#185FA5"),
+                    ("Vendidas en período", str(metricas.get('ventas_total', '—')), "#dc2626"),
+                    ("Vel. promedio", f"{metricas.get('vel_diaria', 0)}/día", "#374151"),
+                    ("Días restantes", str(metricas.get('dias_restantes') or '—'), "#166534"),
+                    ("Precio actual", _fmt_precio(metricas.get('precio_actual')), "#374151"),
+                ]:
+                    with ui.element("div").style(
+                        "background:var(--color-background-secondary);"
+                        "border:0.5px solid var(--color-border-tertiary);"
+                        "border-radius:6px;padding:6px 12px;text-align:center"
+                    ):
+                        ui.label(val).style(f"font-size:15px;font-weight:500;color:{color};display:block")
+                        ui.label(lbl).style("font-size:10px;color:#6b7280")
 
-        def _sort_key_stock(row: Dict[str, Any], col: str) -> Any:
-            if col == "id":
-                return str(row.get("id", "")).lower()
-            if col == "producto":
-                return str(row.get("producto", "")).lower()
-            if col == "sku":
-                return str(row.get("sku", "")).lower()
-            if col == "sales_price":
-                return row.get("sales_price", 0)
-            if col == "qty":
-                return row.get("qty", 0)
-            return ""
-
-        def _on_sort_stock(col: str) -> None:
-            if sort_col_ref.get("val") == col:
-                sort_asc_ref["val"] = not sort_asc_ref.get("val", True)
-            else:
-                sort_col_ref["val"] = col
-                sort_asc_ref["val"] = True
-            _pintar_tabla()
-
-        def _pintar_tabla() -> None:
-            items = items_ref
-            sort_col = sort_col_ref.get("val", "producto")
-            asc = sort_asc_ref.get("val", True)
-            items_sorted = sorted(items, key=lambda x: _sort_key_stock(x, sort_col), reverse=not asc)
-            n_skus = len(items)
-            total_qty = sum(i.get("qty", 0) for i in items)
-            stock_valorizado = sum((i.get("qty", 0) or 0) * (i.get("sales_price", 0) or 0) for i in items)
-            header_card.clear()
-            with header_card:
-                ui.label("Stock").classes("text-xl font-semibold mb-2")
-                with ui.card().classes("w-full p-4 bg-grey-2"):
-                    with ui.row().classes("w-full gap-6 flex-wrap items-center"):
-                        with ui.column().classes("gap-0"):
-                            ui.label("Diferentes SKUs").classes("text-xs text-gray-600")
-                            ui.label(str(n_skus)).classes("text-lg font-bold text-primary")
-                        ui.element("div").classes("w-px h-8 bg-gray-400 shrink-0")
-                        with ui.column().classes("gap-0"):
-                            ui.label("Stock valorizado").classes("text-xs text-gray-600")
-                            _sv_fmt = f"$ {stock_valorizado:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                            ui.label(_sv_fmt).classes("text-lg font-bold text-primary")
-            result_area.clear()
-            with result_area:
-                with ui.element("table").classes("w-full border-collapse text-sm"):
+            # Tabla
+            with ui.element("div").style(
+                "border:0.5px solid var(--color-border-secondary);"
+                "border-radius:8px;overflow:hidden;margin-bottom:16px"
+            ):
+                with ui.element("table").style(
+                    "width:100%;border-collapse:collapse;font-size:11px"
+                ):
                     with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold text-center"):
-                            for col_key, h in [("id", "ID"), ("producto", "Producto"), ("sku", "SKU"), ("sales_price", "Precio venta"), ("qty", "Cantidad"), ("buscar", "Buscar")]:
-                                th = ui.element("th").classes("px-3 py-2 border cursor-pointer hover:bg-primary/80")
-                                if col_key != "buscar":
-                                    th.on("click", lambda c=col_key: _on_sort_stock(c))
-                                with th:
-                                    ui.label(h)
+                        with ui.element("tr"):
+                            for h in ["Fecha", "Stock", "Vendidas", "Vel. diaria", "Precio", "Días restantes"]:
+                                with ui.element("th").style(
+                                    "padding:6px 10px;background:#2A7AC7;color:#fff;"
+                                    "font-weight:500;text-align:center;border-right:0.5px solid rgba(255,255,255,0.15)"
+                                ):
+                                    ui.html(h)
                     with ui.element("tbody"):
-                        for it in items_sorted:
-                            with ui.element("tr").classes("border-t hover:bg-gray-50"):
-                                with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("id", "—")))
-                                with ui.element("td").classes("px-3 py-1 border"):
-                                    ui.label(str(it.get("producto", "—")))
-                                with ui.element("td").classes("px-3 py-1 border"):
-                                    _sku_val = (it.get("sku") or "").strip()
-                                    ui.label(_sku_val if _sku_val else "—")
-                                with ui.element("td").classes("px-3 py-1 border text-right"):
-                                    _sp = it.get("sales_price") or 0
-                                    ui.label(f"$ {_sp:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-                                with ui.element("td").classes("px-3 py-1 border font-medium text-center"):
-                                    ui.label(f"{it.get('qty', 0):,}".replace(",", "."))
-                                with ui.element("td").classes("px-3 py-1 border text-center"):
-                                    def _abrir_historial(uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip()):
-                                        dialog = ui.dialog().props("persistent")
-                                        with dialog:
-                                            with ui.card().classes("p-6 min-w-[400px] max-w-[600px] max-h-[80vh] overflow-hidden flex flex-col"):
-                                                hist_container = ui.column().classes("w-full gap-2 flex-1 min-h-0")
-                                                with hist_container:
-                                                    ui.spinner(size="lg")
-                                                    ui.label("Buscando historial...").classes("text-gray-600")
-                                        dialog.open()
+                        prev_stock = None
+                        for i, r in enumerate(reversed(rows)):
+                            stock = r.get('stock') or 0
+                            vendidas = (prev_stock - stock) if prev_stock is not None and prev_stock > stock else 0
+                            prev_stock_next = rows[-(i+2)]['stock'] if i < len(rows)-1 else None
+                            vel_dia = vendidas
+                            precio = _fmt_precio(r.get('price'))
+                            vel = rows[len(rows)-1-i].get('vel') if False else vel_dia
+                            dias_rest = round(stock / metricas['vel_diaria']) if metricas.get('vel_diaria', 0) > 0 else None
+                            _bg = "background:#f9fafb" if i % 2 == 1 else ""
+                            with ui.element("tr").style(_bg):
+                                for val, extra in [
+                                    (r['snapshot_date'], "text-align:center"),
+                                    (str(stock), "text-align:right;font-weight:500"),
+                                    (
+                                        f"−{vendidas}" if vendidas > 0 else "—",
+                                        f"text-align:right;color:{'#dc2626' if vendidas > 0 else '#9ca3af'}"
+                                    ),
+                                    (
+                                        f"{vendidas}/día" if vendidas > 0 else "—",
+                                        "text-align:right;color:#6b7280"
+                                    ),
+                                    (precio, "text-align:right"),
+                                    (
+                                        str(dias_rest) if dias_rest else "—",
+                                        "text-align:center;color:#166534;font-weight:500"
+                                    ),
+                                ]:
+                                    with ui.element("td").style(
+                                        f"padding:4px 10px;border-bottom:0.5px solid #f1f5f9;"
+                                        f"font-size:11px;color:#374151;{extra}"
+                                    ):
+                                        ui.html(str(val))
+                            prev_stock = stock
 
-                                        async def _cargar_y_mostrar():
-                                            hist, err = await run.io_bound(fetch_qb_item_history, uid, iid, sku_val)
-                                            hist_container.clear()
-                                            with hist_container:
-                                                with ui.row().classes("w-full gap-4 mb-4 border-b-2 border-gray-300 pb-3"):
-                                                    with ui.column().classes("flex-1 min-w-0 gap-1"):
-                                                        ui.label(str(prod)[:80] + ("..." if len(str(prod)) > 80 else "")).classes("text-base font-bold")
-                                                        ui.label(f"ID: {iid}").classes("text-sm font-mono text-gray-600")
-                                                if err:
-                                                    ui.label(f"Error: {err}").classes("text-negative")
-                                                    return
-                                                if not hist:
-                                                    ui.label("No se encontraron ventas, compras ni cotizaciones para este producto.").classes("text-gray-500")
-                                                    return
-                                                with ui.element("div").classes("w-full overflow-x-auto overflow-y-auto").style("max-height: 320px"):
-                                                    with ui.element("table").classes("w-full border-collapse text-sm"):
-                                                        with ui.element("thead"):
-                                                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
-                                                                for hdr in ["Tipo", "Fecha", "Invoice", "P. venta u$"]:
-                                                                    with ui.element("th").classes("px-2 py-1 border"):
-                                                                        ui.label(hdr)
-                                                        with ui.element("tbody"):
-                                                            for h in hist:
-                                                                with ui.element("tr").classes("border-t hover:bg-gray-50"):
-                                                                    with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("tipo", "—"))
-                                                                    with ui.element("td").classes("px-2 py-1 border"):
-                                                                        ui.label(h.get("fecha", "—"))
-                                                                    with ui.element("td").classes("px-2 py-1 border"):
-                                                                        doc_txt = str(h.get("doc", "—"))[:40]
-                                                                        qb_id = h.get("qb_id") or ""
-                                                                        qb_tipo = h.get("qb_tipo") or ""
-                                                                        if qb_tipo == "invoice" and qb_id:
-                                                                            async def _descargar_inv(uid=uid, inv_id=qb_id, doc=doc_txt):
-                                                                                pdf_bytes, err = await run.io_bound(fetch_qb_invoice_pdf, uid, inv_id)
-                                                                                if err:
-                                                                                    ui.notify(f"Error: {err}", color="negative")
-                                                                                    return
-                                                                                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
-                                                                                    f.write(pdf_bytes)
-                                                                                    path = f.name
-                                                                                nombre = _qb_invoice_pdf_download_basename(doc)
-                                                                                ui.download(path, nombre)
-                                                                                ui.notify("Descarga iniciada", color="positive")
-                                                                            ui.button(doc_txt, on_click=_descargar_inv).props("flat dense no-caps").classes("text-primary underline hover:no-underline cursor-pointer p-0 min-w-0 font-normal")
-                                                                        else:
-                                                                            ui.label(doc_txt)
-                                                                    _p = h.get("precio", 0)
-                                                                    _tipo = h.get("tipo", "")
-                                                                    _p_fmt = f"{_p:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-                                                                    with ui.element("td").classes("px-2 py-1 border text-right"):
-                                                                        ui.label(_p_fmt if _tipo == "Venta" else "—")
-                                                with ui.row().classes("w-full justify-end mt-4"):
-                                                    ui.button("Cerrar", on_click=dialog.close, color="secondary").props("flat")
+            # Gráfico (Chart.js via ui.html)
+            labels = [r['snapshot_date'] for r in rows]
+            valores = [r['stock'] or 0 for r in rows]
+            chart_id = f"chart_{user_id}"
+            ui.html(f"""
+<div style="background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);
+border-radius:8px;padding:12px 14px;margin-top:4px">
+  <div style="font-size:11px;font-weight:500;color:#185FA5;margin-bottom:8px">
+    Evolución de stock — {sku}
+  </div>
+  <canvas id="{chart_id}" style="width:100%;height:160px"></canvas>
+</div>
+<script>
+(function(){{
+  var existing = Chart.getChart("{chart_id}");
+  if (existing) existing.destroy();
+  var ctx = document.getElementById("{chart_id}").getContext("2d");
+  new Chart(ctx, {{
+    type: "line",
+    data: {{
+      labels: {json.dumps(labels)},
+      datasets: [{{
+        label: "Stock",
+        data: {json.dumps(valores)},
+        borderColor: "#378ADD",
+        backgroundColor: "rgba(55,138,221,0.08)",
+        fill: true,
+        tension: 0.3,
+        pointRadius: 4,
+        pointBackgroundColor: "#378ADD",
+        borderWidth: 2
+      }}]
+    }},
+    options: {{
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: {{ legend: {{ display: false }} }},
+      scales: {{
+        x: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }},
+        y: {{ grid: {{ color: "rgba(0,0,0,0.05)" }}, ticks: {{ font: {{ size: 10 }} }} }}
+      }}
+    }}
+  }});
+}})();
+</script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+""")
 
-                                        background_tasks.create(_cargar_y_mostrar(), name="stock_historial")
-                                    ui.button("Buscar", on_click=lambda uid=user["id"], iid=it.get("id", ""), prod=it.get("producto", "—"), sku_val=(it.get("sku") or "").strip(): _abrir_historial(uid, iid, prod, sku_val)).props("dense no-caps flat").classes("text-primary hover:bg-primary/10")
+    async def _cargar():
+        sku = estado.get("sku")
+        desde = estado.get("desde") or default_desde
+        hasta = estado.get("hasta") or default_hasta
+        if not sku:
+            contenido_ref[0].clear()
+            with contenido_ref[0]:
+                ui.label("Seleccioná un SKU para ver el historial.").style(
+                    "font-size:13px;color:#9ca3af;padding:24px"
+                )
+            return
+        rows = await run.io_bound(_get_stock_history, user_id, sku, desde, hasta)
+        metricas = _calcular_metricas(rows)
+        _pintar(rows, metricas, sku)
 
-        def _cargar() -> None:
-            items, err = fetch_qb_items(user["id"])
-            if err:
-                result_area.clear()
-                with result_area:
-                    ui.label(f"Error: {err}").classes("text-negative")
-                return
-            items_ref[:] = [i for i in (items or []) if (i.get("qty") or 0) > 0]
-            if not items_ref:
-                result_area.clear()
-                with result_area:
-                    ui.label("No hay items con stock en QuickBooks.").classes("text-gray-500")
-                return
-            _pintar_tabla()
+    # Layout
+    with ui.element("div").style("padding:16px 20px 0"):
+        # Controles
+        with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px"):
+            with ui.column().style("gap:3px"):
+                ui.label("SKU").style("font-size:11px;color:var(--color-text-secondary)")
+                sel_sku = ui.select(
+                    options=skus,
+                    value=None,
+                    label="",
+                ).props("dense outlined clearable use-input input-debounce=200").style(
+                    "width:220px;font-size:12px"
+                )
+                def _on_sku(e):
+                    estado["sku"] = e.value
+                sel_sku.on_value_change(_on_sku)
 
-        async def _cargar_async() -> None:
-            await run.io_bound(_cargar)
+            with ui.column().style("gap:3px"):
+                ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
+                inp_desde = ui.input(value=default_desde).props("type=date dense outlined").style("width:140px")
+                def _on_desde(e):
+                    estado["desde"] = e.value
+                inp_desde.on_value_change(_on_desde)
 
-        background_tasks.create(_cargar_async(), name="cargar_stock_qb")
+            with ui.column().style("gap:3px"):
+                ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
+                inp_hasta = ui.input(value=default_hasta).props("type=date dense outlined").style("width:140px")
+                def _on_hasta(e):
+                    estado["hasta"] = e.value
+                inp_hasta.on_value_change(_on_hasta)
 
+            with ui.element("button").on(
+                "click", lambda: ui.timer(0.05, _cargar, once=True)
+            ).style(
+                "height:34px;font-size:12px;font-weight:500;"
+                "border:1px solid #2A7AC7;border-radius:4px;background:#2A7AC7;"
+                "padding:0 16px;cursor:pointer;color:#FFFFFF;align-self:flex-end"
+            ):
+                ui.html('<i class="ti ti-refresh" style="font-size:13px;margin-right:4px"></i>Actualizar')
 
+        contenido = ui.column().style("width:100%;gap:0")
+        contenido_ref[0] = contenido
+        with contenido:
+            ui.label("Seleccioná un SKU para ver el historial.").style(
+                "font-size:13px;color:#9ca3af;padding:24px"
+            )
