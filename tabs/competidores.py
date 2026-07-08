@@ -161,11 +161,16 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
             LEFT JOIN (
                 SELECT seller_id, MAX(seller_total_ventas) as ventas_antes
                 FROM competidores_snapshots
-                WHERE user_id=? AND snapshot_date <= ?
+                WHERE user_id=? AND snapshot_date = COALESCE(
+                    (SELECT MAX(snapshot_date) FROM competidores_snapshots
+                     WHERE user_id=? AND snapshot_date <= ?),
+                    (SELECT MIN(snapshot_date) FROM competidores_snapshots
+                     WHERE user_id=?)
+                )
                 GROUP BY seller_id
             ) s0 ON s0.seller_id = s1.seller_id
             ORDER BY ventas DESC NULLS LAST
-        """, (user_id, user_id, user_id, fecha_desde)).fetchall()
+        """, (user_id, user_id, user_id, user_id, fecha_desde, user_id)).fetchall()
     conn.close()
     result = []
     for i, r in enumerate(rows, 1):
