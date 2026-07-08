@@ -1,13 +1,14 @@
 """
 tabs/stock.py
-Página Stock: evolución histórica de stock por SKU.
+P¡gina Stock: evoluciÃ³n histÃ³rica de stock por SKU.
 """
 from __future__ import annotations
-import json
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from nicegui import app, run, ui
 from db import get_connection
+
+MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
 
 def _get_skus(user_id: int) -> List[str]:
@@ -21,16 +22,18 @@ def _get_skus(user_id: int) -> List[str]:
     return [r[0] for r in rows]
 
 
-def _get_stock_history(user_id: int, sku: str, fecha_desde: str, fecha_hasta: str) -> List[Dict[str, Any]]:
+def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
     conn = get_connection()
     rows = conn.execute("""
-        SELECT snapshot_date, MAX(available_qty) as stock, MAX(price) as price
+        SELECT snapshot_date,
+               MAX(available_qty) as stock,
+               MAX(price)         as price
         FROM ml_stock_snapshots
         WHERE user_id=? AND seller_sku=?
           AND snapshot_date BETWEEN ? AND ?
         GROUP BY snapshot_date
         ORDER BY snapshot_date ASC
-    """, (user_id, sku, fecha_desde, fecha_hasta)).fetchall()
+    """, (user_id, sku, desde, hasta)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
 
@@ -61,7 +64,7 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
 
 def _fmt_precio(v):
     if v is None:
-        return '—'
+        return 'â'
     try:
         return f"${int(float(v)):,}".replace(',', '.')
     except Exception:
@@ -71,40 +74,40 @@ def _fmt_precio(v):
 def build_tab_stock() -> None:
     user = app.storage.user.get("user")
     if not user:
-        ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
+        ui.label("Debes iniciar sesiÃ³n").classes("text-red-500 p-4")
         return
     user_id = user["id"]
 
-    estado = {"sku": None, "desde": None, "hasta": None}
-    contenido_ref: list = [None]
-
-    skus = _get_skus(user_id)
-
     hoy = date.today()
-    default_desde = (hoy - timedelta(days=29)).isoformat()
-    default_hasta = hoy.isoformat()
+    estado = {
+        "sku": None,
+        "desde": (hoy - timedelta(days=29)).isoformat(),
+        "hasta": hoy.isoformat(),
+    }
+    contenido_ref: list = [None]
+    skus = _get_skus(user_id)
 
     def _pintar(rows: List[Dict], metricas: Dict, sku: str):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not rows:
-                ui.label("No hay datos para este SKU y período.").style(
+                ui.label("Sin datos para este SKU y perÃ­odo.").style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
                 return
 
-            vel       = metricas.get('vel_diaria', 0)
-            dias_r    = metricas.get('dias_restantes')
-            dias_col  = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+            vel     = metricas.get('vel_diaria', 0)
+            dias_r  = metricas.get('dias_restantes')
+            dias_col = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
 
-            # ── Stats ──────────────────────────────────────────────────────
+            # ââ Stats ââââââââââââââââââââââââââââââââââââââââââââââââââââ
             stats = [
-                ("Stock actual",        str(metricas.get('stock_actual', '—')), "#185FA5"),
-                ("Vendidas en período",  str(metricas.get('ventas_total', '—')), "#dc2626"),
-                ("Vel. promedio",       f"{vel}/día",                            "#374151"),
-                ("Días restantes",      str(dias_r or '—'),                      dias_col),
-                ("Precio actual",       _fmt_precio(metricas.get('precio_actual')), "#374151"),
+                ("Stock actual",             str(metricas.get('stock_actual', 'â')), "#185FA5"),
+                ("Vendidas en perÃ­odo",       str(metricas.get('ventas_total', 'â')), "#dc2626"),
+                ("Vel. venta promedio",       f"{vel}/dÃ­a",                           "#374151"),
+                ("DÃ­as de stock restantes",   str(dias_r or 'â'),                     dias_col),
+                ("Precio actual",             _fmt_precio(metricas.get('precio_actual')), "#374151"),
             ]
             with ui.element("div").style(
                 "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px;"
@@ -116,9 +119,10 @@ def build_tab_stock() -> None:
                         ui.label(val).style(f"font-size:16px;font-weight:500;color:{color};display:block;line-height:1.2")
                         ui.label(lbl).style("font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-top:2px;display:block")
 
-            # ── Calcular ventas/repos en orden cronológico ─────────────────
-            MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+            # ââ Calcular ventas/repos + vel. acumulada cronolÃ³gicamente ââ
             data = []
+            running_sales = 0
+            running_stock_days = 0
             for i, r in enumerate(rows):
                 stock_hoy  = r.get('stock') or 0
                 stock_ayer = rows[i-1].get('stock') or 0 if i > 0 else stock_hoy
@@ -126,22 +130,25 @@ def build_tab_stock() -> None:
                     repo, vend = stock_hoy - stock_ayer, 0
                 else:
                     repo, vend = 0, max(0, stock_ayer - stock_hoy)
-                data.append({**r, 'vend': vend, 'repo': repo})
+                if stock_ayer > 0:
+                    running_stock_days += 1
+                running_sales += vend
+                vel_acum = round(running_sales / running_stock_days, 1) if running_stock_days > 0 else None
+                data.append({**r, 'vend': vend, 'repo': repo, 'vel_acum': vel_acum})
 
-            # ── Layout: tabla izquierda + gráfico derecha ─────────────────
-            MESES_CORTO = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
+            # ââ Layout: tabla izquierda (300px) + grÃ¡fico derecha âââââââââ
             with ui.element("div").style(
-                "display:grid;grid-template-columns:320px 1fr;gap:12px;align-items:start"
+                "display:grid;grid-template-columns:300px 1fr;gap:10px;align-items:start"
             ):
-                # ── Tabla ─────────────────────────────────────────────────
+                # ââ Tabla compacta con scroll ââââââââââââââââââââââââââââââ
                 with ui.element("div").style(
                     "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden"
                 ):
-                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 320px)"):
+                    with ui.element("div").style("overflow-y:auto;max-height:45vh"):
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
-                                    for h in ["Día", "Stock", "Vendidas", "Vel. día", "Precio"]:
+                                    for h in ["DÃ­a", "Stock", "Vendidas", "Vel. acum.", "Precio"]:
                                         with ui.element("th").style(
                                             "padding:5px 8px;background:#2A7AC7;color:#fff;"
                                             "font-weight:500;text-align:center;white-space:nowrap;"
@@ -150,15 +157,13 @@ def build_tab_stock() -> None:
                                         ):
                                             ui.html(h)
                             with ui.element("tbody"):
-                                from datetime import datetime as _dt2
                                 cur_mes = None
-                                es_primera = True
                                 for r in reversed(data):
                                     fecha_str = r['snapshot_date']
                                     try:
-                                        d = _dt2.strptime(fecha_str, "%Y-%m-%d")
+                                        d = _dt.strptime(fecha_str, "%Y-%m-%d")
                                         mes_key   = f"{d.year}-{d.month:02d}"
-                                        mes_label = f"{MESES_CORTO[d.month-1]} {d.year}"
+                                        mes_label = f"{MESES[d.month-1]} {d.year}"
                                         dia_label = str(d.day)
                                     except Exception:
                                         mes_key = mes_label = fecha_str
@@ -177,6 +182,7 @@ def build_tab_stock() -> None:
                                     stock  = r.get('stock') or 0
                                     vend   = r['vend']
                                     repo   = r['repo']
+                                    va     = r.get('vel_acum')
                                     precio = _fmt_precio(r.get('price'))
 
                                     bg = "background:#F0FDF4;" if repo > 0 else ""
@@ -188,52 +194,56 @@ def build_tab_stock() -> None:
                                         if repo > 0:
                                             vc, vt = "#166534", f"+{repo}"
                                         elif vend > 0:
-                                            vc, vt = "#dc2626", f"−{vend}"
+                                            vc, vt = "#dc2626", f"â{vend}"
                                         else:
-                                            vc, vt = "#9ca3af", "—"
+                                            vc, vt = "#9ca3af", "â"
                                         with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
                                             ui.html(vt)
-                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#9ca3af"):
-                                            ui.html(f"{vend}/d" if vend > 0 else "—")
+                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
+                                            ui.html(f"{va}/d" if va is not None else "â")
                                         with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
                                             ui.html(precio)
-                                    es_primera = False
 
-                # ── Gráfico ────────────────────────────────────────────────
-                with ui.element("div").style("display:flex;flex-direction:column;gap:8px"):
-                    # Días restantes
+                # ââ GrÃ¡fico (todo el ancho restante, misma altura) âââââââââ
+                with ui.element("div").style("display:flex;flex-direction:column;gap:6px"):
                     if dias_r:
                         ui.label(
-                            f"Con el stock actual ({metricas.get('stock_actual')} uds.) "
-                            f"y una vel. de {vel}/día → quedan estimados {dias_r} días de stock."
+                            f"Con {metricas.get('stock_actual')} uds. y vel. {vel}/dÃ­a â "
+                            f"estimados {dias_r} dÃ­as de stock restantes."
                         ).style(f"font-size:11px;color:{dias_col};display:block")
 
-                    # Pre-procesar etiquetas: mostrar solo cada N días
-                    total_pts = len(rows)
-                    intervalo = max(1, total_pts // 10)
+                    # Etiquetas inteligentes: dÃ­a / "1 Jul" / "1 Ene 2026"
                     chart_labels = []
+                    prev_m, prev_y = None, None
+                    multi_anio = len(set(r['snapshot_date'][:4] for r in rows)) > 1
+
                     for i, r in enumerate(rows):
-                        if i % intervalo == 0 or i == total_pts - 1:
-                            try:
-                                d = _dt.strptime(r['snapshot_date'], "%Y-%m-%d")
-                                chart_labels.append(f"{d.day} {MESES_CORTO[d.month-1]}")
-                            except Exception:
-                                chart_labels.append(r['snapshot_date'])
+                        try:
+                            d = _dt.strptime(r['snapshot_date'], "%Y-%m-%d")
+                        except Exception:
+                            chart_labels.append(""); continue
+                        y_chg = prev_y is not None and d.year != prev_y
+                        m_chg = prev_m is not None and d.month != prev_m
+
+                        if i == 0:
+                            lbl = f"{d.day} {MESES[d.month-1]} {d.year}"
+                        elif y_chg:
+                            lbl = f"{d.day} {MESES[d.month-1]} {d.year}"
+                        elif m_chg:
+                            lbl = f"{d.day} {MESES[d.month-1]}"
                         else:
-                            chart_labels.append("")
+                            lbl = str(d.day)
+
+                        chart_labels.append(lbl)
+                        prev_m, prev_y = d.month, d.year
 
                     valores = [r.get('stock') or 0 for r in rows]
                     ui.echart({
-                        "grid": {"top": 16, "bottom": 32, "left": 42, "right": 8},
+                        "grid": {"top": 16, "bottom": 40, "left": 42, "right": 8},
                         "xAxis": {
                             "type": "category",
                             "data": chart_labels,
-                            "axisLabel": {
-                                "fontSize": 10,
-                                "color": "#9ca3af",
-                                "interval": 0,
-                                "rotate": 0,
-                            },
+                            "axisLabel": {"fontSize": 10, "color": "#9ca3af", "interval": 0},
                             "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
                             "axisTick": {"show": False},
                         },
@@ -258,60 +268,50 @@ def build_tab_stock() -> None:
                                     ]
                                 }
                             },
-                            "symbolSize": 4,
+                            "symbolSize": 5,
                         }],
-                        "tooltip": {
-                            "trigger": "axis",
-                            "formatter": "{b}<br/>Stock: <b>{c}</b>",
-                        },
-                    }).style("height:calc(100vh - 320px);width:100%")
+                        "tooltip": {"trigger": "axis", "formatter": "{b}<br/>Stock: <b>{c}</b>"},
+                    }).style("height:45vh;width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
-        desde = estado.get("desde") or default_desde
-        hasta = estado.get("hasta") or default_hasta
         if not sku:
             contenido_ref[0].clear()
             with contenido_ref[0]:
-                ui.label("Seleccioná un SKU para ver el historial.").style(
+                ui.label("SeleccionÃ¡ un SKU para ver el historial.").style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
             return
-        rows = await run.io_bound(_get_stock_history, user_id, sku, desde, hasta)
-        metricas = _calcular_metricas(rows)
-        _pintar(rows, metricas, sku)
+        rows = await run.io_bound(
+            _get_stock_history, user_id, sku, estado["desde"], estado["hasta"]
+        )
+        met = _calcular_metricas(rows)
+        _pintar(rows, met, sku)
 
-    # Layout
+    # ââ Layout principal ââââââââââââââââââââââââââââââââââââââââââââââââââ
     with ui.element("div").style("padding:16px 20px 0"):
-        # Controles
-        with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:16px"):
+        with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px"):
             with ui.column().style("gap:3px"):
                 ui.label("SKU").style("font-size:11px;color:var(--color-text-secondary)")
-                sel_sku = ui.select(
-                    options=skus,
-                    value=None,
-                    label="",
-                ).props("dense outlined clearable use-input input-debounce=200").style(
-                    "width:220px;font-size:12px"
-                )
+                sel = ui.select(options=skus, value=None, label="").props(
+                    "dense outlined clearable use-input input-debounce=200"
+                ).style("width:240px;font-size:12px")
                 def _on_sku(e):
                     estado["sku"] = e.value
                     ui.timer(0.05, _cargar, once=True)
-                sel_sku.on_value_change(_on_sku)
+                sel.on_value_change(_on_sku)
 
             with ui.column().style("gap:3px"):
                 ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
-                inp_desde = ui.input(value=default_desde).props("type=date dense outlined").style("width:140px")
-                def _on_desde(e):
-                    estado["desde"] = e.value
-                inp_desde.on_value_change(_on_desde)
+                ui.input(value=estado["desde"]).props("type=date dense outlined").style(
+                    "width:140px"
+                ).on_value_change(lambda e: estado.update(desde=e.value))
 
             with ui.column().style("gap:3px"):
                 ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
-                inp_hasta = ui.input(value=default_hasta).props("type=date dense outlined").style("width:140px")
-                def _on_hasta(e):
-                    estado["hasta"] = e.value
-                inp_hasta.on_value_change(_on_hasta)
+                ui.input(value=estado["hasta"]).props("type=date dense outlined").style(
+                    "width:140px"
+                ).on_value_change(lambda e: estado.update(hasta=e.value))
 
             with ui.element("button").on(
                 "click", lambda: ui.timer(0.05, _cargar, once=True)
@@ -322,9 +322,9 @@ def build_tab_stock() -> None:
             ):
                 ui.html('<i class="ti ti-refresh" style="font-size:13px;margin-right:4px"></i>Actualizar')
 
-        contenido = ui.column().style("width:100%;gap:0")
-        contenido_ref[0] = contenido
-        with contenido:
-            ui.label("Seleccioná un SKU para ver el historial.").style(
+        cont = ui.element("div").style("width:100%")
+        contenido_ref[0] = cont
+        with cont:
+            ui.label("SeleccionÃ¡ un SKU para ver el historial.").style(
                 "font-size:13px;color:#9ca3af;padding:24px"
             )
