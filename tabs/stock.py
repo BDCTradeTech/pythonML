@@ -311,7 +311,7 @@ def build_tab_stock() -> None:
                 with ui.element("div").style("display:flex;flex-direction:column;gap:4px;min-width:0"):
                     if dias_r:
                         ui.label(
-                            f"Con {metricas.get('stock_actual')} uds. y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
+                            f"Con {metricas.get('stock_actual')} unidades y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
                         ).style(f"font-size:11px;color:{dc};display:block")
                     ui.echart({
                         "grid": {"top": 20, "bottom": 40, "left": 46, "right": 60},
@@ -324,7 +324,7 @@ def build_tab_stock() -> None:
                         "xAxis": {
                             "type": "category",
                             "data": chart_labels,
-                            "axisLabel": {"fontSize": 10, "color": "#9ca3af", "interval": 0},
+                            "axisLabel": {"fontSize": 10, "color": "#9ca3af", "interval": 1},
                             "axisLine": {"lineStyle": {"color": "#e2e8f0"}},
                             "axisTick": {"show": False},
                         },
@@ -385,7 +385,7 @@ def build_tab_stock() -> None:
                         ],
                         "tooltip": {
                             "trigger": "axis",
-                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+x.value+'k':x.value+' uds.';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
+                            "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+x.value+'k':x.value+' unidades';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
