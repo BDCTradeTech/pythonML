@@ -556,9 +556,18 @@ def build_tab_competidores() -> None:
     def _recargar_tablas():
         tablas_ref[0].clear()
         with tablas_ref[0]:
-            with ui.card().classes("w-full p-8 items-center gap-4"):
-                ui.spinner(size="xl")
-                ui.label("Actualizando...").classes("text-xl text-gray-700")
+            with ui.element("div").style(
+                "width:100%;display:flex;flex-direction:column;align-items:center;"
+                "justify-content:center;gap:16px;padding:60px 0"
+            ):
+                ui.html('''
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <i class="ti ti-users" style="font-size:28px;color:#2A7AC7"></i>
+                        <span style="font-size:16px;font-weight:500;color:#185FA5">Competidores</span>
+                    </div>
+                ''')
+                ui.spinner(size="lg", color="#2A7AC7")
+                ui.label("Cargando ranking...").style("font-size:12px;color:#9ca3af")
 
         async def _reload():
             all_data = []
@@ -732,9 +741,18 @@ def build_tab_competidores() -> None:
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
         tablas_ref[0] = tablas
         with tablas:
-            with ui.card().classes("w-full p-8 items-center gap-4"):
-                ui.spinner(size="xl")
-                ui.label("Cargando competidores...").classes("text-xl text-gray-700")
+            with ui.element("div").style(
+                "width:100%;display:flex;flex-direction:column;align-items:center;"
+                "justify-content:center;gap:16px;padding:60px 0"
+            ):
+                ui.html('''
+                    <div style="display:flex;gap:8px;align-items:center">
+                        <i class="ti ti-users" style="font-size:28px;color:#2A7AC7"></i>
+                        <span style="font-size:16px;font-weight:500;color:#185FA5">Competidores</span>
+                    </div>
+                ''')
+                ui.spinner(size="lg", color="#2A7AC7")
+                ui.label("Cargando ranking...").style("font-size:12px;color:#9ca3af")
 
         async def _cargar_tablas():
             all_data = []
