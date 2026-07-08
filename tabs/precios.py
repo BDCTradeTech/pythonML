@@ -1397,16 +1397,8 @@ def _mostrar_tabla_precios(
                                             delivery_labels[str(item_id_p)] = _dlv_lbl
                                         nick_p = comp_p.get("seller_nickname") or f"ID {comp_p.get('seller_id', '')}"
                                         tv_p   = comp_p.get("seller_total_ventas")
-                                        v60_p  = comp_p.get("seller_ventas_60d")
-                                        per_p  = comp_p.get("seller_period_60d") or "60d"
                                         lvl_p  = comp_p.get("seller_level_id") or ""
-                                        # Armar label: nick (Xd ventas hist. | Y últimos 60d)
-                                        partes = []
-                                        if tv_p is not None:
-                                            partes.append(f"{int(tv_p):,} hist.".replace(",", "."))
-                                        if v60_p is not None:
-                                            partes.append(f"{int(v60_p):,} últ.{per_p}".replace(",", "."))
-                                        np_p = f"{nick_p} ({' | '.join(partes)})" if partes else nick_p
+                                        np_p = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
                                         rep_p  = _LVL_P.get(lvl_p, "") if lvl_p else ""
                                         lbl_p  = f"{np_p}  {rep_p}".strip() if rep_p else np_p
                                         if is_ours_p:

@@ -92,6 +92,37 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+def init_competidores_snapshots_db() -> None:
+    """Crea la tabla competidores_snapshots si no existe (snapshots diarios de competidores por catálogo, para ranking por período)."""
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS competidores_snapshots (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id             INTEGER NOT NULL,
+            catalog_product_id  TEXT NOT NULL,
+            seller_id           TEXT NOT NULL,
+            seller_nickname     TEXT,
+            seller_total_ventas INTEGER,
+            seller_level_id     TEXT,
+            seller_power_status TEXT,
+            price               REAL,
+            item_id             TEXT,
+            snapshot_date       DATE NOT NULL,
+            created_at          DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_comp_snapshot
+        ON competidores_snapshots(user_id, catalog_product_id, seller_id, snapshot_date)
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_db() -> None:
     """Crea las tablas si no existen."""
     conn = get_connection()
@@ -694,6 +725,8 @@ def init_db() -> None:
         conn.execute("DROP TABLE sku_catalogos")
         conn.execute("ALTER TABLE sku_catalogos_new RENAME TO sku_catalogos")
         conn.commit()
+
+    init_competidores_snapshots_db()
 
     # Cache de competidores por catálogo ML
     cur.execute(
