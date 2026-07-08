@@ -134,17 +134,19 @@ def _buscar_vendedor(query: str, access_token: str = "") -> Optional[Dict]:
     if item_match:
         item_id = item_match.group(0)
         try:
-            r = requests.get(
-                f"{_ML_API}/items/{item_id}",
-                params={"attributes": "seller_id,title"},
-                headers=headers, timeout=8
-            )
-            if r.status_code == 200:
-                seller_id = str(r.json().get("seller_id") or "")
-                if seller_id:
-                    r2 = requests.get(f"{_ML_API}/users/{seller_id}", headers=headers, timeout=8)
-                    if r2.status_code == 200:
-                        return _parse_user(r2.json())
+            for hdrs in [headers, {}]:  # primero con token, luego sin token
+                r = requests.get(
+                    f"{_ML_API}/items/{item_id}",
+                    params={"attributes": "seller_id,title"},
+                    headers=hdrs, timeout=8
+                )
+                if r.status_code == 200:
+                    seller_id = str(r.json().get("seller_id") or "")
+                    if seller_id:
+                        r2 = requests.get(f"{_ML_API}/users/{seller_id}", headers=hdrs, timeout=8)
+                        if r2.status_code == 200:
+                            return _parse_user(r2.json())
+                    break
         except Exception:
             pass
 
@@ -339,13 +341,6 @@ def build_tab_competidores() -> None:
     uid     = user["id"]
     mis_ids = _get_mis_seller_ids(uid)
 
-    # Token ML para búsqueda autenticada
-    try:
-        from ml_api import get_ml_access_token as _get_tok
-    except ImportError:
-        from db import get_ml_access_token as _get_tok
-    _token = _get_tok(uid) or ""
-
     PERIODOS = [
         ("Historica", None, "acumulado de por vida"),
         ("Anual",     365,  "ultimos 365 dias"),
@@ -383,7 +378,12 @@ def build_tab_competidores() -> None:
         notif_ref[0].set_text("Buscando...")
         resultado_area.clear()
         buscar_ref[0] = None
-        v = await run.io_bound(_buscar_vendedor, query, _token)
+        try:
+            from ml_api import get_ml_access_token as _get_tok_fresh
+        except ImportError:
+            from db import get_ml_access_token as _get_tok_fresh
+        _token_fresh = _get_tok_fresh(uid) or ""
+        v = await run.io_bound(_buscar_vendedor, query, _token_fresh)
         buscar_ref[0] = v
         notif_ref[0].set_text("")
         resultado_area.clear()
