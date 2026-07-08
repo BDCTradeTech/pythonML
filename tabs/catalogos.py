@@ -238,10 +238,13 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[
             if resp.status_code == 200:
                 data = resp.json()
                 rep = data.get("seller_reputation") or {}
+                metrics = rep.get("metrics") or {}
                 return sid, {
-                    "level_id": rep.get("level_id") or "",
+                    "level_id":    rep.get("level_id") or "",
                     "power_status": rep.get("power_seller_status") or "",
                     "total_ventas": (rep.get("transactions") or {}).get("total"),
+                    "ventas_60d":  (metrics.get("sales") or {}).get("completed"),
+                    "period_60d":  (metrics.get("sales") or {}).get("period"),
                 }
         except Exception:
             pass
@@ -255,11 +258,13 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[
 
     for it in items:
         sid = str(it.get("seller_id", ""))
-        it["seller_nickname"] = nicknames.get(sid, f"ID {sid}")
+        it["seller_nickname"]    = nicknames.get(sid, f"ID {sid}")
         rep = rep_cache.get(sid, {})
-        it["seller_level_id"] = rep.get("level_id", "")
+        it["seller_level_id"]    = rep.get("level_id", "")
         it["seller_power_status"] = rep.get("power_status", "")
         it["seller_total_ventas"] = rep.get("total_ventas")
+        it["seller_ventas_60d"]   = rep.get("ventas_60d")
+        it["seller_period_60d"]   = rep.get("period_60d")
     return items
 
 
