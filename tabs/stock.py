@@ -59,6 +59,25 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
         "dias_restantes": dias_restantes,
         "stock_actual": stock_actual,
         "precio_actual": rows[-1].get("price"),
+        # Precio
+        "precio_min":  min((float(r["price"]) for r in rows if r.get("price")), default=None),
+        "precio_max":  max((float(r["price"]) for r in rows if r.get("price")), default=None),
+        "precio_prom": (lambda vals: round(sum(vals)/len(vals)) if vals else None)(
+            [float(r["price"]) for r in rows if r.get("price")]
+        ),
+        # Stock
+        "stock_max":  max((r.get("stock") or 0 for r in rows), default=0),
+        "stock_min":  min((r.get("stock") or 0 for r in rows), default=0),
+        "stock_prom": round(sum(r.get("stock") or 0 for r in rows) / len(rows), 1) if rows else 0,
+        # Dias
+        "dias_con_stock":  sum(1 for r in rows if (r.get("stock") or 0) > 0),
+        "dias_sin_stock":  sum(1 for r in rows if (r.get("stock") or 0) == 0),
+        "n_reposiciones":  sum(1 for i in range(1, len(rows))
+                              if (rows[i].get("stock") or 0) > (rows[i-1].get("stock") or 0)),
+        "vel_max_dia":     max((
+                              max(0, (rows[i-1].get("stock") or 0) - (rows[i].get("stock") or 0))
+                              for i in range(1, len(rows))
+                           ), default=0),
     }
 
 
@@ -100,24 +119,60 @@ def build_tab_stock() -> None:
             vel    = metricas.get("vel_diaria", 0)
             dias_r = metricas.get("dias_restantes")
             dc = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+            _sp = "font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-top:1px;display:block"
 
-            # Stats bar
-            stats = [
-                ("Stock actual",           str(metricas.get("stock_actual", "—")), "#185FA5"),
-                ("Vendidas en periodo",     str(metricas.get("ventas_total", "—")), "#dc2626"),
-                ("Vel. venta promedio",     f"{vel}/d",                                  "#374151"),
-                ("Dias de stock restantes", str(dias_r or "—"),                     dc),
-                ("Precio actual",           _fmt_precio(metricas.get("precio_actual")),  "#374151"),
-            ]
+            # ── Fila 1: KPIs operativos ──────────────────────────────────
             with ui.element("div").style(
-                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px;"
-                "overflow:hidden;margin-bottom:10px;background:var(--color-background-primary)"
+                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-radius:8px 8px 0 0;"
+                "overflow:hidden;background:var(--color-background-primary)"
             ):
-                for i, (lbl, val, color) in enumerate(stats):
+                for i, (lbl, val, color) in enumerate([
+                    ("Stock actual",          str(metricas.get("stock_actual", "\u2014")), "#185FA5"),
+                    ("Vendidas en periodo",    str(metricas.get("ventas_total", "\u2014")), "#dc2626"),
+                    ("Vel. venta promedio",    f"{vel}/d",                                  "#374151"),
+                    ("Dias de stock rest.",    str(dias_r or "\u2014"),                     dc),
+                    ("Precio actual",          _fmt_precio(metricas.get("precio_actual")),  "#374151"),
+                ]):
                     brd = "border-left:0.5px solid #e2e8f0;" if i else ""
-                    with ui.element("div").style(f"flex:1;padding:8px 12px;text-align:center;{brd}"):
-                        ui.label(val).style(f"font-size:16px;font-weight:500;color:{color};display:block;line-height:1.2")
-                        ui.label(lbl).style("font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:0.04em;margin-top:2px;display:block")
+                    with ui.element("div").style(f"flex:1;padding:6px 10px;text-align:center;{brd}"):
+                        ui.label(val).style(f"font-size:14px;font-weight:500;color:{color};display:block;line-height:1.2")
+                        ui.label(lbl).style(_sp)
+
+            # ── Fila 2: analytics agrupados ──────────────────────────────
+            with ui.element("div").style(
+                "display:flex;gap:0;border:0.5px solid #e2e8f0;border-top:0;"
+                "border-radius:0 0 8px 8px;overflow:hidden;margin-bottom:8px;"
+                "background:var(--color-background-secondary)"
+            ):
+                for gi, (glbl, items) in enumerate([
+                    ("PRECIO", [
+                        ("Min",    _fmt_precio(metricas.get("precio_min")),  "#374151"),
+                        ("Max",    _fmt_precio(metricas.get("precio_max")),  "#374151"),
+                        ("Prom.",  _fmt_precio(metricas.get("precio_prom")), "#374151"),
+                    ]),
+                    ("STOCK", [
+                        ("Max",      str(metricas.get("stock_max", 0)),          "#185FA5"),
+                        ("Prom.",    str(metricas.get("stock_prom", 0)),         "#374151"),
+                        ("Vel. max.",f"{metricas.get('vel_max_dia', 0)}/d",      "#dc2626"),
+                    ]),
+                    ("DIAS", [
+                        ("Con stock", str(metricas.get("dias_con_stock", 0)),    "#166534"),
+                        ("Sin stock", str(metricas.get("dias_sin_stock", 0)),    "#dc2626"),
+                        ("Repos.",    str(metricas.get("n_reposiciones", 0)),    "#185FA5"),
+                    ]),
+                ]):
+                    gbrd = "border-left:1px solid #d0e8f8;" if gi else ""
+                    with ui.element("div").style(f"flex:1;{gbrd}"):
+                        ui.label(glbl).style(
+                            "font-size:9px;font-weight:600;color:#185FA5;"
+                            "padding:3px 10px 0;display:block;letter-spacing:0.06em"
+                        )
+                        with ui.element("div").style("display:flex"):
+                            for ii, (lbl, val, color) in enumerate(items):
+                                ibrd = "border-left:0.5px solid #e2e8f0;" if ii else ""
+                                with ui.element("div").style(f"flex:1;padding:2px 8px 5px;text-align:center;{ibrd}"):
+                                    ui.label(val).style(f"font-size:12px;font-weight:500;color:{color};display:block")
+                                    ui.label(lbl).style("font-size:9px;color:#9ca3af;display:block")
 
             # Calcular ventas/repos + vel acumulada
             data = []
@@ -168,7 +223,7 @@ def build_tab_stock() -> None:
                 with ui.element("div").style(
                     "border:0.5px solid #e2e8f0;border-radius:8px 0 0 8px;overflow:hidden;margin-right:10px"
                 ):
-                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 380px)"):
+                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 450px)"):
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
@@ -307,7 +362,7 @@ def build_tab_stock() -> None:
                             "trigger": "axis",
                             "formatter": "function(p){var s=p[0].name+'<br/>';p.forEach(function(x){var v=x.seriesName==='Precio'?'$'+parseInt(x.value).toLocaleString('es-AR'):x.value+' uds.';s+=x.marker+x.seriesName+': <b>'+v+'</b><br/>';});return s;}",
                         },
-                    }).style("height:calc(100vh - 380px);width:100%")
+                    }).style("height:calc(100vh - 450px);width:100%")
 
     async def _cargar():
         sku = estado.get("sku")
@@ -325,8 +380,8 @@ def build_tab_stock() -> None:
         _pintar(rows, met, sku)
 
     # Layout principal
-    with ui.element("div").style("padding:16px 20px 0"):
-        with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px"):
+    with ui.element("div").style("padding:10px 20px 0"):
+        with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px"):
             with ui.column().style("gap:3px"):
                 ui.label("SKU").style("font-size:11px;color:var(--color-text-secondary)")
                 sel = ui.select(options=skus, value=None, label="").props(
