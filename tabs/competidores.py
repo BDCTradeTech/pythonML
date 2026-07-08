@@ -141,7 +141,37 @@ def _buscar_y_agregar_catalogo(catalog_id: str, user_id: int, access_token: str)
             d = r2.json()
             nick = d.get("nickname") or f"ID {sid}"
             _add_seguido(user_id, sid, nick)
-            agregados += 1
+
+            # Guardar snapshot inmediato con ventas históricas
+            rep = d.get("seller_reputation") or {}
+            txn = rep.get("transactions") or {}
+            total_ventas = txn.get("total")
+            if total_ventas:
+                conn = get_connection()
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO competidores_snapshots
+                            (user_id, catalog_product_id, seller_id, seller_nickname,
+                             seller_total_ventas, seller_level_id, seller_power_status,
+                             snapshot_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        user_id,
+                        catalog_id,
+                        sid,
+                        nick,
+                        total_ventas,
+                        rep.get("level_id"),
+                        rep.get("power_seller_status"),
+                        date.today().isoformat(),
+                    ))
+                    conn.commit()
+                finally:
+                    conn.close()
+                agregados += 1
+            else:
+                # Sin ventas históricas, no agregar
+                pass
 
     return {
         "catalog_id": catalog_id,
