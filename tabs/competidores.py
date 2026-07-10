@@ -767,9 +767,9 @@ def _render_comparador(uid: int, mis_ids: set):
                                             _add_comparador(uid, s, n)
                                             comparador_ref[0]["sellers"] = _get_comparador(uid)
                                             ids_actuales.add(s)
+                                            ui.notify(f"{n} agregado", color="positive", timeout=1500)
                                             comparador_ref[0]["_render"]()
                                             _render_lista()
-                                            ui.notify(f"{n} agregado", color="positive", timeout=1500)
 
                                         with ui.element("tr"):
                                             with ui.element("td").style("padding:4px 10px;border-bottom:0.5px solid #f1f5f9;font-size:11px"):
