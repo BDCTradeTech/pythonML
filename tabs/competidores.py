@@ -353,50 +353,43 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
             ORDER BY ventas DESC NULLS LAST
         """, (user_id, user_id)).fetchall()
     else:
-        # Buscar las fechas de snapshots disponibles ordenadas DESC
-        fechas_snap = [r[0] for r in conn.execute("""
-            SELECT DISTINCT snapshot_date FROM competidores_snapshots
-            WHERE user_id=? ORDER BY snapshot_date DESC
-        """, (user_id,)).fetchall()]
-
-        if len(fechas_snap) < 2:
-            # Solo un snapshot, no hay diferencia que calcular
+        fecha_reciente_row = conn.execute(
+            "SELECT MAX(snapshot_date) FROM competidores_snapshots WHERE user_id=?",
+            (user_id,)
+        ).fetchone()
+        fecha_reciente = fecha_reciente_row[0] if fecha_reciente_row else None
+        if not fecha_reciente:
             conn.close()
             return []
 
-        fecha_reciente = fechas_snap[0]  # más reciente
+        from datetime import datetime, timedelta
+        fecha_desde = (
+            datetime.strptime(fecha_reciente, "%Y-%m-%d") - timedelta(days=dias)
+        ).strftime("%Y-%m-%d")
 
-        # Elegir fecha de referencia según el período:
-        # dias=1 → penúltimo snapshot
-        # dias=7 → snapshot de hace ~7 días o el más antiguo disponible
-        # dias=30 → snapshot de hace ~30 días o el más antiguo disponible
-        # dias=365 → snapshot más antiguo disponible
-        fecha_ref = fecha_reciente  # fallback
-        for f in fechas_snap[1:]:
-            fecha_ref = f  # tomar el más antiguo que cumpla
-            from datetime import datetime
-            diff = (datetime.strptime(fecha_reciente, "%Y-%m-%d") - datetime.strptime(f, "%Y-%m-%d")).days
-            if diff >= dias:
-                break  # encontramos uno suficientemente antiguo
-
+        # Fecha de referencia por seller: el último snapshot <= fecha_desde,
+        # o si el seller no tiene historia tan vieja, su snapshot más antiguo.
         rows = conn.execute("""
-            SELECT s1.seller_id, s1.seller_nickname, s1.seller_level_id,
-                   s1.ventas_hoy - COALESCE(s0.ventas_antes, s1.ventas_hoy) AS ventas
-            FROM (
-                SELECT seller_id, seller_nickname, seller_level_id,
-                       MAX(seller_total_ventas) AS ventas_hoy
+            WITH ref AS (
+                SELECT seller_id,
+                       COALESCE(
+                           MAX(CASE WHEN snapshot_date <= ? THEN snapshot_date END),
+                           MIN(snapshot_date)
+                       ) AS ref_date
                 FROM competidores_snapshots
-                WHERE user_id=? AND snapshot_date=?
+                WHERE user_id=?
                 GROUP BY seller_id
-            ) s1
-            LEFT JOIN (
-                SELECT seller_id, MAX(seller_total_ventas) AS ventas_antes
-                FROM competidores_snapshots
-                WHERE user_id=? AND snapshot_date=?
-                GROUP BY seller_id
-            ) s0 ON s0.seller_id = s1.seller_id
+            )
+            SELECT s2.seller_id, s2.seller_nickname, s2.seller_level_id,
+                   MAX(s2.seller_total_ventas) - MAX(s1.seller_total_ventas) AS ventas
+            FROM ref r
+            JOIN competidores_snapshots s1
+                ON s1.user_id=? AND s1.seller_id=r.seller_id AND s1.snapshot_date=r.ref_date
+            JOIN competidores_snapshots s2
+                ON s2.user_id=? AND s2.seller_id=r.seller_id AND s2.snapshot_date=?
+            GROUP BY s2.seller_id
             ORDER BY ventas DESC NULLS LAST
-        """, (user_id, fecha_reciente, user_id, fecha_ref)).fetchall()
+        """, (fecha_desde, user_id, user_id, user_id, fecha_reciente)).fetchall()
     conn.close()
     result = []
     for i, r in enumerate(rows, 1):
