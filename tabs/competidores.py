@@ -4,7 +4,7 @@ Ranking global de competidores con buscador por nickname/URL/ID.
 """
 from __future__ import annotations
 import html, json, re, requests
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 from nicegui import app, run, ui
 from db import get_connection
@@ -475,7 +475,7 @@ def _get_ultima_actualizacion(user_id: int) -> str:
     return "—"
 
 
-def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, filtro_ref: Optional[list] = None):
+def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, filtro_ref: Optional[list] = None, on_click_nick: Optional[callable] = None):
     total   = len(rows_orig)
     mi_puesto = None
     for r in rows_orig:
@@ -527,13 +527,15 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
                         prefijo = "⭐ " if es_mio else (icon+" " if icon else "")
                         nick_full = (r.get("seller_nickname") or f"ID {sid}")
                         url = f"https://www.mercadolibre.com.ar/perfil/{nick_full}"
-                        ui.html(
+                        nick_el = ui.html(
                             f'<a href="{html.escape(url)}" target="_blank" '
                             f'style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
-                            f'display:block;text-decoration:none;'
+                            f'display:block;text-decoration:none;cursor:pointer;'
                             f'color:{"#185FA5" if es_mio else "#374151"};font-weight:{fw}">'
                             f'{html.escape(prefijo)}{nick_html}</a>'
                         )
+                        if on_click_nick:
+                            nick_el.on("click", lambda sid=sid, nick_full=nick_full: on_click_nick(sid, nick_full))
                     with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         if ventas is not None and int(ventas) >= 0:
                             ui.html(f"{int(ventas):,}".replace(",","."))
@@ -584,6 +586,93 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
         if not hay_datos and titulo != "Historica":
             with ui.element("div").style("padding:4px 8px;background:#F8FAFC;border-top:0.5px solid #e2e8f0;font-size:9px;color:#9ca3af;flex-shrink:0"):
                 ui.html("Sin diferencias aun — se acumulan con cada snapshot")
+
+
+def _render_comparador(uid: int, mis_ids: set):
+    """Mini-tabla comparadora de hasta 4 competidores seleccionados."""
+    comparador_ref = [{"sellers": []}]  # lista de {seller_id, nickname}
+
+    with ui.element("div").style(
+        "border:0.5px solid var(--color-border);border-radius:8px;overflow:hidden;"
+        "min-width:440px;flex-shrink:0"
+    ):
+        tabla_ref = [None]
+
+        def _render_tabla_comp():
+            tabla_ref[0].clear()
+            with tabla_ref[0]:
+                sellers = comparador_ref[0]["sellers"]
+                n_vacias = 4 - len(sellers)
+
+                for entry in sellers:
+                    sid = entry["seller_id"]
+                    nick = entry["nickname"]
+                    conn = get_connection()
+                    rows = conn.execute("""
+                        SELECT snapshot_date, MAX(seller_total_ventas) as v
+                        FROM competidores_snapshots
+                        WHERE user_id=? AND seller_id=?
+                        GROUP BY snapshot_date ORDER BY snapshot_date DESC LIMIT 30
+                    """, (uid, sid)).fetchall()
+                    conn.close()
+
+                    hist = rows[0][1] if rows else 0
+                    ref30 = rows[-1][1] if rows else 0
+                    mensual = (hist or 0) - (ref30 or 0) if len(rows) > 1 else 0
+                    ref7 = next((r[1] for r in rows if (
+                        datetime.strptime(rows[0][0], '%Y-%m-%d') -
+                        datetime.strptime(r[0], '%Y-%m-%d')
+                    ).days >= 1), rows[-1][1] if rows else 0)
+                    semanal = (hist or 0) - (ref7 or 0) if len(rows) > 1 else 0
+
+                    def _quitar(s=sid):
+                        comparador_ref[0]["sellers"] = [x for x in comparador_ref[0]["sellers"] if x["seller_id"] != s]
+                        _render_tabla_comp()
+
+                    with ui.element("tr"):
+                        with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);white-space:nowrap"):
+                            with ui.element("span").on("click", _quitar).style(
+                                "display:inline-flex;align-items:center;justify-content:center;"
+                                "width:16px;height:16px;border-radius:3px;border:0.5px solid var(--color-border);"
+                                "cursor:pointer;margin-right:6px;color:var(--color-text-secondary)"
+                            ):
+                                ui.html('<i class="ti ti-x" style="font-size:10px" aria-hidden="true"></i>')
+                            ui.html(
+                                f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
+                                f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none">'
+                                f'{html.escape(nick[:20])}</a>'
+                            )
+                        for val in [hist, mensual, semanal]:
+                            with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:11px"):
+                                ui.html(f"{int(val):,}".replace(",",".") if val else "—")
+
+                for _ in range(n_vacias):
+                    with ui.element("tr"):
+                        with ui.element("td").style(
+                            "padding:4px 8px;border-bottom:0.5px solid var(--color-border);"
+                            "font-size:11px;color:var(--color-text-secondary);font-style:italic"
+                        ):
+                            ui.html("— agregar competidor")
+                        for _ in range(3):
+                            ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
+
+        # Header
+        with ui.element("table").style("width:100%;border-collapse:collapse"):
+            with ui.element("thead"):
+                with ui.element("tr"):
+                    for h, a in [("Vendedor","left"),("Hist.","right"),("Mes","right"),("Sem.","right")]:
+                        with ui.element("th").style(
+                            f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
+                            f"padding:5px 8px;text-align:{a}"
+                        ):
+                            ui.html(h)
+            tbody = ui.element("tbody")
+            tabla_ref[0] = tbody
+            _render_tabla_comp()
+
+        comparador_ref[0]["_render"] = _render_tabla_comp
+
+    return comparador_ref
 
 
 def build_tab_competidores() -> None:
@@ -640,7 +729,7 @@ def build_tab_competidores() -> None:
             tablas_ref[0].clear()
             with tablas_ref[0]:
                 for titulo, dias, nota, rows in all_data:
-                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref)
+                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref, _on_click_nick)
 
         from nicegui import background_tasks
         background_tasks.create(_reload(), name="comp_reload")
@@ -730,6 +819,7 @@ def build_tab_competidores() -> None:
                 else:
                     def _agregar():
                         _add_seguido(uid, sid, nick)
+                        _agregar_a_comparador(sid, nick)
                         ui.notify(f"{nick} agregado al seguimiento", color="positive", timeout=2000)
                         _recargar_tablas()
                         resultado_area.clear()
@@ -744,6 +834,20 @@ def build_tab_competidores() -> None:
         with ui.element("div").style(
             "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px"
         ):
+            comparador_ref = _render_comparador(uid, mis_ids)
+
+            def _agregar_a_comparador(sid: str, nick: str):
+                sellers = comparador_ref[0]["sellers"]
+                if any(s["seller_id"] == sid for s in sellers):
+                    return
+                if len(sellers) >= 4:
+                    return
+                sellers.append({"seller_id": sid, "nickname": nick})
+                comparador_ref[0]["_render"]()
+
+            def _on_click_nick(sid: str, nick: str):
+                _agregar_a_comparador(sid, nick)
+
             # 1. Input catálogo + lupa
             with ui.element("div").style("display:flex;gap:0"):
                 inp = ui.input(placeholder="Link de una publicación de catálogo...").props(
@@ -850,7 +954,7 @@ def build_tab_competidores() -> None:
             tablas.clear()
             with tablas:
                 for titulo, dias, nota, rows in all_data:
-                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref)
+                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref, _on_click_nick)
 
         from nicegui import background_tasks
         background_tasks.create(_cargar_tablas(), name="comp_load")
