@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import html as _html_esc
 import json as _json
+import time as _time
 from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
@@ -22,6 +23,9 @@ from ml_api import (
     ml_get_items_multiget_with_attributes,
 )
 from tabs.cuotas import _cuotas_key, _cuotas_score, _get_promo_data
+
+_promo_cache_promos: Dict[str, Any] = {}
+_PROMO_CACHE_TTL_PROMOS = 900
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -405,28 +409,48 @@ def build_tab_promos(container) -> None:
                     promo_lbl = ui.label(f"Verificando promos 0/{total}...").classes("text-xl text-gray-700")
 
             _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
-            promo_by_id: Dict[str, dict] = {}
-            check_items: Dict[str, dict] = {}
             sid = _state["seller_id"]
 
-            for i, it in enumerate(rep_items):
-                iid = str(it.get("id") or "")
-                if not iid:
-                    continue
-                _grp_items = grps_by_rep.get(iid, [it])
-                _pds = await asyncio.gather(*[
-                    run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), sid)
-                    for _it in _grp_items
-                ])
-                best_pd, best_price, best_item = _empty_pd, None, it
-                for _it2, _pd in zip(_grp_items, _pds):
-                    _pp = _pd.get("price_promo")
-                    if _pp is not None and (best_price is None or float(_pp) < best_price):
-                        best_price, best_pd, best_item = float(_pp), _pd, _it2
-                promo_by_id[iid] = best_pd
-                check_items[iid]  = best_item
+            _cache_key = f"promos_{sid}"
+            _cached = _promo_cache_promos.get(_cache_key)
+            if _cached and (_time.time() - _cached["ts"]) < _PROMO_CACHE_TTL_PROMOS:
+                promo_by_id = _cached["promo_by_id"]
+                check_items = _cached["check_items"]
                 if promo_lbl:
-                    promo_lbl.set_text(f"Verificando promos {i + 1}/{total}...")
+                    promo_lbl.set_text("Datos desde caché...")
+            else:
+                async def _fetch_grupo_promo(it: dict) -> tuple:
+                    iid = str(it.get("id") or "")
+                    if not iid:
+                        return iid, _empty_pd, it
+                    _grp_items = grps_by_rep.get(iid, [it])
+                    _pds = await asyncio.gather(*[
+                        run.io_bound(_get_promo_data, access_token, str(_it.get("id") or ""), sid)
+                        for _it in _grp_items
+                    ])
+                    best_pd, best_price, best_item = _empty_pd, None, it
+                    for _it2, _pd in zip(_grp_items, _pds):
+                        _pp = _pd.get("price_promo")
+                        if _pp is not None and (best_price is None or float(_pp) < best_price):
+                            best_price, best_pd, best_item = float(_pp), _pd, _it2
+                    return iid, best_pd, best_item
+
+                if promo_lbl:
+                    promo_lbl.set_text("Verificando promos...")
+
+                promo_by_id = {}
+                check_items = {}
+                resultados = await asyncio.gather(*[_fetch_grupo_promo(it) for it in rep_items])
+                for iid, best_pd, best_item in resultados:
+                    if iid:
+                        promo_by_id[iid] = best_pd
+                        check_items[iid] = best_item
+
+                _promo_cache_promos[_cache_key] = {
+                    "promo_by_id": promo_by_id,
+                    "check_items": check_items,
+                    "ts": _time.time(),
+                }
 
             _state["promo_by_id"] = promo_by_id
             _state["check_items"] = check_items
