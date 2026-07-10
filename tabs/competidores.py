@@ -3,7 +3,7 @@ tabs/competidores.py
 Ranking global de competidores con buscador por nickname/URL/ID.
 """
 from __future__ import annotations
-import json, re, requests
+import html, json, re, requests, urllib.parse
 from datetime import date, timedelta
 from typing import Dict, List, Optional
 from nicegui import app, run, ui
@@ -509,8 +509,15 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                     with ui.element("td").style(f"padding:2px 4px;text-align:center;border-bottom:0.5px solid #f1f5f9;font-weight:{fw};color:{pc};font-size:10px;white-space:nowrap"):
                         ui.html(str(rank))
                     with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
-                        ui.label(("⭐ " if es_mio else (icon+" " if icon else ""))+nick).style(
-                            "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block"
+                        prefijo = "⭐ " if es_mio else (icon+" " if icon else "")
+                        nick_full = (r.get("seller_nickname") or f"ID {sid}")
+                        url = f"https://www.mercadolibre.com.ar/perfil/{urllib.parse.quote(nick_full, safe='')}"
+                        ui.html(
+                            f'<a href="{html.escape(url)}" target="_blank" '
+                            f'style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
+                            f'display:block;text-decoration:none;'
+                            f'color:{"#185FA5" if es_mio else "#374151"};font-weight:{fw}">'
+                            f'{html.escape(prefijo + nick[:28])}</a>'
                         )
                     with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         if ventas is not None and int(ventas) >= 0:
