@@ -22,6 +22,7 @@ from db import get_connection, get_cotizador_param
 from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
+    ml_get_fixed_fee,
     ml_get_item_sale_price_full,
     ml_get_items_multiget_with_attributes,
     ml_get_orders,
@@ -275,6 +276,8 @@ def _construir_filas(orders: List[Dict], maps: Dict[str, Dict[str, Any]]) -> Lis
                 "unit_price": unit_price,
                 "seller_sku": sku,
                 "order_id": str(ord_item.get("id", "") or ""),
+                "category_id": obj.get("category_id") or "",
+                "listing_type_id": str(it.get("listing_type_id") or ""),
                 "logistic_type": "",
                 "shipping_id": str((ord_item.get("shipping") or {}).get("id") or ""),
                 "payment_id": _payment_id,
@@ -289,7 +292,7 @@ def _construir_filas(orders: List[Dict], maps: Dict[str, Dict[str, Any]]) -> Lis
 # Cálculo de ganancia (copiado verbatim de _compute en _enriquecer_ventas_async)
 # ---------------------------------------------------------------------------
 
-def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, params: Dict[str, Any], costos_sku: Dict[str, Dict[str, Any]], user_id: int) -> Optional[Dict]:
+def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, params: Dict[str, Any], costos_sku: Dict[str, Dict[str, Any]], user_id: int, access_token: str, fixed_fee_cache: Dict[tuple, float]) -> Optional[Dict]:
     charges = pay_data.get("charges_details") or []
     is_rejected = pay_data.get("status") == "rejected"
     is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
@@ -300,6 +303,15 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     unit_price = float(v.get("unit_price") or 0)
     cantidad = int(v.get("cantidad") or 1)
     total_price = unit_price * cantidad
+    category_id = str(v.get("category_id") or "")
+    listing_type_id = str(v.get("listing_type_id") or "")
+    _fee_key = (round(unit_price), category_id, listing_type_id)
+    if _fee_key not in fixed_fee_cache:
+        fixed_fee_cache[_fee_key] = (
+            ml_get_fixed_fee(access_token, unit_price, category_id, listing_type_id)
+            if (category_id and listing_type_id) else 0.0
+        )
+    costo_fijo = fixed_fee_cache[_fee_key]
     sku = (v.get("seller_sku") or "").removeprefix("SKU ").strip()
     prod = costos_sku.get(sku) if sku else None
     costo_usd = float((prod or {}).get("costo_usd") or 0)
@@ -337,7 +349,7 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
     gan_pesos = gan_vta_pct = gan_cos_pct = None
     if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
-        gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
+        gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
     return {
@@ -346,6 +358,7 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
         "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
         "envio_real": envio_real, "comprador_envio": comprador_envio,
         "logistic_type": logistic_type, "net_rcv": net_rcv,
+        "costo_fijo": costo_fijo,
         "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
         "_skip_overwrite": is_cancelled or has_refund_v,
     }
@@ -380,7 +393,8 @@ def _save_batch(db_rows: List[Dict]) -> None:
         for rd in db_rows:
             cols = ("payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                    "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas")
+                    "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
+                    "costo_fijo")
             vals = (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                      rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                      rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
@@ -388,9 +402,9 @@ def _save_batch(db_rows: List[Dict]) -> None:
                      rd.get("envio_real"), rd.get("comprador_envio"),
                      rd.get("logistic_type"), rd.get("net_rcv"),
                      rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
-                     rd.get("cuotas"))
+                     rd.get("cuotas"), rd.get("costo_fijo"))
             verb = "INSERT OR IGNORE" if rd.get("_skip_overwrite") else "INSERT OR REPLACE"
-            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
             if rd.get("_skip_overwrite") and rd.get("pay_status"):
                 cur.execute(
                     "UPDATE ventas_datos SET pay_status=? WHERE payment_id=? AND user_id=? AND pay_status IS NULL",
@@ -409,9 +423,9 @@ def _save_placeholders(rows: List[Dict]) -> None:
         cur = conn.cursor()
         for rd in rows:
             cur.execute(
-                "INSERT OR IGNORE INTO ventas_datos (payment_id, user_id, order_id, fetched_at, order_date, pay_status) "
-                "VALUES (?,?,?,?,?,?)",
-                (rd["payment_id"], rd["user_id"], rd.get("order_id"), rd.get("fetched_at"), rd.get("order_date"), rd.get("pay_status")),
+                "INSERT OR IGNORE INTO ventas_datos (payment_id, user_id, order_id, fetched_at, order_date, pay_status, costo_fijo) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (rd["payment_id"], rd["user_id"], rd.get("order_id"), rd.get("fetched_at"), rd.get("order_date"), rd.get("pay_status"), 0.0),
             )
             if rd.get("pay_status"):
                 cur.execute(
@@ -434,8 +448,8 @@ def _insert_placeholders_bulk(rows: List[Dict], user_id: int) -> None:
         for v in rows_ok:
             order_date = v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None
             cur.execute(
-                "INSERT OR IGNORE INTO ventas_datos (payment_id, user_id, order_id, fetched_at, order_date) VALUES (?,?,?,?,?)",
-                (v["payment_id"], user_id, v.get("order_id"), now_str, order_date),
+                "INSERT OR IGNORE INTO ventas_datos (payment_id, user_id, order_id, fetched_at, order_date, costo_fijo) VALUES (?,?,?,?,?,?)",
+                (v["payment_id"], user_id, v.get("order_id"), now_str, order_date, 0.0),
             )
         conn.commit()
     finally:
@@ -497,6 +511,7 @@ def backfill_ventas_periodo(
     all_skus = [s for s in maps["sku"].values() if s]
     params = _cargar_params_cotizador(user_id)
     costos_sku = _cargar_costos_sku(user_id, all_skus)
+    _fixed_fee_cache: Dict[tuple, float] = {}
 
     conn = get_connection()
     try:
@@ -575,7 +590,7 @@ def backfill_ventas_periodo(
                     "pay_status": "cancelled" if "cancel" in sr else None,
                 })
 
-            calc = _compute_venta(pay_data, v, zip_code_v, bonif_flex_b, params, costos_sku, user_id)
+            calc = _compute_venta(pay_data, v, zip_code_v, bonif_flex_b, params, costos_sku, user_id, access_token, _fixed_fee_cache)
             if not calc:
                 sr = (v.get("status_raw") or "").lower()
                 return ("placeholder", {
