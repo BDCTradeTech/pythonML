@@ -1053,7 +1053,9 @@ def build_tab_competidores() -> None:
                         color="positive", timeout=4000
                     )
                     _recargar_tablas()
-                ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
+                from datetime import datetime, timedelta
+                ahora = (datetime.utcnow() - timedelta(hours=3)).strftime("%d/%m/%y — %H:%M")
+                ultima_act_ref[0].set_text(f"Últ. act: {ahora}")
 
             # 4. Boton + fecha
             with ui.element("div").style(
