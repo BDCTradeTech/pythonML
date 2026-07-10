@@ -376,9 +376,11 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
     conn = get_connection()
     sellers = conn.execute("""
         SELECT DISTINCT seller_id, seller_nickname
-        FROM competidores_snapshots
-        WHERE user_id=?
-    """, (user_id,)).fetchall()
+        FROM competidores_snapshots WHERE user_id=?
+        UNION
+        SELECT seller_id, seller_nickname
+        FROM competidores_seguidos WHERE user_id=?
+    """, (user_id, user_id)).fetchall()
     conn.close()
 
     total = len(sellers)
@@ -425,7 +427,8 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                             seller_total_ventas=excluded.seller_total_ventas,
                             seller_nickname=excluded.seller_nickname,
                             seller_level_id=excluded.seller_level_id,
-                            seller_power_status=excluded.seller_power_status
+                            seller_power_status=excluded.seller_power_status,
+                            created_at=CURRENT_TIMESTAMP
                     """, (
                         user_id, sid, nick_nuevo, total_ventas,
                         rep.get("level_id") or "",
