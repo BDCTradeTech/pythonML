@@ -738,27 +738,37 @@ def build_tab_competidores() -> None:
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
-        # Fila 1: caja con input+lupa (izquierda) | boton Actualizar ventas + fecha, sin caja (derecha)
-        with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap;width:100%;margin-bottom:8px"):
-            with ui.element("div").style(
-                "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
-                "border-radius:8px;padding:8px 12px;flex-shrink:0;width:400px;max-width:40%"
-            ):
-                with ui.element("div").style("display:flex;gap:0"):
-                    inp = ui.input(
-                        placeholder="Link de una publicación de catálogo..."
-                    ).props("dense outlined").style(
-                        "flex:1;font-size:12px;border-radius:4px 0 0 4px"
-                    )
-                    with ui.element("button").on(
-                        "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
-                    ).style(
-                        "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
-                        "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
-                    ):
-                        ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
+        # Fila unica: input catalogo+lupa | buscador competidor | spacer | boton actualizar + fecha
+        filtro_ref: list = [{"texto": ""}]
 
-            ui.element("div").style("flex:1")  # spacer: empuja el boton a la derecha
+        with ui.element("div").style(
+            "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px"
+        ):
+            # 1. Input catálogo + lupa
+            with ui.element("div").style("display:flex;gap:0"):
+                inp = ui.input(placeholder="Link de una publicación de catálogo...").props(
+                    "dense outlined"
+                ).style("width:320px;font-size:12px;border-radius:4px 0 0 4px")
+                with ui.element("button").on(
+                    "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
+                ).style(
+                    "height:36px;padding:0 14px;background:#2A7AC7;color:#fff;"
+                    "border:none;border-radius:0 4px 4px 0;font-size:12px;cursor:pointer;flex-shrink:0"
+                ):
+                    ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
+
+            # 2. Input buscador de competidor
+            filtro_input = ui.input(placeholder="Buscar competidor en las tablas...").props(
+                "dense outlined clearable"
+            ).style("width:260px;font-size:12px")
+
+            def _on_filtro(e):
+                filtro_ref[0]["texto"] = (e.value or "").strip()
+                _recargar_tablas()
+            filtro_input.on_value_change(_on_filtro)
+
+            # 3. Spacer para empujar el boton a la derecha
+            ui.element("div").style("flex:1")
 
             async def _lanzar_actualizacion():
                 cancelar_ref = [False]
@@ -792,6 +802,7 @@ def build_tab_competidores() -> None:
                     _recargar_tablas()
                 ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
 
+            # 4. Boton + fecha
             with ui.element("div").style(
                 "display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0"
             ):
@@ -813,17 +824,6 @@ def build_tab_competidores() -> None:
         notif = ui.label("").style("font-size:10px;color:#9ca3af")
         notif_ref[0] = notif
         resultado_area = ui.element("div").style("margin-top:4px")
-
-        # Fila 2: buscador de competidor dentro de las 5 tablas
-        filtro_ref: list = [{"texto": ""}]
-        filtro_input = ui.input(placeholder="Buscar competidor en las tablas...").props(
-            "dense outlined clearable"
-        ).style("width:300px;font-size:12px;margin:4px 0 8px")
-
-        def _on_filtro(e):
-            filtro_ref[0]["texto"] = (e.value or "").strip()
-            _recargar_tablas()
-        filtro_input.on_value_change(_on_filtro)
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
