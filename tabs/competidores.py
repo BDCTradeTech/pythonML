@@ -638,12 +638,13 @@ def _render_comparador(uid: int, mis_ids: set):
 
         def _render_tabla_comp():
             tabla_ref[0].clear()
-            sellers = comparador_ref[0]["sellers"]
+            sellers = _get_comparador(uid)
+            comparador_ref[0]["sellers"] = sellers
 
             # Usar la misma lógica que las 5 tablas principales
-            ranking_hist   = {r["seller_id"]: r for r in _get_ranking_global(uid, None)}
-            ranking_seman  = {r["seller_id"]: r for r in _get_ranking_global(uid, 7)}
-            ranking_diaria = {r["seller_id"]: r for r in _get_ranking_global(uid, 1)}
+            ranking_hist   = {str(r["seller_id"]): r for r in _get_ranking_global(uid, None)}
+            ranking_seman  = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 7)}
+            ranking_diaria = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 1)}
 
             with tabla_ref[0]:
                 n_vacias = 4 - len(sellers)
@@ -651,13 +652,12 @@ def _render_comparador(uid: int, mis_ids: set):
                 for entry in sellers:
                     sid  = entry["seller_id"]
                     nick = entry["nickname"]
-                    hist   = ranking_hist.get(sid, {}).get("ventas") or 0
-                    seman  = ranking_seman.get(sid, {}).get("ventas") or 0
-                    diaria = ranking_diaria.get(sid, {}).get("ventas") or 0
+                    hist   = (ranking_hist.get(sid)   or {}).get("ventas") or 0
+                    seman  = (ranking_seman.get(sid)  or {}).get("ventas") or 0
+                    diaria = (ranking_diaria.get(sid) or {}).get("ventas") or 0
 
                     def _quitar(s=sid):
                         _remove_comparador(uid, s)
-                        comparador_ref[0]["sellers"] = _get_comparador(uid)
                         _render_tabla_comp()
 
                     with ui.element("tr"):
