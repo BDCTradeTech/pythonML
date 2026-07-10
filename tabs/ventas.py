@@ -17,6 +17,7 @@ from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
     get_ml_session,
+    ml_get_fixed_fee,
     ml_get_item_sale_price_full,
     ml_get_items_multiget_with_attributes,
     ml_get_orders,
@@ -362,9 +363,11 @@ def build_tab_ventas(container) -> None:
             _iid = str(row.get("item_id") or "")
             raw_order = next((o for o in (all_orders_ref.get("orders") or []) if str(o.get("id", "")) == _oid), None)
 
-            payment_id  = None
-            shipping_id = None
-            thumb_url   = ""
+            payment_id      = None
+            shipping_id     = None
+            thumb_url       = ""
+            category_id     = ""
+            listing_type_id = ""
             if raw_order:
                 pays = raw_order.get("payments") or []
                 _p_ap = next((p for p in pays if str(p.get("status", "")).lower() == "approved"), None) or (pays[0] if pays else None)
@@ -379,6 +382,8 @@ def build_tab_ventas(container) -> None:
                     _iidd = str(_obj.get("id") or _oit.get("item_id") or "").strip() if isinstance(_obj, dict) else ""
                     if _iidd == _iid:
                         thumb_url = (_obj.get("thumbnail") or _obj.get("picture_url") or "") if isinstance(_obj, dict) else ""
+                        category_id = str(_obj.get("category_id") or "") if isinstance(_obj, dict) else ""
+                        listing_type_id = str(_oit.get("listing_type_id") or "")
                         break
 
             d = ui.dialog()
@@ -432,6 +437,9 @@ def build_tab_ventas(container) -> None:
                 async def _noop():
                     return {}
 
+                async def _noop0():
+                    return 0.0
+
                 _cached = ventas_cache_ref.get(payment_id or "")
                 ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
 
@@ -449,6 +457,7 @@ def build_tab_ventas(container) -> None:
                     deb_cred    = float(_cached.get("deb_cred") or 0)
                     iibb_ret    = float(_cached.get("iibb_ret") or 0)
                     sirtac      = float(_cached.get("sirtac") or 0)
+                    fixed_fee   = float(_cached.get("costo_fijo") or 0)
                     net_rcv     = _cached.get("net_rcv")
                     envio_real      = float(_cached.get("envio_real") or 0)
                     comprador_envio = float(_cached.get("comprador_envio") or 0)
@@ -472,7 +481,7 @@ def build_tab_ventas(container) -> None:
                     iva_total   = iva_venta - iva_meli - iva_impor
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                     for _vr in ventas_raw:
@@ -485,7 +494,8 @@ def build_tab_ventas(container) -> None:
                     item_coro       = run.io_bound(_get_item,       access_token, _iid)        if _iid        else _noop()
                     ship_coro       = run.io_bound(_get_ship,        access_token, shipping_id) if shipping_id else _noop()
                     ship_costs_coro = run.io_bound(_get_ship_costs,  access_token, shipping_id) if shipping_id else _noop()
-                    pay_data, item_data, ship_data, ship_costs_data = await asyncio.gather(pay_coro, item_coro, ship_coro, ship_costs_coro)
+                    fee_coro        = run.io_bound(ml_get_fixed_fee, access_token, unit_price, category_id, listing_type_id) if (category_id and listing_type_id) else _noop0()
+                    pay_data, item_data, ship_data, ship_costs_data, fixed_fee = await asyncio.gather(pay_coro, item_coro, ship_coro, ship_costs_coro, fee_coro)
                     zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
 
                     is_rejected = pay_data.get("status") == "rejected"
@@ -528,7 +538,7 @@ def build_tab_ventas(container) -> None:
                     envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
 
@@ -546,6 +556,7 @@ def build_tab_ventas(container) -> None:
                             "order_date": row["dt"].strftime("%Y-%m-%d") if row.get("dt") else None,
                             "cuotas": cuotas_val,
                             "costo_pesos": total_costo if (not is_rejected and has_calc) else None,
+                            "costo_fijo": fixed_fee,
                         }
                         ventas_cache_ref[payment_id] = _ce
                         for _vr in ventas_raw:
@@ -564,8 +575,8 @@ def build_tab_ventas(container) -> None:
                                     "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                     "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                    "costo_pesos) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    "costo_pesos, costo_fijo) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                     (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
                                      _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
                                      _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
@@ -573,7 +584,7 @@ def build_tab_ventas(container) -> None:
                                      _ce.get("envio_real"), _ce.get("comprador_envio"),
                                      _ce.get("logistic_type"), _ce.get("net_rcv"),
                                      _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date"),
-                                     _ce.get("cuotas"), _ce.get("costo_pesos")),
+                                     _ce.get("cuotas"), _ce.get("costo_pesos"), _ce.get("costo_fijo")),
                                 )
                                 conn.commit()
                             finally:
@@ -630,7 +641,7 @@ def build_tab_ventas(container) -> None:
                             _envio_e      = 0.0 if unit_price < _ml_env_grat else _ml_env
                             _gan_pesos_e = _gan_vta_pct_e = _gan_cos_pct_e = None
                             if has_calc:
-                                _gan_pesos_e   = total_price - _meli_fee_e - _cuotas_fee_e - _iva_total_e - _deb_cred_e - _iibb_perc_e - _envio_e - total_costo
+                                _gan_pesos_e   = total_price - _meli_fee_e - _cuotas_fee_e - _iva_total_e - _deb_cred_e - _iibb_perc_e - _envio_e - total_costo - fixed_fee
                                 _gan_vta_pct_e = (_gan_pesos_e / total_price * 100) if total_price > 0 else 0.0
                                 _gan_cos_pct_e = (_gan_pesos_e / total_costo * 100) if total_costo > 0 else 0.0
                             with ui.column().classes("w-full gap-0"):
@@ -643,6 +654,12 @@ def build_tab_ventas(container) -> None:
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _lbl("Comisión ML", False)
                                     ui.label(fmt_moneda(_meli_fee_e)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Costo fijo", True)
+                                    ui.label(fmt_moneda(fixed_fee)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Total cargo ML", False)
+                                    ui.label(fmt_moneda(_meli_fee_e + fixed_fee)).classes("text-sm text-negative font-medium")
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _cf_pct_e = f" ({_cuotas_fee_e / total_price * 100:.1f}%)".replace(".", ",") if _cuotas_fee_e and total_price else ""
                                     _lbl(f"Costo Cuotas{_cf_pct_e}", False)
@@ -707,6 +724,13 @@ def build_tab_ventas(container) -> None:
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _lbl("Comisión ML", True)
                                     ui.label(fmt_moneda(meli_fee)).classes("text-sm text-negative")
+                                # 2b. Costo fijo
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Costo fijo", True)
+                                    ui.label(fmt_moneda(fixed_fee)).classes("text-sm text-negative")
+                                with ui.row().classes("w-full justify-between items-center py-0.5"):
+                                    _lbl("Total cargo ML", True)
+                                    ui.label(fmt_moneda(meli_fee + fixed_fee)).classes("text-sm text-negative font-medium")
                                 # 3. Costo Cuotas (siempre)
                                 with ui.row().classes("w-full justify-between items-center py-0.5"):
                                     _cf_pct = f" ({cuotas_fee / total_price * 100:.1f}%)".replace(".", ",") if cuotas_fee and total_price else ""

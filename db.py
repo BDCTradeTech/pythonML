@@ -533,6 +533,7 @@ def init_db() -> None:
             pay_status    TEXT,
             cuotas        TEXT,
             costo_pesos   REAL,
+            costo_fijo    REAL,
             PRIMARY KEY (payment_id, user_id)
         )
         """
@@ -560,6 +561,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE ventas_datos ADD COLUMN cuotas TEXT")
     if "costo_pesos" not in vd_cols:
         cur.execute("ALTER TABLE ventas_datos ADD COLUMN costo_pesos REAL")
+    if "costo_fijo" not in vd_cols:
+        cur.execute("ALTER TABLE ventas_datos ADD COLUMN costo_fijo REAL")
 
     # Migración: agregar columna despachante a invoice_extra si no existe (tablas antiguas)
     cur.execute("PRAGMA table_info(invoice_extra)")

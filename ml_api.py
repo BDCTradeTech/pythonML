@@ -511,6 +511,34 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
     return None
 
 
+def ml_get_fixed_fee(access_token: Optional[str], price: float, category_id: str, listing_type_id: str) -> float:
+    """Obtiene el costo fijo por unidad vendida (sale_fee_details.fixed_fee) de
+    GET /sites/MLA/listing_prices, la calculadora de costos de venta de ML."""
+    if not access_token or not category_id or not listing_type_id or not price:
+        return 0.0
+    try:
+        resp = get_ml_session().get(
+            "https://api.mercadolibre.com/sites/MLA/listing_prices",
+            params={
+                "price": price,
+                "category_id": category_id,
+                "listing_type_id": listing_type_id,
+                "currency_id": "ARS",
+            },
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        if isinstance(data, dict):
+            return float((data.get("sale_fee_details") or {}).get("fixed_fee") or 0)
+    except Exception:
+        pass
+    return 0.0
+
+
 def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> List[Dict[str, Any]]:
     """GET /seller-promotions/items/{item_id}?app_version=v2 — todas las promos del ítem (todos los status)."""
     if not access_token or not str(item_id).strip():
