@@ -570,7 +570,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").classes("comp-tabla-scroll").style("overflow-y:auto;max-height:calc(100vh - 340px)"):
+        with ui.element("div").classes("comp-tabla-scroll").style("overflow-y:auto;max-height:calc(100vh - 420px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
@@ -656,11 +656,131 @@ def _render_comparador(uid: int, mis_ids: set):
                         for _ in range(3):
                             ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
 
+        def _abrir_popup_competidores():
+            sellers_actual = comparador_ref[0]["sellers"]
+            ids_actuales = {s["seller_id"] for s in sellers_actual}
+
+            with ui.dialog() as dlg:
+                dlg.props("maximized=false persistent=false")
+                with ui.card().style("width:460px;max-height:500px;padding:0;overflow:hidden;display:flex;flex-direction:column"):
+                    # Header
+                    with ui.element("div").style("background:#2A7AC7;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0"):
+                        with ui.element("div"):
+                            ui.label("Agregar competidor").style("font-size:13px;font-weight:500;color:#fff;display:block")
+                            n_slots = 4 - len(sellers_actual)
+                            ui.label(f"{len(sellers_actual)} de 4 slots usados · {n_slots} disponibles").style("font-size:9px;color:rgba(255,255,255,.7);display:block")
+                        ui.button(icon="close", on_click=dlg.close).props("flat dense").style("color:#fff")
+
+                    # Buscador
+                    filtro_popup = {"texto": ""}
+                    lista_ref = [None]
+
+                    with ui.element("div").style("padding:8px 12px;border-bottom:0.5px solid #e2e8f0;flex-shrink:0"):
+                        inp_popup = ui.input(placeholder="Buscar por nombre...").props("dense outlined clearable").style("width:100%;font-size:12px")
+
+                    # Cargar todos los vendedores de la DB ordenados por ventas
+                    conn = get_connection()
+                    todos = conn.execute("""
+                        SELECT seller_id, seller_nickname,
+                               MAX(seller_total_ventas) as hist
+                        FROM competidores_snapshots
+                        WHERE user_id=?
+                        GROUP BY seller_id
+                        ORDER BY hist DESC NULLS LAST
+                    """, (uid,)).fetchall()
+                    conn.close()
+
+                    vendedores_data = []
+                    for t in todos:
+                        sid, nick, hist = str(t[0]), t[1] or "", t[2] or 0
+                        vendedores_data.append({"seller_id": sid, "nickname": nick, "hist": hist})
+
+                    def _render_lista():
+                        lista_ref[0].clear()
+                        texto = filtro_popup["texto"].lower()
+                        with lista_ref[0]:
+                            with ui.element("table").style("width:100%;border-collapse:collapse"):
+                                with ui.element("thead"):
+                                    with ui.element("tr"):
+                                        for h, a in [("Vendedor","left"),("Hist.","right"),("Sem.","right")]:
+                                            with ui.element("th").style(
+                                                f"padding:4px 10px;background:var(--color-background-secondary);"
+                                                f"font-size:9px;font-weight:600;color:#185FA5;"
+                                                f"text-align:{a};position:sticky;top:0;"
+                                                f"border-bottom:0.5px solid #e2e8f0"
+                                            ):
+                                                ui.html(h)
+                                        with ui.element("th").style(
+                                            "padding:4px 6px;background:var(--color-background-secondary);"
+                                            "width:36px;position:sticky;top:0;border-bottom:0.5px solid #e2e8f0"
+                                        ):
+                                            ui.html("")
+                                with ui.element("tbody"):
+                                    for v in vendedores_data:
+                                        if texto and texto not in v["nickname"].lower():
+                                            continue
+                                        sid = v["seller_id"]
+                                        ya_agregado = sid in ids_actuales
+
+                                        def _agregar(s=sid, n=v["nickname"]):
+                                            if len(comparador_ref[0]["sellers"]) >= 4:
+                                                ui.notify("Máximo 4 competidores", color="warning", timeout=2000)
+                                                return
+                                            comparador_ref[0]["sellers"].append({"seller_id": s, "nickname": n})
+                                            ids_actuales.add(s)
+                                            comparador_ref[0]["_render"]()
+                                            _render_lista()
+                                            ui.notify(f"{n} agregado", color="positive", timeout=1500)
+
+                                        with ui.element("tr"):
+                                            with ui.element("td").style("padding:4px 10px;border-bottom:0.5px solid #f1f5f9;font-size:11px"):
+                                                ui.label(v["nickname"][:30]).style("display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap")
+                                            with ui.element("td").style("padding:4px 10px;border-bottom:0.5px solid #f1f5f9;font-size:11px;text-align:right"):
+                                                ui.html(f"{int(v['hist']):,}".replace(",",".") if v['hist'] else "—")
+                                            with ui.element("td").style("padding:4px 10px;border-bottom:0.5px solid #f1f5f9;font-size:11px;text-align:right"):
+                                                ui.html("—")
+                                            with ui.element("td").style("padding:4px 6px;border-bottom:0.5px solid #f1f5f9;text-align:center"):
+                                                if ya_agregado:
+                                                    with ui.element("span").style(
+                                                        "display:inline-flex;align-items:center;justify-content:center;"
+                                                        "width:22px;height:22px;border-radius:4px;"
+                                                        "background:#DCFCE7;color:#166534;border:0.5px solid #86EFAC"
+                                                    ):
+                                                        ui.html('<i class="ti ti-check" style="font-size:11px" aria-hidden="true"></i>')
+                                                else:
+                                                    with ui.element("span").on("click", _agregar).style(
+                                                        "display:inline-flex;align-items:center;justify-content:center;"
+                                                        "width:22px;height:22px;border-radius:4px;"
+                                                        "background:#EEF6FD;color:#185FA5;border:0.5px solid #85B7EB;cursor:pointer"
+                                                    ):
+                                                        ui.html('<i class="ti ti-plus" style="font-size:11px" aria-hidden="true"></i>')
+
+                    def _on_filtro_popup(e):
+                        filtro_popup["texto"] = (e.value or "").strip()
+                        _render_lista()
+                    inp_popup.on_value_change(_on_filtro_popup)
+
+                    with ui.element("div").style("overflow-y:auto;flex:1"):
+                        lista = ui.element("div")
+                        lista_ref[0] = lista
+                        _render_lista()
+
+            dlg.open()
+
         # Header
         with ui.element("table").style("width:100%;border-collapse:collapse"):
             with ui.element("thead"):
                 with ui.element("tr"):
-                    for h, a in [("Vendedor","left"),("Hist.","right"),("Mes","right"),("Sem.","right")]:
+                    with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:5px 8px;text-align:left"):
+                        with ui.row().style("gap:6px;align-items:center"):
+                            ui.html("Vendedor")
+                            with ui.element("span").style(
+                                "display:inline-flex;align-items:center;justify-content:center;"
+                                "width:16px;height:16px;border-radius:3px;background:rgba(255,255,255,.2);"
+                                "cursor:pointer"
+                            ).on("click", lambda: _abrir_popup_competidores()):
+                                ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
+                    for h, a in [("Hist.","right"),("Mes","right"),("Sem.","right")]:
                         with ui.element("th").style(
                             f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
                             f"padding:5px 8px;text-align:{a}"
