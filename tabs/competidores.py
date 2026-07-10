@@ -298,7 +298,7 @@ def _parse_user(data: Dict) -> Dict:
         "nickname":      data.get("nickname") or "",
         "level_id":      rep.get("level_id") or "",
         "power_status":  rep.get("power_seller_status") or "",
-        "total_ventas":  txn.get("total"),
+        "total_ventas":  txn.get("completed"),
         "registration":  (data.get("registration_date") or "")[:10],
     }
 
