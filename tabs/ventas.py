@@ -1415,6 +1415,7 @@ def build_tab_ventas(container) -> None:
             _uid = user["id"]
             p = params_ventas_ref
             total = len(rows_to_enrich)
+            _fixed_fee_cache: Dict[tuple, float] = {}
 
             def _fetch_one(pid: str) -> Dict:
                 try:
@@ -1463,6 +1464,15 @@ def build_tab_ventas(container) -> None:
                 unit_price  = float(v.get("unit_price") or 0)
                 cantidad    = int(v.get("cantidad") or 1)
                 total_price = unit_price * cantidad
+                category_id = str(v.get("category_id") or "")
+                listing_type_id = str(v.get("listing_type_id") or "")
+                _fee_key = (round(unit_price), category_id, listing_type_id)
+                if _fee_key not in _fixed_fee_cache:
+                    _fixed_fee_cache[_fee_key] = (
+                        ml_get_fixed_fee(access_token, unit_price, category_id, listing_type_id)
+                        if (category_id and listing_type_id) else 0.0
+                    )
+                costo_fijo = _fixed_fee_cache[_fee_key]
                 sku = (v.get("seller_sku") or "").removeprefix("SKU ").strip()
                 prod = costos_sku_ref.get(sku) if sku else None
                 costo_usd = float((prod or {}).get("costo_usd") or 0)
@@ -1500,7 +1510,7 @@ def build_tab_ventas(container) -> None:
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
-                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex
+                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                 return {
@@ -1511,6 +1521,7 @@ def build_tab_ventas(container) -> None:
                     "logistic_type": logistic_type, "net_rcv": net_rcv,
                     "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
                     "costo_pesos": total_costo if (not is_rejected and not is_cancelled and not has_refund_v and has_calc) else None,
+                    "costo_fijo": costo_fijo,
                     "_skip_overwrite": is_cancelled or has_refund_v,
                 }
 
@@ -1525,8 +1536,8 @@ def build_tab_ventas(container) -> None:
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                 "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                "costo_pesos) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "costo_pesos, costo_fijo) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
@@ -1534,7 +1545,7 @@ def build_tab_ventas(container) -> None:
                                  rd.get("envio_real"), rd.get("comprador_envio"),
                                  rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
-                                 rd.get("cuotas"), rd.get("costo_pesos")),
+                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo")),
                             )
                             if rd.get("pay_status"):
                                 cur.execute(
@@ -1547,8 +1558,8 @@ def build_tab_ventas(container) -> None:
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                 "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                "costo_pesos) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "costo_pesos, costo_fijo) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
@@ -1556,7 +1567,7 @@ def build_tab_ventas(container) -> None:
                                  rd.get("envio_real"), rd.get("comprador_envio"),
                                  rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
-                                 rd.get("cuotas"), rd.get("costo_pesos")),
+                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo")),
                             )
                     conn.commit()
                 finally:
@@ -1571,10 +1582,10 @@ def build_tab_ventas(container) -> None:
                     for rd in rows:
                         cur.execute(
                             "INSERT OR IGNORE INTO ventas_datos "
-                            "(payment_id, user_id, order_id, fetched_at, order_date, pay_status) "
-                            "VALUES (?,?,?,?,?,?)",
+                            "(payment_id, user_id, order_id, fetched_at, order_date, pay_status, costo_fijo) "
+                            "VALUES (?,?,?,?,?,?,?)",
                             (rd["payment_id"], rd["user_id"], rd.get("order_id"),
-                             rd.get("fetched_at"), rd.get("order_date"), rd.get("pay_status")),
+                             rd.get("fetched_at"), rd.get("order_date"), rd.get("pay_status"), 0.0),
                         )
                         if rd.get("pay_status"):
                             cur.execute(
@@ -2060,6 +2071,8 @@ def build_tab_ventas(container) -> None:
                         "status_raw": status_raw,
                         "agrupar_key": agrupar_key,
                         "item_id": item_id or "—",
+                        "category_id": obj.get("category_id") or "" if isinstance(obj, dict) else "",
+                        "listing_type_id": str(it.get("listing_type_id") or ""),
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
@@ -2086,9 +2099,9 @@ def build_tab_ventas(container) -> None:
                         order_date = v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None
                         cur.execute(
                             "INSERT OR IGNORE INTO ventas_datos "
-                            "(payment_id, user_id, order_id, fetched_at, order_date) "
-                            "VALUES (?,?,?,?,?)",
-                            (pid, _uid_v, v.get("order_id"), now_str, order_date),
+                            "(payment_id, user_id, order_id, fetched_at, order_date, costo_fijo) "
+                            "VALUES (?,?,?,?,?,?)",
+                            (pid, _uid_v, v.get("order_id"), now_str, order_date, 0.0),
                         )
                     conn.commit()
                 finally:
