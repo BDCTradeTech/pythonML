@@ -10,6 +10,8 @@ import asyncio
 
 import re
 
+import time as _time
+
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
@@ -36,6 +38,10 @@ def _require_login() -> Optional[Dict[str, Any]]:
     if not user:
         ui.notify("Debes iniciar sesión para continuar", color="negative")
     return user
+
+
+_promo_cache: Dict[str, Any] = {}   # key: f"promo_{seller_id}" -> {"data": {...}, "ts": float}
+_PROMO_CACHE_TTL = 900  # 15 minutos
 
 
 # ---------------------------------------------------------------------------
@@ -960,23 +966,39 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                     ui.spinner(size="xl")
                     promo_lbl = ui.label(f"Cargando cuotas 0/{total_grupos}...").classes("text-xl text-gray-700")
             _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
-            promo_data: Dict[str, Dict] = {}
-            for _i, (_rep_id, _iids) in enumerate(zip(rep_ids, _all_iids_per_grp)):
-                if not _iids:
-                    promo_data[_rep_id] = _empty_pd
-                    continue
-                _pds = await asyncio.gather(*[
-                    run.io_bound(_get_promo_data, access_token, _iid, seller_id)
-                    for _iid in _iids
-                ])
-                best_pd, best_price = _empty_pd, None
-                for _pd in _pds:
-                    _pp = _pd.get("price_promo")
-                    if _pp is not None and (best_price is None or float(_pp) < best_price):
-                        best_price, best_pd = float(_pp), _pd
-                promo_data[_rep_id] = best_pd
+
+            _cache_key = f"promo_{seller_id}"
+            _cached = _promo_cache.get(_cache_key)
+            if _cached and (_time.time() - _cached["ts"]) < _PROMO_CACHE_TTL and not force_refresh:
+                promo_data = _cached["data"]
                 if promo_lbl:
-                    promo_lbl.set_text(f"Cargando cuotas {_i + 1}/{total_grupos}...")
+                    promo_lbl.set_text("Datos de cuotas desde caché...")
+            else:
+                async def _fetch_grupo(rep_id: str, iids: list) -> tuple:
+                    if not iids:
+                        return rep_id, _empty_pd
+                    _pds = await asyncio.gather(*[
+                        run.io_bound(_get_promo_data, access_token, _iid, seller_id)
+                        for _iid in iids
+                    ])
+                    best_pd, best_price = _empty_pd, None
+                    for _pd in _pds:
+                        _pp = _pd.get("price_promo")
+                        if _pp is not None and (best_price is None or float(_pp) < best_price):
+                            best_price, best_pd = float(_pp), _pd
+                    return rep_id, best_pd
+
+                if promo_lbl:
+                    promo_lbl.set_text("Cargando cuotas...")
+
+                resultados = await asyncio.gather(*[
+                    _fetch_grupo(rep_id, iids)
+                    for rep_id, iids in zip(rep_ids, _all_iids_per_grp)
+                ])
+                promo_data: Dict[str, Dict] = {}
+                for rep_id, pd in resultados:
+                    promo_data[rep_id] = pd
+                _promo_cache[_cache_key] = {"data": promo_data, "ts": _time.time()}
             try:
                 _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
             except Exception as e:
