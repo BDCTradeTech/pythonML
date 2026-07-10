@@ -404,7 +404,7 @@ def _save_batch(db_rows: List[Dict]) -> None:
                      rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
                      rd.get("cuotas"), rd.get("costo_fijo"))
             verb = "INSERT OR IGNORE" if rd.get("_skip_overwrite") else "INSERT OR REPLACE"
-            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
+            cur.execute(f"{verb} INTO ventas_datos ({cols}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", vals)
             if rd.get("_skip_overwrite") and rd.get("pay_status"):
                 cur.execute(
                     "UPDATE ventas_datos SET pay_status=? WHERE payment_id=? AND user_id=? AND pay_status IS NULL",
