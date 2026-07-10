@@ -242,7 +242,7 @@ async def _sync_one_catalog(access_token: str, catalog_product_id: str) -> List[
                 return sid, {
                     "level_id":    rep.get("level_id") or "",
                     "power_status": rep.get("power_seller_status") or "",
-                    "total_ventas": (rep.get("transactions") or {}).get("total"),
+                    "total_ventas": (rep.get("transactions") or {}).get("completed"),
                     "ventas_60d":  (metrics.get("sales") or {}).get("completed"),
                     "period_60d":  (metrics.get("sales") or {}).get("period"),
                 }
