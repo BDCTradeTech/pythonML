@@ -638,30 +638,22 @@ def _render_comparador(uid: int, mis_ids: set):
 
         def _render_tabla_comp():
             tabla_ref[0].clear()
+            sellers = comparador_ref[0]["sellers"]
+
+            # Usar la misma lógica que las 5 tablas principales
+            ranking_hist   = {r["seller_id"]: r for r in _get_ranking_global(uid, None)}
+            ranking_seman  = {r["seller_id"]: r for r in _get_ranking_global(uid, 7)}
+            ranking_diaria = {r["seller_id"]: r for r in _get_ranking_global(uid, 1)}
+
             with tabla_ref[0]:
-                sellers = comparador_ref[0]["sellers"]
                 n_vacias = 4 - len(sellers)
 
                 for entry in sellers:
-                    sid = entry["seller_id"]
+                    sid  = entry["seller_id"]
                     nick = entry["nickname"]
-                    conn = get_connection()
-                    rows = conn.execute("""
-                        SELECT snapshot_date, MAX(seller_total_ventas) as v
-                        FROM competidores_snapshots
-                        WHERE user_id=? AND seller_id=?
-                        GROUP BY snapshot_date ORDER BY snapshot_date DESC LIMIT 30
-                    """, (uid, sid)).fetchall()
-                    conn.close()
-
-                    hist = rows[0][1] if rows else 0
-                    ref30 = rows[-1][1] if rows else 0
-                    mensual = (hist or 0) - (ref30 or 0) if len(rows) > 1 else 0
-                    ref7 = next((r[1] for r in rows if (
-                        datetime.strptime(rows[0][0], '%Y-%m-%d') -
-                        datetime.strptime(r[0], '%Y-%m-%d')
-                    ).days >= 1), rows[-1][1] if rows else 0)
-                    semanal = (hist or 0) - (ref7 or 0) if len(rows) > 1 else 0
+                    hist   = ranking_hist.get(sid, {}).get("ventas") or 0
+                    seman  = ranking_seman.get(sid, {}).get("ventas") or 0
+                    diaria = ranking_diaria.get(sid, {}).get("ventas") or 0
 
                     def _quitar(s=sid):
                         _remove_comparador(uid, s)
@@ -680,7 +672,7 @@ def _render_comparador(uid: int, mis_ids: set):
                                     f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
                                     f'{html.escape(nick[:22])}</a>'
                                 )
-                        for val in [hist, mensual, semanal]:
+                        for val in [hist, seman, diaria]:
                             with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:11px"):
                                 ui.html(f"{int(val):,}".replace(",",".") if val else "—")
 
@@ -819,7 +811,7 @@ def _render_comparador(uid: int, mis_ids: set):
                                 "cursor:pointer"
                             ).on("click", lambda: _abrir_popup_competidores()):
                                 ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
-                    for h, a in [("Hist.","right"),("Mes","right"),("Sem.","right")]:
+                    for h, a in [("Hist.","right"),("Sem.","right"),("Día","right")]:
                         with ui.element("th").style(
                             f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
                             f"padding:5px 8px;text-align:{a}"
