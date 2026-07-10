@@ -450,16 +450,7 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
 
                 if not total_ventas:
                     sin_ventas += 1
-                    conn = get_connection()
-                    try:
-                        conn.execute(
-                            "DELETE FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
-                            (user_id, sid)
-                        )
-                        conn.commit()
-                    finally:
-                        conn.close()
-                    continue
+                    continue  # ignorar, no borrar
 
                 conn = get_connection()
                 try:
@@ -471,7 +462,11 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                         VALUES (?, 'MANUAL', ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(user_id, catalog_product_id, seller_id, snapshot_date)
                         DO UPDATE SET
-                            seller_total_ventas=excluded.seller_total_ventas,
+                            seller_total_ventas=CASE
+                                WHEN excluded.seller_total_ventas > COALESCE(competidores_snapshots.seller_total_ventas, 0)
+                                THEN excluded.seller_total_ventas
+                                ELSE competidores_snapshots.seller_total_ventas
+                            END,
                             seller_nickname=excluded.seller_nickname,
                             seller_level_id=excluded.seller_level_id,
                             seller_power_status=excluded.seller_power_status,
