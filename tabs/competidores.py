@@ -317,29 +317,39 @@ def _get_ranking_global(user_id: int, dias: Optional[int]) -> List[Dict]:
         """, (user_id, user_id)).fetchall()
     else:
         fecha_desde = (date.today() - timedelta(days=dias)).isoformat()
-        rows = conn.execute(f"""
-            SELECT s1.seller_id, s1.seller_nickname, s1.seller_level_id,
-                   s1.ventas_hoy - COALESCE(s0.ventas_antes, s1.ventas_hoy) as ventas
+        rows = conn.execute("""
+            WITH ref AS (
+                SELECT seller_id,
+                       COALESCE(
+                           MAX(CASE WHEN snapshot_date <= ? THEN snapshot_date END),
+                           MIN(snapshot_date)
+                       ) AS ref_date
+                FROM competidores_snapshots
+                WHERE user_id=?
+                GROUP BY seller_id
+            )
+            SELECT
+                s1.seller_id, s1.seller_nickname, s1.seller_level_id,
+                s1.ventas_hoy - COALESCE(s0.ventas_antes, s1.ventas_hoy) AS ventas
             FROM (
                 SELECT seller_id, seller_nickname, seller_level_id,
-                       MAX(seller_total_ventas) as ventas_hoy
+                       MAX(seller_total_ventas) AS ventas_hoy
                 FROM competidores_snapshots
-                WHERE user_id=? AND snapshot_date={latest_sub}
-                GROUP BY seller_id
-            ) s1
-            LEFT JOIN (
-                SELECT seller_id, MAX(seller_total_ventas) as ventas_antes
-                FROM competidores_snapshots
-                WHERE user_id=? AND snapshot_date = COALESCE(
-                    (SELECT MAX(snapshot_date) FROM competidores_snapshots
-                     WHERE user_id=? AND snapshot_date <= ?),
-                    (SELECT MIN(snapshot_date) FROM competidores_snapshots
-                     WHERE user_id=?)
+                WHERE user_id=? AND snapshot_date=(
+                    SELECT MAX(snapshot_date) FROM competidores_snapshots WHERE user_id=?
                 )
                 GROUP BY seller_id
+            ) s1
+            JOIN ref ON ref.seller_id = s1.seller_id
+            LEFT JOIN (
+                SELECT cs.seller_id, MAX(cs.seller_total_ventas) AS ventas_antes
+                FROM competidores_snapshots cs
+                JOIN ref r2 ON r2.seller_id = cs.seller_id AND cs.snapshot_date = r2.ref_date
+                WHERE cs.user_id=?
+                GROUP BY cs.seller_id
             ) s0 ON s0.seller_id = s1.seller_id
             ORDER BY ventas DESC NULLS LAST
-        """, (user_id, user_id, user_id, user_id, fecha_desde, user_id)).fetchall()
+        """, (fecha_desde, user_id, user_id, user_id, user_id)).fetchall()
     conn.close()
     result = []
     for i, r in enumerate(rows, 1):
