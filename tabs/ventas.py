@@ -1322,8 +1322,17 @@ def build_tab_ventas(container) -> None:
                     "comisión real y calcula ganancia. Puede tardar varios minutos si son muchas ventas."
                 ).classes("text-sm text-gray-600 mb-3")
                 with ui.row().classes("w-full gap-3"):
-                    inp_desde = ui.input("Fecha desde", value="2026-04-17").props("type=date outlined dense").classes("flex-1")
-                    inp_hasta = ui.input("Fecha hasta", value=hoy_bf.strftime("%Y-%m-%d")).props("type=date outlined dense").classes("flex-1")
+                    inp_desde = ui.input("Fecha desde", value="17/04/2026").props("outlined dense mask='##/##/####'").classes("flex-1")
+                    with inp_desde.add_slot("append"):
+                        ui.icon("edit_calendar").classes("cursor-pointer").on("click", lambda: menu_desde.open())
+                    with ui.menu() as menu_desde:
+                        ui.date(value="17/04/2026").props("locale=es mask='DD/MM/YYYY'").bind_value(inp_desde)
+
+                    inp_hasta = ui.input("Fecha hasta", value=hoy_bf.strftime("%d/%m/%Y")).props("outlined dense mask='##/##/####'").classes("flex-1")
+                    with inp_hasta.add_slot("append"):
+                        ui.icon("edit_calendar").classes("cursor-pointer").on("click", lambda: menu_hasta.open())
+                    with ui.menu() as menu_hasta:
+                        ui.date(value=hoy_bf.strftime("%d/%m/%Y")).props("locale=es mask='DD/MM/YYYY'").bind_value(inp_hasta)
                 resumen_area = ui.column().classes("w-full gap-1 mt-2")
                 barra_bf = ui.linear_progress(value=0, show_value=False, size="20px").props("instant-feedback").classes("w-full my-2")
                 barra_bf.set_visibility(False)
@@ -1332,9 +1341,15 @@ def build_tab_ventas(container) -> None:
                     btn_iniciar = ui.button("Iniciar backfill", color="primary").props("no-caps")
 
                 async def _iniciar() -> None:
-                    fd, fh = inp_desde.value, inp_hasta.value
-                    if not fd or not fh:
+                    fd_raw, fh_raw = inp_desde.value, inp_hasta.value
+                    if not fd_raw or not fh_raw:
                         ui.notify("Completá ambas fechas.", type="warning")
+                        return
+                    try:
+                        fd = datetime.strptime(fd_raw, "%d/%m/%Y").strftime("%Y-%m-%d")
+                        fh = datetime.strptime(fh_raw, "%d/%m/%Y").strftime("%Y-%m-%d")
+                    except ValueError:
+                        ui.notify("Formato de fecha inválido. Usá DD/MM/AAAA.", type="warning")
                         return
                     btn_iniciar.disable()
                     inp_desde.disable()
