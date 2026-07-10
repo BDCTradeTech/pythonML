@@ -536,6 +536,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
                         )
                         if on_click_nick:
                             nick_el.on("click", lambda sid=sid, nick_full=nick_full: on_click_nick(sid, nick_full))
+                            nick_el.tooltip("Agregar al comparador")
                     with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         if ventas is not None and int(ventas) >= 0:
                             ui.html(f"{int(ventas):,}".replace(",","."))
@@ -593,7 +594,7 @@ def _render_comparador(uid: int, mis_ids: set):
     comparador_ref = [{"sellers": []}]  # lista de {seller_id, nickname}
 
     with ui.element("div").style(
-        "border:0.5px solid var(--color-border);border-radius:8px;overflow:hidden;"
+        "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;"
         "min-width:440px;flex-shrink:0"
     ):
         tabla_ref = [None]
@@ -631,17 +632,16 @@ def _render_comparador(uid: int, mis_ids: set):
 
                     with ui.element("tr"):
                         with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);white-space:nowrap"):
-                            with ui.element("span").on("click", _quitar).style(
-                                "display:inline-flex;align-items:center;justify-content:center;"
-                                "width:16px;height:16px;border-radius:3px;border:0.5px solid var(--color-border);"
-                                "cursor:pointer;margin-right:6px;color:var(--color-text-secondary)"
-                            ):
-                                ui.html('<i class="ti ti-x" style="font-size:10px" aria-hidden="true"></i>')
-                            ui.html(
-                                f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
-                                f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none">'
-                                f'{html.escape(nick[:20])}</a>'
-                            )
+                            with ui.row().style("gap:6px;align-items:center;flex-wrap:nowrap"):
+                                with ui.element("span").on("click", _quitar).style(
+                                    "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center"
+                                ):
+                                    ui.html('<i class="ti ti-trash" style="font-size:13px" aria-hidden="true"></i>')
+                                ui.html(
+                                    f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
+                                    f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
+                                    f'{html.escape(nick[:22])}</a>'
+                                )
                         for val in [hist, mensual, semanal]:
                             with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:11px"):
                                 ui.html(f"{int(val):,}".replace(",",".") if val else "—")
@@ -819,7 +819,7 @@ def build_tab_competidores() -> None:
                 else:
                     def _agregar():
                         _add_seguido(uid, sid, nick)
-                        _agregar_a_comparador(sid, nick)
+                        _agregar_al_comparador(sid, nick)
                         ui.notify(f"{nick} agregado al seguimiento", color="positive", timeout=2000)
                         _recargar_tablas()
                         resultado_area.clear()
@@ -836,17 +836,20 @@ def build_tab_competidores() -> None:
         ):
             comparador_ref = _render_comparador(uid, mis_ids)
 
-            def _agregar_a_comparador(sid: str, nick: str):
+            def _agregar_al_comparador(seller_id: str, nickname: str):
                 sellers = comparador_ref[0]["sellers"]
-                if any(s["seller_id"] == sid for s in sellers):
-                    return
                 if len(sellers) >= 4:
+                    ui.notify("Máximo 4 competidores en el comparador", color="warning", timeout=2000)
                     return
-                sellers.append({"seller_id": sid, "nickname": nick})
+                if any(s["seller_id"] == seller_id for s in sellers):
+                    ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
+                    return
+                sellers.append({"seller_id": seller_id, "nickname": nickname})
                 comparador_ref[0]["_render"]()
+                ui.notify(f"{nickname} agregado al comparador", color="positive", timeout=1500)
 
             def _on_click_nick(sid: str, nick: str):
-                _agregar_a_comparador(sid, nick)
+                _agregar_al_comparador(sid, nick)
 
             # 1. Input catálogo + lupa
             with ui.element("div").style("display:flex;gap:0"):
