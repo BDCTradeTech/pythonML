@@ -82,6 +82,43 @@ def _remove_seguido(user_id: int, seller_id: str):
         conn.close()
 
 
+def _get_comparador(user_id: int) -> List[Dict]:
+    """Carga los competidores del comparador ordenados por ventas históricas DESC."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT cc.seller_id, cc.seller_nickname,
+               COALESCE(MAX(cs.seller_total_ventas), 0) as hist
+        FROM comparador_competidores cc
+        LEFT JOIN competidores_snapshots cs
+               ON cs.seller_id = cc.seller_id AND cs.user_id = cc.user_id
+        WHERE cc.user_id = ?
+        GROUP BY cc.seller_id, cc.seller_nickname
+        ORDER BY hist DESC NULLS LAST
+    """, (user_id,)).fetchall()
+    conn.close()
+    return [{"seller_id": r[0], "nickname": r[1] or "", "hist": r[2] or 0} for r in rows]
+
+
+def _add_comparador(user_id: int, seller_id: str, nickname: str):
+    conn = get_connection()
+    conn.execute(
+        "INSERT OR IGNORE INTO comparador_competidores (user_id, seller_id, seller_nickname) VALUES (?,?,?)",
+        (user_id, seller_id, nickname)
+    )
+    conn.commit()
+    conn.close()
+
+
+def _remove_comparador(user_id: int, seller_id: str):
+    conn = get_connection()
+    conn.execute(
+        "DELETE FROM comparador_competidores WHERE user_id=? AND seller_id=?",
+        (user_id, seller_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def _buscar_y_agregar_catalogo(catalog_id: str, user_id: int, access_token: str) -> Dict:
     """
     Trae todos los sellers de un catálogo ML y los agrega a competidores_seguidos.
@@ -591,7 +628,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
 
 def _render_comparador(uid: int, mis_ids: set):
     """Mini-tabla comparadora de hasta 4 competidores seleccionados."""
-    comparador_ref = [{"sellers": []}]  # lista de {seller_id, nickname}
+    comparador_ref = [{"sellers": _get_comparador(uid)}]  # lista de {seller_id, nickname}
 
     with ui.element("div").style(
         "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;"
@@ -627,7 +664,8 @@ def _render_comparador(uid: int, mis_ids: set):
                     semanal = (hist or 0) - (ref7 or 0) if len(rows) > 1 else 0
 
                     def _quitar(s=sid):
-                        comparador_ref[0]["sellers"] = [x for x in comparador_ref[0]["sellers"] if x["seller_id"] != s]
+                        _remove_comparador(uid, s)
+                        comparador_ref[0]["sellers"] = _get_comparador(uid)
                         _render_tabla_comp()
 
                     with ui.element("tr"):
@@ -726,7 +764,8 @@ def _render_comparador(uid: int, mis_ids: set):
                                             if len(comparador_ref[0]["sellers"]) >= 4:
                                                 ui.notify("Máximo 4 competidores", color="warning", timeout=2000)
                                                 return
-                                            comparador_ref[0]["sellers"].append({"seller_id": s, "nickname": n})
+                                            _add_comparador(uid, s, n)
+                                            comparador_ref[0]["sellers"] = _get_comparador(uid)
                                             ids_actuales.add(s)
                                             comparador_ref[0]["_render"]()
                                             _render_lista()
@@ -773,7 +812,7 @@ def _render_comparador(uid: int, mis_ids: set):
                 with ui.element("tr"):
                     with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:5px 8px;text-align:left"):
                         with ui.row().style("gap:6px;align-items:center"):
-                            ui.html("Vendedor")
+                            ui.html("Competidores")
                             with ui.element("span").style(
                                 "display:inline-flex;align-items:center;justify-content:center;"
                                 "width:16px;height:16px;border-radius:3px;background:rgba(255,255,255,.2);"
@@ -964,7 +1003,8 @@ def build_tab_competidores() -> None:
                 if any(s["seller_id"] == seller_id for s in sellers):
                     ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
                     return
-                sellers.append({"seller_id": seller_id, "nickname": nickname})
+                _add_comparador(uid, seller_id, nickname)
+                comparador_ref[0]["sellers"] = _get_comparador(uid)
                 comparador_ref[0]["_render"]()
                 ui.notify(f"{nickname} agregado al comparador", color="positive", timeout=1500)
 

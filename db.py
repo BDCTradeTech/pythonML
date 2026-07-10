@@ -728,6 +728,19 @@ def init_db() -> None:
 
     init_competidores_snapshots_db()
 
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS comparador_competidores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            seller_id TEXT NOT NULL,
+            seller_nickname TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, seller_id)
+        )
+        """
+    )
+
     # Cache de competidores por catálogo ML
     cur.execute(
         """
