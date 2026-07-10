@@ -475,7 +475,7 @@ def _get_ultima_actualizacion(user_id: int) -> str:
     return "—"
 
 
-def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
+def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, filtro_ref: Optional[list] = None):
     total   = len(rows_orig)
     mi_puesto = None
     for r in rows_orig:
@@ -493,6 +493,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
 
     def _render_body():
         tbody_ref[0].clear()
+        texto_filtro = (filtro_ref[0]["texto"].lower() if filtro_ref else "")
         with tbody_ref[0]:
             for r in _sorted():
                 sid    = str(r.get("seller_id") or "")
@@ -501,6 +502,20 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                 rank   = r.get("rank_ventas", "—")
                 nick   = (r.get("seller_nickname") or f"ID {sid}")[:22]
                 icon   = _LVL_ICON.get(r.get("seller_level_id") or "", "")
+
+                if texto_filtro and texto_filtro not in nick.lower():
+                    continue  # ocultar fila que no coincide con el filtro
+
+                if texto_filtro and texto_filtro in nick.lower():
+                    idx = nick.lower().find(texto_filtro)
+                    nick_html = (
+                        html.escape(nick[:idx]) +
+                        f'<mark style="background:#FEF08A;padding:0">{html.escape(nick[idx:idx+len(texto_filtro)])}</mark>' +
+                        html.escape(nick[idx+len(texto_filtro):])
+                    )
+                else:
+                    nick_html = html.escape(nick)
+
                 bg     = "background:#EEF6FD;" if es_mio else ("background:#fafafa;" if isinstance(rank,int) and rank%2==0 else "")
                 pc     = "#ca6d00" if rank==1 else "#7c6514" if rank==2 else "#6b7280" if rank==3 else ("#166534" if es_mio else "#9ca3af")
                 fw     = "700" if es_mio else ("600" if isinstance(rank,int) and rank<=3 else "400")
@@ -517,7 +532,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                             f'style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
                             f'display:block;text-decoration:none;'
                             f'color:{"#185FA5" if es_mio else "#374151"};font-weight:{fw}">'
-                            f'{html.escape(prefijo + nick[:28])}</a>'
+                            f'{html.escape(prefijo)}{nick_html}</a>'
                         )
                     with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         if ventas is not None and int(ventas) >= 0:
@@ -625,7 +640,7 @@ def build_tab_competidores() -> None:
             tablas_ref[0].clear()
             with tablas_ref[0]:
                 for titulo, dias, nota, rows in all_data:
-                    _render_tabla(rows, mis_ids, titulo, nota)
+                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref)
 
         from nicegui import background_tasks
         background_tasks.create(_reload(), name="comp_reload")
@@ -723,13 +738,13 @@ def build_tab_competidores() -> None:
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
-        # Buscador (input + lupa + boton actualizar ventas, todo en la misma fila)
-        with ui.element("div").style(
-            "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
-            "border-radius:8px;padding:8px 12px;margin-bottom:8px;flex-shrink:0;max-width:60%"
-        ):
-            with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap"):
-                with ui.element("div").style("display:flex;gap:0;flex:1;min-width:260px"):
+        # Fila 1: caja con input+lupa (izquierda) | boton Actualizar ventas + fecha, sin caja (derecha)
+        with ui.row().style("gap:8px;align-items:center;flex-wrap:wrap;width:100%;margin-bottom:8px"):
+            with ui.element("div").style(
+                "background:var(--color-background-primary);border:0.5px solid #e2e8f0;"
+                "border-radius:8px;padding:8px 12px;flex-shrink:0;width:400px;max-width:40%"
+            ):
+                with ui.element("div").style("display:flex;gap:0"):
                     inp = ui.input(
                         placeholder="Link de una publicación de catálogo..."
                     ).props("dense outlined").style(
@@ -743,59 +758,72 @@ def build_tab_competidores() -> None:
                     ):
                         ui.html('<i class="ti ti-search" style="font-size:14px;color:#fff"></i>')
 
-                async def _lanzar_actualizacion():
-                    cancelar_ref = [False]
+            ui.element("div").style("flex:1")  # spacer: empuja el boton a la derecha
 
-                    with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
-                        ui.label("Actualizando ventas históricas").style(
-                            "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
-                        )
-                        ui.spinner(size="xl", color="#2A7AC7")
-                        prog = ui.label("Iniciando...").style(
-                            "font-size:12px;color:#6b7280;margin-top:12px;display:block"
-                        )
+            async def _lanzar_actualizacion():
+                cancelar_ref = [False]
 
-                        def _cancelar():
-                            cancelar_ref[0] = True
-                            dlg.close()
-                            ui.notify("Actualización cancelada", color="warning", timeout=2000)
-
-                        ui.button("Cancelar", on_click=_cancelar).props(
-                            "flat no-caps"
-                        ).style("color:#dc2626;font-size:12px;margin-top:16px")
-
-                    dlg.open()
-                    resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
-                    if not cancelar_ref[0]:
-                        dlg.close()
-                        ui.notify(
-                            f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
-                            color="positive", timeout=4000
-                        )
-                        _recargar_tablas()
-                    ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
-
-                with ui.element("div").style(
-                    "display:flex;flex-direction:column;align-items:flex-start;flex-shrink:0;margin-left:8px"
-                ):
-                    with ui.button(on_click=_lanzar_actualizacion).props(
-                        "unelevated no-caps"
-                    ).style(
-                        "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
-                        "flex-shrink:0;min-width:36px"
-                    ).tooltip("Actualizar ventas históricas"):
-                        ui.html('''
-                            <i class="ti ti-refresh" style="font-size:16px"></i>
-                            <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
-                        ''')
-                    lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
-                        "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
+                with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
+                    ui.label("Actualizando ventas históricas").style(
+                        "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
                     )
-                    ultima_act_ref[0] = lbl_ultima
+                    ui.spinner(size="xl", color="#2A7AC7")
+                    prog = ui.label("Iniciando...").style(
+                        "font-size:12px;color:#6b7280;margin-top:12px;display:block"
+                    )
 
-                notif = ui.label("").style("font-size:10px;color:#9ca3af;align-self:center")
-                notif_ref[0] = notif
-            resultado_area = ui.element("div").style("margin-top:4px")
+                    def _cancelar():
+                        cancelar_ref[0] = True
+                        dlg.close()
+                        ui.notify("Actualización cancelada", color="warning", timeout=2000)
+
+                    ui.button("Cancelar", on_click=_cancelar).props(
+                        "flat no-caps"
+                    ).style("color:#dc2626;font-size:12px;margin-top:16px")
+
+                dlg.open()
+                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
+                if not cancelar_ref[0]:
+                    dlg.close()
+                    ui.notify(
+                        f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
+                        color="positive", timeout=4000
+                    )
+                    _recargar_tablas()
+                ultima_act_ref[0].set_text(f"Últ. act: {_get_ultima_actualizacion(uid)}")
+
+            with ui.element("div").style(
+                "display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0"
+            ):
+                with ui.button(on_click=_lanzar_actualizacion).props(
+                    "unelevated no-caps"
+                ).style(
+                    "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
+                    "flex-shrink:0;min-width:36px"
+                ).tooltip("Actualizar ventas históricas"):
+                    ui.html('''
+                        <i class="ti ti-refresh" style="font-size:16px"></i>
+                        <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
+                    ''')
+                lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
+                    "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
+                )
+                ultima_act_ref[0] = lbl_ultima
+
+        notif = ui.label("").style("font-size:10px;color:#9ca3af")
+        notif_ref[0] = notif
+        resultado_area = ui.element("div").style("margin-top:4px")
+
+        # Fila 2: buscador de competidor dentro de las 5 tablas
+        filtro_ref: list = [{"texto": ""}]
+        filtro_input = ui.input(placeholder="Buscar competidor en las tablas...").props(
+            "dense outlined clearable"
+        ).style("width:300px;font-size:12px;margin:4px 0 8px")
+
+        def _on_filtro(e):
+            filtro_ref[0]["texto"] = (e.value or "").strip()
+            _recargar_tablas()
+        filtro_input.on_value_change(_on_filtro)
 
         # 5 tablas — spinner inmediato, datos en background
         tablas = ui.element("div").classes("comp-tablas").style("display:flex;gap:8px;align-items:flex-start")
@@ -822,7 +850,7 @@ def build_tab_competidores() -> None:
             tablas.clear()
             with tablas:
                 for titulo, dias, nota, rows in all_data:
-                    _render_tabla(rows, mis_ids, titulo, nota)
+                    _render_tabla(rows, mis_ids, titulo, nota, filtro_ref)
 
         from nicegui import background_tasks
         background_tasks.create(_cargar_tablas(), name="comp_load")
