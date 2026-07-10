@@ -511,7 +511,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str):
                     with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         prefijo = "⭐ " if es_mio else (icon+" " if icon else "")
                         nick_full = (r.get("seller_nickname") or f"ID {sid}")
-                        url = f"https://www.mercadolibre.com.ar/perfil/{urllib.parse.quote(nick_full, safe='')}"
+                        url = f"https://www.mercadolibre.com.ar/pagina/{urllib.parse.quote(nick_full, safe='')}"
                         ui.html(
                             f'<a href="{html.escape(url)}" target="_blank" '
                             f'style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;'
