@@ -445,7 +445,13 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                     sin_ventas += 1
                     continue  # ignorar, no borrar
 
+                # Obtener el máximo histórico para no bajar nunca
                 conn = get_connection()
+                max_hist = conn.execute(
+                    "SELECT MAX(seller_total_ventas) FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
+                    (user_id, sid)
+                ).fetchone()[0] or 0
+                valor_final = max(total_ventas, max_hist)
                 try:
                     conn.execute("""
                         INSERT INTO competidores_snapshots
@@ -465,7 +471,7 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                             seller_power_status=excluded.seller_power_status,
                             created_at=CURRENT_TIMESTAMP
                     """, (
-                        user_id, sid, nick_nuevo, total_ventas,
+                        user_id, sid, nick_nuevo, valor_final,
                         rep.get("level_id") or "",
                         rep.get("power_seller_status") or "",
                         today
