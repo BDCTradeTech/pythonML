@@ -182,7 +182,7 @@ def _buscar_y_agregar_catalogo(catalog_id: str, user_id: int, access_token: str)
             # Guardar snapshot inmediato con ventas históricas
             rep = d.get("seller_reputation") or {}
             txn = rep.get("transactions") or {}
-            total_ventas = txn.get("completed")
+            total_ventas = txn.get("total")
             if total_ventas:
                 conn = get_connection()
                 try:
@@ -335,7 +335,7 @@ def _parse_user(data: Dict) -> Dict:
         "nickname":      data.get("nickname") or "",
         "level_id":      rep.get("level_id") or "",
         "power_status":  rep.get("power_seller_status") or "",
-        "total_ventas":  txn.get("completed"),
+        "total_ventas":  txn.get("total"),
         "registration":  (data.get("registration_date") or "")[:10],
     }
 
@@ -438,7 +438,7 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
                 d = r.json()
                 rep = d.get("seller_reputation") or {}
                 txn = rep.get("transactions") or {}
-                total_ventas = txn.get("completed")
+                total_ventas = txn.get("total")
                 nick_nuevo = d.get("nickname") or nick
 
                 if not total_ventas:
