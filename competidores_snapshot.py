@@ -164,7 +164,7 @@ async def run():
                     d = r.json()
                     rep = d.get("seller_reputation") or {}
                     txn = rep.get("transactions") or {}
-                    total = txn.get("completed")
+                    total = txn.get("total")
                     if total:  # Solo guardar si tiene ventas
                         seller_data[sid] = {
                             "nickname": d.get("nickname") or "",

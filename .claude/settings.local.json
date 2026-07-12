@@ -11,7 +11,23 @@
       "Bash(git commit -m ' *)",
       "Bash(git push *)",
       "Bash(scp *)",
-      "Bash(ssh *)"
+      "Bash(ssh *)",
+      "Bash(sqlite3 app.db \"SELECT key, value FROM app_config;\")",
+      "Read(//c/Users/diego/.claude/**)",
+      "Read(//c/Users/diego/.claude//**)",
+      "Bash(git commit -m 'VERSION 3.26.06.14.00 - Preguntas/Config: soporte Gemini junto a Groq \\(botón + card + handler\\) *)",
+      "Bash(git *)",
+      "Read(//c/Users/diego/.ssh/**)",
+      "PowerShell(ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes root@157.230.88.160 \"echo CONECTADO; whoami\")",
+      "Bash(ssh-add -l)",
+      "WebSearch",
+      "WebFetch(domain:developers.mercadolibre.com.ar)",
+      "WebFetch(domain:global-selling.mercadolibre.com)",
+      "WebFetch(domain:developers.mercadolivre.com.br)",
+      "PowerShell(cd \"C:\\\\Users\\\\diego\\\\Desktop\\\\PythonML\"; python check_token.py 2>&1; if \\(-not \\(Test-Path check_token.py\\)\\) { echo \"no file\" })",
+      "Bash(pip install *)",
+      "Bash(dir \"C:\\\\Users\\\\diego\\\\Desktop\\\\PythonML\" /b)",
+      "Bash(findstr /i \"backfill\\\\|ventas\")"
     ]
   }
 }
