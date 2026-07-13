@@ -229,6 +229,11 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Si no aparece en el documento, devolver null.
 - perc_iibb: etiquetado "Perc.IB", "Perc. IB", "Percepción IIBB" o similar. Valor en ARS.
     Si no aparece en el documento, devolver null.
+- gastos_en_origen: buscar la línea EXACTA "GASTOS EN ORIGEN" en la factura de LHS.
+    Es un concepto propio de LHS, distinto de "Gastos Operativos" (servicios_honorarios)
+    y de "Derechos IVA tasa gral." (derechos_importacion) — no confundirlos entre sí.
+    Tomar el importe en ARS de esa línea. Puede ser 0 si no aplica.
+    Devolver null si la línea no aparece en el documento.
 - tasa_estadistica: puede ser 0
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
@@ -278,6 +283,7 @@ pa: no viene del documento, se inyecta desde la UI. Devolver null.
   "derechos_importacion": null,
   "tasa_estadistica": null,
   "perc_iibb": null,
+  "gastos_en_origen": null,
   "pa": null,
   "total_real": null
 }
@@ -459,6 +465,7 @@ _LABELS = {
     "iva_21": "IVA 21%",
     "derechos_importacion": "Derechos de importación",
     "tasa_estadistica": "Tasa estadística",
+    "gastos_en_origen": "Gastos en Origen",
     "pa": "PA",
     "total_real": "Total real",
 }
@@ -471,7 +478,7 @@ _SCALAR_COLS = [
     "seguro_internacional", "almacenaje", "servicios_honorarios",
     "gastos_administrativos", "honorarios", "handling",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
-    "pa", "total_real", "courier", "perc_iibb", "ia_usada",
+    "pa", "total_real", "courier", "perc_iibb", "ia_usada", "gastos_en_origen",
 ]
 
 _TABLE_HEADERS = [
@@ -549,7 +556,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2", "gastos_en_origen"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -653,7 +660,8 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         "derechos_importacion, tasa_estadistica, iva_aduanero, iva_21, flete_aereo, "
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
-        "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada, pdf_path, pdf_path_2 "
+        "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada, pdf_path, pdf_path_2, "
+        "gastos_en_origen "
         f"FROM guias_importacion WHERE {where_sql} "
         "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
         params,
@@ -703,6 +711,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
                 ("tasa_estadistica",     "Tasa Estadística",        _to_float(r["tasa_estadistica"])),
                 ("iva_21",               "IVA 21%",                 _to_float(r["iva_21"])),
                 ("perc_iibb",            "Percepción IIBB",         _to_float(r["perc_iibb"])),
+                ("gastos_en_origen",     "Gastos en Origen",        _to_float(r["gastos_en_origen"])),
             ]
         else:
             tf_components = [
