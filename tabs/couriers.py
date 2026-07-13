@@ -259,10 +259,7 @@ def build_tab_couriers() -> None:
         chart_options = {
             "backgroundColor": "transparent",
             "grid": {"left": 45, "right": 20, "top": 45, "bottom": 22, "containLabel": True},
-            "tooltip": {
-                "trigger": "axis",
-                "formatter": "{b0} kg<br/>{a0}: {c0@1}%<br/>{a1}: {c1@1}%<br/>{a2}: {c2@1}%",
-            },
+            "tooltip": {"trigger": "axis"},
             "xAxis": {
                 "type": "value",
                 "min": 0,
