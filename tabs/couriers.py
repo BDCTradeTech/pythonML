@@ -258,7 +258,7 @@ def build_tab_couriers() -> None:
 
         chart_options = {
             "backgroundColor": "transparent",
-            "grid": {"left": 45, "right": 20, "top": 55, "bottom": 30, "containLabel": True},
+            "grid": {"left": 45, "right": 20, "top": 45, "bottom": 22, "containLabel": True},
             "tooltip": {"trigger": "axis"},
             "xAxis": {
                 "type": "value",
@@ -268,12 +268,13 @@ def build_tab_couriers() -> None:
             },
             "yAxis": {
                 "type": "value",
+                "scale": True,
                 "axisLabel": {"formatter": "{value}%", "fontSize": 10},
             },
             "series": series,
         }
         with chart_container_ref[0]:
-            ui.echart(chart_options).classes("w-full").style("height:340px")
+            ui.echart(chart_options).classes("w-full").style("height:300px")
 
     def _recalcular():
         for cfg in _COURIERS:
@@ -286,11 +287,11 @@ def build_tab_couriers() -> None:
             _render_card_content(cfg)
         _render_chart()
 
-    with ui.element("div").style("padding:6px 16px;display:flex;flex-direction:column;gap:6px;width:100%"):
+    with ui.element("div").style("padding:6px 16px;display:flex;flex-direction:column;gap:4px;width:100%"):
         # 1) Barra superior — posicion arancelaria + FOB + Peso (sliders) + Cambio PA
         with ui.element("div").classes("couriers-topbar").style(
             "display:flex;gap:24px;align-items:flex-end;width:100%;"
-            "border:0.5px solid #e2e8f0;border-radius:8px;padding:8px 16px"
+            "border:0.5px solid #e2e8f0;border-radius:8px;padding:6px 16px"
         ):
             with ui.element("div").style("min-width:220px"):
                 ui.label("Posición Arancelaria").style("font-size:11px;color:#374151;font-weight:500;display:block")
