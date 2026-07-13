@@ -877,6 +877,22 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'analisis_ml', 1)"
         )
 
+    # Config por usuario de couriers de importacion (flete/kg, cambio PA, envio a domicilio)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS couriers_config (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id          INTEGER NOT NULL,
+            despachante      TEXT NOT NULL,
+            flete_kg         REAL,
+            cambio_pa        REAL,
+            envio_domicilio  REAL,
+            UNIQUE(user_id, despachante),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     conn.commit()
     conn.close()
 
@@ -1262,6 +1278,49 @@ def get_cotizador_tabla(nombre: str, user_id: int) -> List[Dict[str, Any]]:
 def set_cotizador_tabla(nombre: str, rows: List[Dict[str, Any]], user_id: int) -> None:
     """Guarda una tabla del cotizador para el usuario."""
     set_cotizador_param(f"tabla_{nombre}", json.dumps(rows, ensure_ascii=False), user_id)
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Couriers (config por despachante, multiusuario)
+# ---------------------------------------------------------------------------
+
+_COURIER_CONFIG_CAMPOS = {"flete_kg", "cambio_pa", "envio_domicilio"}
+
+
+def ensure_courier_config_defaults(user_id: int, despachante: str, defaults: Dict[str, float]) -> Dict[str, float]:
+    """Si no existe fila para user_id+despachante la crea con los defaults. Devuelve los valores vigentes."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT flete_kg, cambio_pa, envio_domicilio FROM couriers_config WHERE user_id=? AND despachante=?",
+        (user_id, despachante)
+    ).fetchone()
+    if row:
+        conn.close()
+        return {"flete_kg": row["flete_kg"], "cambio_pa": row["cambio_pa"], "envio_domicilio": row["envio_domicilio"]}
+    conn.execute(
+        "INSERT INTO couriers_config (user_id, despachante, flete_kg, cambio_pa, envio_domicilio) VALUES (?,?,?,?,?)",
+        (user_id, despachante, defaults["flete_kg"], defaults["cambio_pa"], defaults["envio_domicilio"])
+    )
+    conn.commit()
+    conn.close()
+    return dict(defaults)
+
+
+def set_courier_config_campo(user_id: int, despachante: str, campo: str, valor: float) -> None:
+    """Actualiza (o crea) un campo individual de couriers_config para user_id+despachante."""
+    if campo not in _COURIER_CONFIG_CAMPOS:
+        raise ValueError(f"Campo invalido: {campo}")
+    conn = get_connection()
+    conn.execute(
+        f"""
+        INSERT INTO couriers_config (user_id, despachante, {campo})
+        VALUES (?, ?, ?)
+        ON CONFLICT(user_id, despachante) DO UPDATE SET {campo}=excluded.{campo}
+        """,
+        (user_id, despachante, valor)
+    )
+    conn.commit()
+    conn.close()
 
 
 # ---------------------------------------------------------------------------
