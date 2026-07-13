@@ -174,6 +174,9 @@ def build_tab_couriers() -> None:
                     pa_input_refs[cfg["key"]] = pa_input
 
                 def _on_cambio_pa_card(e, cfg=cfg, pa_input=pa_input):
+                    if state["posicion"] != "Cambio PA":
+                        pa_input.set_value(0.0)
+                        return
                     val = max(0.0, float(e.value or 0))
                     pa_state[cfg["key"]] = val
                     pa_input.set_value(val)
@@ -274,10 +277,16 @@ def build_tab_couriers() -> None:
 
     def _recalcular():
         for cfg in _COURIERS:
+            efectivo = _cambio_pa_efectivo(cfg)
+            pa_input_refs[cfg["key"]].set_value(efectivo)
+            if state["posicion"] == "Cambio PA":
+                pa_input_refs[cfg["key"]].enable()
+            else:
+                pa_input_refs[cfg["key"]].disable()
             _render_card_content(cfg)
         _render_chart()
 
-    with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column;gap:10px;width:100%"):
+    with ui.element("div").style("padding:6px 16px;display:flex;flex-direction:column;gap:6px;width:100%"):
         # 1) Barra superior — posicion arancelaria + FOB + Peso (sliders) + Cambio PA
         with ui.element("div").classes("couriers-topbar").style(
             "display:flex;gap:24px;align-items:flex-end;width:100%;"
