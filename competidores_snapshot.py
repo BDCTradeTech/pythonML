@@ -98,91 +98,115 @@ async def run():
 
     for cred in creds:
         user_id = cred["user_id"]
-        token = get_ml_access_token(user_id)
-        if not token:
-            log.warning("Sin token para user_id=%s", user_id)
-            continue
-
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-        catalog_ids = get_catalog_ids(user_id)
-        log.info("user_id=%s — %d catálogos", user_id, len(catalog_ids))
-
-        # PASO 1: Recolectar seller_ids de todos los catálogos
-        # Estructura: {catalog_product_id: [seller_ids]}
-        catalog_sellers = {}  # cpid -> list of {seller_id, price, item_id}
-
-        for cpid in catalog_ids:
-            try:
-                r = requests.get(
-                    f"{ML_API}/products/{cpid}/items",
-                    headers=headers, timeout=10
-                )
-                if r.status_code == 200:
-                    items = r.json().get("results", [])
-                    catalog_sellers[cpid] = [
-                        {
-                            "seller_id": str(it.get("seller_id", "")),
-                            "price": it.get("price"),
-                            "item_id": it.get("item_id") or it.get("id"),
-                        }
-                        for it in items if it.get("seller_id")
-                    ]
-            except Exception as e:
-                log.error("Error catálogo %s: %s", cpid, e)
-
-        log.info("Catálogos procesados: %d", len(catalog_sellers))
-
-        # PASO 2: Seller IDs únicos (de catálogos + competidores_seguidos)
-        all_seller_ids = set()
-        for items in catalog_sellers.values():
-            for it in items:
-                if it["seller_id"]:
-                    all_seller_ids.add(it["seller_id"])
-
-        # Agregar los que están en competidores_seguidos
-        seguidos = []
         try:
-            conn = get_connection()
-            seguidos = conn.execute(
-                "SELECT seller_id FROM competidores_seguidos WHERE user_id=?", (user_id,)
-            ).fetchall()
-            conn.close()
-        except Exception as e:
-            log.error("Error leyendo competidores_seguidos: %s", e)
-        for s in seguidos:
-            all_seller_ids.add(str(s[0]))
+            token = get_ml_access_token(user_id)
+            if not token:
+                log.warning("Sin token para user_id=%s", user_id)
+                continue
 
-        log.info("Sellers únicos a consultar: %d", len(all_seller_ids))
+            headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+            catalog_ids = get_catalog_ids(user_id)
+            log.info("user_id=%s — %d catálogos", user_id, len(catalog_ids))
 
-        # PASO 3: Consultar /users/{seller_id} UNA sola vez por vendedor
-        seller_data = {}  # seller_id -> {nickname, total_ventas, level_id, power_status}
+            # PASO 1: Recolectar seller_ids de todos los catálogos
+            # Estructura: {catalog_product_id: [seller_ids]}
+            catalog_sellers = {}  # cpid -> list of {seller_id, price, item_id}
 
-        for sid in all_seller_ids:
+            for cpid in catalog_ids:
+                try:
+                    r = requests.get(
+                        f"{ML_API}/products/{cpid}/items",
+                        headers=headers, timeout=10
+                    )
+                    if r.status_code == 200:
+                        items = r.json().get("results", [])
+                        catalog_sellers[cpid] = [
+                            {
+                                "seller_id": str(it.get("seller_id", "")),
+                                "price": it.get("price"),
+                                "item_id": it.get("item_id") or it.get("id"),
+                            }
+                            for it in items if it.get("seller_id")
+                        ]
+                except Exception as e:
+                    log.error("Error catálogo %s: %s", cpid, e)
+
+            log.info("Catálogos procesados: %d", len(catalog_sellers))
+
+            # PASO 2: Seller IDs únicos (de catálogos + competidores_seguidos)
+            all_seller_ids = set()
+            for items in catalog_sellers.values():
+                for it in items:
+                    if it["seller_id"]:
+                        all_seller_ids.add(it["seller_id"])
+
+            # Agregar los que están en competidores_seguidos
+            seguidos = []
             try:
-                r = requests.get(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
-                if r.status_code == 200:
-                    d = r.json()
-                    rep = d.get("seller_reputation") or {}
-                    txn = rep.get("transactions") or {}
-                    total = txn.get("total")
-                    if total:  # Solo guardar si tiene ventas
-                        seller_data[sid] = {
-                            "nickname": d.get("nickname") or "",
-                            "total_ventas": total,
-                            "level_id": rep.get("level_id") or "",
-                            "power_status": rep.get("power_seller_status") or "",
-                        }
+                conn = get_connection()
+                seguidos = conn.execute(
+                    "SELECT seller_id FROM competidores_seguidos WHERE user_id=?", (user_id,)
+                ).fetchall()
+                conn.close()
             except Exception as e:
-                log.error("Error usuario %s: %s", sid, e)
+                log.error("Error leyendo competidores_seguidos: %s", e)
+            for s in seguidos:
+                all_seller_ids.add(str(s[0]))
 
-        log.info("Sellers con ventas históricas: %d", len(seller_data))
+            log.info("Sellers únicos a consultar: %d", len(all_seller_ids))
 
-        # PASO 4: Guardar snapshots
-        conn = get_connection()
-        saved = 0
-        for cpid, items in catalog_sellers.items():
-            for it in items:
-                sid = it["seller_id"]
+            # PASO 3: Consultar /users/{seller_id} UNA sola vez por vendedor
+            seller_data = {}  # seller_id -> {nickname, total_ventas, level_id, power_status}
+
+            for sid in all_seller_ids:
+                try:
+                    r = requests.get(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
+                    if r.status_code == 200:
+                        d = r.json()
+                        rep = d.get("seller_reputation") or {}
+                        txn = rep.get("transactions") or {}
+                        total = txn.get("total")
+                        if total:  # Solo guardar si tiene ventas
+                            seller_data[sid] = {
+                                "nickname": d.get("nickname") or "",
+                                "total_ventas": total,
+                                "level_id": rep.get("level_id") or "",
+                                "power_status": rep.get("power_seller_status") or "",
+                            }
+                except Exception as e:
+                    log.error("Error usuario %s: %s", sid, e)
+
+            log.info("Sellers con ventas históricas: %d", len(seller_data))
+
+            # PASO 4: Guardar snapshots
+            conn = get_connection()
+            saved = 0
+            for cpid, items in catalog_sellers.items():
+                for it in items:
+                    sid = it["seller_id"]
+                    if sid not in seller_data:
+                        continue
+                    sd = seller_data[sid]
+                    try:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO competidores_snapshots
+                                (user_id, catalog_product_id, seller_id, seller_nickname,
+                                 seller_total_ventas, seller_level_id, seller_power_status,
+                                 price, item_id, snapshot_date)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            user_id, cpid, sid,
+                            sd["nickname"], sd["total_ventas"],
+                            sd["level_id"], sd["power_status"],
+                            it["price"], it["item_id"], today
+                        ))
+                        saved += 1
+                    except Exception as e:
+                        log.error("Error insert %s/%s: %s", cpid, sid, e)
+
+            # También guardar seguidos que no están en ningún catálogo
+            for s in seguidos:
+                sid = str(s[0])
                 if sid not in seller_data:
                     continue
                 sd = seller_data[sid]
@@ -191,58 +215,38 @@ async def run():
                         INSERT OR IGNORE INTO competidores_snapshots
                             (user_id, catalog_product_id, seller_id, seller_nickname,
                              seller_total_ventas, seller_level_id, seller_power_status,
-                             price, item_id, snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                             snapshot_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        user_id, cpid, sid,
+                        user_id, "SEGUIDO", sid,
                         sd["nickname"], sd["total_ventas"],
-                        sd["level_id"], sd["power_status"],
-                        it["price"], it["item_id"], today
+                        sd["level_id"], sd["power_status"], today
                     ))
-                    saved += 1
-                except Exception as e:
-                    log.error("Error insert %s/%s: %s", cpid, sid, e)
+                except Exception:
+                    pass
 
-        # También guardar seguidos que no están en ningún catálogo
-        for s in seguidos:
-            sid = str(s[0])
-            if sid not in seller_data:
-                continue
-            sd = seller_data[sid]
-            try:
-                conn.execute("""
-                    INSERT OR IGNORE INTO competidores_snapshots
-                        (user_id, catalog_product_id, seller_id, seller_nickname,
-                         seller_total_ventas, seller_level_id, seller_power_status,
-                         snapshot_date)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    user_id, "SEGUIDO", sid,
-                    sd["nickname"], sd["total_ventas"],
-                    sd["level_id"], sd["power_status"], today
-                ))
-            except Exception:
-                pass
+            conn.commit()
+            conn.close()
+            log.info("Snapshots guardados: %d", saved)
 
-        conn.commit()
-        conn.close()
-        log.info("Snapshots guardados: %d", saved)
-
-        # PASO 5: Borrar vendedores con 0 ventas históricas
-        conn = get_connection()
-        n = conn.execute("""
-            DELETE FROM competidores_snapshots
-            WHERE user_id=? AND seller_id IN (
-                SELECT seller_id FROM competidores_snapshots
-                WHERE user_id=?
-                GROUP BY seller_id
-                HAVING MAX(seller_total_ventas) IS NULL OR MAX(seller_total_ventas) = 0
-            )
-        """, (user_id, user_id)).rowcount
-        conn.commit()
-        conn.close()
-        if n:
-            log.info("Eliminados %d registros con 0 ventas", n)
+            # PASO 5: Borrar vendedores con 0 ventas históricas
+            conn = get_connection()
+            n = conn.execute("""
+                DELETE FROM competidores_snapshots
+                WHERE user_id=? AND seller_id IN (
+                    SELECT seller_id FROM competidores_snapshots
+                    WHERE user_id=?
+                    GROUP BY seller_id
+                    HAVING MAX(seller_total_ventas) IS NULL OR MAX(seller_total_ventas) = 0
+                )
+            """, (user_id, user_id)).rowcount
+            conn.commit()
+            conn.close()
+            if n:
+                log.info("Eliminados %d registros con 0 ventas", n)
+        except Exception as e:
+            log.error("ERROR procesando user_id=%s: %s — continuando con el siguiente", user_id, e)
+            continue
 
     log.info("=== COMPLETADO ===")
 
