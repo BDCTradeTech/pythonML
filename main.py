@@ -130,6 +130,7 @@ from tabs.admin import build_tab_admin
 from tabs.importacion import build_tab_importacion
 from tabs.historicos import build_tab_historicos
 from tabs.pesos import build_tab_pesos
+from tabs.couriers import build_tab_couriers
 from tabs.arca import build_tab_arca
 from tabs.gastos import build_tab_gastos
 from tabs.dashboard import build_tab_dashboard
@@ -150,7 +151,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.13.01"
+VERSION = "3.26.07.13.02"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -373,6 +374,7 @@ def show_main_layout(container) -> None:
                 tab_transferencias = ui.tab("Transferencias")
                 tab_datos = ui.tab("Datos")
                 tab_pesos = ui.tab("Pesos")
+                tab_couriers = ui.tab("Couriers")
                 tab_arca = ui.tab("ARCA")
                 tab_gastos = ui.tab("Gastos")
                 tab_balance    = ui.tab("Balance")
@@ -403,6 +405,7 @@ def show_main_layout(container) -> None:
             "Transferencias": tab_transferencias,
             "Datos": tab_datos,
             "Pesos": tab_pesos,
+            "Couriers": tab_couriers,
             "ARCA": tab_arca,
             "Gastos": tab_gastos,
             "Balance":    tab_balance,
@@ -416,7 +419,7 @@ def show_main_layout(container) -> None:
             "Admin": tab_admin,
             "Actividad": tab_actividad,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "Couriers": "couriers", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -591,7 +594,7 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_historicos
                                         app.storage.user["last_tab"] = "Históricos"
                                     ui.menu_item("HISTÓRICOS", _historicos_click)
-                if perms.get("importacion", True) or perms.get("pesos", True) or perms.get("guias", True):
+                if perms.get("importacion", True) or perms.get("pesos", True) or perms.get("guias", True) or perms.get("couriers", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as comex_menu:
@@ -619,6 +622,12 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_pesos
                                         app.storage.user["last_tab"] = "Pesos"
                                     ui.menu_item("PESOS", _pesos_click)
+                                if perms.get("couriers", True):
+                                    def _couriers_click():
+                                        _lazy_load("Couriers")
+                                        tab_panels.value = tab_couriers
+                                        app.storage.user["last_tab"] = "Couriers"
+                                    ui.menu_item("COURIERS", _couriers_click)
                 if perms.get("arca", True) or perms.get("gastos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(impuestos_menu)):
                         with ui.button("IMPUESTOS").props("flat dense no-caps").classes(_nav_font):
@@ -766,6 +775,7 @@ def show_main_layout(container) -> None:
             "Guias":         ("Comex", "Guías"),
             "Transferencias": ("Comex", "Transferencias"),
             "Pesos":         ("Comex", "Pesos"),
+            "Couriers":      ("Comex", "Couriers"),
             "ARCA":          ("Impuestos", "ARCA"),
             "Gastos":        ("Impuestos", "Gastos"),
             "Datos":         ("Config", "Datos"),
@@ -830,6 +840,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_pesos):
                 build_tab_pesos()
+
+            with ui.tab_panel(tab_couriers):
+                build_tab_couriers()
 
             with ui.tab_panel(tab_arca):
                 arca_container = ui.column().classes("w-full")
