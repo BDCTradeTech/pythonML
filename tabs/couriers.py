@@ -234,13 +234,21 @@ def build_tab_couriers() -> None:
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
                     ui.label("FOB Total").style("font-size:11px;color:#374151;font-weight:500")
                     lbl_fob = ui.label(_fmt_usd0(state["fob"])).style("font-size:12px;font-weight:700;color:#185FA5")
-                sld_fob = ui.slider(min=0, max=3000, step=5, value=state["fob"]).style("width:100%")
+                with ui.element("div").style("display:flex;gap:6px;align-items:center;width:100%"):
+                    sld_fob = ui.slider(min=0, max=3000, step=5, value=state["fob"]).style("flex:1")
+                    inp_fob = ui.number(value=state["fob"], min=0, max=3000, step=5).props(
+                        "dense outlined"
+                    ).style("width:76px;flex-shrink:0;font-size:12px")
 
             with ui.element("div").style("flex:1;min-width:220px"):
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
                     ui.label("Peso total").style("font-size:11px;color:#374151;font-weight:500")
                     lbl_peso = ui.label(f"{state['peso']:.1f} kg").style("font-size:12px;font-weight:700;color:#185FA5")
-                sld_peso = ui.slider(min=0, max=60, step=0.1, value=state["peso"]).style("width:100%")
+                with ui.element("div").style("display:flex;gap:6px;align-items:center;width:100%"):
+                    sld_peso = ui.slider(min=0, max=60, step=0.1, value=state["peso"]).style("flex:1")
+                    inp_peso = ui.number(value=state["peso"], min=0, max=60, step=0.1).props(
+                        "dense outlined"
+                    ).style("width:70px;flex-shrink:0;font-size:12px")
 
             with ui.element("div").style("min-width:140px"):
                 ui.label("Cambio PA (u$)").style("font-size:11px;color:#374151;font-weight:500;display:block")
@@ -253,17 +261,40 @@ def build_tab_couriers() -> None:
             _recalcular()
         sel_posicion.on_value_change(_on_posicion)
 
-        def _on_fob(e):
-            state["fob"] = float(e.value or 0)
-            lbl_fob.set_text(_fmt_usd0(state["fob"]))
-            _recalcular()
-        sld_fob.on_value_change(_on_fob)
+        def _clamp(v, lo, hi):
+            return max(lo, min(hi, v))
 
-        def _on_peso(e):
-            state["peso"] = round(float(e.value or 0), 1)
-            lbl_peso.set_text(f"{state['peso']:.1f} kg")
+        def _on_fob_slider(e):
+            val = _clamp(float(e.value or 0), 0, 3000)
+            state["fob"] = val
+            lbl_fob.set_text(_fmt_usd0(val))
+            inp_fob.set_value(val)
             _recalcular()
-        sld_peso.on_value_change(_on_peso)
+        sld_fob.on_value_change(_on_fob_slider)
+
+        def _on_fob_input(e):
+            val = _clamp(float(e.value or 0), 0, 3000)
+            state["fob"] = val
+            lbl_fob.set_text(_fmt_usd0(val))
+            sld_fob.set_value(val)
+            _recalcular()
+        inp_fob.on_value_change(_on_fob_input)
+
+        def _on_peso_slider(e):
+            val = round(_clamp(float(e.value or 0), 0, 60), 1)
+            state["peso"] = val
+            lbl_peso.set_text(f"{val:.1f} kg")
+            inp_peso.set_value(val)
+            _recalcular()
+        sld_peso.on_value_change(_on_peso_slider)
+
+        def _on_peso_input(e):
+            val = round(_clamp(float(e.value or 0), 0, 60), 1)
+            state["peso"] = val
+            lbl_peso.set_text(f"{val:.1f} kg")
+            sld_peso.set_value(val)
+            _recalcular()
+        inp_peso.on_value_change(_on_peso_input)
 
         def _on_cambio_pa(e):
             state["cambio_pa"] = float(e.value or 0)
