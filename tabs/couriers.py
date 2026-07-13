@@ -82,6 +82,11 @@ def build_tab_couriers() -> None:
     pa_input_refs: dict = {}
     chart_container_ref: list = [None]
 
+    def _cambio_pa_efectivo(cfg: dict) -> float:
+        if state["posicion"] != "Cambio PA":
+            return 0.0
+        return pa_state[cfg["key"]]
+
     def _calc(cfg: dict) -> dict:
         row = {
             "origen": cfg["origen"],
@@ -90,7 +95,7 @@ def build_tab_couriers() -> None:
             "qty": 1,
             "peso_unitario": state["peso"],
             "extras": 0,
-            "cambio_pa": pa_state[cfg["key"]],
+            "cambio_pa": _cambio_pa_efectivo(cfg),
             "venta_ml": "",
         }
         return calc_courier_row(row, ctx["params"], ctx["posicion_by_name"], ctx["courier_by_origen"], ctx["origen_posicion"], ctx["iva_vs_exento_by_courier"])
@@ -184,7 +189,7 @@ def build_tab_couriers() -> None:
         chart_container_ref[0].clear()
         fob = state["fob"]
         peso = state["peso"]
-        kgs = list(range(0, 61))
+        kgs = list(range(0, 56))
 
         pct_en_peso_by_key = {cfg["key"]: round(_calc(cfg)["traida_pct_raw"], 1) for cfg in _COURIERS}
 
@@ -210,7 +215,7 @@ def build_tab_couriers() -> None:
                     "qty": 1,
                     "peso_unitario": k,
                     "extras": 0,
-                    "cambio_pa": pa_state[cfg["key"]],
+                    "cambio_pa": _cambio_pa_efectivo(cfg),
                     "venta_ml": "",
                 }
                 calc = calc_courier_row(row, ctx["params"], ctx["posicion_by_name"], ctx["courier_by_origen"], ctx["origen_posicion"], ctx["iva_vs_exento_by_courier"])
@@ -251,13 +256,11 @@ def build_tab_couriers() -> None:
         chart_options = {
             "backgroundColor": "transparent",
             "grid": {"left": 45, "right": 20, "top": 55, "bottom": 30, "containLabel": True},
-            "legend": {"top": 0, "textStyle": {"fontSize": 10}},
             "tooltip": {"trigger": "axis"},
             "xAxis": {
                 "type": "value",
                 "min": 0,
-                "max": 60,
-                "name": "kg",
+                "max": 55,
                 "axisLabel": {"formatter": "{value} kg", "fontSize": 10},
             },
             "yAxis": {
