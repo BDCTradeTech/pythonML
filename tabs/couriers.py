@@ -10,16 +10,16 @@ from nicegui import app, ui
 TC = 1460  # dolar oficial, hardcodeado por ahora
 
 
-def _sixstar_usd(kg: float, fob: float, pa: float) -> float:
-    return 63 + fob * 0.0242 + kg * 3.63 + pa
+def _sixstar_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
+    return 63 + fob * 0.0242 + kg * 3.63 + kg * flete_kg + pa
 
 
-def _lhs_usd(kg: float, fob: float, pa: float) -> float:
-    return 27 + pa  # fijo, no depende de kg ni fob
+def _lhs_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
+    return 27 + kg * flete_kg + pa
 
 
-def _nc_usd(kg: float, fob: float, pa: float) -> float:
-    return 31 + pa  # fijo, no depende de kg ni fob
+def _nc_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
+    return 31 + kg * flete_kg + pa
 
 
 def _pct_traida(total_usd: float, fob: float) -> float:
@@ -35,9 +35,10 @@ _COURIERS = [
         "key": "sixstar",
         "nombre": "SIXSTAR",
         "color": "#2a78d6",
-        "pa_default": 100.0,
+        "flete_default": 7.50,
+        "pa_default": 150.0,
         "usd_fn": _sixstar_usd,
-        "rows_fn": lambda kg, fob, tc: [
+        "fixed_rows_fn": lambda kg, fob, tc: [
             ("Handling (fijo)", "USD 63 × TC", 63 * tc),
             ("G. Administrativos", "FOB × 2.42% × TC", fob * 0.0242 * tc),
             ("Honorarios", "KGS × USD 3.63 × TC", kg * 3.63 * tc),
@@ -47,9 +48,10 @@ _COURIERS = [
         "key": "lhs",
         "nombre": "LHS",
         "color": "#1baf7a",
-        "pa_default": 80.0,
+        "flete_default": 8.50,
+        "pa_default": 200.0,
         "usd_fn": _lhs_usd,
-        "rows_fn": lambda kg, fob, tc: [
+        "fixed_rows_fn": lambda kg, fob, tc: [
             ("Gastos Operativos (fijo)", "USD 27 × TC", 27 * tc),
         ],
     },
@@ -57,9 +59,10 @@ _COURIERS = [
         "key": "nc",
         "nombre": "NC Supplies",
         "color": "#eda100",
-        "pa_default": 90.0,
+        "flete_default": 9.50,
+        "pa_default": 250.0,
         "usd_fn": _nc_usd,
-        "rows_fn": lambda kg, fob, tc: [
+        "fixed_rows_fn": lambda kg, fob, tc: [
             ("Servicios y Honorarios (fijo)", "USD 31 × TC", 31 * tc),
         ],
     },
@@ -79,21 +82,29 @@ def build_tab_couriers() -> None:
 
     state = {"fob": 2000.0, "peso": 20.0}
     for cfg in _COURIERS:
+        state[f"flete_{cfg['key']}"] = cfg["flete_default"]
         state[f"pa_{cfg['key']}"] = cfg["pa_default"]
 
     content_refs: dict = {}
+    badge_refs: dict = {}
     derecha_ref: list = [None]
 
     def _render_card_content(cfg: dict):
-        cont = content_refs[cfg["key"]]
-        cont.clear()
         kg, fob = state["peso"], state["fob"]
+        flete_kg = state[f"flete_{cfg['key']}"]
         pa = state[f"pa_{cfg['key']}"]
-        total_usd = cfg["usd_fn"](kg, fob, pa)
+        total_usd = cfg["usd_fn"](kg, fob, flete_kg, pa)
         total_ars = total_usd * TC
         pct = _pct_traida(total_usd, fob)
-        filas = cfg["rows_fn"](kg, fob, TC) + [("Cambio PA", "PA (USD) × TC", pa * TC)]
 
+        badge_refs[cfg["key"]].set_text(f"{pct:.1f}%")
+
+        cont = content_refs[cfg["key"]]
+        cont.clear()
+        filas = cfg["fixed_rows_fn"](kg, fob, TC) + [
+            ("Flete internacional", "KGS × Flete/kg × TC", kg * flete_kg * TC),
+            ("Cambio PA", "PA (USD) × TC", pa * TC),
+        ]
         with cont:
             for nombre, formula, valor in filas:
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
@@ -105,9 +116,6 @@ def build_tab_couriers() -> None:
             with ui.element("div").style("display:flex;justify-content:space-between;align-items:center"):
                 ui.label("Total courier").style("font-size:12px;font-weight:600;color:#185FA5")
                 ui.label(_fmt_ars(total_ars)).style("font-size:13px;font-weight:700;color:#185FA5")
-            with ui.element("div").style("display:flex;justify-content:space-between;align-items:center"):
-                ui.label("% de traida").style("font-size:11px;color:#6b7280")
-                ui.label(f"{pct:.1f}%").style(f"font-size:12px;font-weight:600;color:{cfg['color']}")
 
     def _build_card_shell(cfg: dict):
         with ui.element("div").style(
@@ -122,14 +130,32 @@ def build_tab_couriers() -> None:
                         "width:9px;height:9px;border-radius:50%;background:#fff;flex-shrink:0"
                     )
                     ui.label(cfg["nombre"]).style("font-size:13px;font-weight:600;color:#fff;white-space:nowrap")
-                with ui.row().style("gap:4px;align-items:center;flex-shrink:0"):
-                    ui.label("PA USD").style("font-size:9px;color:rgba(255,255,255,.85)")
-                    inp_pa = ui.number(value=cfg["pa_default"], min=0, max=300, step=5).props(
-                        "dense outlined bg-color=white"
-                    ).style("width:72px;font-size:11px;border-radius:4px")
+                badge = ui.label("0.0%").style(
+                    "font-size:11px;font-weight:700;color:#fff;background:rgba(255,255,255,.22);"
+                    "padding:2px 10px;border-radius:10px;white-space:nowrap"
+                )
+                badge_refs[cfg["key"]] = badge
 
-            content = ui.element("div").style("padding:10px 12px;display:flex;flex-direction:column;gap:6px")
-            content_refs[cfg["key"]] = content
+            with ui.element("div").style("padding:10px 12px;display:flex;flex-direction:column;gap:8px"):
+                with ui.row().style("gap:10px"):
+                    with ui.element("div"):
+                        ui.label("Flete/kg (USD)").style("font-size:9px;color:#6b7280;display:block")
+                        inp_flete = ui.number(value=cfg["flete_default"], min=0, step=0.5).props(
+                            "dense outlined"
+                        ).style("width:90px;font-size:11px")
+                    with ui.element("div"):
+                        ui.label("PA (USD)").style("font-size:9px;color:#6b7280;display:block")
+                        inp_pa = ui.number(value=cfg["pa_default"], min=0, max=300, step=5).props(
+                            "dense outlined"
+                        ).style("width:90px;font-size:11px")
+
+                content = ui.element("div").style("display:flex;flex-direction:column;gap:6px")
+                content_refs[cfg["key"]] = content
+
+        def _on_flete(e, key=cfg["key"]):
+            state[f"flete_{key}"] = float(e.value or 0)
+            _recalcular()
+        inp_flete.on_value_change(_on_flete)
 
         def _on_pa(e, key=cfg["key"]):
             state[f"pa_{key}"] = float(e.value or 0)
@@ -140,11 +166,33 @@ def build_tab_couriers() -> None:
         derecha_ref[0].clear()
         fob = state["fob"]
         kgs = list(range(0, 61))
-        sixstar_pts = [round(_pct_traida(_sixstar_usd(k, fob, state["pa_sixstar"]), fob), 2) for k in kgs]
-        lhs_pct = round(_pct_traida(_lhs_usd(0, fob, state["pa_lhs"]), fob), 2)
-        nc_pct = round(_pct_traida(_nc_usd(0, fob, state["pa_nc"]), fob), 2)
-        lhs_pts = [lhs_pct] * len(kgs)
-        nc_pts = [nc_pct] * len(kgs)
+
+        series_defs = []
+        for cfg in _COURIERS:
+            flete_kg = state[f"flete_{cfg['key']}"]
+            pa = state[f"pa_{cfg['key']}"]
+            pts = [round(_pct_traida(cfg["usd_fn"](k, fob, flete_kg, pa), fob), 2) for k in kgs]
+            series_defs.append((cfg, pts))
+
+        series = []
+        for i, (cfg, pts) in enumerate(series_defs):
+            serie = {
+                "name": cfg["nombre"],
+                "type": "line",
+                "showSymbol": False,
+                "lineStyle": {"color": cfg["color"], "width": 2},
+                "itemStyle": {"color": cfg["color"]},
+                "data": [[k, v] for k, v in zip(kgs, pts)],
+            }
+            if i == 0:
+                serie["markLine"] = {
+                    "symbol": "none",
+                    "silent": True,
+                    "lineStyle": {"color": "#6b7280", "type": "dashed"},
+                    "label": {"formatter": "{c} kg", "position": "insideEndTop", "fontSize": 9, "color": "#6b7280"},
+                    "data": [{"xAxis": state["peso"]}],
+                }
+            series.append(serie)
 
         chart_options = {
             "backgroundColor": "transparent",
@@ -162,39 +210,7 @@ def build_tab_couriers() -> None:
                 "type": "value",
                 "axisLabel": {"formatter": "{value}%", "fontSize": 10},
             },
-            "series": [
-                {
-                    "name": "SIXSTAR",
-                    "type": "line",
-                    "showSymbol": False,
-                    "lineStyle": {"color": "#2a78d6", "width": 2},
-                    "itemStyle": {"color": "#2a78d6"},
-                    "data": [[k, v] for k, v in zip(kgs, sixstar_pts)],
-                    "markLine": {
-                        "symbol": "none",
-                        "silent": True,
-                        "lineStyle": {"color": "#6b7280", "type": "dashed"},
-                        "label": {"formatter": "{c} kg", "position": "insideEndTop", "fontSize": 9, "color": "#6b7280"},
-                        "data": [{"xAxis": state["peso"]}],
-                    },
-                },
-                {
-                    "name": "LHS",
-                    "type": "line",
-                    "showSymbol": False,
-                    "lineStyle": {"color": "#1baf7a", "width": 2},
-                    "itemStyle": {"color": "#1baf7a"},
-                    "data": [[k, v] for k, v in zip(kgs, lhs_pts)],
-                },
-                {
-                    "name": "NC Supplies",
-                    "type": "line",
-                    "showSymbol": False,
-                    "lineStyle": {"color": "#eda100", "width": 2},
-                    "itemStyle": {"color": "#eda100"},
-                    "data": [[k, v] for k, v in zip(kgs, nc_pts)],
-                },
-            ],
+            "series": series,
         }
         with derecha_ref[0]:
             with ui.element("div").style("border:0.5px solid #e2e8f0;border-radius:8px;padding:8px 4px 4px"):
