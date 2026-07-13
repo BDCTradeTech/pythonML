@@ -629,6 +629,7 @@ TABLA_COURIER_DEFAULT = [
     {"courier": "Mia Rosario", "posicion": "21I + 20D + 3E",     "valor_kg": "26.00", "descuento": "1",          "kg_real": "22.00", "almacenaje": "0",    "seguro": "0",     "res_3244": "0",     "gas_ope": "0",     "env_dom": "0",     "iibb": "0",    "cif": "0.7$+0.01%"},
     {"courier": "Mia Richard", "posicion": "10,5I + 10,8D + 0E", "valor_kg": "9.50",  "descuento": "1",          "kg_real": "9.50",  "almacenaje": "1.90", "seguro": "29.75", "res_3244": "5.00",  "gas_ope": "25.00", "env_dom": "10.00", "iibb": "0",    "cif": "3$+2%"},
     {"courier": "China",       "posicion": "10,5I + 0D + 0E",    "valor_kg": "27.00", "descuento": "1.33267522", "kg_real": "20.26", "almacenaje": "2.70", "seguro": "29.35", "res_3244": "10.00", "gas_ope": "27.00", "env_dom": "10.00", "iibb": "0.03", "cif": "0"},
+    {"courier": "Mia Sixtar",  "posicion": "Cambio PA",          "valor_kg": "7.00",  "descuento": "1",          "kg_real": "7.00",  "almacenaje": "1.2102", "seguro": "37.00", "res_3244": "6.05",  "gas_ope": "139.77", "env_dom": "22.00", "iibb": "0",    "cif": "3$+2%"},
 ]
 
 TABLA_IVA_VS_EXENTO_DEFAULT: List[Dict[str, Any]] = []
