@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import traceback
+from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
 
 import requests as _requests
@@ -639,18 +640,24 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
                 where_parts.append("pais_procedencia = ?")
                 params.append(origen_val)
         fecha_f = filtros.get("fecha", "Todas")
-        if fecha_f == "Hoy":
-            where_parts.append("fecha = strftime('%d/%m/%Y', 'now', 'localtime')")
-        elif fecha_f == "Esta semana":
-            where_parts.append(
-                "SUBSTR(fecha,7,4)||'-'||SUBSTR(fecha,4,2)||'-'||SUBSTR(fecha,1,2) >= DATE('now', 'localtime', '-6 days')"
-            )
-        elif fecha_f == "Este mes":
-            where_parts.append(
-                "SUBSTR(fecha,4,2) = strftime('%m', 'now', 'localtime') AND SUBSTR(fecha,7,4) = strftime('%Y', 'now', 'localtime')"
-            )
-        elif fecha_f == "Este año":
-            where_parts.append("SUBSTR(fecha,7,4) = strftime('%Y', 'now', 'localtime')")
+        if fecha_f != "Todas":
+            _hoy_ar = (datetime.utcnow() - timedelta(hours=3)).date()
+            _fecha_expr = "SUBSTR(fecha,7,4)||'-'||SUBSTR(fecha,4,2)||'-'||SUBSTR(fecha,1,2)"
+            if fecha_f == "Hoy":
+                where_parts.append(f"{_fecha_expr} = ?")
+                params.append(_hoy_ar.isoformat())
+            elif fecha_f == "Esta semana":
+                _inicio = _hoy_ar - timedelta(days=_hoy_ar.weekday())
+                where_parts.append(f"{_fecha_expr} >= ?")
+                params.append(_inicio.isoformat())
+            elif fecha_f == "Este mes":
+                _inicio = _hoy_ar.replace(day=1)
+                where_parts.append(f"{_fecha_expr} >= ?")
+                params.append(_inicio.isoformat())
+            elif fecha_f == "Este año":
+                _inicio = _hoy_ar.replace(month=1, day=1)
+                where_parts.append(f"{_fecha_expr} >= ?")
+                params.append(_inicio.isoformat())
         busqueda = (filtros.get("busqueda") or "").strip()
         if busqueda:
             where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ? OR LOWER(hawb) LIKE ?)")
