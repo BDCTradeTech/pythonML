@@ -566,8 +566,8 @@ def build_tab_datos() -> None:
 
                     def guardar_tabla() -> None:
                         new_data = []
-                        for rinputs in edit_rows:
-                            row: Dict[str, Any] = {}
+                        for idx, rinputs in enumerate(edit_rows):
+                            row: Dict[str, Any] = dict(data[idx]) if idx < len(data) else {}
                             for c in cols:
                                 if computed and c in computed:
                                     continue
