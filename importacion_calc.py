@@ -268,7 +268,7 @@ def load_calc_context(uid: int) -> Dict[str, Any]:
         for r in posicion_data if r.get("posicion")
     }
     courier_by_origen = {
-        str(r.get("courier", "")).strip(): {c: _f(r.get(c)) for c in ["valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb"]}
+        str(r.get("courier", "")).strip(): {c: _f(r.get(c)) for c in ["valor_kg", "descuento", "kg_real", "almacenaje", "seguro", "res_3244", "gas_ope", "env_dom", "iibb", "cambio_pa"]}
         for r in courier_data if r.get("courier")
     }
     origen_posicion = {str(r.get("courier", "")).strip(): str(r.get("posicion", "")).strip() for r in courier_data if r.get("courier")}

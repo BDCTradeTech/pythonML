@@ -2,14 +2,17 @@
 tabs/couriers.py
 Comparador de couriers de importacion (SIXSTAR, LHS, NC Supplies). Usa el motor
 real de calculo de Importacion (importacion_calc.calc_courier_row) sobre las
-mismas tablas por usuario: Costos por Courier y Tasas por Posicion. Solo lectura:
-los valores de cada courier se editan desde Datos -> Costos por Courier.
-FOB, peso, posicion y Cambio PA son de sesion (no se persisten).
+mismas tablas por usuario: Costos por Courier y Tasas por Posicion. Los valores
+de cada courier (excepto Cambio PA) se editan desde Datos -> Costos por Courier.
+FOB, peso y posicion son de sesion (no se persisten). Cambio PA es editable por
+courier desde esta misma pagina y SI se persiste (columna cambio_pa en la misma
+fila de tabla_courier) — no se toca desde Datos.
 """
 from __future__ import annotations
 
 from nicegui import app, ui
 
+from db import set_cotizador_tabla
 from importacion_calc import calc_courier_row, load_calc_context
 
 _COURIERS = [
@@ -17,6 +20,8 @@ _COURIERS = [
     {"key": "lhs", "nombre": "LHS", "color": "#1baf7a", "origen": "Mia LHS"},
     {"key": "nc", "nombre": "NC Supplies", "color": "#eda100", "origen": "Mia Richard"},
 ]
+
+_DEFAULT_CAMBIO_PA = {"sixstar": 150.0, "lhs": 200.0, "nc": 250.0}
 
 
 def _fmt_usd0(v: float) -> str:
@@ -43,10 +48,38 @@ def build_tab_couriers() -> None:
     }
     default_posicion = next(iter(opciones_posicion), "")
 
-    state = {"fob": 2900.0, "peso": 35.0, "posicion": default_posicion, "cambio_pa": 0.0}
+    state = {"fob": 2900.0, "peso": 35.0, "posicion": default_posicion}
+
+    _courier_row_by_origen: dict = {
+        str(r.get("courier", "")).strip(): r for r in ctx["courier_data"]
+    }
+
+    def _cambio_pa_inicial(cfg: dict) -> float:
+        row = _courier_row_by_origen.get(cfg["origen"], {})
+        raw = row.get("cambio_pa")
+        if raw is None or raw == "":
+            return _DEFAULT_CAMBIO_PA[cfg["key"]]
+        try:
+            return float(str(raw).replace(",", "."))
+        except (TypeError, ValueError):
+            return _DEFAULT_CAMBIO_PA[cfg["key"]]
+
+    pa_state: dict = {cfg["key"]: _cambio_pa_inicial(cfg) for cfg in _COURIERS}
+
+    def _persist_cambio_pa(cfg: dict, val: float) -> None:
+        rows = [dict(r) for r in ctx["courier_data"]]
+        for r in rows:
+            if str(r.get("courier", "")).strip() == cfg["origen"]:
+                r["cambio_pa"] = val
+                break
+        set_cotizador_tabla("courier", rows, uid)
+        ctx["courier_data"] = rows
+        _courier_row_by_origen.clear()
+        _courier_row_by_origen.update({str(r.get("courier", "")).strip(): r for r in rows})
 
     content_refs: dict = {}
     badge_refs: dict = {}
+    pa_input_refs: dict = {}
     chart_container_ref: list = [None]
 
     def _calc(cfg: dict) -> dict:
@@ -57,7 +90,7 @@ def build_tab_couriers() -> None:
             "qty": 1,
             "peso_unitario": state["peso"],
             "extras": 0,
-            "cambio_pa": state["cambio_pa"],
+            "cambio_pa": pa_state[cfg["key"]],
             "venta_ml": "",
         }
         return calc_courier_row(row, ctx["params"], ctx["posicion_by_name"], ctx["courier_by_origen"], ctx["origen_posicion"], ctx["iva_vs_exento_by_courier"])
@@ -123,6 +156,27 @@ def build_tab_couriers() -> None:
                 badge_refs[cfg["key"]] = badge
 
             with ui.element("div").style("padding:6px 10px;display:flex;flex-direction:column;gap:2px"):
+                with ui.element("div").style(
+                    "display:flex;justify-content:space-between;align-items:center;gap:6px;"
+                    "padding-bottom:4px;margin-bottom:2px;border-bottom:0.5px solid #e2e8f0"
+                ):
+                    ui.label("Cambio PA (u$)").style(
+                        "font-size:10px;color:#374151;font-weight:500;white-space:nowrap"
+                    )
+                    pa_input = ui.number(value=pa_state[cfg["key"]], min=0, step=10).props(
+                        "dense outlined"
+                    ).style("width:64px;font-size:10px")
+                    pa_input_refs[cfg["key"]] = pa_input
+
+                def _on_cambio_pa_card(e, cfg=cfg, pa_input=pa_input):
+                    val = max(0.0, float(e.value or 0))
+                    pa_state[cfg["key"]] = val
+                    pa_input.set_value(val)
+                    _persist_cambio_pa(cfg, val)
+                    _render_card_content(cfg)
+                    _render_chart()
+                pa_input.on_value_change(_on_cambio_pa_card)
+
                 content = ui.element("div").style("display:flex;flex-direction:column;gap:2px")
                 content_refs[cfg["key"]] = content
 
@@ -156,7 +210,7 @@ def build_tab_couriers() -> None:
                     "qty": 1,
                     "peso_unitario": k,
                     "extras": 0,
-                    "cambio_pa": state["cambio_pa"],
+                    "cambio_pa": pa_state[cfg["key"]],
                     "venta_ml": "",
                 }
                 calc = calc_courier_row(row, ctx["params"], ctx["posicion_by_name"], ctx["courier_by_origen"], ctx["origen_posicion"], ctx["iva_vs_exento_by_courier"])
@@ -252,12 +306,6 @@ def build_tab_couriers() -> None:
                         "dense outlined"
                     ).style("width:70px;flex-shrink:0;font-size:12px")
 
-            with ui.element("div").style("min-width:140px"):
-                ui.label("Cambio PA (u$)").style("font-size:11px;color:#374151;font-weight:500;display:block")
-                inp_pa = ui.number(value=state["cambio_pa"], min=0, step=10).props(
-                    "dense outlined"
-                ).style("width:100%;font-size:12px")
-
         def _on_posicion(e):
             state["posicion"] = e.value
             _recalcular()
@@ -297,11 +345,6 @@ def build_tab_couriers() -> None:
             sld_peso.set_value(val)
             _recalcular()
         inp_peso.on_value_change(_on_peso_input)
-
-        def _on_cambio_pa(e):
-            state["cambio_pa"] = float(e.value or 0)
-            _recalcular()
-        inp_pa.on_value_change(_on_cambio_pa)
 
         # 2) Fila de 3 tarjetas, una sola fila full-width
         with ui.element("div").classes("couriers-row").style("display:flex;gap:10px;width:100%"):
