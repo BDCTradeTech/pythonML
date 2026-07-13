@@ -234,13 +234,13 @@ def build_tab_couriers() -> None:
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
                     ui.label("FOB Total").style("font-size:11px;color:#374151;font-weight:500")
                     lbl_fob = ui.label(_fmt_usd0(state["fob"])).style("font-size:12px;font-weight:700;color:#185FA5")
-                sld_fob = ui.slider(min=0, max=3000, step=100, value=state["fob"]).style("width:100%")
+                sld_fob = ui.slider(min=0, max=3000, step=5, value=state["fob"]).style("width:100%")
 
             with ui.element("div").style("flex:1;min-width:220px"):
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
                     ui.label("Peso total").style("font-size:11px;color:#374151;font-weight:500")
-                    lbl_peso = ui.label(f"{state['peso']:.0f} kg").style("font-size:12px;font-weight:700;color:#185FA5")
-                sld_peso = ui.slider(min=0, max=60, step=1, value=state["peso"]).style("width:100%")
+                    lbl_peso = ui.label(f"{state['peso']:.1f} kg").style("font-size:12px;font-weight:700;color:#185FA5")
+                sld_peso = ui.slider(min=0, max=60, step=0.1, value=state["peso"]).style("width:100%")
 
             with ui.element("div").style("min-width:140px"):
                 ui.label("Cambio PA (u$)").style("font-size:11px;color:#374151;font-weight:500;display:block")
@@ -260,8 +260,8 @@ def build_tab_couriers() -> None:
         sld_fob.on_value_change(_on_fob)
 
         def _on_peso(e):
-            state["peso"] = float(e.value or 0)
-            lbl_peso.set_text(f"{state['peso']:.0f} kg")
+            state["peso"] = round(float(e.value or 0), 1)
+            lbl_peso.set_text(f"{state['peso']:.1f} kg")
             _recalcular()
         sld_peso.on_value_change(_on_peso)
 
