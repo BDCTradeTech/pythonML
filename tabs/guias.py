@@ -1130,6 +1130,7 @@ def _rebuild_tabla(
     filas_ref: list,
     parsed_ref: list,
     sort_state: list,
+    refresh,
     filtros: dict | None = None,
     recien: set | None = None,
 ) -> None:
@@ -1170,7 +1171,7 @@ def _rebuild_tabla(
                         def _sort_click(col=h):
                             sort_state[1] = "desc" if sort_state[0] == col and sort_state[1] == "asc" else "asc"
                             sort_state[0] = col
-                            _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros, recien=recien)
+                            refresh(recien)
                         _h_nowrap = ";white-space:nowrap" if h == "Almacenaje" else ""
                         with ui.element("div").style(
                             _hs_base + f";color:{_hc};cursor:pointer;user-select:none{_h_nowrap}"
@@ -1257,9 +1258,7 @@ def _rebuild_tabla(
                         f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                     ):
                         def _pa_click(rid=rid, hawb=r["hawb"], pa=r["pa"]):
-                            _show_edit_pa_dialog(
-                                rid, hawb, pa, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
-                            )
+                            _show_edit_pa_dialog(rid, hawb, pa, user_id, refresh, recien)
                         with ui.element("div").classes("pa-chip").style("min-width:60px").on("click", _pa_click):
                             ui.label(_fmt_usd(r["pa"])).style("pointer-events:none;font-size:10px;color:#0C447C;white-space:nowrap")
                             ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:9px;opacity:0.7;color:#0C447C"></i>')
@@ -1273,9 +1272,7 @@ def _rebuild_tabla(
                             f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                         ):
                             def _origen_click(rid=rid, hawb=r["hawb"], origen=r["pais_procedencia"]):
-                                _show_edit_origen_dialog(
-                                    rid, hawb, origen, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
-                                )
+                                _show_edit_origen_dialog(rid, hawb, origen, user_id, refresh, recien)
                             with ui.element("div").classes("pa-chip").style("min-width:50px").on("click", _origen_click):
                                 ui.label(_origen_raw or "—").style(
                                     "pointer-events:none;font-size:10px;color:#0C447C"
@@ -1303,9 +1300,7 @@ def _rebuild_tabla(
                             _kgs_val = _to_float(r["kgs"])
                             _kgs_disp = f"{_kgs_val:.1f} kg" if _kgs_val is not None else "—"
                             def _kgs_click(rid=rid, hawb=r["hawb"], kgs=r["kgs"]):
-                                _show_edit_kgs_dialog(
-                                    rid, hawb, kgs, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
-                                )
+                                _show_edit_kgs_dialog(rid, hawb, kgs, user_id, refresh, recien)
                             with ui.element("div").classes("pa-chip").style("min-width:55px").on("click", _kgs_click):
                                 ui.label(_kgs_disp).style(
                                     "pointer-events:none;font-size:9px;color:#0C447C;white-space:nowrap"
@@ -1423,11 +1418,8 @@ def _rebuild_tabla(
                         else:
                             with ui.element("button").on(
                                 "click",
-                                lambda rid=rid, c=_r_courier, fac=_r_fac, f=filtros:
-                                    _show_upload_pdf_dialog(
-                                        rid, user_id, c, fac,
-                                        tabla_container, filas_ref, parsed_ref, sort_state, f, recien
-                                    ),
+                                lambda rid=rid, c=_r_courier, fac=_r_fac:
+                                    _show_upload_pdf_dialog(rid, user_id, c, fac, refresh, recien),
                             ).style(
                                 "background:none;border:0.5px dashed var(--color-border-secondary);"
                                 "cursor:pointer;color:var(--color-text-tertiary);"
@@ -1437,9 +1429,7 @@ def _rebuild_tabla(
                                 ui.html('<i class="ti ti-file-upload" style="font-size:12px;pointer-events:none"></i>')
                         ui.button(
                             icon="delete",
-                            on_click=lambda rid=rid: _show_del_dialog(
-                                rid, user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien
-                            ),
+                            on_click=lambda rid=rid: _show_del_dialog(rid, user_id, refresh, recien),
                         ).props("flat dense").style("color:#dc2626;min-width:20px")
                     # Fila expandible — abarca todas las columnas del grid
                     det_productos = r.get("productos") or []
@@ -1551,8 +1541,7 @@ def _show_ver_dialog(guia_id: int, user_id: int) -> None:
 
 
 def _show_del_dialog(
-    rid: int, user_id: int, tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
-    recien: set | None = None,
+    rid: int, user_id: int, refresh, recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:280px"):
         ui.label("¿Eliminar esta guía?").style(
@@ -1564,7 +1553,7 @@ def _show_del_dialog(
                 d.close()
                 _delete_guia(rid, user_id)
                 ui.notify("Guía eliminada", color="info")
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
+                refresh(recien)
             ui.button("Eliminar", on_click=_confirm).props("flat").style("color:#dc2626")
     d.open()
 
@@ -1588,8 +1577,7 @@ def _download_pdf_handler(pdf_path: str, pdf_path_2: str, courier: str, nro_fact
 
 def _show_upload_pdf_dialog(
     rid: int, user_id: int, courier: str, nro_factura: str,
-    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
-    filtros: dict | None = None,
+    refresh,
     recien: set | None = None,
 ) -> None:
     from datetime import datetime as _dt
@@ -1654,7 +1642,7 @@ def _show_upload_pdf_dialog(
                     _update_pdf_path(rid, p1, p2)
                     d.close()
                     ui.notify("PDF guardado", color="positive")
-                    _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, filtros, recien=recien)
+                    refresh(recien)
                 except Exception as exc:
                     ui.notify(f"Error: {exc}", color="negative")
 
@@ -1783,7 +1771,7 @@ def _show_traida_dialog(breakdown: dict) -> None:
 
 def _show_edit_pa_dialog(
     rid: int, hawb: str, pa_current: str, user_id: int,
-    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    refresh,
     recien: set | None = None,
 ) -> None:
     pa_val = _to_float(pa_current) or 0.0
@@ -1812,7 +1800,7 @@ def _show_edit_pa_dialog(
                 ui.notify("PA actualizado", color="positive")
                 if recien is not None:
                     recien.add(rid)
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
+                refresh(recien)
             ui.button("Guardar y recalcular", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1821,7 +1809,7 @@ def _show_edit_pa_dialog(
 
 def _show_edit_origen_dialog(
     rid: int, hawb: str, origen_current: str, user_id: int,
-    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    refresh,
     recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
@@ -1845,7 +1833,7 @@ def _show_edit_origen_dialog(
                 ui.notify("Origen actualizado", color="positive")
                 if recien is not None:
                     recien.add(rid)
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
+                refresh(recien)
             ui.button("Guardar", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1854,7 +1842,7 @@ def _show_edit_origen_dialog(
 
 def _show_edit_kgs_dialog(
     rid: int, hawb: str, kgs_current: str, user_id: int,
-    tabla_container, filas_ref: list, parsed_ref: list, sort_state: list,
+    refresh,
     recien: set | None = None,
 ) -> None:
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
@@ -1876,7 +1864,7 @@ def _show_edit_kgs_dialog(
                 ui.notify("Peso Total actualizado", color="positive")
                 if recien is not None:
                     recien.add(rid)
-                _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=recien)
+                refresh(recien)
             ui.button("Guardar", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
@@ -1895,8 +1883,8 @@ def _build_courier_panel(
     parsed_ref: list,
     sort_state: list,
     recien: set,
+    refresh,
     pa_default: int = 200,
-    filtros: dict | None = None,
 ) -> None:
     logger.warning("[DBG] _build_courier_panel START courier=%s", courier_key)
     archivo_data: list = [None]
@@ -2002,9 +1990,9 @@ def _build_courier_panel(
                             logger.warning("[DBG] PDF guardado courier=%s path=%s", courier_key, _p1)
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error courier=%s: %s", courier_key, _pe)
-                    logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=filtros, recien=recien)
-                    logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
+                    logger.warning("[DBG] Llamando refresh courier=%s", courier_key)
+                    refresh(recien)
+                    logger.warning("[DBG] refresh OK courier=%s", courier_key)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
                         "color:'positive',position:'bottom'})"
@@ -2135,7 +2123,7 @@ def _build_lhs_panel(
     parsed_ref: list,
     sort_state: list,
     recien: set,
-    filtros: dict | None = None,
+    refresh,
 ) -> None:
     archivo_data_lhs1: list = [None]
     archivo_mime_lhs1: list = [None]
@@ -2290,7 +2278,7 @@ def _build_lhs_panel(
                             _update_pdf_path(_guia_id, _p1, _p2)
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error LHS: %s", _pe)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=filtros, recien=recien)
+                    refresh(recien)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
                         "color:'positive',position:'bottom'})"
@@ -2430,10 +2418,18 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
     guias_recien: set = set()
     _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Este mes", "busqueda": ""}
 
+    def _refresh(recien: set | None = None) -> None:
+        if tabla_ref[0] is None:
+            return
+        _rebuild_tabla(
+            user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state,
+            _refresh, filtros=_filtros,
+            recien=recien if recien is not None else guias_recien,
+        )
+
     def _filter_change(key: str, val: str) -> None:
         _filtros[key] = val
-        if tabla_ref[0] is not None:
-            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien)
+        _refresh()
 
     # ── Panel superior: couriers colapsable ───────────────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
@@ -2465,18 +2461,18 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
             _build_courier_panel(
                 "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
-                pa_default=250, filtros=_filtros,
+                _refresh, pa_default=250,
             )
             logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
             _build_courier_panel(
                 "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
-                pa_default=150, filtros=_filtros,
+                _refresh, pa_default=150,
             )
             logger.warning("[DBG] build_tab_guias: panel LHS...")
             _build_lhs_panel(
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
-                filtros=_filtros,
+                _refresh,
             )
     logger.warning("[DBG] build_tab_guias: paneles OK")
 
@@ -2521,9 +2517,7 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
             )
         with ui.element("button").on(
             "click",
-            lambda: _rebuild_tabla(
-                user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien
-            ),
+            lambda: _refresh(),
         ).style(
             "height:34px;font-size:12px;font-weight:500;"
             "border:1px solid #2A7AC7;"
@@ -2541,13 +2535,12 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
     with ui.element("div").style("padding:16px 0 24px"):
         tabla_container = ui.element("div").style("width:100%")
         tabla_ref[0] = tabla_container
-        _rebuild_tabla(user_id, tabla_container, filas_ref, parsed_ref, sort_state, recien=guias_recien)
+        _refresh()
 
     def _limpiar_recien_cargadas() -> None:
         if not guias_recien:
             return
         guias_recien.clear()
-        if tabla_ref[0] is not None:
-            _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=_filtros, recien=guias_recien)
+        _refresh()
 
     return _limpiar_recien_cargadas
