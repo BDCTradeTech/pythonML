@@ -67,12 +67,14 @@ def build_tab_couriers() -> None:
         pct = calc["traida_pct_raw"]
         badge_refs[cfg["key"]].set_text(f"{pct:.1f}%")
 
+        kg_real = ctx["courier_by_origen"].get(cfg["origen"], {}).get("kg_real", 0.0)
+
         cont = content_refs[cfg["key"]]
         cont.clear()
         filas = [
             ("Derechos", calc["derechos"]),
             ("Tasa Estadística", calc["estadistica"]),
-            ("Flete Internacional", calc["flete_int"]),
+            (f"Flete Internacional (u$ {kg_real:.2f} kg)", calc["flete_int"]),
             ("Almacenaje", calc["almacenaje"]),
             ("Res 3244", calc["res_3244"]),
             ("Seguro", calc["seguro"]),
