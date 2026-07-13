@@ -468,6 +468,7 @@ _LABELS = {
     "gastos_en_origen": "Gastos en Origen",
     "pa": "PA",
     "total_real": "Total real",
+    "revisar_iva": "Revisar IVA Aduanero",
 }
 
 _SCALAR_COLS = [
@@ -479,6 +480,7 @@ _SCALAR_COLS = [
     "gastos_administrativos", "honorarios", "handling",
     "iva_aduanero", "iva_21", "derechos_importacion", "tasa_estadistica",
     "pa", "total_real", "courier", "perc_iibb", "ia_usada", "gastos_en_origen",
+    "revisar_iva",
 ]
 
 _TABLE_HEADERS = [
@@ -556,7 +558,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2", "gastos_en_origen"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2", "gastos_en_origen", "revisar_iva"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -661,7 +663,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
         "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada, pdf_path, pdf_path_2, "
-        "gastos_en_origen "
+        "gastos_en_origen, revisar_iva "
         f"FROM guias_importacion WHERE {where_sql} "
         "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
         params,
@@ -786,6 +788,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "costo_sin_iva": costo_sin_iva,
             "traida_breakdown": traida_breakdown,
             "total_real": r["total_real"] or "",
+            "revisar_iva": r["revisar_iva"] or "",
             "almacenaje_kg": almacenaje_kg,
             "productos": json.loads(r["productos"] or "[]") if r["productos"] else [],
             "ia_usada": r["ia_usada"] or "",
@@ -1343,6 +1346,10 @@ def _rebuild_tabla(
                             "color:#1d4ed8;font-size:11px;white-space:nowrap;"
                             "padding:0 2px;min-height:0;text-decoration:none"
                         )
+                        if r.get("revisar_iva"):
+                            ui.html(
+                                '<i class="ti ti-alert-triangle" style="color:#dc2626;font-size:12px"></i>'
+                            ).tooltip(r["revisar_iva"])
                     # Total real
                     ui.label(_fmt_ars(r["total_real"])).style(
                         f"{_ct};white-space:nowrap;text-align:right"
@@ -1889,6 +1896,7 @@ def _build_courier_panel(
     sort_state: list,
     recien: set,
     pa_default: int = 200,
+    filtros: dict | None = None,
 ) -> None:
     logger.warning("[DBG] _build_courier_panel START courier=%s", courier_key)
     archivo_data: list = [None]
@@ -1995,7 +2003,7 @@ def _build_courier_panel(
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error courier=%s: %s", courier_key, _pe)
                     logger.warning("[DBG] Llamando _rebuild_tabla courier=%s", courier_key)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, recien=recien)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=filtros, recien=recien)
                     logger.warning("[DBG] _rebuild_tabla OK courier=%s", courier_key)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
@@ -2092,6 +2100,32 @@ def _build_courier_panel(
     logger.warning("[DBG] _build_courier_panel END courier=%s", courier_key)
 
 
+# ── LHS: validacion cruzada del IVA Aduanero contra Total Real ───────────────
+# Debe reflejar exactamente la rama is_lhs de tf_components en _list_guias.
+_LHS_TF_KEYS = [
+    "flete_aereo", "entrega_domicilio", "seguro_internacional", "resolucion_3244",
+    "servicios_honorarios", "almacenaje", "iva_aduanero", "derechos_importacion",
+    "tasa_estadistica", "iva_21", "perc_iibb", "gastos_en_origen",
+]
+_LHS_IVA_TOLERANCIA = 0.02
+_LHS_IVA_MAX_REINTENTOS = 2
+
+
+def _lhs_total_factura_desde_parsed(parsed: dict) -> float:
+    return sum(_to_float(parsed.get(k)) or 0.0 for k in _LHS_TF_KEYS)
+
+
+def _lhs_iva_ok(parsed: dict):
+    """Chequeo cruzado: Total Factura calculado vs Total Real de la factura.
+    Devuelve (ok, total_factura_calc, total_real, diff_pct)."""
+    tf_calc = _lhs_total_factura_desde_parsed(parsed)
+    total_real = _to_float(parsed.get("total_real"))
+    if total_real is None or total_real == 0:
+        return True, tf_calc, total_real, None
+    diff_pct = abs(tf_calc - total_real) / total_real
+    return diff_pct <= _LHS_IVA_TOLERANCIA, tf_calc, total_real, diff_pct
+
+
 # ── LHS panel (dos uploaders: Factura LHS + Invoice BDC) ─────────────────────
 
 def _build_lhs_panel(
@@ -2101,6 +2135,7 @@ def _build_lhs_panel(
     parsed_ref: list,
     sort_state: list,
     recien: set,
+    filtros: dict | None = None,
 ) -> None:
     archivo_data_lhs1: list = [None]
     archivo_mime_lhs1: list = [None]
@@ -2163,15 +2198,8 @@ def _build_lhs_panel(
         filas_ref[0].clear()
 
         try:
-            if usar_gemini:
-                raw = await run.io_bound(
-                    _gemini_vision_multi,
-                    gemini_key,
-                    archivo_data_lhs1[0], archivo_mime_lhs1[0],
-                    archivo_data_lhs2[0], archivo_mime_lhs2[0],
-                    PROMPT_GUIA_LHS,
-                )
-            else:
+            texto_completo = None
+            if not usar_gemini:
                 texto1 = await run.io_bound(_extract_pdf_text, archivo_data_lhs1[0])
                 texto2 = await run.io_bound(_extract_pdf_text, archivo_data_lhs2[0])
                 if not texto1.strip():
@@ -2187,14 +2215,57 @@ def _build_lhs_panel(
                     )
                     return
                 texto_completo = texto1 + "\n\n--- DOCUMENTO 2 (Invoice BDC) ---\n\n" + texto2
-                full_prompt = PROMPT_GUIA_LHS + "\n\nCONTENIDO DE LOS DOCUMENTOS:\n" + texto_completo
-                raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
-            raw = _clean_json(raw)
+
             try:
-                parsed = json.loads(raw)
+                intento = 0
+                parsed: dict = {}
+                iva_ok = True
+                diff_pct = None
+                while True:
+                    intento += 1
+                    extra_ctx = ""
+                    if intento > 1:
+                        _prev_iva = parsed.get("iva_aduanero")
+                        extra_ctx = (
+                            "\n\nADVERTENCIA — EL INTENTO ANTERIOR NO PASÓ LA VALIDACIÓN CRUZADA:\n"
+                            f"En el intento anterior extrajiste iva_aduanero = {_prev_iva}. Con ese valor, "
+                            f"el Total Factura calculado (suma de todos los componentes) da "
+                            f"{_lhs_total_factura_desde_parsed(parsed):,.2f}, pero el campo \"TOTAL\" "
+                            f"(total_real) de la factura es {parsed.get('total_real')} — una diferencia del "
+                            f"{(diff_pct * 100):.1f}%, demasiado grande para ser normal.\n"
+                            "Es muy probable que el valor de iva_aduanero tenga un dígito de más (ej: leer "
+                            "4.771.262 en vez de 477.126). Releé la fila con porcentaje 10,50% en la columna "
+                            "\"I.V.A.\" con mucho cuidado, dígito por dígito, y devolvé el valor correcto. "
+                            f"NO repitas el mismo valor ({_prev_iva}) salvo que estés absolutamente seguro."
+                        )
+                    if usar_gemini:
+                        raw = await run.io_bound(
+                            _gemini_vision_multi,
+                            gemini_key,
+                            archivo_data_lhs1[0], archivo_mime_lhs1[0],
+                            archivo_data_lhs2[0], archivo_mime_lhs2[0],
+                            PROMPT_GUIA_LHS + extra_ctx,
+                        )
+                    else:
+                        full_prompt = PROMPT_GUIA_LHS + extra_ctx + "\n\nCONTENIDO DE LOS DOCUMENTOS:\n" + texto_completo
+                        raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+                    raw = _clean_json(raw)
+                    parsed = json.loads(raw)
+                    iva_ok, _tf_calc, _total_real, diff_pct = _lhs_iva_ok(parsed)
+                    if iva_ok or intento > _LHS_IVA_MAX_REINTENTOS:
+                        break
+                    logger.warning(
+                        "[DBG] LHS IVA Aduanero no cuadra (intento %d, dif %.1f%%) — reintentando",
+                        intento, diff_pct * 100,
+                    )
+
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = "LHS"
                 parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
+                parsed["revisar_iva"] = "" if iva_ok else (
+                    f"IVA Aduanero no coincide con Total Real tras {intento} intento(s) "
+                    f"(diferencia {diff_pct * 100:.1f}%). Verificar manualmente."
+                )
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
                 parsed_ref[0] = parsed
@@ -2219,7 +2290,7 @@ def _build_lhs_panel(
                             _update_pdf_path(_guia_id, _p1, _p2)
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error LHS: %s", _pe)
-                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, recien=recien)
+                    _rebuild_tabla(user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state, filtros=filtros, recien=recien)
                     client.run_javascript(
                         "Quasar.Notify.create({message:'Guía agregada automáticamente',"
                         "color:'positive',position:'bottom'})"
@@ -2394,17 +2465,18 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
             _build_courier_panel(
                 "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
-                pa_default=250,
+                pa_default=250, filtros=_filtros,
             )
             logger.warning("[DBG] build_tab_guias: panel SIXTAR...")
             _build_courier_panel(
                 "Sixtar", "SIXTAR", PROMPT_GUIA_SIXTAR,
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
-                pa_default=150,
+                pa_default=150, filtros=_filtros,
             )
             logger.warning("[DBG] build_tab_guias: panel LHS...")
             _build_lhs_panel(
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
+                filtros=_filtros,
             )
     logger.warning("[DBG] build_tab_guias: paneles OK")
 
