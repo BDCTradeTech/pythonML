@@ -1,73 +1,75 @@
 """
 tabs/couriers.py
-Comparador de couriers de importacion — 100% efimero, sin persistencia en DB.
-Los inputs viven solo en la sesion del navegador (estado reactivo NiceGUI).
+Comparador de couriers de importacion. Persistencia por usuario en couriers_config
+(flete/kg, cambio PA, envio a domicilio por despachante). FOB, peso y posicion
+arancelaria son de sesion (no se persisten).
 """
 from __future__ import annotations
 
 from nicegui import app, ui
 
-TC = 1460  # dolar oficial, hardcodeado por ahora
+from db import ensure_courier_config_defaults, set_courier_config_campo, get_cotizador_tabla
+from tabs.admin import TABLA_POSICION_DEFAULT
 
 
-def _sixstar_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
-    return 63 + fob * 0.0242 + kg * 3.63 + kg * flete_kg + pa
+def _sixstar_usd(kg: float, fob: float, flete_kg: float, pa: float, envio: float) -> float:
+    return 63 + fob * 0.0242 + kg * 3.63 + kg * flete_kg + pa + envio
 
 
-def _lhs_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
-    return 27 + kg * flete_kg + pa
+def _lhs_usd(kg: float, fob: float, flete_kg: float, pa: float, envio: float) -> float:
+    return 27 + kg * flete_kg + pa + envio
 
 
-def _nc_usd(kg: float, fob: float, flete_kg: float, pa: float) -> float:
-    return 31 + kg * flete_kg + pa
+def _nc_usd(kg: float, fob: float, flete_kg: float, pa: float, envio: float) -> float:
+    return 31 + kg * flete_kg + pa + envio
 
 
 def _pct_traida(total_usd: float, fob: float) -> float:
     return (total_usd / fob) * 100 if fob else 0.0
 
 
-def _fmt_ars(v: float) -> str:
-    return f"$ {v:,.0f}".replace(",", ".")
-
-
 def _fmt_usd(v: float) -> str:
-    return f"USD {v:,.0f}".replace(",", ".")
+    return f"u$ {v:,.2f}"
+
+
+def _fmt_usd0(v: float) -> str:
+    return f"USD {v:,.0f}"
 
 
 _COURIERS = [
     {
         "key": "sixstar",
+        "despachante": "SIXSTAR",
         "nombre": "SIXSTAR",
         "color": "#2a78d6",
-        "flete_default": 7.50,
-        "pa_default": 150.0,
+        "defaults": {"flete_kg": 7.50, "cambio_pa": 150.0, "envio_domicilio": 23.0},
         "usd_fn": _sixstar_usd,
-        "fixed_rows_fn": lambda kg, fob, tc: [
-            ("Handling", "USD 63 × TC", 63 * tc),
-            ("G. Admin.", "FOB × 2.42% × TC", fob * 0.0242 * tc),
-            ("Honorarios", "KGS × USD 3.63 × TC", kg * 3.63 * tc),
+        "fixed_rows_fn": lambda kg, fob: [
+            ("Handling", "u$ 63.00", 63.0),
+            ("G. Administrativos", "FOB × 2.42%", fob * 0.0242),
+            ("Honorarios", "kg × u$ 3.63", kg * 3.63),
         ],
     },
     {
         "key": "lhs",
+        "despachante": "LHS",
         "nombre": "LHS",
         "color": "#1baf7a",
-        "flete_default": 8.50,
-        "pa_default": 200.0,
+        "defaults": {"flete_kg": 8.50, "cambio_pa": 200.0, "envio_domicilio": 10.0},
         "usd_fn": _lhs_usd,
-        "fixed_rows_fn": lambda kg, fob, tc: [
-            ("Gastos Operativos", "USD 27 × TC", 27 * tc),
+        "fixed_rows_fn": lambda kg, fob: [
+            ("Gastos Operativos", "u$ 27.00", 27.0),
         ],
     },
     {
         "key": "nc",
+        "despachante": "NC",
         "nombre": "NC Supplies",
         "color": "#eda100",
-        "flete_default": 9.50,
-        "pa_default": 250.0,
+        "defaults": {"flete_kg": 9.50, "cambio_pa": 250.0, "envio_domicilio": 30.0},
         "usd_fn": _nc_usd,
-        "fixed_rows_fn": lambda kg, fob, tc: [
-            ("Serv. y Honorarios", "USD 31 × TC", 31 * tc),
+        "fixed_rows_fn": lambda kg, fob: [
+            ("Serv. y Honorarios", "u$ 31.00", 31.0),
         ],
     },
 ]
@@ -84,11 +86,14 @@ def build_tab_couriers() -> None:
     if not user:
         ui.label("Debes iniciar sesion").classes("text-red-500 p-4")
         return
+    uid = user["id"]
 
     state = {"fob": 2900.0, "peso": 35.0}
     for cfg in _COURIERS:
-        state[f"flete_{cfg['key']}"] = cfg["flete_default"]
-        state[f"pa_{cfg['key']}"] = cfg["pa_default"]
+        vals = ensure_courier_config_defaults(uid, cfg["despachante"], cfg["defaults"])
+        state[f"flete_{cfg['key']}"] = float(vals["flete_kg"])
+        state[f"pa_{cfg['key']}"] = float(vals["cambio_pa"])
+        state[f"envio_{cfg['key']}"] = float(vals["envio_domicilio"])
 
     content_refs: dict = {}
     badge_refs: dict = {}
@@ -98,38 +103,42 @@ def build_tab_couriers() -> None:
         kg, fob = state["peso"], state["fob"]
         flete_kg = state[f"flete_{cfg['key']}"]
         pa = state[f"pa_{cfg['key']}"]
-        total_usd = cfg["usd_fn"](kg, fob, flete_kg, pa)
-        total_ars = total_usd * TC
+        envio = state[f"envio_{cfg['key']}"]
+        total_usd = cfg["usd_fn"](kg, fob, flete_kg, pa, envio)
         pct = _pct_traida(total_usd, fob)
 
         badge_refs[cfg["key"]].set_text(f"{pct:.1f}%")
 
         cont = content_refs[cfg["key"]]
         cont.clear()
-        filas = cfg["fixed_rows_fn"](kg, fob, TC) + [
-            ("Flete internacional", "KGS × Flete/kg × TC", kg * flete_kg * TC),
-            ("Cambio PA", "PA (USD) × TC", pa * TC),
+        filas = cfg["fixed_rows_fn"](kg, fob) + [
+            ("Flete internacional", "kg × Flete/kg", kg * flete_kg),
+            ("Cambio PA", "", pa),
+            ("Envío a domicilio", "", envio),
         ]
         with cont:
             for nombre, formula, valor in filas:
                 with ui.element("div").style(
                     "display:flex;justify-content:space-between;align-items:baseline;gap:6px"
                 ):
-                    ui.label(f"{nombre}").style(
+                    ui.label(nombre).style(
                         "font-size:10px;color:#374151;white-space:nowrap;overflow:hidden;"
                         "text-overflow:ellipsis"
                     )
-                    ui.label(formula).style(
-                        "font-size:8px;color:#9ca3af;white-space:nowrap;overflow:hidden;"
-                        "text-overflow:ellipsis;flex:1;text-align:right"
-                    )
-                    ui.label(_fmt_ars(valor)).style(
+                    if formula:
+                        ui.label(formula).style(
+                            "font-size:8px;color:#9ca3af;white-space:nowrap;overflow:hidden;"
+                            "text-overflow:ellipsis;flex:1;text-align:right"
+                        )
+                    else:
+                        ui.element("div").style("flex:1")
+                    ui.label(_fmt_usd(valor)).style(
                         "font-size:10px;font-weight:500;color:#374151;white-space:nowrap;flex-shrink:0"
                     )
             ui.element("div").style("border-top:0.5px solid #e2e8f0;margin:2px 0")
             with ui.element("div").style("display:flex;justify-content:space-between;align-items:center"):
                 ui.label("Total courier").style("font-size:11px;font-weight:600;color:#185FA5")
-                ui.label(_fmt_ars(total_ars)).style("font-size:12px;font-weight:700;color:#185FA5")
+                ui.label(_fmt_usd(total_usd)).style("font-size:12px;font-weight:700;color:#185FA5")
 
     def _build_card_shell(cfg: dict):
         with ui.element("div").style(
@@ -151,30 +160,46 @@ def build_tab_couriers() -> None:
                 badge_refs[cfg["key"]] = badge
 
             with ui.element("div").style("padding:6px 10px;display:flex;flex-direction:column;gap:4px"):
-                with ui.row().style("gap:8px"):
+                with ui.row().style("gap:6px"):
                     with ui.element("div").style("flex:1;min-width:0"):
-                        ui.label("Flete/kg (USD)").style("font-size:8px;color:#6b7280;display:block")
-                        inp_flete = ui.number(value=cfg["flete_default"], min=0, step=0.5).props(
+                        ui.label("Flete/kg (u$)").style("font-size:8px;color:#6b7280;display:block")
+                        inp_flete = ui.number(value=state[f"flete_{cfg['key']}"], min=0, step=0.5).props(
                             "dense outlined"
                         ).style("width:100%;font-size:11px")
                     with ui.element("div").style("flex:1;min-width:0"):
-                        ui.label("PA (USD)").style("font-size:8px;color:#6b7280;display:block")
-                        inp_pa = ui.number(value=cfg["pa_default"], min=0, max=300, step=5).props(
+                        ui.label("PA (u$)").style("font-size:8px;color:#6b7280;display:block")
+                        inp_pa = ui.number(value=state[f"pa_{cfg['key']}"], min=0, max=300, step=5).props(
+                            "dense outlined"
+                        ).style("width:100%;font-size:11px")
+                    with ui.element("div").style("flex:1;min-width:0"):
+                        ui.label("Envío (u$)").style("font-size:8px;color:#6b7280;display:block")
+                        inp_envio = ui.number(value=state[f"envio_{cfg['key']}"], min=0, step=1).props(
                             "dense outlined"
                         ).style("width:100%;font-size:11px")
 
                 content = ui.element("div").style("display:flex;flex-direction:column;gap:2px;margin-top:2px")
                 content_refs[cfg["key"]] = content
 
-        def _on_flete(e, key=cfg["key"]):
-            state[f"flete_{key}"] = float(e.value or 0)
+        def _on_flete(e, key=cfg["key"], despachante=cfg["despachante"]):
+            valor = float(e.value or 0)
+            state[f"flete_{key}"] = valor
+            set_courier_config_campo(uid, despachante, "flete_kg", valor)
             _recalcular()
         inp_flete.on_value_change(_on_flete)
 
-        def _on_pa(e, key=cfg["key"]):
-            state[f"pa_{key}"] = float(e.value or 0)
+        def _on_pa(e, key=cfg["key"], despachante=cfg["despachante"]):
+            valor = float(e.value or 0)
+            state[f"pa_{key}"] = valor
+            set_courier_config_campo(uid, despachante, "cambio_pa", valor)
             _recalcular()
         inp_pa.on_value_change(_on_pa)
+
+        def _on_envio(e, key=cfg["key"], despachante=cfg["despachante"]):
+            valor = float(e.value or 0)
+            state[f"envio_{key}"] = valor
+            set_courier_config_campo(uid, despachante, "envio_domicilio", valor)
+            _recalcular()
+        inp_envio.on_value_change(_on_envio)
 
     def _render_chart():
         chart_container_ref[0].clear()
@@ -186,7 +211,10 @@ def build_tab_couriers() -> None:
         for cfg in _COURIERS:
             flete_kg = state[f"flete_{cfg['key']}"]
             pa = state[f"pa_{cfg['key']}"]
-            pct_en_peso_by_key[cfg["key"]] = round(_pct_traida(cfg["usd_fn"](peso, fob, flete_kg, pa), fob), 1)
+            envio = state[f"envio_{cfg['key']}"]
+            pct_en_peso_by_key[cfg["key"]] = round(
+                _pct_traida(cfg["usd_fn"](peso, fob, flete_kg, pa, envio), fob), 1
+            )
 
         # Las 3 etiquetas del markPoint se separan en direcciones distintas (arriba/
         # derecha/abajo) segun el ranking de valor en el peso actual, para que no se
@@ -203,7 +231,8 @@ def build_tab_couriers() -> None:
         for cfg in _COURIERS:
             flete_kg = state[f"flete_{cfg['key']}"]
             pa = state[f"pa_{cfg['key']}"]
-            pts = [round(_pct_traida(cfg["usd_fn"](k, fob, flete_kg, pa), fob), 2) for k in kgs]
+            envio = state[f"envio_{cfg['key']}"]
+            pts = [round(_pct_traida(cfg["usd_fn"](k, fob, flete_kg, pa, envio), fob), 2) for k in kgs]
             pct_en_peso = pct_en_peso_by_key[cfg["key"]]
 
             serie = {
@@ -256,7 +285,7 @@ def build_tab_couriers() -> None:
             "series": series,
         }
         with chart_container_ref[0]:
-            ui.echart(chart_options).classes("w-full").style("height:300px")
+            ui.echart(chart_options).classes("w-full").style("height:450px")
 
     def _recalcular():
         for cfg in _COURIERS:
@@ -264,15 +293,25 @@ def build_tab_couriers() -> None:
         _render_chart()
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column;gap:10px;width:100%"):
-        # 1) Barra superior — inputs globales (full width, sliders)
+        # 1) Barra superior — posicion arancelaria (solo visual) + FOB + Peso (sliders)
+        posiciones = get_cotizador_tabla("posicion", uid) or TABLA_POSICION_DEFAULT
+        opciones_posicion = {
+            row.get("posicion", ""): row.get("posicion", "")
+            for row in posiciones if row.get("posicion")
+        }
+
         with ui.element("div").classes("couriers-topbar").style(
             "display:flex;gap:24px;align-items:flex-end;width:100%;"
             "border:0.5px solid #e2e8f0;border-radius:8px;padding:8px 16px"
         ):
+            with ui.element("div").style("min-width:220px"):
+                ui.label("Posición Arancelaria").style("font-size:11px;color:#374151;font-weight:500;display:block")
+                ui.select(options=opciones_posicion).props("dense outlined").style("width:100%;font-size:12px")
+
             with ui.element("div").style("flex:1;min-width:220px"):
                 with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline"):
                     ui.label("FOB Total").style("font-size:11px;color:#374151;font-weight:500")
-                    lbl_fob = ui.label(_fmt_usd(state["fob"])).style("font-size:12px;font-weight:700;color:#185FA5")
+                    lbl_fob = ui.label(_fmt_usd0(state["fob"])).style("font-size:12px;font-weight:700;color:#185FA5")
                 sld_fob = ui.slider(min=0, max=3000, step=100, value=state["fob"]).style("width:100%")
 
             with ui.element("div").style("flex:1;min-width:220px"):
@@ -283,7 +322,7 @@ def build_tab_couriers() -> None:
 
         def _on_fob(e):
             state["fob"] = float(e.value or 0)
-            lbl_fob.set_text(_fmt_usd(state["fob"]))
+            lbl_fob.set_text(_fmt_usd0(state["fob"]))
             _recalcular()
         sld_fob.on_value_change(_on_fob)
 
