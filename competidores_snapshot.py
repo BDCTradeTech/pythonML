@@ -167,9 +167,18 @@ async def run():
                         txn = rep.get("transactions") or {}
                         total = txn.get("total")
                         if total:  # Solo guardar si tiene ventas
+                            # Guard: nunca guardar un valor menor al máximo histórico
+                            # (ML corrige total hacia abajo por cancelaciones)
+                            conn = get_connection()
+                            max_hist = conn.execute(
+                                "SELECT MAX(seller_total_ventas) FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
+                                (user_id, sid)
+                            ).fetchone()[0] or 0
+                            conn.close()
+                            valor_final = max(total, max_hist)
                             seller_data[sid] = {
                                 "nickname": d.get("nickname") or "",
-                                "total_ventas": total,
+                                "total_ventas": valor_final,
                                 "level_id": rep.get("level_id") or "",
                                 "power_status": rep.get("power_seller_status") or "",
                             }
