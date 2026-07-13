@@ -206,9 +206,15 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Tomar el importe de la fila con porcentaje 10,50% en la columna "I.V.A.".
     NUNCA tomar "Derechos Bienes de Capital" ni ningún valor de la columna de derechos.
     Si no lo encontrás, devolver null (no 0) para indicar error de lectura.
-- derechos_importacion: en LHS se llama "Derechos Bienes de Capital" o similar.
-    Es un valor separado del IVA. Buscarlo en la sección de derechos/tributos, NO en la
-    columna I.V.A. Puede ser 0 si no aplica.
+- derechos_importacion: CAMPO CRITICO. Tomar el importe de la línea EXACTA
+    "Derechos IVA tasa gral." de la factura. NO usar el valor de "Valor A.N.A.
+    Bienes de Capital" para este campo — es un concepto distinto (valor ANA de
+    bienes de capital) y NUNCA corresponde a los derechos de importación, aunque
+    esté en una línea cercana de la factura.
+    Buscarlo en la sección de derechos/tributos, NO en la columna I.V.A.
+    Puede ser 0 si no aplica.
+    Ejemplo CORRECTO:   derechos_importacion = [importe de "Derechos IVA tasa gral."]
+    Ejemplo INCORRECTO: derechos_importacion = [importe de "Valor A.N.A. Bienes de Capital"]
 - iva_21: tomar el importe de la fila con porcentaje 21,00% en la columna "I.V.A.".
     Si no existe esa fila, devolver null.
 - flete_aereo: flete internacional en ARS
