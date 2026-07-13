@@ -16,9 +16,9 @@ from db import set_cotizador_tabla
 from importacion_calc import calc_courier_row, load_calc_context
 
 _COURIERS = [
-    {"key": "sixstar", "nombre": "SIXSTAR", "color": "#2a78d6", "origen": "Mia Sixtar"},
-    {"key": "lhs", "nombre": "LHS", "color": "#1baf7a", "origen": "Mia LHS"},
-    {"key": "nc", "nombre": "NC Supplies", "color": "#eda100", "origen": "Mia Richard"},
+    {"key": "sixstar", "nombre": "SIXSTAR", "color": "#2a78d6", "pct_color": "#0c447c", "origen": "Mia Sixtar"},
+    {"key": "lhs", "nombre": "LHS", "color": "#1baf7a", "pct_color": "#0f6e56", "origen": "Mia LHS"},
+    {"key": "nc", "nombre": "NC Supplies", "color": "#eda100", "pct_color": "#854f0b", "origen": "Mia Richard"},
 ]
 
 _DEFAULT_CAMBIO_PA = {"sixstar": 150.0, "lhs": 200.0, "nc": 250.0}
@@ -155,7 +155,7 @@ def build_tab_couriers() -> None:
                     )
                     ui.label(cfg["nombre"]).style("font-size:12px;font-weight:600;color:#fff;white-space:nowrap")
                 badge = ui.label("0.0%").style(
-                    "font-size:10px;font-weight:700;color:#fff;background:rgba(255,255,255,.22);"
+                    f"font-size:11px;font-weight:700;color:{cfg['pct_color']};background:rgba(255,255,255,.82);"
                     "padding:1px 8px;border-radius:9px;white-space:nowrap"
                 )
                 badge_refs[cfg["key"]] = badge
@@ -273,7 +273,7 @@ def build_tab_couriers() -> None:
             "series": series,
         }
         with chart_container_ref[0]:
-            ui.echart(chart_options).classes("w-full").style("height:382px")
+            ui.echart(chart_options).classes("w-full").style("height:340px")
 
     def _recalcular():
         for cfg in _COURIERS:
