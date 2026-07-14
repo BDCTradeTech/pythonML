@@ -26,6 +26,7 @@ from ml_api import (
     ml_get_promotion_item_discounts_by_user,
     ml_get_promotion_item_discounts_by_campaign,
     ml_update_item_price,
+    ml_get_seller_promotions_item,
 )
 
 
@@ -115,7 +116,7 @@ def _is_reacondicionado(row: dict) -> bool:
 # Tabla de cuotas
 # ---------------------------------------------------------------------------
 
-def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None) -> None:
+async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
@@ -235,6 +236,75 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
     _pd = promo_data or {}
     for _row in rows_all:
         _row["promo"] = _pd.get(_row.get("promo_item_id", ""), {"price_promo": None, "meli_pct": None, "seller_pct": None})
+
+    _CUOTAS_TASAS = [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]
+
+    def _calc_to_fix(row: Dict[str, Any]) -> List[tuple]:
+        _pp = row["propia"]["price"]
+        if _pp is None:
+            _pp = row["catalogo"]["price"]
+        if _pp is None:
+            return []
+        try:
+            _pp = float(_pp)
+        except (TypeError, ValueError):
+            return []
+        if _pp == 0:
+            return []
+        out: List[tuple] = []
+        for gkey, tasa in _CUOTAS_TASAS:
+            slot = row[gkey]
+            iid, cp = slot.get("id"), slot.get("price")
+            if not iid or cp is None:
+                continue
+            try:
+                cp = float(cp)
+            except (TypeError, ValueError):
+                continue
+            pc = round(_pp * (1 + tasa))
+            if abs((cp - _pp) / _pp * 100 - tasa * 100) <= 0.5:
+                continue
+            out.append((gkey, iid, cp, pc))
+        return out
+
+    for _row in rows_all:
+        _row["_to_fix"] = _calc_to_fix(_row)
+
+    # Precios topeados por promo activa (DEAL/SMART/PRICE_DISCOUNT con status "started"
+    # cuyo price ya coincide con el precio actual y es menor al recomendado): solo se
+    # consulta para los items que ya necesitan corrección, no para toda la tabla.
+    _fix_item_ids = sorted({iid for _r in rows_all for (_gk, iid, _cp, _pc) in _r["_to_fix"]})
+    promo_lock_map: Dict[str, Dict[str, Any]] = {}
+    if _fix_item_ids:
+        _to_fix_by_iid: Dict[str, tuple] = {
+            iid: (cp, pc) for _r in rows_all for (_gk, iid, cp, pc) in _r["_to_fix"]
+        }
+
+        async def _check_promo_lock(iid: str) -> tuple:
+            promos = await run.io_bound(ml_get_seller_promotions_item, access_token, iid)
+            return iid, promos
+
+        _lock_results = await asyncio.gather(*[_check_promo_lock(_iid) for _iid in _fix_item_ids])
+        for iid, promos in _lock_results:
+            cp, pc = _to_fix_by_iid.get(iid, (None, None))
+            if cp is None:
+                continue
+            for p in (promos or []):
+                if str(p.get("status") or "") != "started":
+                    continue
+                p_price = p.get("price")
+                if p_price is None:
+                    continue
+                try:
+                    p_price = float(p_price)
+                except (TypeError, ValueError):
+                    continue
+                if abs(p_price - cp) <= max(cp * 0.005, 1) and p_price < pc:
+                    promo_lock_map[iid] = {
+                        "name": p.get("name") or p.get("id") or "Promoción",
+                        "finish_date": p.get("finish_date"),
+                    }
+                    break
 
     filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
     sort_col_ref:  Dict[str, str]   = {"val": "title"}
@@ -686,27 +756,18 @@ def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, 
                                         "font-weight:normal;width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:left"
                                     )
                                 with ui.element("td").style(f"{TD_BASE};text-align:center;padding:2px"):
-                                    _propia_p_fix = row["propia"]["price"]
-                                    if _propia_p_fix is None:
-                                        _propia_p_fix = row["catalogo"]["price"]
-                                    _needs_fix = False
-                                    if _propia_p_fix is not None:
-                                        try:
-                                            _propia_f = float(_propia_p_fix)
-                                        except (TypeError, ValueError):
-                                            _propia_f = 0.0
-                                        if _propia_f != 0:
-                                            for _gk_f, _tasa_f in [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]:
-                                                _cp_f = row[_gk_f]["price"]
-                                                if _cp_f is not None:
-                                                    try:
-                                                        _diff_f = (float(_cp_f) - _propia_f) / _propia_f * 100 - _tasa_f * 100
-                                                        if abs(_diff_f) > 0.5:
-                                                            _needs_fix = True
-                                                            break
-                                                    except (TypeError, ValueError):
-                                                        pass
-                                    if _needs_fix:
+                                    _to_fix_row = row.get("_to_fix") or []
+                                    _locked_iid = next((iid for (_gk, iid, _cp, _pc) in _to_fix_row if iid in promo_lock_map), None)
+                                    if _locked_iid:
+                                        _lock_info = promo_lock_map[_locked_iid]
+                                        _lock_fecha = _fmt_fecha(_lock_info.get("finish_date") or "") or "fecha desconocida"
+                                        _lock_nombre = str(_lock_info.get("name") or "promoción").replace('"', "&quot;")
+                                        _lock_title = (
+                                            f"Precio topeado por promo &quot;{_lock_nombre}&quot; — vigente hasta {_lock_fecha}. "
+                                            f"No se puede subir sin salir de la promo."
+                                        )
+                                        ui.html(f'<i class="ti ti-lock" style="color:#F57C00;font-size:16px" title="{_lock_title}"></i>')
+                                    elif _to_fix_row:
                                         def _fix_click(r_fix=row) -> None:
                                             cl = context.client
                                             async def _do_fix(client_=cl, rr=r_fix) -> None:
@@ -1010,7 +1071,7 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                     promo_data[rep_id] = pd
                 _promo_cache[_cache_key] = {"data": promo_data, "ts": _time.time()}
             try:
-                _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
+                await _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
             except Exception as e:
                 result_area.clear()
                 with result_area:
