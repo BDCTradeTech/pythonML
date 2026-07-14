@@ -988,11 +988,21 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                             best_price, best_pd = float(_pp), _pd
                     return rep_id, best_pd
 
+                _completadas = 0
+
+                async def _fetch_grupo_tracked(rep_id: str, iids: list) -> tuple:
+                    nonlocal _completadas
+                    resultado = await _fetch_grupo(rep_id, iids)
+                    _completadas += 1
+                    if promo_lbl:
+                        promo_lbl.set_text(f"Cargando cuotas {_completadas}/{total_grupos}...")
+                    return resultado
+
                 if promo_lbl:
-                    promo_lbl.set_text("Cargando cuotas...")
+                    promo_lbl.set_text(f"Cargando cuotas 0/{total_grupos}...")
 
                 resultados = await asyncio.gather(*[
-                    _fetch_grupo(rep_id, iids)
+                    _fetch_grupo_tracked(rep_id, iids)
                     for rep_id, iids in zip(rep_ids, _all_iids_per_grp)
                 ])
                 promo_data: Dict[str, Dict] = {}
