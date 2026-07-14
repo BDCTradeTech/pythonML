@@ -7,6 +7,10 @@ re-corre este mismo script.
 Ejecutar: python3 fill_datos_fiscales_ml.py
 """
 from datetime import datetime, timezone
+from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).with_name(".env"))
 
 from db import get_connection
 from ml_api import get_ml_access_token, get_ml_session
