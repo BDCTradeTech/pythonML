@@ -48,6 +48,15 @@ def _require_login() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 _SOCIETY_TOKENS = {"SA", "SRL", "SAS"}
+_INVALID_FILENAME_CHARS = '<>:"/\\|?*'
+
+
+def _sanitize_filename_part(value: str) -> str:
+    """Reemplaza espacios y caracteres inválidos de Windows por `_`. No toca puntos (separador válido)."""
+    out = value.strip().replace(" ", "_")
+    for c in _INVALID_FILENAME_CHARS:
+        out = out.replace(c, "_")
+    return out
 
 
 def _prefijo_desde_razon_social(razon_social: Optional[str]) -> str:
@@ -58,20 +67,15 @@ def _prefijo_desde_razon_social(razon_social: Optional[str]) -> str:
         tok_norm = tok.upper().replace(".", "")
         if tok_norm in _SOCIETY_TOKENS:
             continue
-        prefijo = tok.capitalize()
-        for c in '<>:"/\\|?* ':
-            prefijo = prefijo.replace(c, "_")
-        return prefijo or "Invoice"
+        return _sanitize_filename_part(tok.capitalize()) or "Invoice"
     return "Invoice"
 
 
 def _qb_invoice_pdf_download_basename(doc: Any, prefijo: Optional[str] = None) -> str:
-    """Nombre de archivo sugerido para PDF de invoice: `{Prefijo}_{doc}.pdf` (o `{doc}.pdf` sin prefijo)."""
-    base = str(doc or "invoice").strip().replace(" ", "_")
-    for c in '<>:"/\\|?*':
-        base = base.replace(c, "_")
-    base = base[:80]
-    return f"{prefijo}_{base}.pdf" if prefijo else f"{base}.pdf"
+    """Nombre de archivo sugerido: `{Prefijo}.{doc}.pdf` (o `{doc}.pdf` sin prefijo).
+    El único punto que define la extensión es el `.pdf` final; los demás son separadores."""
+    base = _sanitize_filename_part(str(doc or "invoice"))[:80]
+    return f"{prefijo}.{base}.pdf" if prefijo else f"{base}.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +329,7 @@ def build_tab_compras(container) -> None:
                                 os.close(fd)
                                 base_fn = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"), prefijo_archivo)
                                 stem = base_fn[:-4] if base_fn.lower().endswith(".pdf") else base_fn
-                                nombre = f"BDC_{stem}.pdf"
+                                nombre = f"BDC.{stem}.pdf"
                                 with dlg:
                                     ui.download(path, nombre)
                                 if perr:
@@ -694,7 +698,7 @@ def build_tab_compras(container) -> None:
                     os.write(fd, buf.read())
                     os.close(fd)
                     fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    ui.download(path, f"{prefijo_archivo}_invoices_{fecha_str}.zip")
+                    ui.download(path, f"{prefijo_archivo}.invoices.{fecha_str}.zip")
                     if errores:
                         ui.notify(f"No se pudo descargar: {', '.join(errores)}", color="warning")
                     else:
