@@ -939,6 +939,23 @@ def _mostrar_tabla_precios(
     # enriquecidos (en ese caso hay un delay adicional acotado a esos items nuevos).
     _enriquecidos_ids: set = set()
 
+    # Progreso en vivo del enriquecimiento (mismo espíritu que el contador "X de N" de
+    # Cuotas, pero acá el trabajo lo hacen hilos de ThreadPoolExecutor, no corutinas
+    # asyncio.gather — por eso se expone vía un dict thread-safe que un ui.timer del
+    # lado del event loop lee periódicamente en vez de actualizarse con un await directo.
+    _progress_ref: Dict[str, Any] = {"fase": "", "done": 0, "total": 0}
+    _progress_lock = threading.Lock()
+
+    def _progress_fase(fase: str, total: int) -> None:
+        with _progress_lock:
+            _progress_ref["fase"] = fase
+            _progress_ref["total"] = total
+            _progress_ref["done"] = 0
+
+    def _progress_bump() -> None:
+        with _progress_lock:
+            _progress_ref["done"] = _progress_ref.get("done", 0) + 1
+
     def _enriquecer_items(items_subset: List[Dict[str, Any]]) -> None:
         _t_ptw = time.perf_counter()
         _items_para_ptw = [
@@ -950,6 +967,7 @@ def _mostrar_tabla_precios(
         _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
         if _cat_ids and access_token:
             def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
+                _progress_fase("posición en catálogo", len(ids))
                 res: Dict[str, Optional[Dict]] = {}
                 with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
                     futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
@@ -959,6 +977,7 @@ def _mostrar_tabla_precios(
                             res[iid] = fut.result()
                         except Exception:
                             res[iid] = None
+                        _progress_bump()
                 return res
             _t_api_ptw = time.perf_counter()
             _cat_pos_map = _cached_or_refresh_bulk(f"enriq_price_to_win_{_uid}", _cat_ids, _fetch_catalog_pos)
@@ -1027,6 +1046,7 @@ def _mostrar_tabla_precios(
         _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
         if _quality_ids and access_token:
             def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
+                _progress_fase("calidad de publicación", len(ids))
                 res: Dict[str, Dict] = {}
                 with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
                     futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
@@ -1036,6 +1056,7 @@ def _mostrar_tabla_precios(
                             res[iid] = fut.result()
                         except Exception:
                             res[iid] = {}
+                        _progress_bump()
                 return res
             _quality_map = _cached_or_refresh_bulk(f"enriq_quality_{_uid}", _quality_ids, _fetch_quality)
             for r in items_subset:
@@ -1070,12 +1091,14 @@ def _mostrar_tabla_precios(
                 _all_cids = list({cid for _, cid in _pairs})
 
                 _t_api_promo_bulk = time.perf_counter()
+                _progress_fase("promociones activas", 1)
                 _promo_bulk = (
                     _cached_or_refresh(
                         f"enriq_promo_{_uid}",
                         lambda: ml_get_active_promo_prices_bulk(access_token, seller_id_ref),
                     ) if seller_id_ref else None
                 )
+                _progress_bump()
                 logging.warning(
                     f"[PERF-PRODUCTOS] fase='api_promo_bulk' user_id={_perf_uid} "
                     f"tiempo={time.perf_counter() - _t_api_promo_bulk:.3f}s "
@@ -1088,6 +1111,7 @@ def _mostrar_tabla_precios(
                 sp_lookup: Dict[str, Any] = dict(_promo_bulk) if _promo_bulk is not None else {}
                 if _promo_bulk is None and _all_cids:
                     _t_api_promo_fallback = time.perf_counter()
+                    _progress_fase("promociones activas (detalle)", len(_all_cids))
                     with ThreadPoolExecutor(max_workers=min(16, max(1, len(_all_cids)))) as ex:
                         futures = {ex.submit(ml_get_item_sale_price_full, access_token, cid): cid for cid in _all_cids}
                         for fut in as_completed(futures):
@@ -1096,6 +1120,7 @@ def _mostrar_tabla_precios(
                                 sp_lookup[cid] = fut.result()
                             except Exception:
                                 pass
+                            _progress_bump()
                     logging.warning(
                         f"[PERF-PRODUCTOS] fase='api_promo_fallback_individual' user_id={_perf_uid} "
                         f"tiempo={time.perf_counter() - _t_api_promo_fallback:.3f}s items={len(_all_cids)}"
@@ -3272,7 +3297,32 @@ def _mostrar_tabla_precios(
     # así el request HTTP que sirvió esta página se libera ya, y el event loop de
     # NiceGUI queda disponible para atender a otros usuarios mientras las filas
     # aparecen progresivamente (ver fase='filtrar_y_pintar_total' para el tiempo real).
+    _progress_lbl = None
     with table_container:
-        ui.spinner(size="md").classes("m-4")
-    background_tasks.create(filtrar_y_pintar())
+        with ui.row().classes("items-center gap-2 m-4"):
+            ui.spinner(size="md")
+            _progress_lbl = ui.label("Cargando productos...").classes("text-sm text-gray-600")
+
+    async def _tick_progress() -> None:
+        if _progress_lbl is None:
+            return
+        _tot = _progress_ref.get("total") or 0
+        _done = _progress_ref.get("done") or 0
+        _fase = _progress_ref.get("fase") or ""
+        if _tot > 0:
+            _progress_lbl.set_text(f"Cargando productos... {_fase}: {_done} de {_tot}")
+        elif _fase:
+            _progress_lbl.set_text(f"Cargando productos... {_fase}...")
+        else:
+            _progress_lbl.set_text("Cargando productos...")
+
+    _progress_timer = ui.timer(0.25, _tick_progress)
+
+    async def _primera_carga() -> None:
+        try:
+            await filtrar_y_pintar()
+        finally:
+            _progress_timer.deactivate()
+
+    background_tasks.create(_primera_carga())
 
