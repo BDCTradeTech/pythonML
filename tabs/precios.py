@@ -3297,32 +3297,41 @@ def _mostrar_tabla_precios(
     # así el request HTTP que sirvió esta página se libera ya, y el event loop de
     # NiceGUI queda disponible para atender a otros usuarios mientras las filas
     # aparecen progresivamente (ver fase='filtrar_y_pintar_total' para el tiempo real).
+    # [FIX slot stack] toda creación/actualización de UI que se dispara desde una tarea
+    # background debe entrar explícitamente al slot destino con `with container_element:`
+    # — el slot stack no se hereda automáticamente fuera del render sincrónico. Por eso
+    # el ui.timer se crea DENTRO de `with table_container:` (no después de salir de ese
+    # bloque), y el label se actualiza con `with _progress_client:` en cada tick.
     _progress_lbl = None
+    _progress_client = context.client
+    _progress_timer = None
     with table_container:
         with ui.row().classes("items-center gap-2 m-4"):
             ui.spinner(size="md")
             _progress_lbl = ui.label("Cargando productos...").classes("text-sm text-gray-600")
 
-    async def _tick_progress() -> None:
-        if _progress_lbl is None:
-            return
-        _tot = _progress_ref.get("total") or 0
-        _done = _progress_ref.get("done") or 0
-        _fase = _progress_ref.get("fase") or ""
-        if _tot > 0:
-            _progress_lbl.set_text(f"Cargando productos... {_fase}: {_done} de {_tot}")
-        elif _fase:
-            _progress_lbl.set_text(f"Cargando productos... {_fase}...")
-        else:
-            _progress_lbl.set_text("Cargando productos...")
+        async def _tick_progress() -> None:
+            if _progress_lbl is None:
+                return
+            _tot = _progress_ref.get("total") or 0
+            _done = _progress_ref.get("done") or 0
+            _fase = _progress_ref.get("fase") or ""
+            with _progress_client:
+                if _tot > 0:
+                    _progress_lbl.set_text(f"Cargando productos... {_fase}: {_done} de {_tot}")
+                elif _fase:
+                    _progress_lbl.set_text(f"Cargando productos... {_fase}...")
+                else:
+                    _progress_lbl.set_text("Cargando productos...")
 
-    _progress_timer = ui.timer(0.25, _tick_progress)
+        _progress_timer = ui.timer(0.25, _tick_progress)
 
     async def _primera_carga() -> None:
         try:
             await filtrar_y_pintar()
         finally:
-            _progress_timer.deactivate()
+            if _progress_timer is not None:
+                _progress_timer.deactivate()
 
     background_tasks.create(_primera_carga())
 
