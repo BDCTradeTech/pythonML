@@ -243,6 +243,7 @@ def build_tab_precios(container) -> None:
             try:
                 _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
             except Exception as e:
+                logging.exception(f"[PERF-PRODUCTOS] fase='mostrar_tabla_precios_EXCEPTION' user_id={_t_perf_uid} error={e}")
                 area.clear()
                 with area:
                     ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
@@ -3134,14 +3135,19 @@ def _mostrar_tabla_precios(
                         row_refs[_sku_key] = _tr_el
                         with _tr_el:
                             _render_row_cells(row)
+            _recalc_padding_client = context.client
+
             async def _recalc_padding() -> None:
-                await ui.run_javascript(
-                    f"(function(){{"
-                    f"var body=document.getElementById('c{_cid_p}');"
-                    f"var hdr=document.getElementById('c{_hid_p}');"
-                    f"if(body&&hdr){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
-                    f"}})();"
-                )
+                # [FIX slot stack] misma razón que _setup_sync_precios: run_javascript
+                # necesita reentrar explícitamente al cliente desde la tarea background.
+                with _recalc_padding_client:
+                    await ui.run_javascript(
+                        f"(function(){{"
+                        f"var body=document.getElementById('c{_cid_p}');"
+                        f"var hdr=document.getElementById('c{_hid_p}');"
+                        f"if(body&&hdr){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                        f"}})();"
+                    )
             background_tasks.create(_recalc_padding())
             current_table.clear()
 
@@ -3257,17 +3263,22 @@ def _mostrar_tabla_precios(
         table_container = ui.element("div").style("width:100%;height:65vh;overflow-y:scroll;overflow-x:auto")
         _hid_p = header_div_precios.id
         _cid_p = table_container.id
+        _sync_precios_client = context.client
+
         async def _setup_sync_precios() -> None:
-            await ui.run_javascript(
-                f"(function(){{"
-                f"var body=document.getElementById('c{_cid_p}');"
-                f"var hdr=document.getElementById('c{_hid_p}');"
-                f"if(!body||!hdr)return;"
-                f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
-                f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
-                f"_sg();new ResizeObserver(_sg).observe(body);"
-                f"}})();"
-            )
+            # [FIX slot stack] run_javascript necesita un slot/cliente activo; una tarea
+            # background arranca con el slot stack vacío, por eso se re-entra explícitamente.
+            with _sync_precios_client:
+                await ui.run_javascript(
+                    f"(function(){{"
+                    f"var body=document.getElementById('c{_cid_p}');"
+                    f"var hdr=document.getElementById('c{_hid_p}');"
+                    f"if(!body||!hdr)return;"
+                    f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                    f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                    f"_sg();new ResizeObserver(_sg).observe(body);"
+                    f"}})();"
+                )
         background_tasks.create(_setup_sync_precios())
 
     def on_filtro_stock_change(*args):
@@ -3303,9 +3314,10 @@ def _mostrar_tabla_precios(
     # el ui.timer se crea DENTRO de `with table_container:` (no después de salir de ese
     # bloque), y el label se actualiza con `with _progress_client:` en cada tick.
     _progress_lbl = None
-    _progress_client = context.client
+    _progress_client = None
     _progress_timer = None
     with table_container:
+        _progress_client = context.client
         with ui.row().classes("items-center gap-2 m-4"):
             ui.spinner(size="md")
             _progress_lbl = ui.label("Cargando productos...").classes("text-sm text-gray-600")
