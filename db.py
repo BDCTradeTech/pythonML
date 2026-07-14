@@ -145,6 +145,11 @@ def init_db() -> None:
     if "email" not in user_cols:
         cur.execute("ALTER TABLE users ADD COLUMN email TEXT")
 
+    # Migración: datos fiscales de MercadoLibre (company.corporate_name / brand_name / identification)
+    for col in ("ml_cuit", "ml_doc_type", "ml_razon_social", "ml_nombre_fantasia", "ml_cust_type_id", "ml_billing_updated_at"):
+        if col not in user_cols:
+            cur.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+
     # Credenciales de la App de MercadoLibre por usuario (cada usuario puede tener su propia app)
     cur.execute(
         """
