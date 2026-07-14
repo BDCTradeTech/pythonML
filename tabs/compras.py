@@ -18,6 +18,7 @@ from db import (
     get_invoice_extras,
     get_qb_app_credentials,
     get_qb_tokens,
+    get_user_ml_razon_social,
     get_user_qb_customer,
     upsert_invoice_extra,
 )
@@ -46,12 +47,31 @@ def _require_login() -> Optional[Dict[str, Any]]:
 # Se unificará en qb_api.py cuando esos tabs también se extraigan.
 # ---------------------------------------------------------------------------
 
-def _qb_invoice_pdf_download_basename(doc: Any) -> str:
-    """Nombre de archivo sugerido para PDF de invoice: `{doc}.pdf` (sin prefijo invoice_)."""
+_SOCIETY_TOKENS = {"SA", "SRL", "SAS"}
+
+
+def _prefijo_desde_razon_social(razon_social: Optional[str]) -> str:
+    """Deriva el prefijo del filename desde ml_razon_social: 1ra palabra no-societaria, Title case."""
+    if not razon_social or not razon_social.strip():
+        return "Invoice"
+    for tok in razon_social.strip().split():
+        tok_norm = tok.upper().replace(".", "")
+        if tok_norm in _SOCIETY_TOKENS:
+            continue
+        prefijo = tok.capitalize()
+        for c in '<>:"/\\|?* ':
+            prefijo = prefijo.replace(c, "_")
+        return prefijo or "Invoice"
+    return "Invoice"
+
+
+def _qb_invoice_pdf_download_basename(doc: Any, prefijo: Optional[str] = None) -> str:
+    """Nombre de archivo sugerido para PDF de invoice: `{Prefijo}_{doc}.pdf` (o `{doc}.pdf` sin prefijo)."""
     base = str(doc or "invoice").strip().replace(" ", "_")
     for c in '<>:"/\\|?*':
         base = base.replace(c, "_")
-    return f"{base[:80]}.pdf"
+    base = base[:80]
+    return f"{prefijo}_{base}.pdf" if prefijo else f"{base}.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +83,8 @@ def build_tab_compras(container) -> None:
     user = _require_login()
     if not user:
         return
+
+    prefijo_archivo = _prefijo_desde_razon_social(get_user_ml_razon_social(user["id"]))
 
     qb_creds = get_qb_app_credentials(user["id"])
     qb_tokens = get_qb_tokens(user["id"])
@@ -271,7 +293,7 @@ def build_tab_compras(container) -> None:
                                 fd, path = tempfile.mkstemp(suffix=".pdf")
                                 os.write(fd, pdf_bytes)
                                 os.close(fd)
-                                nombre = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"))
+                                nombre = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"), prefijo_archivo)
                                 with dlg:
                                     ui.download(path, nombre)
                                 ui.notify("Descarga iniciada", color="positive")
@@ -301,7 +323,7 @@ def build_tab_compras(container) -> None:
                                 fd, path = tempfile.mkstemp(suffix=".pdf")
                                 os.write(fd, patched)
                                 os.close(fd)
-                                base_fn = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"))
+                                base_fn = _qb_invoice_pdf_download_basename(inv.get("doc", "invoice"), prefijo_archivo)
                                 stem = base_fn[:-4] if base_fn.lower().endswith(".pdf") else base_fn
                                 nombre = f"BDC_{stem}.pdf"
                                 with dlg:
@@ -665,14 +687,14 @@ def build_tab_compras(container) -> None:
                             if err or not pdf_bytes:
                                 errores.append(str(inv.get("doc", inv_id)))
                                 continue
-                            nombre = _qb_invoice_pdf_download_basename(inv.get("doc", str(inv_id)))
+                            nombre = _qb_invoice_pdf_download_basename(inv.get("doc", str(inv_id)), prefijo_archivo)
                             zf.writestr(nombre, pdf_bytes)
                     buf.seek(0)
                     fd, path = tempfile.mkstemp(suffix=".zip")
                     os.write(fd, buf.read())
                     os.close(fd)
                     fecha_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    ui.download(path, f"invoices_{fecha_str}.zip")
+                    ui.download(path, f"{prefijo_archivo}_invoices_{fecha_str}.zip")
                     if errores:
                         ui.notify(f"No se pudo descargar: {', '.join(errores)}", color="warning")
                     else:
