@@ -1140,6 +1140,18 @@ def get_qb_tokens(user_id: int) -> Optional[Any]:
         conn.close()
 
 
+def get_user_ml_razon_social(user_id: int) -> Optional[str]:
+    """Lee ml_razon_social directo de la tabla users (valor fresco, no el de la sesión)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT ml_razon_social FROM users WHERE id = ?", (user_id,))
+        row = cur.fetchone()
+        return row["ml_razon_social"] if row and row["ml_razon_social"] else None
+    finally:
+        conn.close()
+
+
 def get_user_qb_customer(user_id: int) -> Optional[Dict[str, str]]:
     """Obtiene el Cliente QuickBooks: primero user_qb_customer (Config), sino qb_customer_preasignado por email."""
     conn = get_connection()
