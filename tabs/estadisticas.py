@@ -957,14 +957,17 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             except Exception:
                 pass
 
-            questions: List[Dict[str, Any]] = []
+            questions: Optional[List[Dict[str, Any]]] = None
             if seller_id:
                 try:
                     t0 = time.perf_counter()
                     questions = await run.io_bound(ml_get_unanswered_questions, access_token, str(seller_id))
                     logging.warning(f"[TIMING] ml_get_unanswered_questions: {time.perf_counter()-t0:.2f}s")
                 except Exception:
-                    pass
+                    logging.exception(
+                        "[ESTADISTICAS] no se pudo obtener preguntas sin responder (seller_id=%s)",
+                        seller_id,
+                    )
 
             logging.warning(f"[TIMING] TOTAL estadisticas: {time.perf_counter()-t_inicio:.2f}s")
 

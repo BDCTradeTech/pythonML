@@ -5,6 +5,7 @@ Exporta: build_tab_dashboard
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -927,15 +928,18 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 profile = await run.io_bound(ml_get_user_profile, access_token)
                 seller_id = str((profile or {}).get("id") or "")
             except Exception:
-                pass
+                logging.exception("[DASHBOARD] no se pudo obtener el perfil/seller_id ML (uid=%s)", uid)
 
-            questions: List[Dict[str, Any]] = []
+            questions: Optional[List[Dict[str, Any]]] = None
             if seller_id:
                 try:
                     questions = await run.io_bound(ml_get_unanswered_questions, access_token, seller_id)
                 except Exception:
-                    pass
-            n_questions = len(questions)
+                    logging.exception(
+                        "[DASHBOARD] no se pudo obtener preguntas sin responder (uid=%s, seller_id=%s)",
+                        uid, seller_id,
+                    )
+            n_questions = len(questions) if questions is not None else None
 
             # ── Publicaciones ML (under_review) ──────────────────────────────
             ur_pend_doc = [it for it in all_items
@@ -946,7 +950,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                            and "held" in (it.get("sub_status") or [])]
             active_count = sum(1 for it in all_items if str(it.get("status", "")).lower() == "active")
 
-            ml_pubs_ov = (_RED if ur_pend_doc or n_questions > 0 else _YELLOW if ur_held else _GREEN)
+            ml_pubs_ov = (_RED if ur_pend_doc or (n_questions or 0) > 0 else _YELLOW if ur_held else _GREEN)
             _col_defs_ur = [
                 ("ID ML",      lambda r: str(r.get("id") or "—")),
                 ("Título",     lambda r: (r.get("title") or "—")[:45]),
@@ -970,12 +974,19 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         lambda rows=ur_held: _open_popup_list(
                             "Retenidas por ML", rows, _col_defs_ur))
                     _stat_row("Activas sin problemas", str(active_count), _GREEN)
-                    q_list = list(questions)
+                    q_list = list(questions or [])
                     q_row_container = ui.element("div").classes("w-full")
 
-                    def _rebuild_q_row(n_q: int, tok: str = access_token, ql=q_list, cont=q_row_container) -> None:
-                        color = _RED if n_q > 0 else _GREEN
+                    def _rebuild_q_row(n_q: Optional[int], tok: str = access_token, ql=q_list, cont=q_row_container) -> None:
                         cont.clear()
+                        if n_q is None:
+                            with cont:
+                                with ui.row().classes("items-center gap-2 w-full"):
+                                    _dot("#6b7280")
+                                    ui.label("Preguntas sin responder").classes("text-xs text-gray-700 flex-1")
+                                    ui.label("No disponible").classes("text-xs font-semibold").style("color:#6b7280")
+                            return
+                        color = _RED if n_q > 0 else _GREEN
                         with cont:
                             with ui.row().classes("items-center gap-2 w-full"):
                                 _dot(color)
