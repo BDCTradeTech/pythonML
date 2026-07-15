@@ -15,9 +15,15 @@ ENV/
 *.sqlite3
 app.db
 
+# Backups (.bak, .bak_YYYYMMDD_HHMMSS, .bak.old, etc. - cubre cualquier variante)
+*.bak*
+
 # Variables de entorno (NO subir credenciales)
 .env
 .env.local
+
+# Storage de sesiones NiceGUI (datos de usuario, no debe subirse)
+.nicegui/
 
 # IDE
 .idea/
