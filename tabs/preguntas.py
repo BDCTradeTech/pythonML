@@ -624,7 +624,10 @@ def build_tab_preguntas(container) -> None:
                                             + ",color:'orange',position:'bottom',timeout:6000})"
                                         )
                                     except Exception:
-                                        pass
+                                        logging.exception(
+                                            "[PREGUNTAS] no se pudo mostrar el aviso 'item no activo' "
+                                            "al responder qid=%s — mensaje real: %s", qid, _msg,
+                                        )
                                 else:
                                     _err_msg = _body.get("message") or str(_body)[:200]
                                     _err_full = f"Error ML: {_err_msg}"
@@ -635,7 +638,10 @@ def build_tab_preguntas(container) -> None:
                                             + ",color:'red',position:'bottom',timeout:4000})"
                                         )
                                     except Exception:
-                                        pass
+                                        logging.exception(
+                                            "[PREGUNTAS] no se pudo mostrar el error de ML al responder "
+                                            "qid=%s — mensaje real: %s", qid, _err_full,
+                                        )
                         except Exception as exc:
                             _exc_msg = f"Error al enviar: {str(exc)[:100]}"
                             try:
@@ -645,7 +651,10 @@ def build_tab_preguntas(container) -> None:
                                     + ",color:'red',position:'bottom',timeout:4000})"
                                 )
                             except Exception:
-                                pass
+                                logging.exception(
+                                    "[PREGUNTAS] no se pudo mostrar el aviso de excepcion al responder "
+                                    "qid=%s — excepcion real: %s", qid, exc,
+                                )
 
                     async def _eliminar_pregunta(client) -> None:
                         try:
