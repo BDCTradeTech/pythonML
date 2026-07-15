@@ -1092,14 +1092,15 @@ def _mostrar_tabla_precios(
                 _all_cids = list({cid for _, cid in _pairs})
 
                 _t_api_promo_bulk = time.perf_counter()
-                _progress_fase("promociones activas", 1)
+                # total=0 a propósito: es 1 sola llamada atómica (no hay "X de N" real),
+                # mostrar "0 de 1" fijo durante los 6-11s que tarda en frío se ve congelado.
+                _progress_fase("promociones activas", 0)
                 _promo_bulk = (
                     _cached_or_refresh(
                         f"enriq_promo_{_uid}",
                         lambda: ml_get_active_promo_prices_bulk(access_token, seller_id_ref),
                     ) if seller_id_ref else None
                 )
-                _progress_bump()
                 logging.warning(
                     f"[PERF-PRODUCTOS] fase='api_promo_bulk' user_id={_perf_uid} "
                     f"tiempo={time.perf_counter() - _t_api_promo_bulk:.3f}s "
