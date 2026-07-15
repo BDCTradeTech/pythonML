@@ -1188,8 +1188,8 @@ def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> L
     # Sin attributes: ML está deprecando price en /items; sale_price se usa como fallback
     url = f"https://api.mercadolibre.com/items?ids={ids_str}"
     for headers in (
-        ([{"Accept": "application/json", "Authorization": f"Bearer {access_token}"}] if access_token else []),
-        [{"Accept": "application/json"}],
+        ({"Accept": "application/json", "Authorization": f"Bearer {access_token}"} if access_token else None),
+        {"Accept": "application/json"},
     ):
         if not headers:
             continue
