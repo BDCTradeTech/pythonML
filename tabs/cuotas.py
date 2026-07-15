@@ -27,6 +27,7 @@ from ml_api import (
     ml_get_promotion_item_discounts_by_campaign,
     ml_update_item_price,
     ml_get_seller_promotions_item,
+    ml_get_items_multiget,
 )
 
 
@@ -270,6 +271,23 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
     for _row in rows_all:
         _row["_to_fix"] = _calc_to_fix(_row)
 
+    def _detect_promo_lock(promos: Optional[list], cp: float, pc: float) -> Optional[Dict[str, Any]]:
+        """Si alguna promo `started` fija el precio en `cp` (precio actual) y por debajo
+        del precio recomendado `pc`, la suba está topeada por esa promo mientras siga activa."""
+        for p in (promos or []):
+            if str(p.get("status") or "") != "started":
+                continue
+            p_price = p.get("price")
+            if p_price is None:
+                continue
+            try:
+                p_price = float(p_price)
+            except (TypeError, ValueError):
+                continue
+            if abs(p_price - cp) <= max(cp * 0.005, 1) and p_price < pc:
+                return {"name": p.get("name") or p.get("id") or "Promoción", "finish_date": p.get("finish_date")}
+        return None
+
     # Precios topeados por promo activa (DEAL/SMART/PRICE_DISCOUNT con status "started"
     # cuyo price ya coincide con el precio actual y es menor al recomendado): solo se
     # consulta para los items que ya necesitan corrección, no para toda la tabla.
@@ -289,22 +307,9 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
             cp, pc = _to_fix_by_iid.get(iid, (None, None))
             if cp is None:
                 continue
-            for p in (promos or []):
-                if str(p.get("status") or "") != "started":
-                    continue
-                p_price = p.get("price")
-                if p_price is None:
-                    continue
-                try:
-                    p_price = float(p_price)
-                except (TypeError, ValueError):
-                    continue
-                if abs(p_price - cp) <= max(cp * 0.005, 1) and p_price < pc:
-                    promo_lock_map[iid] = {
-                        "name": p.get("name") or p.get("id") or "Promoción",
-                        "finish_date": p.get("finish_date"),
-                    }
-                    break
+            _lock = _detect_promo_lock(promos, cp, pc)
+            if _lock:
+                promo_lock_map[iid] = _lock
 
     filtrados_ref: Dict[str, list]  = {"val": list(rows_all)}
     sort_col_ref:  Dict[str, str]   = {"val": "title"}
@@ -771,29 +776,7 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                         def _fix_click(r_fix=row) -> None:
                                             cl = context.client
                                             async def _do_fix(client_=cl, rr=r_fix) -> None:
-                                                _pp = rr["propia"]["price"]
-                                                if _pp is None:
-                                                    _pp = rr["catalogo"]["price"]
-                                                if _pp is None or float(_pp) == 0:
-                                                    with client_:
-                                                        ui.notify("No hay precio de referencia (propia ni catálogo).", color="warning")
-                                                    return
-                                                _pp = float(_pp)
-                                                _to_fix = []
-                                                for _gk, _tasa in [("x3", cuotas_3x), ("x6", cuotas_6x), ("x9", cuotas_9x), ("x12", cuotas_12x)]:
-                                                    _sl = rr[_gk]
-                                                    _iid = _sl.get("id")
-                                                    _cp = _sl.get("price")
-                                                    if not _iid or _cp is None:
-                                                        continue
-                                                    try:
-                                                        _cp = float(_cp)
-                                                    except (TypeError, ValueError):
-                                                        continue
-                                                    _pc = round(_pp * (1 + _tasa))
-                                                    if abs((_cp - _pp) / _pp * 100 - _tasa * 100) <= 0.5:
-                                                        continue
-                                                    _to_fix.append((_gk, _iid, _cp, _pc))
+                                                _to_fix = _calc_to_fix(rr)
                                                 if not _to_fix:
                                                     with client_:
                                                         ui.notify("Todas las variantes ya están correctas.", color="info")
@@ -801,13 +784,60 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                                 for _gk, _iid, _old, _new in _to_fix:
                                                     try:
                                                         await run.io_bound(ml_update_item_price, access_token, _iid, _new)
-                                                        rr[_gk]["price"] = _new
-                                                        with client_:
-                                                            ui.notify(f"Corregido {_iid}: {fmt_moneda(_old)} → {fmt_moneda(_new)}", color="positive", timeout=4000)
                                                     except Exception as _err:
                                                         with client_:
                                                             ui.notify(f"Error al corregir {_iid}: {_err}", color="negative")
+
+                                                # ML puede revertir el PUT en silencio (ítem topeado por una
+                                                # promo activa) — releemos el precio REAL desde ML en vez de
+                                                # asumir que el PUT tuvo efecto, con una sola llamada batch.
+                                                _fixed_iids = [_iid for _gk, _iid, _old, _new in _to_fix]
+                                                _real_items = await run.io_bound(ml_get_items_multiget, access_token, _fixed_iids)
+                                                _real_by_id = {
+                                                    str(_it.get("id")): _it.get("price")
+                                                    for _it in _real_items if _it and _it.get("id") is not None
+                                                }
+                                                _confirmados, _revertidos = [], []
+                                                for _gk, _iid, _old, _new in _to_fix:
+                                                    _real_p = _real_by_id.get(_iid)
+                                                    if _real_p is None:
+                                                        continue
+                                                    try:
+                                                        _real_p = float(_real_p)
+                                                    except (TypeError, ValueError):
+                                                        continue
+                                                    rr[_gk]["price"] = _real_p
+                                                    if abs(_real_p - _new) <= max(_new * 0.005, 1):
+                                                        _confirmados.append((_iid, _old, _real_p))
+                                                    else:
+                                                        _revertidos.append((_iid, _old, _real_p))
+
+                                                # Recalcular con los precios REALES: si sigue habiendo mismatch,
+                                                # chequear si ahora está topeado por una promo activa (candado).
+                                                rr["_to_fix"] = _calc_to_fix(rr)
+                                                if rr["_to_fix"]:
+                                                    _pend_ids = sorted({_iid2 for _gk2, _iid2, _cp2, _pc2 in rr["_to_fix"]})
+                                                    _to_fix_by_iid2 = {_iid2: (_cp2, _pc2) for _gk2, _iid2, _cp2, _pc2 in rr["_to_fix"]}
+                                                    _pend_promos = await asyncio.gather(*[
+                                                        run.io_bound(ml_get_seller_promotions_item, access_token, _iid2)
+                                                        for _iid2 in _pend_ids
+                                                    ])
+                                                    for _iid2, _promos2 in zip(_pend_ids, _pend_promos):
+                                                        _cp2, _pc2 = _to_fix_by_iid2.get(_iid2, (None, None))
+                                                        if _cp2 is None:
+                                                            continue
+                                                        _lock2 = _detect_promo_lock(_promos2, _cp2, _pc2)
+                                                        if _lock2:
+                                                            promo_lock_map[_iid2] = _lock2
+
                                                 with client_:
+                                                    for _iid, _old, _real_p in _confirmados:
+                                                        ui.notify(f"Corregido {_iid}: {fmt_moneda(_old)} → {fmt_moneda(_real_p)}", color="positive", timeout=4000)
+                                                    for _iid, _old, _real_p in _revertidos:
+                                                        ui.notify(
+                                                            f"ML revirtió el precio de {_iid} (sigue en {fmt_moneda(_real_p)}) — probablemente topeado por una promo activa.",
+                                                            color="warning", timeout=6000,
+                                                        )
                                                     _render(_sort_rows(filtrados_ref["val"]))
                                             background_tasks.create(_do_fix())
                                         with ui.element("div").style("display:inline-flex;align-items:center;cursor:pointer").on("click", _fix_click):
