@@ -223,15 +223,16 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
         ("stock",      str(metricas.get("stock_actual", "—")), "#E6F1FB", "#85B7EB", "#0C447C", False),
         ("vendidas",   str(metricas.get("ventas_total", "—")), "#FEE2E2", "#FCA5A5", "#991B1B", False),
         ("dias rest.", str(dias_r or "—"),                     dc_bg,     dc_br,     dc,        False),
-        ("precio",     _fmt_precio(metricas.get("precio_actual")), "#F1F5F9", "#e2e8f0", "#374151", False),
+        ("ticket prom.", _fmt_precio(metricas.get("precio_actual")), "#F1F5F9", "#e2e8f0", "#374151", False),
     ]
     _pills_html = '<div style="display:flex;gap:8px;margin-bottom:6px">'
     for lbl, val, bg, border, color, is_main in pills:
         _pills_html += (
             f'<div style="display:inline-flex;align-items:baseline;gap:5px;background:{bg};'
-            f'border:{"1.5px" if is_main else "0.5px"} solid {border};border-radius:20px;padding:5px 12px">'
+            f'border:{"1.5px" if is_main else "0.5px"} solid {border};border-radius:20px;padding:5px 12px;'
+            f'{"min-width:112px;white-space:nowrap;" if is_main else ""}">'
             f'<span style="font-size:{"14px" if is_main else "12px"};font-weight:{"800" if is_main else "600"};'
-            f'color:{color}">{val}</span>'
+            f'color:{color};white-space:nowrap">{val}</span>'
             f'<span style="font-size:9px;color:{color};opacity:.75">{lbl}</span>'
             "</div>"
         )
@@ -239,7 +240,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
 
     _detalle_html = (
         f'<div style="font-size:9px;color:#666;margin-bottom:14px">'
-        f'Precio: {p_detalle} &nbsp;&middot;&middot;&nbsp; '
+        f'Ticket: {p_detalle} &nbsp;&middot;&middot;&nbsp; '
         f"Stock: {metricas.get('stock_max',0)} max &middot; {metricas.get('stock_prom',0)} prom "
         f"&middot; {metricas.get('vel_max_dia',0)}/d max &nbsp;&middot;&middot;&nbsp; "
         f"Dias: {metricas.get('dias_con_stock',0)} c/stock &middot; "
@@ -293,7 +294,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
         + "".join(
             f'<th style="padding:4px 8px;background:#2A7AC7;color:#fff;font-weight:600;'
             f'text-align:center">{h}</th>'
-            for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Precio"]
+            for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Ticket prom."]
         )
         + "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
     )
@@ -408,12 +409,13 @@ def build_tab_stock() -> None:
                         with ui.element("div").style(
                             f"display:inline-flex;align-items:center;gap:4px;"
                             f"background:{bg};border:{'1.5px' if is_main else '0.5px'} solid {border};"
-                            f"border-radius:20px;padding:4px 10px"
+                            f"border-radius:20px;padding:4px 10px;"
+                            f"{'min-width:92px;white-space:nowrap;' if is_main else ''}"
                         ):
                             ui.html(f'<i class="ti {icon}" style="font-size:12px;color:{color}" aria-hidden="true"></i>')
-                            ui.label(val).style(f"font-size:{'13px' if is_main else '12px'};font-weight:{'700' if is_main else '500'};color:{color}")
+                            ui.label(val).style(f"font-size:{'13px' if is_main else '12px'};font-weight:{'700' if is_main else '500'};color:{color};white-space:nowrap")
                             if lbl:
-                                ui.label(lbl).style(f"font-size:10px;color:{color};opacity:.7")
+                                ui.label(lbl).style(f"font-size:10px;color:{color};opacity:.7;white-space:nowrap")
 
                 # Fila 2: detalle compacto
                 p_detalle = p_min if p_iguales else f"{p_min} min \u00b7 {p_max} max \u00b7 {p_prom} prom"
@@ -421,7 +423,7 @@ def build_tab_stock() -> None:
                 d_detalle = f"<span style='color:#166534'>{metricas.get('dias_con_stock',0)}</span> c/stock \u00b7 <span style='color:#dc2626'>{metricas.get('dias_sin_stock',0)}</span> sin \u00b7 <span style='color:#185FA5'>{metricas.get('n_reposiciones',0)}</span> repos"
                 ui.html(
                     f'<div style="font-size:10px;color:#9ca3af;display:flex;flex-wrap:wrap;gap:4px;align-items:center">'
-                    f'<span style="font-weight:500;color:#185FA5">Precio:</span>'
+                    f'<span style="font-weight:500;color:#185FA5">Ticket:</span>'
                     f'<span style="color:#374151">{p_detalle}</span>'
                     f'<span style="color:#d0d0d0">\u00b7\u00b7</span>'
                     f'<span style="font-weight:500;color:#185FA5">Stock:</span>'
@@ -515,7 +517,7 @@ def build_tab_stock() -> None:
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
-                                    for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Precio"]:
+                                    for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Ticket prom."]:
                                         with ui.element("th").style(
                                             "padding:5px 8px;background:#2A7AC7;color:#fff;"
                                             "font-weight:500;text-align:center;white-space:nowrap;"
