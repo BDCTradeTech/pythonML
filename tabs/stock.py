@@ -3,7 +3,7 @@ tabs/stock.py
 Pagina Stock: evolucion historica de stock por SKU.
 """
 from __future__ import annotations
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List
 from nicegui import app, run, ui
 from db import get_connection
@@ -141,6 +141,20 @@ def _fmt_precio(v):
         return "$" + f"{int(float(v)):,}".replace(",", ".")
     except Exception:
         return str(v)
+
+
+def _iso_a_ddmmyyyy(iso_str: str) -> str:
+    try:
+        return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return iso_str
+
+
+def _ddmmyyyy_a_iso(v: str):
+    try:
+        return datetime.strptime(v, "%d/%m/%Y").strftime("%Y-%m-%d")
+    except Exception:
+        return None
 
 
 def build_tab_stock() -> None:
@@ -499,14 +513,40 @@ def build_tab_stock() -> None:
 
             with ui.column().style("gap:3px"):
                 ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
-                ui.input(value=estado["desde"]).props("type=date dense outlined").style(
-                    "width:140px"
-                ).on_value_change(lambda e: estado.update(desde=e.value))
+                inp_desde = ui.input(value=_iso_a_ddmmyyyy(estado["desde"])).props(
+                    "dense outlined mask='##/##/####'"
+                ).style("width:140px")
+                def _on_desde(e):
+                    iso = _ddmmyyyy_a_iso(e.value)
+                    if iso:
+                        estado["desde"] = iso
+                inp_desde.on_value_change(_on_desde)
+                with inp_desde.add_slot("append"):
+                    ui.icon("edit_calendar").classes("cursor-pointer").on(
+                        "click", lambda: menu_desde.open()
+                    )
+                with ui.menu() as menu_desde:
+                    ui.date(value=_iso_a_ddmmyyyy(estado["desde"])).props(
+                        "locale=es mask='DD/MM/YYYY'"
+                    ).bind_value(inp_desde)
             with ui.column().style("gap:3px"):
                 ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
-                ui.input(value=estado["hasta"]).props("type=date dense outlined").style(
-                    "width:140px"
-                ).on_value_change(lambda e: estado.update(hasta=e.value))
+                inp_hasta = ui.input(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
+                    "dense outlined mask='##/##/####'"
+                ).style("width:140px")
+                def _on_hasta(e):
+                    iso = _ddmmyyyy_a_iso(e.value)
+                    if iso:
+                        estado["hasta"] = iso
+                inp_hasta.on_value_change(_on_hasta)
+                with inp_hasta.add_slot("append"):
+                    ui.icon("edit_calendar").classes("cursor-pointer").on(
+                        "click", lambda: menu_hasta.open()
+                    )
+                with ui.menu() as menu_hasta:
+                    ui.date(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
+                        "locale=es mask='DD/MM/YYYY'"
+                    ).bind_value(inp_hasta)
             with ui.element("button").on(
                 "click", lambda: ui.timer(0.05, _cargar, once=True)
             ).style(
