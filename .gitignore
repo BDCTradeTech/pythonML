@@ -22,6 +22,9 @@ app.db
 .env
 .env.local
 
+# Config MCP local (contiene Bearer token de ML en texto plano)
+.mcp.json
+
 # Storage de sesiones NiceGUI (datos de usuario, no debe subirse)
 .nicegui/
 
