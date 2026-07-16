@@ -52,7 +52,10 @@ def get_ml_session() -> requests.Session:
 
 
 def _ml_refresh_token(user_id: int, refresh_token: str) -> Optional[Dict[str, Any]]:
-    """Refresca el access_token usando refresh_token. Usa credenciales del usuario o .env."""
+    """Refresca el access_token usando refresh_token. Usa credenciales del usuario o .env.
+    Reintenta una vez tras 10s si el primer intento falla -- las fallas observadas eran
+    transitorias (timeouts/errores de red en llamadas aisladas, ej. cron de madrugada sin
+    trafico previo que mantuviera la conexion "caliente"), no un refresh_token invalido."""
     app_creds = get_ml_app_credentials(user_id)
     if app_creds:
         client_id = app_creds["client_id"]
@@ -62,22 +65,28 @@ def _ml_refresh_token(user_id: int, refresh_token: str) -> Optional[Dict[str, An
         client_secret = os.getenv("ML_CLIENT_SECRET")
     if not client_id or not client_secret or not refresh_token:
         return None
-    try:
-        resp = get_ml_session().post(
-            "https://api.mercadolibre.com/oauth/token",
-            data={
-                "grant_type": "refresh_token",
-                "client_id": client_id,
-                "client_secret": client_secret,
-                "refresh_token": refresh_token,
-            },
-            headers={"Accept": "application/json"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception:
-        return None
+
+    for intento in (1, 2):
+        try:
+            resp = get_ml_session().post(
+                "https://api.mercadolibre.com/oauth/token",
+                data={
+                    "grant_type": "refresh_token",
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "refresh_token": refresh_token,
+                },
+                headers={"Accept": "application/json"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            if intento == 1:
+                time.sleep(10)
+                continue
+            logging.exception("[ML_API] _ml_refresh_token fallo para user_id=%s", user_id)
+            return None
 
 
 def get_ml_access_token(user_id: int) -> Optional[str]:

@@ -2,7 +2,10 @@
 stock_snapshot.py
 Toma un snapshot diario del available_quantity de todas las publicaciones activas.
 Uso: python3 /opt/pythonml/stock_snapshot.py
-Cron: 0 3 * * * /opt/pythonml/venv/bin/python3 /opt/pythonml/stock_snapshot.py >> /var/log/pythonml_stock.log 2>&1
+Cron: 0 11 * * * /opt/pythonml/venv/bin/python3 /opt/pythonml/stock_snapshot.py >> /var/log/pythonml_stock.log 2>&1
+(movido de 3am a 11am: a las 3am el token de ML llevaba 9+ horas sin usarse y el refresh
+fallaba intermitentemente -- ver [ML_API] _ml_refresh_token en ml_api.py -- a las 11am el
+usuario ya viene usando el sistema desde la manana y el token esta fresco)
 
 Nota: para cuentas con warehouse_management/multiwarehouse activo (ver MULTIWAREHOUSE_SELLER_IDS),
 available_quantity de /items puede no reflejar el stock real por depósito (ver /user-products/{id}/stock).
@@ -11,6 +14,7 @@ Se guarda igual, marcado con is_multiwarehouse=1, para no bloquear el snapshot d
 import json
 import logging
 import sys
+import time
 from datetime import date
 from pathlib import Path
 
@@ -96,7 +100,11 @@ def run_snapshot():
     conn.close()
 
     total_saved = 0
-    for cred_id, user_id, raw_data in creds:
+    for i, (cred_id, user_id, raw_data) in enumerate(creds):
+        if i > 0:
+            # Espaciar el refresh de token entre usuarios: procesarlos en menos de 1s
+            # puede colisionar con el rate limit de ML para /oauth/token.
+            time.sleep(5)
         seller_id = get_seller_id(raw_data)
         token = get_ml_access_token(user_id)
         if not token:
