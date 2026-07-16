@@ -138,6 +138,10 @@ def get_ml_access_token(user_id: int) -> Optional[str]:
         conn.close()
 
 
+_COLOR_MAX_LEN = 25  # un color real es corto ("Negro", "Azul marino"); mas que esto suele ser
+                      # dato sucio del catalogo de ML (ej. el titulo completo cargado como color)
+
+
 def _parse_ml_item_body(body: dict) -> dict:
     """Convierte el body de la API /items al formato interno de la app."""
     marca = ""
@@ -172,6 +176,11 @@ def _parse_ml_item_body(body: dict) -> dict:
                         break
             if seller_sku:
                 break
+    color_sucio = None
+    if color and len(color) > _COLOR_MAX_LEN:
+        color_sucio = color
+        color = ""  # invalido -- cae al mismo fallback de abajo que busca el color en el titulo
+
     if not color:
         tit = (body.get("title") or "").lower()
         colores = ["negro", "blanco", "azul", "rojo", "gris", "verde", "amarillo", "naranja", "rosa", "marron", "beige", "celeste", "plateado", "dorado", "violeta", "multicolor", "silver", "space gray", "space grey", "gold", "negro espacial", "midnight"]
@@ -180,6 +189,20 @@ def _parse_ml_item_body(body: dict) -> dict:
             if c in tit:
                 color = equiv.get(c, c.capitalize())
                 break
+
+    if color_sucio:
+        if color:
+            logging.info(
+                "[ML_API] COLOR sucio descartado sku=%s value_name=%r (%d chars) -> fallback encontro %r",
+                seller_sku, color_sucio, len(color_sucio), color,
+            )
+        else:
+            logging.info(
+                "[ML_API] COLOR sucio sku=%s value_name=%r (%d chars) -- fallback no encontro color, se mantiene el original",
+                seller_sku, color_sucio, len(color_sucio),
+            )
+            color = color_sucio  # mejor mostrar algo raro que nada
+
     catalog_listing = body.get("catalog_listing") is True
     original_price = body.get("original_price") or body.get("base_price")
     thumbnail = body.get("thumbnail") or ""
