@@ -25,6 +25,7 @@ from db import (
     get_catalogo_competidores, upsert_catalogo_competidores,
     get_app_config,
     get_cached, get_cached_stale_ok, set_cached,
+    get_marca_override_map,
 )
 from ml_api import (
     get_ml_access_token,
@@ -699,6 +700,16 @@ def _mostrar_tabla_precios(
     _t_fase = time.perf_counter()
 
     _uid = user["id"]
+    _marca_override = get_marca_override_map(_uid)
+
+    def _resolve_marca(m):
+        """Marca cruda de ML -> marca a grabar en productos, aplicando
+        marcas_override (correcciones de marcas mal cargadas en ML, ej.
+        "AfterShokz" -> "Shokz") antes de cualquier write."""
+        if not m or m == "—":
+            return None
+        return _marca_override.get(m, m)
+
     _sku_cats_all = get_sku_catalogos(_uid)
     _n_cat_by_sku: Dict[str, int] = {}
     for _sc in _sku_cats_all:
@@ -707,9 +718,9 @@ def _mostrar_tabla_precios(
             _n_cat_by_sku[_sc_sku] = _n_cat_by_sku.get(_sc_sku, 0) + 1
     _skus_dedup = [i.get("seller_sku") for i in items_dedup if i.get("seller_sku")]
     _sku_marca_dedup = {
-        i.get("seller_sku"): i.get("marca")
+        i.get("seller_sku"): _resolve_marca(i.get("marca"))
         for i in items_dedup
-        if i.get("seller_sku") and i.get("marca") and i.get("marca") != "—"
+        if i.get("seller_sku") and _resolve_marca(i.get("marca"))
     }
     _prod_map: Dict[str, Dict[str, Any]] = {}
     if _skus_dedup:
@@ -892,7 +903,7 @@ def _mostrar_tabla_precios(
     _gan_rows = [
         (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"),
          str(row.get("title") or ""),
-         row.get("marca") if row.get("marca") and row.get("marca") != "—" else None,
+         _resolve_marca(row.get("marca")),
          row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is not None and row.get("seller_sku")
@@ -911,7 +922,7 @@ def _mostrar_tabla_precios(
 
     _no_costo_rows = [
         (row.get("available_quantity"), str(row.get("title") or ""),
-         row.get("marca") if row.get("marca") and row.get("marca") != "—" else None,
+         _resolve_marca(row.get("marca")),
          row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is None and row.get("seller_sku")
@@ -1187,7 +1198,7 @@ def _mostrar_tabla_precios(
                                 _gan_promo_rows.append((
                                     r["margen_pesos"], r["margen_venta_pct"],
                                     r.get("available_quantity"), str(r.get("title") or ""),
-                                    r.get("marca") if r.get("marca") and r.get("marca") != "—" else None,
+                                    _resolve_marca(r.get("marca")),
                                     r["seller_sku"]
                                 ))
             if _gan_promo_rows:
