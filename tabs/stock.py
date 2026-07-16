@@ -3,10 +3,13 @@ tabs/stock.py
 Pagina Stock: evolucion historica de stock por SKU.
 """
 from __future__ import annotations
+import os
+import re
+import tempfile
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from nicegui import app, run, ui
-from db import get_connection
+from db import get_connection, get_user_ml_razon_social
 
 MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
@@ -167,6 +170,159 @@ def _ddmmyyyy_a_iso(v: str):
         return None
 
 
+def _slug_nombre(s: str) -> str:
+    s = re.sub(r"\s+", "-", (s or "").strip())
+    s = re.sub(r"[^A-Za-z0-9_-]", "", s)
+    return s or "Reporte"
+
+
+def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: Optional[str]) -> str:
+    """Arma el HTML del reporte de Stock para exportar a PDF via WeasyPrint (A4 landscape).
+    Reutiliza los mismos valores ya calculados que se muestran en pantalla (metricas +
+    data por dia), asi el PDF y la vista en vivo nunca pueden desalinearse."""
+    metricas = datos["metricas"]
+    sku, marca, n_skus = datos.get("sku"), datos.get("marca"), datos.get("n_skus")
+    desde_fmt, hasta_fmt = _iso_a_ddmmyyyy(datos["desde"]), _iso_a_ddmmyyyy(datos["hasta"])
+    generado = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    titulo = f"SKU: {sku}" if sku else f"Marca: {marca}"
+    if marca and n_skus:
+        titulo += f" ({n_skus} SKUs)"
+
+    vel    = metricas.get("vel_diaria", 0)
+    dias_r = metricas.get("dias_restantes")
+    dc     = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+    dc_bg  = "#FEE2E2" if dias_r and dias_r < 7 else "#FEF3C7" if dias_r and dias_r < 20 else "#DCFCE7"
+    dc_br  = "#FCA5A5" if dias_r and dias_r < 7 else "#FDE68A" if dias_r and dias_r < 20 else "#86EFAC"
+
+    p_min  = _fmt_precio(metricas.get("precio_min"))
+    p_max  = _fmt_precio(metricas.get("precio_max"))
+    p_prom = _fmt_precio(metricas.get("precio_prom"))
+    p_detalle = p_min if p_min == p_max else f"{p_min} min &middot; {p_max} max &middot; {p_prom} prom"
+
+    _header_html = (
+        '<div style="display:flex;justify-content:space-between;align-items:flex-end;'
+        'border-bottom:3px solid #113F72;padding-bottom:10px;margin-bottom:14px">'
+        "<div>"
+        '<div style="font-size:19px;font-weight:800;color:#185FA5;letter-spacing:0.02em">'
+        "BDC systems</div>"
+        '<div style="font-size:14px;font-weight:700;color:#222;margin-top:2px">'
+        f"Reporte de Stock &mdash; {titulo}</div>"
+        "</div>"
+        '<div style="text-align:right;font-size:10px;color:#555;line-height:1.6">'
+        f'<div style="font-size:12px;font-weight:700;color:#185FA5">{razon_social or ""}</div>'
+        f'<div>Periodo: {desde_fmt} &ndash; {hasta_fmt}</div>'
+        f'<div>Generado: {generado}</div>'
+        "</div></div>"
+    )
+
+    pills = [
+        ("vel.",       f"{vel}/d",                                 "#FFEDD5", "#FB923C", "#C2410C", True),
+        ("stock",      str(metricas.get("stock_actual", "—")), "#E6F1FB", "#85B7EB", "#0C447C", False),
+        ("vendidas",   str(metricas.get("ventas_total", "—")), "#FEE2E2", "#FCA5A5", "#991B1B", False),
+        ("dias rest.", str(dias_r or "—"),                     dc_bg,     dc_br,     dc,        False),
+        ("precio",     _fmt_precio(metricas.get("precio_actual")), "#F1F5F9", "#e2e8f0", "#374151", False),
+    ]
+    _pills_html = '<div style="display:flex;gap:8px;margin-bottom:6px">'
+    for lbl, val, bg, border, color, is_main in pills:
+        _pills_html += (
+            f'<div style="display:inline-flex;align-items:baseline;gap:5px;background:{bg};'
+            f'border:{"1.5px" if is_main else "0.5px"} solid {border};border-radius:20px;padding:5px 12px">'
+            f'<span style="font-size:{"14px" if is_main else "12px"};font-weight:{"800" if is_main else "600"};'
+            f'color:{color}">{val}</span>'
+            f'<span style="font-size:9px;color:{color};opacity:.75">{lbl}</span>'
+            "</div>"
+        )
+    _pills_html += "</div>"
+
+    _detalle_html = (
+        f'<div style="font-size:9px;color:#666;margin-bottom:14px">'
+        f'Precio: {p_detalle} &nbsp;&middot;&middot;&nbsp; '
+        f"Stock: {metricas.get('stock_max',0)} max &middot; {metricas.get('stock_prom',0)} prom "
+        f"&middot; {metricas.get('vel_max_dia',0)}/d max &nbsp;&middot;&middot;&nbsp; "
+        f"Dias: {metricas.get('dias_con_stock',0)} c/stock &middot; "
+        f"{metricas.get('dias_sin_stock',0)} sin &middot; {metricas.get('n_reposiciones',0)} repos"
+        "</div>"
+    )
+
+    _chart_html = ""
+    if chart_b64:
+        _chart_html = (
+            f'<img src="{chart_b64}" style="width:100%;max-height:230mm;object-fit:contain;'
+            f'margin-bottom:14px" />'
+        )
+
+    rows_html = []
+    cur_mes = None
+    for r in reversed(datos["data"]):
+        try:
+            d = datetime.strptime(r["snapshot_date"], "%Y-%m-%d")
+            mes_key, dia_label = f"{d.year}-{d.month:02d}", f"{d.day:02d}/{d.month:02d}/{d.year}"
+        except Exception:
+            mes_key = dia_label = r["snapshot_date"]
+        if mes_key != cur_mes:
+            cur_mes = mes_key
+            rows_html.append(
+                f'<tr><td colspan="5" style="background:#EEF6FD;color:#185FA5;'
+                f'font-weight:700;padding:3px 8px;font-size:9px">{MESES[d.month-1]} {d.year}</td></tr>'
+            )
+        stock, vend, repo, va = r.get("stock") or 0, r["vend"], r["repo"], r.get("vel_acum")
+        if repo > 0:
+            vc, vt = "#166534", f"+{repo}"
+        elif vend > 0:
+            vc, vt = "#dc2626", f"−{vend}"
+        else:
+            vc, vt = "#9ca3af", "—"
+        rows_html.append(
+            "<tr>"
+            f'<td style="padding:2px 8px;text-align:center;color:#6b7280">{dia_label}</td>'
+            f'<td style="padding:2px 8px;text-align:right;font-weight:600;'
+            f'color:{"#166534" if stock > 0 else "#9ca3af"}">{stock}</td>'
+            f'<td style="padding:2px 8px;text-align:right;font-weight:600;color:{vc}">{vt}</td>'
+            f'<td style="padding:2px 8px;text-align:right;color:#6b7280">'
+            f'{f"{va}/d" if va is not None else "—"}</td>'
+            f'<td style="padding:2px 8px;text-align:right;color:#374151">{_fmt_precio(r.get("price"))}</td>'
+            "</tr>"
+        )
+
+    _tabla_html = (
+        '<table style="width:100%;border-collapse:collapse;font-size:9.5px">'
+        "<thead><tr>"
+        + "".join(
+            f'<th style="padding:4px 8px;background:#2A7AC7;color:#fff;font-weight:600;'
+            f'text-align:center">{h}</th>'
+            for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Precio"]
+        )
+        + "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
+    )
+
+    _style = (
+        "@page { size: A4 landscape; margin: 12mm 10mm 16mm 10mm; "
+        '@bottom-center { content: "Pagina " counter(page) " de " counter(pages); '
+        "font-size: 8px; color: #999; } }"
+        "body { font-family: 'Segoe UI', Arial, sans-serif; color: #222; margin: 0; }"
+    )
+
+    body = _header_html + _pills_html + _detalle_html + _chart_html + _tabla_html
+    return f"<html><head><style>{_style}</style></head><body>{body}</body></html>"
+
+
+def _generar_pdf_stock(datos: Dict[str, Any], razon_social: str, chart_b64: Optional[str]) -> tuple:
+    """Genera el PDF del reporte de Stock via WeasyPrint. Devuelve (path, filename)."""
+    from weasyprint import HTML
+
+    html = _render_stock_pdf_html(datos, razon_social, chart_b64)
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    HTML(string=html).write_pdf(path)
+
+    nombre_base = _slug_nombre(datos.get("sku") or datos.get("marca") or "Reporte")
+    desde_fmt = datetime.strptime(datos["desde"], "%Y-%m-%d").strftime("%d%m%Y")
+    hasta_fmt = datetime.strptime(datos["hasta"], "%Y-%m-%d").strftime("%d%m%Y")
+    nombre = f"Stock_{nombre_base}_{desde_fmt}_{hasta_fmt}.pdf"
+    return path, nombre
+
+
 def build_tab_stock() -> None:
     user = app.storage.user.get("user")
     if not user:
@@ -186,6 +342,7 @@ def build_tab_stock() -> None:
         "hasta": hoy.isoformat(),
     }
     contenido_ref: list = [None]
+    pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
     skus = _get_skus(user_id)
     marcas = _get_marcas(user_id)
 
@@ -210,6 +367,9 @@ def build_tab_stock() -> None:
                 ui.label(msg).style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
+                pdf_state["chart"] = None
+                pdf_state["datos"] = None
+                _set_pdf_habilitado(False)
                 return
 
             if marca:
@@ -286,6 +446,13 @@ def build_tab_stock() -> None:
                 running_sales += vend
                 vel_acum = round(running_sales / running_stock_days, 1) if running_stock_days > 0 else None
                 data.append({**r, "vend": vend, "repo": repo, "vel_acum": vel_acum})
+
+            pdf_state["datos"] = {
+                "sku": sku, "marca": marca, "n_skus": n_skus,
+                "desde": estado["desde"], "hasta": estado["hasta"],
+                "metricas": metricas, "data": data,
+            }
+            _set_pdf_habilitado(True)
 
             # Etiquetas del grafico
             chart_labels = []
@@ -405,7 +572,7 @@ def build_tab_stock() -> None:
                         ui.label(
                             f"Con {metricas.get('stock_actual')} unidades y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
                         ).style(f"font-size:11px;color:{dc};display:block")
-                    ui.echart({
+                    pdf_state["chart"] = ui.echart({
                         "grid": {"top": 20, "bottom": 40, "left": 46, "right": 60},
                         "legend": {
                             "data": ["Stock", "Precio"],
@@ -500,6 +667,9 @@ def build_tab_stock() -> None:
                 ui.label("Selecciona un SKU o una Marca para ver el historial.").style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
+            pdf_state["chart"] = None
+            pdf_state["datos"] = None
+            _set_pdf_habilitado(False)
             return
         rows = await run.io_bound(
             _get_stock_history, user_id, sku, estado["desde"], estado["hasta"]
@@ -585,6 +755,59 @@ def build_tab_stock() -> None:
                 "padding:0 16px;cursor:pointer;color:#FFFFFF;align-self:flex-end"
             ):
                 ui.html('<i class="ti ti-refresh" style="font-size:13px;margin-right:4px"></i>Actualizar')
+
+            pdf_spinner = ui.spinner(size="sm", color="#2A7AC7").style("display:none;align-self:flex-end;margin-bottom:8px")
+            with ui.element("button").on(
+                "click", lambda: ui.timer(0.05, _descargar_pdf, once=True)
+            ).style(
+                "height:34px;font-size:12px;font-weight:500;"
+                "border:1px solid #2A7AC7;border-radius:4px;background:#FFFFFF;"
+                "padding:0 16px;cursor:default;color:#2A7AC7;align-self:flex-end;"
+                "opacity:0.4;pointer-events:none"
+            ) as btn_pdf:
+                ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>PDF')
+
+            def _set_pdf_habilitado(hab: bool) -> None:
+                pdf_state["habilitado"] = hab
+                if hab:
+                    btn_pdf.style("opacity:1;pointer-events:auto;cursor:pointer")
+                else:
+                    btn_pdf.style("opacity:0.4;pointer-events:none;cursor:default")
+
+            async def _descargar_pdf() -> None:
+                if not pdf_state.get("habilitado") or not pdf_state.get("datos"):
+                    return
+                _set_pdf_habilitado(False)
+                pdf_spinner.style("display:inline-block")
+                try:
+                    chart_b64 = None
+                    chart_el = pdf_state.get("chart")
+                    if chart_el is not None:
+                        try:
+                            chart_b64 = await chart_el.run_chart_method(
+                                "getDataURL", {"type": "png", "pixelRatio": 2, "backgroundColor": "#ffffff"}
+                            )
+                        except Exception:
+                            chart_b64 = None
+                    razon_social = await run.io_bound(get_user_ml_razon_social, user_id) or user.get("username", "")
+                    path, nombre = await run.io_bound(
+                        _generar_pdf_stock, pdf_state["datos"], razon_social, chart_b64
+                    )
+                    ui.download(path, nombre)
+                    ui.notify(f"Exportado: {nombre}", color="positive")
+
+                    def _cleanup() -> None:
+                        try:
+                            if path and os.path.exists(path):
+                                os.unlink(path)
+                        except Exception:
+                            pass
+                    ui.timer(5.0, _cleanup, once=True)
+                except Exception as ex:
+                    ui.notify(f"Error generando PDF: {ex}", color="negative")
+                finally:
+                    pdf_spinner.style("display:none")
+                    _set_pdf_habilitado(bool(pdf_state.get("datos")))
 
     # Contenido (sin padding lateral para que el grafico llegue al borde)
     with ui.element("div").style("padding:0 0 0 20px;width:100%"):
