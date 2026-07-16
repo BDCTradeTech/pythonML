@@ -483,6 +483,21 @@ def init_db() -> None:
     if "catalog_status" not in _prod_cols:
         cur.execute("ALTER TABLE productos ADD COLUMN catalog_status TEXT DEFAULT NULL")
 
+    # Override de marca: corrige marcas mal cargadas en ML que no se pueden editar ahí
+    # (ej. "AfterShokz" -> "Shokz"). Se aplica antes de grabar productos.marca en
+    # cualquier flujo que la escriba (auto-populate, backfill), no como filtro de lectura.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS marcas_override (
+            marca_ml    TEXT NOT NULL,
+            marca_real  TEXT NOT NULL,
+            user_id     INTEGER NOT NULL,
+            PRIMARY KEY (marca_ml, user_id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+        """
+    )
+
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS revisiones_diarias (
@@ -1596,6 +1611,22 @@ def delete_marca(marca_id: int) -> Optional[str]:
         if cur.rowcount == 0:
             return "Marca no encontrada"
         return None
+    finally:
+        conn.close()
+
+
+def get_marca_override_map(user_id: int) -> Dict[str, str]:
+    """Mapa marca_ml -> marca_real para corregir marcas mal cargadas en ML que no se
+    pueden editar ahí (ej. "AfterShokz" -> "Shokz"). Aplicar SIEMPRE antes de grabar
+    productos.marca, en cualquier flujo que la escriba."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT marca_ml, marca_real FROM marcas_override WHERE user_id=?",
+            (user_id,),
+        )
+        return {r["marca_ml"]: r["marca_real"] for r in cur.fetchall()}
     finally:
         conn.close()
 
