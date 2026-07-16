@@ -982,14 +982,6 @@ def build_tab_stock() -> None:
                         _date_range_props
                     ).bind_value(inp_hasta)
                 menu_hasta.on("hide", lambda: ui.timer(0.05, _cargar, once=True))
-            with ui.element("button").on(
-                "click", lambda: ui.timer(0.05, _cargar, once=True)
-            ).style(
-                "height:34px;font-size:12px;font-weight:500;"
-                "border:1px solid #2A7AC7;border-radius:4px;background:#2A7AC7;"
-                "padding:0 16px;cursor:pointer;color:#FFFFFF;align-self:flex-end"
-            ):
-                ui.html('<i class="ti ti-refresh" style="font-size:13px;margin-right:4px"></i>Actualizar')
 
             pdf_spinner = ui.spinner(size="sm", color="#2A7AC7").style("display:none;align-self:flex-end;margin-bottom:8px")
             with ui.element("button").on(
@@ -1011,6 +1003,15 @@ def build_tab_stock() -> None:
                 "padding:0 16px;cursor:pointer;color:#2A7AC7;align-self:flex-end"
             ):
                 ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>Marcas')
+
+            with ui.element("button").on(
+                "click", lambda: ui.timer(0.05, _cargar, once=True)
+            ).style(
+                "height:34px;font-size:12px;font-weight:500;"
+                "border:1px solid #2A7AC7;border-radius:4px;background:#2A7AC7;"
+                "padding:0 16px;cursor:pointer;color:#FFFFFF;align-self:flex-end"
+            ):
+                ui.html('<i class="ti ti-refresh" style="font-size:13px;margin-right:4px"></i>Actualizar')
 
             async def _descargar_pdf_marcas() -> None:
                 marcas_spinner.style("display:inline-block")
