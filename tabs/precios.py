@@ -657,6 +657,19 @@ def _mostrar_tabla_precios(
         with result_area:
             ui.label("No tienes publicaciones en MercadoLibre o aún no se han cargado.").classes("text-gray-500")
         return
+
+    # Override de marca (marcas_override): corrige marcas mal cargadas en ML que no se
+    # pueden editar ahí (ej. "AfterShokz" -> "Shokz"). Se aplica UNA sola vez, lo mas
+    # temprano posible -- antes de dedup, display y cualquier write -- para que todo lo
+    # que consume `items` de aca en adelante vea el valor correcto sin tener que
+    # chequear el override en cada lugar.
+    _marca_override_map = get_marca_override_map(user["id"])
+    if _marca_override_map:
+        for _it in items:
+            _m = _it.get("marca")
+            if _m and _m in _marca_override_map:
+                _it["marca"] = _marca_override_map[_m]
+
     _perf_uid = user["id"]
     _t_fase = time.perf_counter()
 
@@ -700,15 +713,14 @@ def _mostrar_tabla_precios(
     _t_fase = time.perf_counter()
 
     _uid = user["id"]
-    _marca_override = get_marca_override_map(_uid)
 
     def _resolve_marca(m):
-        """Marca cruda de ML -> marca a grabar en productos, aplicando
-        marcas_override (correcciones de marcas mal cargadas en ML, ej.
-        "AfterShokz" -> "Shokz") antes de cualquier write."""
+        """Normaliza el placeholder "—" (item sin atributo BRAND) a None. El override
+        de marcas_override ya se aplicó sobre `items` mas arriba, antes del dedup --
+        todo lo que llega aca (items_dedup/items_loaded) ya trae la marca corregida."""
         if not m or m == "—":
             return None
-        return _marca_override.get(m, m)
+        return m
 
     _sku_cats_all = get_sku_catalogos(_uid)
     _n_cat_by_sku: Dict[str, int] = {}
