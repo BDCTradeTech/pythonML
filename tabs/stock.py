@@ -38,6 +38,59 @@ def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[D
     return [dict(r) for r in rows]
 
 
+def _get_marcas(user_id: int) -> List[str]:
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT DISTINCT p.marca FROM productos p
+        INNER JOIN ml_stock_snapshots s ON p.sku = s.seller_sku AND p.user_id = s.user_id
+        WHERE p.user_id=? AND p.marca IS NOT NULL
+        ORDER BY p.marca
+    """, (user_id,)).fetchall()
+    conn.close()
+    return [r[0] for r in rows]
+
+
+def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
+    """Igual que _get_stock_history pero sumado entre todos los SKUs de la marca.
+    Colapsa primero por (seller_sku, snapshot_date) con MAX -- un mismo seller_sku puede
+    tener mas de un item_id reportando stock el mismo dia -- y recien despues suma entre
+    SKUs, para no sobrecontar (un SUM directo sobre ml_stock_snapshots llega a sobrecontar
+    7-8x en SKUs con varios item_id). Precio = promedio ponderado por stock, no tiene
+    sentido sumar precios."""
+    conn = get_connection()
+    rows = conn.execute("""
+        WITH per_sku_dia AS (
+            SELECT s.snapshot_date, s.seller_sku,
+                   MAX(s.available_qty) AS stock,
+                   MAX(s.price)         AS price
+            FROM ml_stock_snapshots s
+            INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+            WHERE p.marca=? AND s.user_id=? AND s.snapshot_date BETWEEN ? AND ?
+            GROUP BY s.snapshot_date, s.seller_sku
+        )
+        SELECT snapshot_date,
+               SUM(stock) AS stock,
+               SUM(price * stock) * 1.0 / NULLIF(SUM(stock), 0) AS price
+        FROM per_sku_dia
+        GROUP BY snapshot_date
+        ORDER BY snapshot_date ASC
+    """, (marca, user_id, desde, hasta)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def _get_marca_n_skus(user_id: int, marca: str, desde: str, hasta: str) -> int:
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT COUNT(DISTINCT s.seller_sku)
+        FROM ml_stock_snapshots s
+        INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+        WHERE p.marca=? AND s.user_id=? AND s.snapshot_date BETWEEN ? AND ?
+    """, (marca, user_id, desde, hasta)).fetchone()
+    conn.close()
+    return row[0] if row else 0
+
+
 def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     if not rows:
         return {}
@@ -100,21 +153,30 @@ def build_tab_stock() -> None:
     hoy = date.today()
     estado = {
         "sku": None,
+        "marca": None,
         "desde": (hoy - timedelta(days=29)).isoformat(),
         "hasta": hoy.isoformat(),
     }
     contenido_ref: list = [None]
     skus = _get_skus(user_id)
+    marcas = _get_marcas(user_id)
 
-    def _pintar(rows: List[Dict], metricas: Dict, sku: str):
+    def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not rows:
-                ui.label("Sin datos para este SKU y periodo.").style(
+                msg = "Sin datos para esta marca y periodo." if marca else "Sin datos para este SKU y periodo."
+                ui.label(msg).style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
                 return
+
+            if marca:
+                ui.label(
+                    f"Vista agregada — marca: {marca} · {n_skus} SKUs con historial · "
+                    "Precio = promedio ponderado por stock."
+                ).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
 
             vel    = metricas.get("vel_diaria", 0)
             dias_r = metricas.get("dias_restantes")
@@ -381,10 +443,21 @@ def build_tab_stock() -> None:
 
     async def _cargar():
         sku = estado.get("sku")
+        marca = estado.get("marca")
+        if marca:
+            rows = await run.io_bound(
+                _get_stock_history_marca, user_id, marca, estado["desde"], estado["hasta"]
+            )
+            n_skus = await run.io_bound(
+                _get_marca_n_skus, user_id, marca, estado["desde"], estado["hasta"]
+            )
+            met = _calcular_metricas(rows)
+            _pintar(rows, met, marca=marca, n_skus=n_skus)
+            return
         if not sku:
             contenido_ref[0].clear()
             with contenido_ref[0]:
-                ui.label("Selecciona un SKU para ver el historial.").style(
+                ui.label("Selecciona un SKU o una Marca para ver el historial.").style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
             return
@@ -392,7 +465,7 @@ def build_tab_stock() -> None:
             _get_stock_history, user_id, sku, estado["desde"], estado["hasta"]
         )
         met = _calcular_metricas(rows)
-        _pintar(rows, met, sku)
+        _pintar(rows, met, sku=sku)
 
     # Layout principal
     with ui.element("div").style("padding:10px 20px 0"):
@@ -402,10 +475,28 @@ def build_tab_stock() -> None:
                 sel = ui.select(options=skus, value=None, label="").props(
                     "dense outlined clearable use-input input-debounce=200"
                 ).style("width:240px;font-size:12px")
-                def _on_sku(e):
-                    estado["sku"] = e.value
-                    ui.timer(0.05, _cargar, once=True)
-                sel.on_value_change(_on_sku)
+            with ui.column().style("gap:3px"):
+                ui.label("Marca").style("font-size:11px;color:var(--color-text-secondary)")
+                sel_marca = ui.select(options=marcas, value=None, label="").props(
+                    "dense outlined clearable use-input input-debounce=200"
+                ).style("width:200px;font-size:12px")
+
+            def _on_sku(e):
+                estado["sku"] = e.value
+                if e.value:
+                    estado["marca"] = None
+                    sel_marca.set_value(None)
+                ui.timer(0.05, _cargar, once=True)
+            sel.on_value_change(_on_sku)
+
+            def _on_marca(e):
+                estado["marca"] = e.value
+                if e.value:
+                    estado["sku"] = None
+                    sel.set_value(None)
+                ui.timer(0.05, _cargar, once=True)
+            sel_marca.on_value_change(_on_marca)
+
             with ui.column().style("gap:3px"):
                 ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
                 ui.input(value=estado["desde"]).props("type=date dense outlined").style(
@@ -430,6 +521,6 @@ def build_tab_stock() -> None:
         cont = ui.element("div").style("width:100%")
         contenido_ref[0] = cont
         with cont:
-            ui.label("Selecciona un SKU para ver el historial.").style(
+            ui.label("Selecciona un SKU o una Marca para ver el historial.").style(
                 "font-size:13px;color:#9ca3af;padding:24px"
             )
