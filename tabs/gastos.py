@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import re
 import tempfile
@@ -1741,13 +1742,20 @@ def _parsear_filas_facturacion_ml(path: Path) -> Dict[str, dict]:
 
 def _fetch_meli_fee_mp(access_token: str, payment_id: str) -> Optional[float]:
     """Comisión real cobrada por ML para un pago, vía la misma API que usa
-    tabs/ventas.py en 'Completar datos' (MercadoPago Payments, no un endpoint de ML)."""
+    tabs/ventas.py en 'Completar datos' (MercadoPago Payments, no un endpoint de ML).
+    Devuelve None si la consulta falla (distinto de 0.0, que es un fee real
+    verificado por MP) para que el caller no confunda "fee=0 real" con "no se pudo
+    saber el fee" y termine estimándolo por tasa plana sin dejar rastro."""
     try:
         r = get_ml_session().get(
             f"https://api.mercadopago.com/v1/payments/{payment_id}",
             headers={"Authorization": f"Bearer {access_token}"}, timeout=15,
         )
         if r.status_code != 200:
+            logging.warning(
+                "[GASTOS] _fetch_meli_fee_mp: MP devolvió status %s para payment_id=%s",
+                r.status_code, payment_id,
+            )
             return None
         charges = r.json().get("charges_details") or []
         return sum(
@@ -1755,6 +1763,10 @@ def _fetch_meli_fee_mp(access_token: str, payment_id: str) -> Optional[float]:
             for c in charges if c.get("name") == "meli_percentage_fee"
         )
     except Exception:
+        logging.exception(
+            "[GASTOS] _fetch_meli_fee_mp: excepción consultando comisión real MP para payment_id=%s",
+            payment_id,
+        )
         return None
 
 
@@ -1828,6 +1840,7 @@ def _obtener_ventas_bd_periodo(user_id: int, inicio: datetime, fin: datetime) ->
                     fee_cache[pid] = fee
 
     ventas_bd: Dict[str, dict] = {}
+    fees_estimados_count = 0
     for o in raw_orders:
         if not isinstance(o, dict) or not o.get("id"):
             continue
@@ -1841,6 +1854,8 @@ def _obtener_ventas_bd_periodo(user_id: int, inicio: datetime, fin: datetime) ->
         pids = pids_por_orden.get(order_id) or []
         fees = [fee_cache[p] for p in pids if p in fee_cache]
         fee_real = sum(fees) if pids and len(fees) == len(pids) else None
+        if fee_real is None:
+            fees_estimados_count += 1
         comision_bd = round(fee_real, 2) if fee_real is not None else round(total_bd * ml_com, 2)
 
         ventas_bd[order_id] = {
@@ -1850,7 +1865,13 @@ def _obtener_ventas_bd_periodo(user_id: int, inicio: datetime, fin: datetime) ->
             "comision_bd": comision_bd,
             "status_raw": status_raw,
         }
-    return ventas_bd, str(seller_id)
+    if fees_estimados_count:
+        logging.warning(
+            "[GASTOS] _obtener_ventas_bd_periodo: %s de %s órdenes usaron comisión estimada "
+            "(tasa plana) en vez de la real de MP, user_id=%s periodo=%s..%s",
+            fees_estimados_count, len(ventas_bd), user_id, inicio.date(), fin.date(),
+        )
+    return ventas_bd, str(seller_id), fees_estimados_count
 
 
 def _cruzar_ventas_reporte_vs_bd(
@@ -2030,10 +2051,13 @@ def _calcular_seccion_cruce_ventas(
     if not filas_reporte:
         return {"_disponible": False}
 
-    ventas_bd, seller_id = _obtener_ventas_bd_periodo(user_id, periodo_ml_desde, periodo_ml_hasta)
+    ventas_bd, seller_id, fees_estimados_count = _obtener_ventas_bd_periodo(
+        user_id, periodo_ml_desde, periodo_ml_hasta
+    )
     cruce = _cruzar_ventas_reporte_vs_bd(filas_reporte, ventas_bd)
     cruce["_disponible"] = True
     cruce["seller_id"] = seller_id or ""
+    cruce["_fees_estimados_count"] = fees_estimados_count
     return cruce
 
 
@@ -3406,6 +3430,15 @@ def _render_seccion_cruce_ventas_html(resultado: dict) -> str:
             "</div>"
         )
 
+    _fees_estimados_count = cr.get("_fees_estimados_count") or 0
+    _aviso_fee_estimado = (
+        '<div style="padding:6px 14px;font-size:11px;color:#A32D2D;font-style:italic">'
+        f"⚠ {_fees_estimados_count} venta(s) de este período usan una comisión ML "
+        "ESTIMADA (tasa plana) porque no se pudo consultar el pago real en MercadoPago. "
+        "La ganancia calculada para esas ventas es aproximada, no exacta.</div>"
+        if _fees_estimados_count else ""
+    )
+
     cruzadas_ok = cr.get("cruzadas_ok") or []
     solo_reporte = cr.get("solo_reporte") or []
     solo_bd = cr.get("solo_bd") or []
@@ -3505,7 +3538,10 @@ def _render_seccion_cruce_ventas_html(resultado: dict) -> str:
             '</span></div>'
         )
 
-    return f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}{_hero_html}{_tabla_html}{_cross_mes_html}</div>'
+    return (
+        f'<div style="{_SECCION_WRAP_STYLE}">{_header_html}{_aviso_fee_estimado}'
+        f'{_hero_html}{_tabla_html}{_cross_mes_html}</div>'
+    )
 
 
 def _render_seccion_cruce_ventas(resultado: dict) -> None:
