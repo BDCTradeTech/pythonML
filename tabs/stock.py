@@ -385,6 +385,84 @@ def _generar_pdf_stock(datos: Dict[str, Any], razon_social: str, chart_b64: Opti
     return path, nombre
 
 
+def _render_marcas_pdf_html(resumen: List[Dict[str, Any]], desde: str, hasta: str, razon_social: str) -> str:
+    """Arma el HTML del resumen de Marcas para exportar a PDF via WeasyPrint (A4 landscape).
+    Mismo patron visual que _render_stock_pdf_html (header BDC systems + razon social +
+    periodo), pero con la tabla resumen de todas las marcas en vez del detalle dia a dia."""
+    desde_fmt, hasta_fmt = _iso_a_ddmmyyyy(desde), _iso_a_ddmmyyyy(hasta)
+    generado = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+    _header_html = (
+        '<div style="display:flex;justify-content:space-between;align-items:flex-end;'
+        'border-bottom:3px solid #113F72;padding-bottom:10px;margin-bottom:14px">'
+        "<div>"
+        '<div style="font-size:19px;font-weight:800;color:#185FA5;letter-spacing:0.02em">'
+        "BDC systems</div>"
+        '<div style="font-size:14px;font-weight:700;color:#222;margin-top:2px">'
+        "Reporte de Venta y Stock &mdash; Resumen por Marca</div>"
+        "</div>"
+        '<div style="text-align:right;font-size:10px;color:#555;line-height:1.6">'
+        f'<div style="font-size:12px;font-weight:700;color:#185FA5">{razon_social or ""}</div>'
+        f'<div>Periodo: {desde_fmt} &ndash; {hasta_fmt}</div>'
+        f'<div>Generado: {generado}</div>'
+        "</div></div>"
+    )
+
+    marca_header = f"Marca ({_iso_a_ddmm(desde)} al {_iso_a_ddmm(hasta)})"
+    cols = [(marca_header, "left"), ("Stock", "right"), ("Ventas", "right"), ("Velocidad", "right"), ("Dias Restantes", "right"), ("Ticket Promedio", "right")]
+
+    rows_html = []
+    for row in resumen:
+        dias_r = row.get("dias_restantes")
+        dc = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+        rows_html.append(
+            "<tr>"
+            f'<td style="padding:3px 8px;text-align:left;font-weight:600;color:#374151">{row["marca"]}</td>'
+            f'<td style="padding:3px 8px;text-align:right;color:#0C447C">{row["stock"]}</td>'
+            f'<td style="padding:3px 8px;text-align:right;color:#991B1B">{row.get("ventas", 0)}</td>'
+            f'<td style="padding:3px 8px;text-align:right;font-weight:600;color:#C2410C">{row["vel"]}/d</td>'
+            f'<td style="padding:3px 8px;text-align:right;font-weight:600;color:{dc}">{dias_r if dias_r else "—"}</td>'
+            f'<td style="padding:3px 8px;text-align:right;color:#374151">{_fmt_precio(row.get("ticket_prom"))}</td>'
+            "</tr>"
+        )
+
+    _tabla_html = (
+        '<table style="width:100%;border-collapse:collapse;font-size:10px">'
+        "<thead><tr>"
+        + "".join(
+            f'<th style="padding:5px 8px;background:#2A7AC7;color:#fff;font-weight:600;'
+            f'text-align:{align}">{h}</th>'
+            for h, align in cols
+        )
+        + "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
+    )
+
+    _style = (
+        "@page { size: A4 landscape; margin: 12mm 10mm 16mm 10mm; "
+        '@bottom-center { content: "Pagina " counter(page) " de " counter(pages); '
+        "font-size: 8px; color: #999; } }"
+        "body { font-family: 'Segoe UI', Arial, sans-serif; color: #222; margin: 0; }"
+    )
+
+    body = _header_html + _tabla_html
+    return f"<html><head><style>{_style}</style></head><body>{body}</body></html>"
+
+
+def _generar_pdf_marcas(resumen: List[Dict[str, Any]], desde: str, hasta: str, razon_social: str) -> tuple:
+    """Genera el PDF del resumen de Marcas via WeasyPrint. Devuelve (path, filename)."""
+    from weasyprint import HTML
+
+    html = _render_marcas_pdf_html(resumen, desde, hasta, razon_social)
+    fd, path = tempfile.mkstemp(suffix=".pdf")
+    os.close(fd)
+    HTML(string=html).write_pdf(path)
+
+    desde_fmt = datetime.strptime(desde, "%Y-%m-%d").strftime("%d%m%Y")
+    hasta_fmt = datetime.strptime(hasta, "%Y-%m-%d").strftime("%d%m%Y")
+    nombre = f"Marcas_{desde_fmt}_{hasta_fmt}.pdf"
+    return path, nombre
+
+
 def build_tab_stock() -> None:
     user = app.storage.user.get("user")
     if not user:
@@ -402,7 +480,8 @@ def build_tab_stock() -> None:
         "marca": None,
         "desde": desde_default,
         "hasta": hoy.isoformat(),
-        "vista_resumen": False,
+        "vista_resumen": True,
+        "_syncing": False,
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
@@ -801,25 +880,42 @@ def build_tab_stock() -> None:
                 ).style("width:240px;font-size:12px")
             with ui.column().style("gap:3px"):
                 ui.label("Marca").style("font-size:11px;color:var(--color-text-secondary)")
-                sel_marca = ui.select(options=marcas, value=None, label="").props(
-                    "dense outlined clearable use-input input-debounce=200"
+                sel_marca = ui.select(options=["Todas"] + marcas, value="Todas", label="").props(
+                    "dense outlined use-input input-debounce=200"
                 ).style("width:200px;font-size:12px")
 
+            def _sync_select(el, value):
+                """Cambia el value de un select sin disparar su propio on_value_change --
+                evita que el reseteo programatico del select 'contrario' pise el estado
+                que este handler acaba de setear (ej. elegir SKU resetea Marca a "Todas",
+                pero eso no debe volver a activar vista_resumen)."""
+                estado["_syncing"] = True
+                el.set_value(value)
+                estado["_syncing"] = False
+
             def _on_sku(e):
+                if estado.get("_syncing"):
+                    return
                 estado["sku"] = e.value
-                if e.value:
-                    estado["marca"] = None
-                    estado["vista_resumen"] = False
-                    sel_marca.set_value(None)
+                estado["marca"] = None
+                estado["vista_resumen"] = not bool(e.value)
+                _sync_select(sel_marca, "Todas")
                 ui.timer(0.05, _cargar, once=True)
             sel.on_value_change(_on_sku)
 
             def _on_marca(e):
-                estado["marca"] = e.value
-                if e.value:
+                if estado.get("_syncing"):
+                    return
+                if not e.value or e.value == "Todas":
+                    estado["marca"] = None
+                    estado["vista_resumen"] = True
+                    if not e.value:
+                        _sync_select(sel_marca, "Todas")
+                else:
+                    estado["marca"] = e.value
                     estado["sku"] = None
                     estado["vista_resumen"] = False
-                    sel.set_value(None)
+                    _sync_select(sel, None)
                 ui.timer(0.05, _cargar, once=True)
             sel_marca.on_value_change(_on_marca)
 
@@ -885,18 +981,39 @@ def build_tab_stock() -> None:
             ) as btn_pdf:
                 ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>Reporte')
 
-            def _activar_resumen():
-                estado["vista_resumen"] = True
-                ui.timer(0.05, _cargar, once=True)
-
+            marcas_spinner = ui.spinner(size="sm", color="#2A7AC7").style("display:none;align-self:flex-end;margin-bottom:8px")
             with ui.element("button").on(
-                "click", _activar_resumen
+                "click", lambda: ui.timer(0.05, _descargar_pdf_marcas, once=True)
             ).style(
                 "height:34px;font-size:12px;font-weight:500;"
                 "border:1px solid #2A7AC7;border-radius:4px;background:#FFFFFF;"
                 "padding:0 16px;cursor:pointer;color:#2A7AC7;align-self:flex-end"
             ):
                 ui.html('<i class="ti ti-tags" style="font-size:13px;margin-right:4px"></i>Marcas')
+
+            async def _descargar_pdf_marcas() -> None:
+                marcas_spinner.style("display:inline-block")
+                try:
+                    rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
+                    resumen = _calcular_resumen_marcas(rows)
+                    razon_social = await run.io_bound(get_user_ml_razon_social, user_id) or user.get("username", "")
+                    path, nombre = await run.io_bound(
+                        _generar_pdf_marcas, resumen, estado["desde"], estado["hasta"], razon_social
+                    )
+                    ui.download(path, nombre)
+                    ui.notify(f"Exportado: {nombre}", color="positive")
+
+                    def _cleanup() -> None:
+                        try:
+                            if path and os.path.exists(path):
+                                os.unlink(path)
+                        except Exception:
+                            pass
+                    ui.timer(5.0, _cleanup, once=True)
+                except Exception as ex:
+                    ui.notify(f"Error generando PDF: {ex}", color="negative")
+                finally:
+                    marcas_spinner.style("display:none")
 
             def _set_pdf_habilitado(hab: bool) -> None:
                 pdf_state["habilitado"] = hab
@@ -945,6 +1062,10 @@ def build_tab_stock() -> None:
         cont = ui.element("div").style("width:100%")
         contenido_ref[0] = cont
         with cont:
-            ui.label("Selecciona un SKU o una Marca para ver el historial.").style(
+            ui.label("Cargando...").style(
                 "font-size:13px;color:#9ca3af;padding:24px"
             )
+
+    # Vista de aterrizaje: "Todas" viene seleccionada por defecto -> mostrar el resumen
+    # de marcas apenas carga la pagina, sin esperar a que el usuario interactue.
+    ui.timer(0.1, _cargar, once=True)
