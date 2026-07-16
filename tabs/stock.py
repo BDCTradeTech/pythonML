@@ -109,14 +109,16 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     if not rows:
         return {}
     ventas_total = 0
-    dias_venta = 0
+    dias_validos = 0
     for i in range(1, len(rows)):
         stock_prev = rows[i-1].get("stock") or 0
         stock_curr = rows[i].get("stock") or 0
+        if stock_curr > stock_prev:
+            continue  # restock: no cuenta ni en numerador ni en denominador
         if stock_prev > stock_curr:
             ventas_total += stock_prev - stock_curr
-            dias_venta += 1
-    vel = round(ventas_total / dias_venta, 1) if dias_venta > 0 else 0
+        dias_validos += 1  # venta o variacion cero: dia valido para el promedio
+    vel = round(ventas_total / dias_validos, 1) if dias_validos > 0 else 0
     stock_actual = rows[-1].get("stock") or 0
     dias_restantes = round(stock_actual / vel) if vel > 0 and stock_actual > 0 else None
     return {
@@ -441,7 +443,7 @@ def build_tab_stock() -> None:
                     repo, vend = stock_hoy - stock_ayer, 0
                 else:
                     repo, vend = 0, max(0, stock_ayer - stock_hoy)
-                if vend > 0:
+                if i > 0 and repo == 0:
                     running_stock_days += 1
                 running_sales += vend
                 vel_acum = round(running_sales / running_stock_days, 1) if running_stock_days > 0 else None
