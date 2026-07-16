@@ -706,6 +706,11 @@ def _mostrar_tabla_precios(
         if _sc_sku:
             _n_cat_by_sku[_sc_sku] = _n_cat_by_sku.get(_sc_sku, 0) + 1
     _skus_dedup = [i.get("seller_sku") for i in items_dedup if i.get("seller_sku")]
+    _sku_marca_dedup = {
+        i.get("seller_sku"): i.get("marca")
+        for i in items_dedup
+        if i.get("seller_sku") and i.get("marca") and i.get("marca") != "—"
+    }
     _prod_map: Dict[str, Dict[str, Any]] = {}
     if _skus_dedup:
         _conn_prod = get_connection()
@@ -732,8 +737,8 @@ def _mostrar_tabla_precios(
         _conn_ins = get_connection()
         try:
             _conn_ins.executemany(
-                "INSERT OR IGNORE INTO productos (sku, user_id, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                [(s, _uid, _now_create, _now_create) for s in _new_skus],
+                "INSERT OR IGNORE INTO productos (sku, user_id, marca, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+                [(s, _uid, _sku_marca_dedup.get(s), _now_create, _now_create) for s in _new_skus],
             )
             _conn_ins.commit()
             for s in _new_skus:
@@ -886,7 +891,9 @@ def _mostrar_tabla_precios(
 
     _gan_rows = [
         (row["margen_pesos"], row.get("margen_venta_pct"), row.get("available_quantity"),
-         str(row.get("title") or ""), row.get("seller_sku"))
+         str(row.get("title") or ""),
+         row.get("marca") if row.get("marca") and row.get("marca") != "—" else None,
+         row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is not None and row.get("seller_sku")
     ]
@@ -895,15 +902,17 @@ def _mostrar_tabla_precios(
         _conn_gan = get_connection()
         try:
             _conn_gan.executemany(
-                "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
-                [(g[0], g[1], g[2], g[3], _now_gan, g[4], _uid) for g in _gan_rows],
+                "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, marca=COALESCE(?, marca), updated_at=? WHERE sku=? AND user_id=?",
+                [(g[0], g[1], g[2], g[3], g[4], _now_gan, g[5], _uid) for g in _gan_rows],
             )
             _conn_gan.commit()
         finally:
             _conn_gan.close()
 
     _no_costo_rows = [
-        (row.get("available_quantity"), str(row.get("title") or ""), row.get("seller_sku"))
+        (row.get("available_quantity"), str(row.get("title") or ""),
+         row.get("marca") if row.get("marca") and row.get("marca") != "—" else None,
+         row.get("seller_sku"))
         for row in items_loaded
         if row.get("margen_pesos") is None and row.get("seller_sku")
     ]
@@ -912,8 +921,8 @@ def _mostrar_tabla_precios(
         _conn_nombre = get_connection()
         try:
             _conn_nombre.executemany(
-                "UPDATE productos SET stock=?, nombre=COALESCE(NULLIF(nombre,''),?), updated_at=? WHERE sku=? AND user_id=?",
-                [(n[0], n[1], _now_nombre, n[2], _uid) for n in _no_costo_rows],
+                "UPDATE productos SET stock=?, nombre=COALESCE(NULLIF(nombre,''),?), marca=COALESCE(?, marca), updated_at=? WHERE sku=? AND user_id=?",
+                [(n[0], n[1], n[2], _now_nombre, n[3], _uid) for n in _no_costo_rows],
             )
             _conn_nombre.commit()
         finally:
@@ -1178,6 +1187,7 @@ def _mostrar_tabla_precios(
                                 _gan_promo_rows.append((
                                     r["margen_pesos"], r["margen_venta_pct"],
                                     r.get("available_quantity"), str(r.get("title") or ""),
+                                    r.get("marca") if r.get("marca") and r.get("marca") != "—" else None,
                                     r["seller_sku"]
                                 ))
             if _gan_promo_rows:
@@ -1185,8 +1195,8 @@ def _mostrar_tabla_precios(
                 _conn_gp = get_connection()
                 try:
                     _conn_gp.executemany(
-                        "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, updated_at=? WHERE sku=? AND user_id=?",
-                        [(g[0], g[1], g[2], g[3], _now_gp, g[4], _uid) for g in _gan_promo_rows],
+                        "UPDATE productos SET gan_pesos=?, gan_pct=?, stock=?, nombre=?, marca=COALESCE(?, marca), updated_at=? WHERE sku=? AND user_id=?",
+                        [(g[0], g[1], g[2], g[3], g[4], _now_gp, g[5], _uid) for g in _gan_promo_rows],
                     )
                     _conn_gp.commit()
                 finally:
