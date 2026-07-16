@@ -1010,7 +1010,7 @@ def build_tab_stock() -> None:
                 "border:1px solid #2A7AC7;border-radius:4px;background:#FFFFFF;"
                 "padding:0 16px;cursor:pointer;color:#2A7AC7;align-self:flex-end"
             ):
-                ui.html('<i class="ti ti-tags" style="font-size:13px;margin-right:4px"></i>Marcas')
+                ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>Marcas')
 
             async def _descargar_pdf_marcas() -> None:
                 marcas_spinner.style("display:inline-block")
