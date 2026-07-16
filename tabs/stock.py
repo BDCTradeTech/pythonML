@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from nicegui import app, run, ui
@@ -105,6 +106,32 @@ def _get_marca_n_skus(user_id: int, marca: str, desde: str, hasta: str) -> int:
     return row[0] if row else 0
 
 
+def _get_resumen_marcas(user_id: int, desde: str, hasta: str) -> List[Dict[str, Any]]:
+    """Serie diaria de stock/precio por marca (todas las marcas del usuario) en el rango dado.
+    Mismo patron anti-sobreconteo que _get_stock_history_marca -- colapsa por (seller_sku, dia)
+    con MAX antes de sumar entre SKUs, para no inflar el stock en SKUs con varios item_id."""
+    conn = get_connection()
+    rows = conn.execute("""
+        WITH per_sku_dia AS (
+            SELECT p.marca, s.snapshot_date, s.seller_sku,
+                   MAX(s.available_qty) AS stock,
+                   MAX(s.price)         AS price
+            FROM ml_stock_snapshots s
+            INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+            WHERE s.user_id=? AND p.marca IS NOT NULL AND s.snapshot_date BETWEEN ? AND ?
+            GROUP BY p.marca, s.snapshot_date, s.seller_sku
+        )
+        SELECT marca, snapshot_date,
+               SUM(stock) AS stock,
+               SUM(price * stock) * 1.0 / NULLIF(SUM(stock), 0) AS price
+        FROM per_sku_dia
+        GROUP BY marca, snapshot_date
+        ORDER BY marca, snapshot_date ASC
+    """, (user_id, desde, hasta)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
 def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     if not rows:
         return {}
@@ -147,6 +174,29 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
                               for i in range(1, len(rows))
                            ), default=0),
     }
+
+
+def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
+    """Agrupa la serie diaria por marca y reutiliza _calcular_metricas (misma logica de
+    velocidad ya corregida) para cada una. Ordena por velocidad descendente."""
+    por_marca: Dict[str, List[Dict]] = defaultdict(list)
+    for r in rows:
+        por_marca[r["marca"]].append(r)
+
+    resumen = []
+    for marca, serie in por_marca.items():
+        met = _calcular_metricas(serie)
+        if not met:
+            continue
+        resumen.append({
+            "marca": marca,
+            "stock": met.get("stock_actual", 0),
+            "vel": met.get("vel_diaria", 0),
+            "dias_restantes": met.get("dias_restantes"),
+            "ticket_prom": met.get("precio_actual"),
+        })
+    resumen.sort(key=lambda x: x["vel"], reverse=True)
+    return resumen
 
 
 def _fmt_precio(v):
@@ -344,6 +394,7 @@ def build_tab_stock() -> None:
         "marca": None,
         "desde": desde_default,
         "hasta": hoy.isoformat(),
+        "vista_resumen": False,
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
@@ -653,7 +704,54 @@ def build_tab_stock() -> None:
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
+    def _pintar_resumen_marcas(resumen: List[Dict]):
+        contenido_ref[0].clear()
+        with contenido_ref[0]:
+            if not resumen:
+                ui.label("Sin datos de marcas para este periodo.").style(
+                    "font-size:13px;color:#9ca3af;padding:24px"
+                )
+                return
+            with ui.element("div").style(
+                "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:720px"
+            ):
+                with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 260px)"):
+                    with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for h, align in [("Marca", "left"), ("Stock", "right"), ("Velocidad", "right"), ("Dias Restantes", "right"), ("Ticket Promedio", "right")]:
+                                    with ui.element("th").style(
+                                        f"padding:5px 8px;background:#2A7AC7;color:#fff;"
+                                        f"font-weight:500;text-align:{align};white-space:nowrap;"
+                                        "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                        "position:sticky;top:0;z-index:2"
+                                    ):
+                                        ui.html(h)
+                        with ui.element("tbody"):
+                            for row in resumen:
+                                dias_r = row.get("dias_restantes")
+                                dc = "#dc2626" if dias_r and dias_r < 7 else "#ca6d00" if dias_r and dias_r < 20 else "#166534"
+                                with ui.element("tr"):
+                                    with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:left;font-weight:500;color:#374151"):
+                                        ui.html(row["marca"])
+                                    with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
+                                        ui.html(str(row["stock"]))
+                                    with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
+                                        ui.html(f"{row['vel']}/d")
+                                    with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc}"):
+                                        ui.html(str(dias_r) if dias_r else "—")
+                                    with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
+                                        ui.html(_fmt_precio(row.get("ticket_prom")))
+
     async def _cargar():
+        if estado.get("vista_resumen"):
+            rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
+            resumen = _calcular_resumen_marcas(rows)
+            _pintar_resumen_marcas(resumen)
+            pdf_state["chart"] = None
+            pdf_state["datos"] = None
+            _set_pdf_habilitado(False)
+            return
         sku = estado.get("sku")
         marca = estado.get("marca")
         if marca:
@@ -700,6 +798,7 @@ def build_tab_stock() -> None:
                 estado["sku"] = e.value
                 if e.value:
                     estado["marca"] = None
+                    estado["vista_resumen"] = False
                     sel_marca.set_value(None)
                 ui.timer(0.05, _cargar, once=True)
             sel.on_value_change(_on_sku)
@@ -708,6 +807,7 @@ def build_tab_stock() -> None:
                 estado["marca"] = e.value
                 if e.value:
                     estado["sku"] = None
+                    estado["vista_resumen"] = False
                     sel.set_value(None)
                 ui.timer(0.05, _cargar, once=True)
             sel_marca.on_value_change(_on_marca)
@@ -770,7 +870,20 @@ def build_tab_stock() -> None:
                 "padding:0 16px;cursor:default;color:#2A7AC7;align-self:flex-end;"
                 "opacity:0.4;pointer-events:none"
             ) as btn_pdf:
-                ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>PDF')
+                ui.html('<i class="ti ti-download" style="font-size:13px;margin-right:4px"></i>Reporte')
+
+            def _activar_resumen():
+                estado["vista_resumen"] = True
+                ui.timer(0.05, _cargar, once=True)
+
+            with ui.element("button").on(
+                "click", _activar_resumen
+            ).style(
+                "height:34px;font-size:12px;font-weight:500;"
+                "border:1px solid #2A7AC7;border-radius:4px;background:#FFFFFF;"
+                "padding:0 16px;cursor:pointer;color:#2A7AC7;align-self:flex-end"
+            ):
+                ui.html('<i class="ti ti-tags" style="font-size:13px;margin-right:4px"></i>Marcas')
 
             def _set_pdf_habilitado(hab: bool) -> None:
                 pdf_state["habilitado"] = hab
