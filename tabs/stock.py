@@ -209,7 +209,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
         '<div style="font-size:19px;font-weight:800;color:#185FA5;letter-spacing:0.02em">'
         "BDC systems</div>"
         '<div style="font-size:14px;font-weight:700;color:#222;margin-top:2px">'
-        f"Reporte de Stock &mdash; {titulo}</div>"
+        f"Reporte de Venta y Stock &mdash; {titulo}</div>"
         "</div>"
         '<div style="text-align:right;font-size:10px;color:#555;line-height:1.6">'
         f'<div style="font-size:12px;font-weight:700;color:#185FA5">{razon_social or ""}</div>'
@@ -267,7 +267,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
             cur_mes = mes_key
             rows_html.append(
                 f'<tr><td colspan="5" style="background:#EEF6FD;color:#185FA5;'
-                f'font-weight:700;padding:3px 8px;font-size:9px">{MESES[d.month-1]} {d.year}</td></tr>'
+                f'font-weight:700;padding:2px 6px;font-size:8px">{MESES[d.month-1]} {d.year}</td></tr>'
             )
         stock, vend, repo, va = r.get("stock") or 0, r["vend"], r["repo"], r.get("vel_acum")
         if repo > 0:
@@ -278,23 +278,24 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
             vc, vt = "#9ca3af", "—"
         rows_html.append(
             "<tr>"
-            f'<td style="padding:2px 8px;text-align:center;color:#6b7280">{dia_label}</td>'
-            f'<td style="padding:2px 8px;text-align:right;font-weight:600;'
+            f'<td style="padding:1.5px 6px;text-align:left;color:#6b7280">{dia_label}</td>'
+            f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;'
             f'color:{"#166534" if stock > 0 else "#9ca3af"}">{stock}</td>'
-            f'<td style="padding:2px 8px;text-align:right;font-weight:600;color:{vc}">{vt}</td>'
-            f'<td style="padding:2px 8px;text-align:right;color:#6b7280">'
+            f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;color:{vc}">{vt}</td>'
+            f'<td style="padding:1.5px 6px;text-align:right;color:#6b7280">'
             f'{f"{va}/d" if va is not None else "—"}</td>'
-            f'<td style="padding:2px 8px;text-align:right;color:#374151">{_fmt_precio(r.get("price"))}</td>'
+            f'<td style="padding:1.5px 6px;text-align:right;color:#374151">{_fmt_precio(r.get("price"))}</td>'
             "</tr>"
         )
 
+    _tabla_cols = [("Dia", "left"), ("Stock", "right"), ("Variacion", "right"), ("Vel. acum.", "right"), ("Ticket prom.", "right")]
     _tabla_html = (
-        '<table style="width:100%;border-collapse:collapse;font-size:9.5px">'
+        '<table style="width:100%;max-width:340px;border-collapse:collapse;font-size:8.5px">'
         "<thead><tr>"
         + "".join(
-            f'<th style="padding:4px 8px;background:#2A7AC7;color:#fff;font-weight:600;'
-            f'text-align:center">{h}</th>'
-            for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Ticket prom."]
+            f'<th style="padding:3px 6px;background:#2A7AC7;color:#fff;font-weight:600;'
+            f'text-align:{align}">{h}</th>'
+            for h, align in _tabla_cols
         )
         + "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
     )
@@ -507,20 +508,20 @@ def build_tab_stock() -> None:
 
             # Grid: tabla fija izquierda + grafico ancho completo derecha
             with ui.element("div").style(
-                "display:grid;grid-template-columns:390px 1fr;gap:0;align-items:start;width:100%"
+                "display:grid;grid-template-columns:340px 1fr;gap:0;align-items:start;width:100%"
             ):
                 # Tabla
                 with ui.element("div").style(
                     "border:0.5px solid #e2e8f0;border-radius:8px 0 0 8px;overflow:hidden;margin-right:10px"
                 ):
                     with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 450px)"):
-                        with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
+                        with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
                             with ui.element("thead"):
                                 with ui.element("tr"):
-                                    for h in ["Dia", "Stock", "Variacion", "Vel. acum.", "Ticket prom."]:
+                                    for h, align in [("Dia", "left"), ("Stock", "right"), ("Variacion", "right"), ("Vel. acum.", "right"), ("Ticket prom.", "right")]:
                                         with ui.element("th").style(
-                                            "padding:5px 8px;background:#2A7AC7;color:#fff;"
-                                            "font-weight:500;text-align:center;white-space:nowrap;"
+                                            f"padding:3px 6px;background:#2A7AC7;color:#fff;"
+                                            f"font-weight:500;text-align:{align};white-space:nowrap;"
                                             "border-right:0.5px solid rgba(255,255,255,0.15);"
                                             "position:sticky;top:0;z-index:2"
                                         ):
@@ -541,9 +542,9 @@ def build_tab_stock() -> None:
                                         cur_mes = mes_key
                                         with ui.element("tr"):
                                             with ui.element("td").style(
-                                                "padding:3px 8px;background:#EEF6FD;"
+                                                "padding:2px 6px;background:#EEF6FD;"
                                                 "border-bottom:0.5px solid #d0e8f8;"
-                                                "font-size:10px;font-weight:600;color:#185FA5"
+                                                "font-size:9px;font-weight:600;color:#185FA5"
                                             ).props('colspan="5"'):
                                                 ui.html(mes_label)
                                     stock  = r.get("stock") or 0
@@ -553,9 +554,9 @@ def build_tab_stock() -> None:
                                     precio = _fmt_precio(r.get("price"))
                                     bg = "background:#F0FDF4;" if repo > 0 else ""
                                     with ui.element("tr").style(bg):
-                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:center;color:#6b7280"):
+                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:left;color:#6b7280"):
                                             ui.html(dia_label)
-                                        with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
+                                        with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
                                             ui.html(str(stock))
                                         if repo > 0:
                                             vc, vt = "#166534", f"+{repo}"
@@ -563,11 +564,11 @@ def build_tab_stock() -> None:
                                             vc, vt = "#dc2626", f"\u2212{vend}"
                                         else:
                                             vc, vt = "#9ca3af", "\u2014"
-                                        with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
+                                        with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
                                             ui.html(vt)
-                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
+                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
                                             ui.html(f"{va}/d" if va is not None else "\u2014")
-                                        with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151;min-width:80px"):
+                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151;min-width:60px"):
                                             ui.html(precio)
 
                 # Grafico dual: stock (izq) + precio (der)
