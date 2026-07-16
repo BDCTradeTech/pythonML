@@ -191,6 +191,7 @@ def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
         resumen.append({
             "marca": marca,
             "stock": met.get("stock_actual", 0),
+            "ventas": met.get("ventas_total", 0),
             "vel": met.get("vel_diaria", 0),
             "dias_restantes": met.get("dias_restantes"),
             "ticket_prom": met.get("precio_actual"),
@@ -211,6 +212,13 @@ def _fmt_precio(v):
 def _iso_a_ddmmyyyy(iso_str: str) -> str:
     try:
         return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d/%m/%Y")
+    except Exception:
+        return iso_str
+
+
+def _iso_a_ddmm(iso_str: str) -> str:
+    try:
+        return datetime.strptime(iso_str, "%Y-%m-%d").strftime("%d/%m")
     except Exception:
         return iso_str
 
@@ -704,7 +712,7 @@ def build_tab_stock() -> None:
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
-    def _pintar_resumen_marcas(resumen: List[Dict]):
+    def _pintar_resumen_marcas(resumen: List[Dict], desde: str, hasta: str):
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not resumen:
@@ -712,14 +720,15 @@ def build_tab_stock() -> None:
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
                 return
+            marca_header = f"Marca ({_iso_a_ddmm(desde)} al {_iso_a_ddmm(hasta)})"
             with ui.element("div").style(
-                "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:720px"
+                "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:820px"
             ):
                 with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 260px)"):
                     with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
                         with ui.element("thead"):
                             with ui.element("tr"):
-                                for h, align in [("Marca", "left"), ("Stock", "right"), ("Velocidad", "right"), ("Dias Restantes", "right"), ("Ticket Promedio", "right")]:
+                                for h, align in [(marca_header, "left"), ("Stock", "right"), ("Ventas", "right"), ("Velocidad", "right"), ("Dias Restantes", "right"), ("Ticket Promedio", "right")]:
                                     with ui.element("th").style(
                                         f"padding:5px 8px;background:#2A7AC7;color:#fff;"
                                         f"font-weight:500;text-align:{align};white-space:nowrap;"
@@ -736,6 +745,8 @@ def build_tab_stock() -> None:
                                         ui.html(row["marca"])
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
                                         ui.html(str(row["stock"]))
+                                    with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#991B1B"):
+                                        ui.html(str(row.get("ventas", 0)))
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
                                         ui.html(f"{row['vel']}/d")
                                     with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc}"):
@@ -747,7 +758,7 @@ def build_tab_stock() -> None:
         if estado.get("vista_resumen"):
             rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
             resumen = _calcular_resumen_marcas(rows)
-            _pintar_resumen_marcas(resumen)
+            _pintar_resumen_marcas(resumen, estado["desde"], estado["hasta"])
             pdf_state["chart"] = None
             pdf_state["datos"] = None
             _set_pdf_habilitado(False)
@@ -832,6 +843,7 @@ def build_tab_stock() -> None:
                     ui.date(value=_iso_a_ddmmyyyy(estado["desde"])).props(
                         _date_range_props
                     ).bind_value(inp_desde)
+                menu_desde.on("hide", lambda: ui.timer(0.05, _cargar, once=True))
             with ui.column().style("gap:3px"):
                 ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
                 inp_hasta = ui.input(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
@@ -852,6 +864,7 @@ def build_tab_stock() -> None:
                     ui.date(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
                         _date_range_props
                     ).bind_value(inp_hasta)
+                menu_hasta.on("hide", lambda: ui.timer(0.05, _cargar, once=True))
             with ui.element("button").on(
                 "click", lambda: ui.timer(0.05, _cargar, once=True)
             ).style(
