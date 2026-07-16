@@ -38,6 +38,17 @@ def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[D
     return [dict(r) for r in rows]
 
 
+def _get_fecha_minima(user_id: int) -> str | None:
+    """Primer snapshot real del usuario, excluyendo el SKU de prueba TEST-PRODUCTO-DEMO."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT MIN(snapshot_date) FROM ml_stock_snapshots
+        WHERE user_id=? AND seller_sku != 'TEST-PRODUCTO-DEMO'
+    """, (user_id,)).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
 def _get_marcas(user_id: int) -> List[str]:
     conn = get_connection()
     rows = conn.execute("""
@@ -95,15 +106,14 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     if not rows:
         return {}
     ventas_total = 0
-    dias_con_stock = 0
+    dias_venta = 0
     for i in range(1, len(rows)):
         stock_prev = rows[i-1].get("stock") or 0
         stock_curr = rows[i].get("stock") or 0
         if stock_prev > stock_curr:
             ventas_total += stock_prev - stock_curr
-        if stock_prev > 0:
-            dias_con_stock += 1
-    vel = round(ventas_total / dias_con_stock, 1) if dias_con_stock > 0 else 0
+            dias_venta += 1
+    vel = round(ventas_total / dias_venta, 1) if dias_venta > 0 else 0
     stock_actual = rows[-1].get("stock") or 0
     dias_restantes = round(stock_actual / vel) if vel > 0 and stock_actual > 0 else None
     return {
@@ -165,15 +175,31 @@ def build_tab_stock() -> None:
     user_id = user["id"]
 
     hoy = date.today()
+    fecha_minima = _get_fecha_minima(user_id)
+    desde_default = (hoy - timedelta(days=29)).isoformat()
+    if fecha_minima and desde_default < fecha_minima:
+        desde_default = fecha_minima
     estado = {
         "sku": None,
         "marca": None,
-        "desde": (hoy - timedelta(days=29)).isoformat(),
+        "desde": desde_default,
         "hasta": hoy.isoformat(),
     }
     contenido_ref: list = [None]
     skus = _get_skus(user_id)
     marcas = _get_marcas(user_id)
+
+    # QDate no tiene props min/max: la restriccion de rango se hace con `options`,
+    # una funcion JS que recibe cada fecha candidata en formato 'YYYY/MM/DD'
+    # (fijo, independiente de la mask de visualizacion) y devuelve bool.
+    _min_slash = (fecha_minima or "1970-01-01").replace("-", "/")
+    _max_slash = hoy.isoformat().replace("-", "/")
+    _date_range_props = (
+        f"locale=es mask='DD/MM/YYYY' "
+        f":options=\"date => date >= '{_min_slash}' && date <= '{_max_slash}'\" "
+        f"navigation-min-year-month=\"{_min_slash[:7]}\" "
+        f"navigation-max-year-month=\"{_max_slash[:7]}\""
+    )
 
     def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None):
         from datetime import datetime as _dt
@@ -210,20 +236,20 @@ def build_tab_stock() -> None:
             ):
                 # Fila 1: pills
                 with ui.element("div").style("display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px"):
-                    for icon, val, lbl, bg, border, color in [
-                        ("ti-package",      str(metricas.get("stock_actual", "\u2014")), "stock",    "#E6F1FB", "#85B7EB", "#0C447C"),
-                        ("ti-shopping-cart",str(metricas.get("ventas_total", "\u2014")), "vendidas", "#FEE2E2", "#FCA5A5", "#991B1B"),
-                        ("ti-trending-up",  f"{vel}/d",                                 "vel.",     "var(--color-background-secondary)", "#e2e8f0", "#374151"),
-                        ("ti-clock",        str(dias_r or "\u2014"),                    "dias rest.",dc_bg,    dc_br,     dc),
-                        ("ti-tag",          _fmt_precio(metricas.get("precio_actual")), "",         "var(--color-background-secondary)", "#e2e8f0", "#374151"),
+                    for icon, val, lbl, bg, border, color, is_main in [
+                        ("ti-trending-up",  f"{vel}/d",                                 "vel.",     "#FFEDD5", "#FB923C", "#C2410C", True),
+                        ("ti-package",      str(metricas.get("stock_actual", "\u2014")), "stock",    "#E6F1FB", "#85B7EB", "#0C447C", False),
+                        ("ti-shopping-cart",str(metricas.get("ventas_total", "\u2014")), "vendidas", "#FEE2E2", "#FCA5A5", "#991B1B", False),
+                        ("ti-clock",        str(dias_r or "\u2014"),                    "dias rest.",dc_bg,    dc_br,     dc,        False),
+                        ("ti-tag",          _fmt_precio(metricas.get("precio_actual")), "",         "var(--color-background-secondary)", "#e2e8f0", "#374151", False),
                     ]:
                         with ui.element("div").style(
                             f"display:inline-flex;align-items:center;gap:4px;"
-                            f"background:{bg};border:0.5px solid {border};"
+                            f"background:{bg};border:{'1.5px' if is_main else '0.5px'} solid {border};"
                             f"border-radius:20px;padding:4px 10px"
                         ):
                             ui.html(f'<i class="ti {icon}" style="font-size:12px;color:{color}" aria-hidden="true"></i>')
-                            ui.label(val).style(f"font-size:12px;font-weight:500;color:{color}")
+                            ui.label(val).style(f"font-size:{'13px' if is_main else '12px'};font-weight:{'700' if is_main else '500'};color:{color}")
                             if lbl:
                                 ui.label(lbl).style(f"font-size:10px;color:{color};opacity:.7")
 
@@ -255,7 +281,7 @@ def build_tab_stock() -> None:
                     repo, vend = stock_hoy - stock_ayer, 0
                 else:
                     repo, vend = 0, max(0, stock_ayer - stock_hoy)
-                if stock_ayer > 0:
+                if vend > 0:
                     running_stock_days += 1
                 running_sales += vend
                 vel_acum = round(running_sales / running_stock_days, 1) if running_stock_days > 0 else None
@@ -519,6 +545,8 @@ def build_tab_stock() -> None:
                 def _on_desde(e):
                     iso = _ddmmyyyy_a_iso(e.value)
                     if iso:
+                        iso_min = fecha_minima or "1970-01-01"
+                        iso = max(iso_min, min(iso, hoy.isoformat()))
                         estado["desde"] = iso
                 inp_desde.on_value_change(_on_desde)
                 with inp_desde.add_slot("append"):
@@ -527,7 +555,7 @@ def build_tab_stock() -> None:
                     )
                 with ui.menu() as menu_desde:
                     ui.date(value=_iso_a_ddmmyyyy(estado["desde"])).props(
-                        "locale=es mask='DD/MM/YYYY'"
+                        _date_range_props
                     ).bind_value(inp_desde)
             with ui.column().style("gap:3px"):
                 ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
@@ -537,6 +565,8 @@ def build_tab_stock() -> None:
                 def _on_hasta(e):
                     iso = _ddmmyyyy_a_iso(e.value)
                     if iso:
+                        iso_min = fecha_minima or "1970-01-01"
+                        iso = max(iso_min, min(iso, hoy.isoformat()))
                         estado["hasta"] = iso
                 inp_hasta.on_value_change(_on_hasta)
                 with inp_hasta.add_slot("append"):
@@ -545,7 +575,7 @@ def build_tab_stock() -> None:
                     )
                 with ui.menu() as menu_hasta:
                     ui.date(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
-                        "locale=es mask='DD/MM/YYYY'"
+                        _date_range_props
                     ).bind_value(inp_hasta)
             with ui.element("button").on(
                 "click", lambda: ui.timer(0.05, _cargar, once=True)
