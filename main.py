@@ -151,7 +151,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.16.06"
+VERSION = "3.26.07.16.07"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -1286,6 +1286,7 @@ def main() -> None:
         storage_secret=os.getenv("STORAGE_SECRET", ""),
         reconnect_timeout=120,  # Evita "Connection lost" durante carga pesada (Precios con muchos productos)
         message_history_length=2000,  # Más mensajes al reconectar para restaurar UI
+        language="es",  # Paquete de idioma de Quasar (calendarios, etc.) -- no afecta textos propios de la app
     )
 
 
