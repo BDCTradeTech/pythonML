@@ -15,15 +15,17 @@ from db import get_connection, get_user_ml_razon_social
 MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
 
-def _get_skus(user_id: int) -> List[str]:
+def _get_skus(user_id: int) -> List[Dict[str, Any]]:
     conn = get_connection()
     rows = conn.execute("""
-        SELECT DISTINCT seller_sku FROM ml_stock_snapshots
-        WHERE user_id=? AND seller_sku IS NOT NULL AND seller_sku != ''
-        ORDER BY seller_sku
+        SELECT DISTINCT s.seller_sku, p.nombre
+        FROM ml_stock_snapshots s
+        LEFT JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+        WHERE s.user_id=? AND s.seller_sku IS NOT NULL AND s.seller_sku != ''
+        ORDER BY s.seller_sku
     """, (user_id,)).fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    return [dict(r) for r in rows]
 
 
 def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
@@ -200,13 +202,28 @@ def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
     return resumen
 
 
+def _fmt_num(n) -> str:
+    """Formato argentino: punto para miles, coma para decimales (solo si hay). None -> '—'."""
+    if n is None:
+        return "—"
+    try:
+        n = float(n)
+    except (TypeError, ValueError):
+        return str(n)
+    signo = "-" if n < 0 else ""
+    n = abs(n)
+    if n == int(n):
+        cuerpo = f"{int(n):,}".replace(",", ".")
+    else:
+        entero, decimales = f"{n:,.2f}".split(".")
+        cuerpo = entero.replace(",", ".") + "," + decimales
+    return signo + cuerpo
+
+
 def _fmt_precio(v):
     if v is None:
         return "—"
-    try:
-        return "$" + f"{int(float(v)):,}".replace(",", ".")
-    except Exception:
-        return str(v)
+    return "$" + _fmt_num(v)
 
 
 def _iso_a_ddmmyyyy(iso_str: str) -> str:
@@ -278,8 +295,8 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
 
     pills = [
         ("vel.",       f"{vel}/d",                                 "#FFEDD5", "#FB923C", "#C2410C", True),
-        ("stock",      str(metricas.get("stock_actual", "—")), "#E6F1FB", "#85B7EB", "#0C447C", False),
-        ("vendidas",   str(metricas.get("ventas_total", "—")), "#FEE2E2", "#FCA5A5", "#991B1B", False),
+        ("stock",      _fmt_num(metricas.get("stock_actual")), "#E6F1FB", "#85B7EB", "#0C447C", False),
+        ("vendidas",   _fmt_num(metricas.get("ventas_total")), "#FEE2E2", "#FCA5A5", "#991B1B", False),
         ("dias rest.", str(dias_r or "—"),                     dc_bg,     dc_br,     dc,        False),
         ("ticket prom.", _fmt_precio(metricas.get("precio_actual")), "#F1F5F9", "#e2e8f0", "#374151", False),
     ]
@@ -299,10 +316,10 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
     _detalle_html = (
         f'<div style="font-size:9px;color:#666;margin-bottom:14px">'
         f'Ticket: {p_detalle} &nbsp;&middot;&middot;&nbsp; '
-        f"Stock: {metricas.get('stock_max',0)} max &middot; {metricas.get('stock_prom',0)} prom "
-        f"&middot; {metricas.get('vel_max_dia',0)}/d max &nbsp;&middot;&middot;&nbsp; "
-        f"Dias: {metricas.get('dias_con_stock',0)} c/stock &middot; "
-        f"{metricas.get('dias_sin_stock',0)} sin &middot; {metricas.get('n_reposiciones',0)} repos"
+        f"Stock: {_fmt_num(metricas.get('stock_max',0))} max &middot; {_fmt_num(metricas.get('stock_prom',0))} prom "
+        f"&middot; {_fmt_num(metricas.get('vel_max_dia',0))}/d max &nbsp;&middot;&middot;&nbsp; "
+        f"Dias: {_fmt_num(metricas.get('dias_con_stock',0))} c/stock &middot; "
+        f"{_fmt_num(metricas.get('dias_sin_stock',0))} sin &middot; {_fmt_num(metricas.get('n_reposiciones',0))} repos"
         "</div>"
     )
 
@@ -329,16 +346,16 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
             )
         stock, vend, repo, va = r.get("stock") or 0, r["vend"], r["repo"], r.get("vel_acum")
         if repo > 0:
-            vc, vt = "#166534", f"+{repo}"
+            vc, vt = "#166534", f"+{_fmt_num(repo)}"
         elif vend > 0:
-            vc, vt = "#dc2626", f"−{vend}"
+            vc, vt = "#dc2626", f"−{_fmt_num(vend)}"
         else:
             vc, vt = "#9ca3af", "—"
         rows_html.append(
             "<tr>"
             f'<td style="padding:1.5px 6px;text-align:left;color:#6b7280">{dia_label}</td>'
             f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;'
-            f'color:{"#166534" if stock > 0 else "#9ca3af"}">{stock}</td>'
+            f'color:{"#166534" if stock > 0 else "#9ca3af"}">{_fmt_num(stock)}</td>'
             f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;color:{vc}">{vt}</td>'
             f'<td style="padding:1.5px 6px;text-align:right;color:#6b7280">'
             f'{f"{va}/d" if va is not None else "—"}</td>'
@@ -418,8 +435,8 @@ def _render_marcas_pdf_html(resumen: List[Dict[str, Any]], desde: str, hasta: st
         rows_html.append(
             "<tr>"
             f'<td style="padding:3px 8px;text-align:left;font-weight:600;color:#374151">{row["marca"]}</td>'
-            f'<td style="padding:3px 8px;text-align:right;color:#0C447C">{row["stock"]}</td>'
-            f'<td style="padding:3px 8px;text-align:right;color:#991B1B">{row.get("ventas", 0)}</td>'
+            f'<td style="padding:3px 8px;text-align:right;color:#0C447C">{_fmt_num(row["stock"])}</td>'
+            f'<td style="padding:3px 8px;text-align:right;color:#991B1B">{_fmt_num(row.get("ventas", 0))}</td>'
             f'<td style="padding:3px 8px;text-align:right;font-weight:600;color:#C2410C">{row["vel"]}/d</td>'
             f'<td style="padding:3px 8px;text-align:right;font-weight:600;color:{dc}">{dias_r if dias_r else "—"}</td>'
             f'<td style="padding:3px 8px;text-align:right;color:#374151">{_fmt_precio(row.get("ticket_prom"))}</td>'
@@ -485,7 +502,11 @@ def build_tab_stock() -> None:
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
-    skus = _get_skus(user_id)
+    skus_rows = _get_skus(user_id)
+    sku_options = {
+        r["seller_sku"]: (f'{r["seller_sku"]} — {r["nombre"]}' if r.get("nombre") else r["seller_sku"])
+        for r in skus_rows
+    }
     marcas = _get_marcas(user_id)
 
     # QDate no tiene props min/max: la restriccion de rango se hace con `options`,
@@ -540,8 +561,8 @@ def build_tab_stock() -> None:
                 with ui.element("div").style("display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:6px"):
                     for icon, val, lbl, bg, border, color, is_main in [
                         ("ti-trending-up",  f"{vel}/d",                                 "vel.",     "#FFEDD5", "#FB923C", "#C2410C", True),
-                        ("ti-package",      str(metricas.get("stock_actual", "\u2014")), "stock",    "#E6F1FB", "#85B7EB", "#0C447C", False),
-                        ("ti-shopping-cart",str(metricas.get("ventas_total", "\u2014")), "vendidas", "#FEE2E2", "#FCA5A5", "#991B1B", False),
+                        ("ti-package",      _fmt_num(metricas.get("stock_actual")), "stock",    "#E6F1FB", "#85B7EB", "#0C447C", False),
+                        ("ti-shopping-cart",_fmt_num(metricas.get("ventas_total")), "vendidas", "#FEE2E2", "#FCA5A5", "#991B1B", False),
                         ("ti-clock",        str(dias_r or "\u2014"),                    "dias rest.",dc_bg,    dc_br,     dc,        False),
                         ("ti-tag",          _fmt_precio(metricas.get("precio_actual")), "",         "var(--color-background-secondary)", "#e2e8f0", "#374151", False),
                     ]:
@@ -558,8 +579,8 @@ def build_tab_stock() -> None:
 
                 # Fila 2: detalle compacto
                 p_detalle = p_min if p_iguales else f"{p_min} min \u00b7 {p_max} max \u00b7 {p_prom} prom"
-                s_detalle = f"{metricas.get('stock_max',0)} max \u00b7 {metricas.get('stock_prom',0)} prom \u00b7 <span style='color:#dc2626'>{metricas.get('vel_max_dia',0)}/d max</span>"
-                d_detalle = f"<span style='color:#166534'>{metricas.get('dias_con_stock',0)}</span> c/stock \u00b7 <span style='color:#dc2626'>{metricas.get('dias_sin_stock',0)}</span> sin \u00b7 <span style='color:#185FA5'>{metricas.get('n_reposiciones',0)}</span> repos"
+                s_detalle = f"{_fmt_num(metricas.get('stock_max',0))} max \u00b7 {_fmt_num(metricas.get('stock_prom',0))} prom \u00b7 <span style='color:#dc2626'>{_fmt_num(metricas.get('vel_max_dia',0))}/d max</span>"
+                d_detalle = f"<span style='color:#166534'>{_fmt_num(metricas.get('dias_con_stock',0))}</span> c/stock \u00b7 <span style='color:#dc2626'>{_fmt_num(metricas.get('dias_sin_stock',0))}</span> sin \u00b7 <span style='color:#185FA5'>{_fmt_num(metricas.get('n_reposiciones',0))}</span> repos"
                 ui.html(
                     f'<div style="font-size:10px;color:#9ca3af;display:flex;flex-wrap:wrap;gap:4px;align-items:center">'
                     f'<span style="font-weight:500;color:#185FA5">Ticket:</span>'
@@ -695,11 +716,11 @@ def build_tab_stock() -> None:
                                         with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:left;color:#6b7280"):
                                             ui.html(dia_label)
                                         with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
-                                            ui.html(str(stock))
+                                            ui.html(_fmt_num(stock))
                                         if repo > 0:
-                                            vc, vt = "#166534", f"+{repo}"
+                                            vc, vt = "#166534", f"+{_fmt_num(repo)}"
                                         elif vend > 0:
-                                            vc, vt = "#dc2626", f"\u2212{vend}"
+                                            vc, vt = "#dc2626", f"\u2212{_fmt_num(vend)}"
                                         else:
                                             vc, vt = "#9ca3af", "\u2014"
                                         with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
@@ -823,9 +844,9 @@ def build_tab_stock() -> None:
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:left;font-weight:500;color:#374151"):
                                         ui.html(row["marca"])
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
-                                        ui.html(str(row["stock"]))
+                                        ui.html(_fmt_num(row["stock"]))
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#991B1B"):
-                                        ui.html(str(row.get("ventas", 0)))
+                                        ui.html(_fmt_num(row.get("ventas", 0)))
                                     with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
                                         ui.html(f"{row['vel']}/d")
                                     with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc}"):
@@ -875,9 +896,9 @@ def build_tab_stock() -> None:
         with ui.row().style("gap:8px;align-items:flex-end;flex-wrap:wrap;margin-bottom:8px"):
             with ui.column().style("gap:3px"):
                 ui.label("SKU").style("font-size:11px;color:var(--color-text-secondary)")
-                sel = ui.select(options=skus, value=None, label="").props(
+                sel = ui.select(options=sku_options, value=None, label="").props(
                     "dense outlined clearable use-input input-debounce=200"
-                ).style("width:240px;font-size:12px")
+                ).style("width:300px;font-size:12px")
             with ui.column().style("gap:3px"):
                 ui.label("Marca").style("font-size:11px;color:var(--color-text-secondary)")
                 sel_marca = ui.select(options=["Todas"] + marcas, value="Todas", label="").props(
