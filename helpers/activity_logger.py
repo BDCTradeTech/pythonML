@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Optional
 
@@ -44,4 +45,8 @@ def log_event(
         finally:
             conn.close()
     except Exception:
-        pass
+        # No propagar: el usuario que disparó la acción auditada no tiene por qué
+        # ver romperse su operación porque el logger de auditoría falló. Pero el
+        # fallo tiene que quedar visible para el operador (stderr/journald), porque
+        # este es el propio mecanismo que permitiría detectar que algo más se rompió.
+        logging.exception("[ACTIVITY_LOGGER] log_event falló (user_id=%s, tab=%s, accion=%s)", user_id, tab, accion)
