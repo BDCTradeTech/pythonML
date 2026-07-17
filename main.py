@@ -49,6 +49,7 @@ from dotenv import load_dotenv
 from fastapi import Request
 from fastapi.responses import RedirectResponse
 from nicegui import app, background_tasks, context, run, ui
+from nicegui.elements.tabs import Tab, TabPanel
 
 # --- Compatibilidad Fase 1: funciones ML movidas a ml_api.py ---
 from ml_api import (
@@ -151,7 +152,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.17.15"
+VERSION = "3.26.07.17.16"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -885,8 +886,13 @@ def show_main_layout(container) -> None:
 
         tab_enter_times: Dict[str, Any] = {}
 
+        def _tab_label(value: Any) -> Any:
+            # tab_panels.value se asigna como objeto Tab (tab_map[lbl]), no string; NiceGUI solo
+            # lo convierte a nombre para el prop del navegador, no para e.value en Python.
+            return value.props["name"] if isinstance(value, (Tab, TabPanel)) else value
+
         def on_tab_change(e) -> None:
-            new_val = getattr(e, "value", None)
+            new_val = _tab_label(getattr(e, "value", None))
             old_val = app.storage.user.get("last_tab")
             if old_val == "Guias" and new_val != "Guias" and guias_clear_ref[0]:
                 guias_clear_ref[0]()
