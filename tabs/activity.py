@@ -90,9 +90,6 @@ _BADGE_COLOR: Dict[str, str] = {
     "actualizar": "#6b7280",
 }
 
-_TIME_SECTIONS = ["Dashboard", "Estadísticas", "Ventas", "Productos",
-                  "Cuotas", "Promos", "Preguntas", "Importacion"]
-
 
 def _derive_display_name(username: str, nombre: str) -> str:
     if nombre and nombre.strip():
@@ -230,8 +227,9 @@ def build_tab_actividad(container) -> None:
 
         def _render(desde: str, hasta: str, tab_f: str, accion_f: str) -> None:
             main_area.clear()
-            names_map = _users_name_map()
-            rows      = _query_logs(desde, hasta, tab_f, accion_f)
+            names_map     = _users_name_map()
+            time_sections = _distinct_tabs()
+            rows          = _query_logs(desde, hasta, tab_f, accion_f)
             view_rows = [r for r in rows if r["accion"] == "page_view"]
             time_rows = [r for r in rows if r["accion"] == "time_spent"]
             disp_rows = [r for r in rows if r["accion"] != "time_spent"]
@@ -304,7 +302,7 @@ def build_tab_actividad(container) -> None:
                     sec_cells = "".join(
                         f'<td style="padding:6px 12px;font-size:12px;color:#374151;text-align:center">'
                         f'{_fmt_mins(d["tab_secs"].get(sec)) if d["tab_secs"].get(sec) else "—"}</td>'
-                        for sec in _TIME_SECTIONS
+                        for sec in time_sections
                     )
                     rows_html += (
                         f'<tr style="border-top:1px solid #f3f4f6;{op}">'
@@ -326,7 +324,7 @@ def build_tab_actividad(container) -> None:
                         f'</tr>'
                     )
 
-                sec_hdrs  = "".join(_th(s, "60px") for s in _TIME_SECTIONS)
+                sec_hdrs  = "".join(_th(s, "60px") for s in time_sections)
                 cols_html = (
                     _th("Usuario", "140px") +
                     _th("Visitas", "60px") +
