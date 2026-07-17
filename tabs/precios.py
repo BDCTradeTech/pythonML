@@ -24,9 +24,9 @@ from db import (
     get_sku_catalogos, add_sku_catalogo, delete_sku_catalogo,
     get_catalogo_competidores, upsert_catalogo_competidores,
     get_app_config,
-    get_cached, get_cached_stale_ok, set_cached,
     get_marca_override_map,
 )
+from helpers.cache_swr import _cached_or_refresh, _cached_or_refresh_bulk
 from ml_api import (
     get_ml_access_token,
     _cuotas_desde_item,
@@ -60,79 +60,9 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 # ---------------------------------------------------------------------------
 # Cache stale-while-revalidate para el enriquecimiento de la tabla (price_to_win/
-# quality/promo) — mismo patrón que ml_get_my_items en ml_api.py: fresh se sirve
-# directo, stale se sirve YA y dispara un único refresh en background, y solo si
-# no hay ni fresh ni stale se hace la llamada bloqueante. [PERF-PRODUCTOS]
+# quality/promo) — ver helpers/cache_swr.py (_cached_or_refresh / _cached_or_refresh_bulk),
+# mismo patrón que ml_get_my_items en ml_api.py. [PERF-PRODUCTOS]
 # ---------------------------------------------------------------------------
-
-_FRESH_MIN = 15
-_STALE_MIN = 60
-
-
-def _cached_or_refresh(cache_key: str, fetch_fn):
-    """Cache de un solo valor global (ej. bulk de promos de todo el vendedor).
-    fetch_fn: callable sin argumentos que hace el trabajo real y devuelve el valor a cachear."""
-    cached = get_cached(cache_key, max_age_minutes=_FRESH_MIN)
-    if cached is not None:
-        return cached
-    stale = get_cached_stale_ok(cache_key, max_age_minutes=_STALE_MIN)
-    if stale is not None:
-        def _refresh_bg() -> None:
-            try:
-                set_cached(cache_key, fetch_fn())
-            except Exception as _e_bg:
-                logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error key={cache_key}: {_e_bg}")
-        threading.Thread(target=_refresh_bg, daemon=True, name="precios_cache_bg_refresh").start()
-        return stale
-    valor = fetch_fn()
-    set_cached(cache_key, valor)
-    return valor
-
-
-def _cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
-    """Cache individual por id (key = f"{key_prefix}_{id}") para resultados por-item
-    (price_to_win, quality). fetch_fn(ids_a_buscar) hace la llamada real (bulk/paralela) y
-    devuelve dict {id: valor}. Un solo thread de refresh en background por llamada (no uno por
-    id) para no saturar la API cuando hay muchos ids stale a la vez."""
-    out: Dict[str, Any] = {}
-    faltantes_fresh: List[str] = []
-    for iid in ids:
-        cached = get_cached(f"{key_prefix}_{iid}", max_age_minutes=_FRESH_MIN)
-        if cached is not None:
-            out[iid] = cached
-        else:
-            faltantes_fresh.append(iid)
-
-    stale_ids: List[str] = []
-    miss_ids: List[str] = []
-    for iid in faltantes_fresh:
-        stale = get_cached_stale_ok(f"{key_prefix}_{iid}", max_age_minutes=_STALE_MIN)
-        if stale is not None:
-            out[iid] = stale
-            stale_ids.append(iid)
-        else:
-            miss_ids.append(iid)
-
-    if stale_ids:
-        def _refresh_bg() -> None:
-            try:
-                frescos = fetch_fn(stale_ids) or {}
-                for iid, val in frescos.items():
-                    if val is not None:
-                        set_cached(f"{key_prefix}_{iid}", val)
-            except Exception as _e_bg:
-                logging.error(f"[PERF-PRODUCTOS] cache_bg_refresh_error prefix={key_prefix}: {_e_bg}")
-        threading.Thread(target=_refresh_bg, daemon=True, name=f"precios_bg_{key_prefix}").start()
-
-    if miss_ids:
-        frescos_bloqueante = fetch_fn(miss_ids) or {}
-        for iid, val in frescos_bloqueante.items():
-            out[iid] = val
-            if val is not None:
-                set_cached(f"{key_prefix}_{iid}", val)
-
-    return out
-
 
 # ---------------------------------------------------------------------------
 # Funciones exportadas

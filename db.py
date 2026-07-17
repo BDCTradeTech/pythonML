@@ -2324,6 +2324,25 @@ def set_cached(key: str, value: Any) -> None:
     set_app_config(key, _json.dumps(value))
 
 
+def get_cache_age_minutes(key: str) -> Optional[float]:
+    """Antigüedad en minutos del valor cacheado bajo `key`, o None si no hay ningún valor
+    cacheado todavía. Usado para mostrar honestamente "actualizado hace X min" en la UI
+    cuando se sirve un dato stale-while-revalidate."""
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT updated_at FROM app_config WHERE key = ?", (key,))
+        row = cur.fetchone()
+        if not row or not row["updated_at"]:
+            return None
+        return (_dt.utcnow() - _dt.fromisoformat(row["updated_at"])).total_seconds() / 60
+    except Exception:
+        return None
+    finally:
+        conn.close()
+
+
 def get_cached_stale_ok(key: str, max_age_minutes: Optional[int] = None) -> Optional[Any]:
     """Como get_cached pero sin chequear el TTL fresh — devuelve el valor cacheado si existe el
     registro. Usado para stale-while-revalidate: servir datos viejos mientras se refresca en bg.

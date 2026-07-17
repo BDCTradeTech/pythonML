@@ -5,14 +5,17 @@ Exporta: build_tab_dashboard
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from nicegui import app, background_tasks, run, ui
+from nicegui import app, background_tasks, context, run, ui
 
-from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral
+from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral, get_cache_age_minutes
 from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions, ml_delete_question
+from helpers.cache_swr import cached_or_refresh_bulk, FRESH_MIN
 
 _GREEN  = "#2E7D32"
 _YELLOW = "#BA7517"
@@ -575,6 +578,11 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     cuotas_card     = None
     rep_card        = None
     ml_pubs_card    = None
+    # cliente capturado sincrónicamente al crear cuotas_card, para poder re-entrar
+    # de forma segura ("with cuotas_client:") desde el timer de polling de refresh
+    # y desde _cargar_cuotas (background_tasks.create) — mismo patrón que el fix de
+    # slot-stack-vacío de Productos (commits 319ea8b/c20fcde).
+    cuotas_client   = None
 
     with container:
         with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
@@ -631,7 +639,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
             def _render_cards() -> None:
                 nonlocal prod_color, prod_header_row, _susp_dot, _susp_lbl
-                nonlocal cuotas_card, rep_card, ml_pubs_card
+                nonlocal cuotas_card, rep_card, ml_pubs_card, cuotas_client
                 cols = 2 if is_mobile_ref["val"] else 3
                 gap  = "gap-2" if is_mobile_ref["val"] else "gap-4"
                 cards_area.clear()
@@ -744,6 +752,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
                         # --- Fila 1, Col 3: Cuotas (placeholder async) ---
                         cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        cuotas_client = context.client
                         with cuotas_card:
                             with ui.row().classes("items-center gap-2 mb-2"):
                                 ui.spinner(size="sm")
@@ -852,9 +861,24 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
         red_count_lbl.set_text(str(n_red_init + dyn_ref["red"]))
         yel_count_lbl.set_text(str(n_yellow_init + dyn_ref["yellow"]))
 
+    # _cargar_rep y _cargar_cuotas corren en paralelo y ambas necesitan el perfil ML
+    # (para reputación y para seller_id respectivamente) — memoizado por carga de
+    # dashboard para hacer un solo request en vez de dos. Nada que ver con el caché
+    # SWR de 15/60min: esto vive solo mientras dura esta carga de la página.
+    _profile_once_lock = asyncio.Lock()
+    _profile_once_val: Dict[str, Any] = {}
+
+    async def _get_profile_once() -> Dict[str, Any]:
+        async with _profile_once_lock:
+            if "data" not in _profile_once_val:
+                _profile_once_val["data"] = await run.io_bound(ml_get_user_profile, access_token)
+            return _profile_once_val["data"]
+
     async def _cargar_rep() -> None:
         try:
-            profile  = await run.io_bound(ml_get_user_profile, access_token)
+            # _get_profile_once: memoizado para esta carga del dashboard, evita pedir el
+            # perfil dos veces (_cargar_rep y _cargar_cuotas corren en paralelo). [PERF]
+            profile  = await _get_profile_once()
             rep      = (profile or {}).get("seller_reputation") or {}
             metrics  = rep.get("metrics") or {}
             level_id = rep.get("level_id") or "—"
@@ -894,11 +918,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             if not db_alerts and not ra:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
 
-        except Exception as exc:
+        except Exception:
+            logging.exception(f"[DASHBOARD] error cargando Estadísticas ML (uid={uid})")
             rep_card.clear()
             with rep_card:
                 _card_header("Estadísticas ML", "#6b7280")
-                ui.label(f"Error: {exc}").classes("text-xs text-gray-400")
+                ui.label("Datos no disponibles").classes("text-xs text-gray-400")
             rep_placeholder.delete()
             if not db_alerts:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
@@ -925,7 +950,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             # ── Obtener seller_id y preguntas sin responder ───────────────────────
             seller_id = ""
             try:
-                profile = await run.io_bound(ml_get_user_profile, access_token)
+                profile = await _get_profile_once()
                 seller_id = str((profile or {}).get("id") or "")
             except Exception:
                 logging.exception("[DASHBOARD] no se pudo obtener el perfil/seller_id ML (uid=%s)", uid)
@@ -1073,33 +1098,117 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 if rid:
                     rep_ids.append(rid)
 
-            promo_data: dict = {}
-            for iid in rep_ids:
-                promo_data[iid] = await run.io_bound(_get_promo_data, access_token, iid, seller_id)
+            # ── Cuotas/Promos: bloque más lento del dashboard (hasta 3 requests HTTP por
+            # publicación, medido en catálogos grandes: 66s en frío y secuencial). Se aplica
+            # el mismo patrón stale-while-revalidate de tabs/precios.py (fresh 15min/stale
+            # 60min, ver helpers/cache_swr.py) más paralelización de la parte que sí hace
+            # falta pedir (igual que _enriquecer_items en precios.py). [PERF-DASHBOARD]
+            promo_cache_prefix = f"dash_promo_{uid}"
 
-            n_promos = sum(1 for iid in rep_ids if (promo_data.get(iid) or {}).get("price_promo") is not None)
+            def _fetch_promo_batch(ids_to_fetch: List[str]) -> Dict[str, Any]:
+                out: Dict[str, Any] = {}
+                with ThreadPoolExecutor(max_workers=min(16, len(ids_to_fetch) or 1)) as ex:
+                    futures = {ex.submit(_get_promo_data, access_token, iid, seller_id): iid
+                               for iid in ids_to_fetch}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            out[iid] = fut.result()
+                        except Exception:
+                            logging.exception(f"[DASHBOARD] error _get_promo_data iid={iid} uid={uid}")
+                return out
 
-            cuotas_card.clear()
-            with cuotas_card:
-                _card_header(f"Cuotas — {_tot} publicaciones", _BLUE)
-                with ui.column().classes("w-full gap-2"):
-                    _cuotas_row("Promos",    n_promos / denom * 100)
-                    ui.separator().style("margin:2px 0")
-                    _cuotas_row("3 cuotas",  n_x3  / denom * 100)
-                    _cuotas_row("6 cuotas",  n_x6  / denom * 100)
-                    _cuotas_row("9 cuotas",  n_x9  / denom * 100)
-                    _cuotas_row("12 cuotas", n_x12 / denom * 100)
-                with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
-                    for col, rng in [("#A32D2D", "0–25%"),   ("#E24B4A", "26–34%"),
-                                     ("#BA7517", "35–49%"),  ("#639922", "50–75%"),
-                                     ("#3B6D11", "76–100%")]:
-                        with ui.row().classes("items-center gap-1"):
-                            ui.element("span").style(
-                                f"display:inline-block;width:10px;height:10px;"
-                                f"border-radius:2px;background:{col};flex-shrink:0")
-                            ui.label(rng).style("font-size:12px;color:#6b7280")
+            def _promo_age_minutes() -> float:
+                ages = [get_cache_age_minutes(f"{promo_cache_prefix}_{iid}") for iid in rep_ids]
+                ages = [a for a in ages if a is not None]
+                return max(ages) if ages else 0.0
+
+            def _fmt_age(mins: float) -> str:
+                if mins < 1:    return "hace instantes"
+                if mins < 60:   return f"hace {mins:.0f} min"
+                return f"hace {mins / 60:.1f} h"
+
+            def _render_cuotas_card(data: dict, age_min: float, refreshing: bool) -> None:
+                n_promos_l = sum(1 for iid in rep_ids if (data.get(iid) or {}).get("price_promo") is not None)
+                cuotas_card.clear()
+                with cuotas_card:
+                    _card_header(f"Cuotas — {_tot} publicaciones", _BLUE)
+                    with ui.column().classes("w-full gap-2"):
+                        _cuotas_row("Promos",    n_promos_l / denom * 100)
+                        ui.separator().style("margin:2px 0")
+                        _cuotas_row("3 cuotas",  n_x3  / denom * 100)
+                        _cuotas_row("6 cuotas",  n_x6  / denom * 100)
+                        _cuotas_row("9 cuotas",  n_x9  / denom * 100)
+                        _cuotas_row("12 cuotas", n_x12 / denom * 100)
+                    with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
+                        for col, rng in [("#A32D2D", "0–25%"),   ("#E24B4A", "26–34%"),
+                                         ("#BA7517", "35–49%"),  ("#639922", "50–75%"),
+                                         ("#3B6D11", "76–100%")]:
+                            with ui.row().classes("items-center gap-1"):
+                                ui.element("span").style(
+                                    f"display:inline-block;width:10px;height:10px;"
+                                    f"border-radius:2px;background:{col};flex-shrink:0")
+                                ui.label(rng).style("font-size:12px;color:#6b7280")
+                    with ui.row().classes("items-center gap-1 mt-2"):
+                        if refreshing:
+                            ui.spinner(size="xs")
+                            ui.label(f"Actualizado {_fmt_age(age_min)} · actualizando…").classes(
+                                "text-xs").style("color:#9ca3af")
+                        else:
+                            ui.label(f"Actualizado {_fmt_age(age_min)}").classes(
+                                "text-xs").style("color:#9ca3af")
+
+            promo_data: dict = await run.io_bound(
+                cached_or_refresh_bulk, promo_cache_prefix, rep_ids, _fetch_promo_batch)
+            oldest_age = _promo_age_minutes()
+            is_stale = bool(rep_ids) and oldest_age > FRESH_MIN
+
+            with cuotas_client:
+                _render_cuotas_card(promo_data, oldest_age, refreshing=is_stale)
+
+            if is_stale:
+                # datos ya visibles (stale) mientras _cached_or_refresh_bulk refresca en un
+                # thread de fondo; este timer sondea hasta que el dato quede fresco (o hasta
+                # un techo razonable) y vuelve a pintar la card avisando que se actualizó.
+                POLL_INTERVAL = 5.0
+                MAX_POLL_ATTEMPTS = 24  # ~120s, cubre holgado el peor caso medido (catálogos grandes en frío)
+                poll_state: Dict[str, Any] = {"attempts": 0, "timer": None}
+
+                async def _poll_promo_refresh() -> None:
+                    poll_state["attempts"] += 1
+                    age = _promo_age_minutes()
+                    if age <= FRESH_MIN:
+                        try:
+                            fresh_data = await run.io_bound(
+                                cached_or_refresh_bulk, promo_cache_prefix, rep_ids, _fetch_promo_batch)
+                        except Exception:
+                            logging.exception(
+                                f"[DASHBOARD] error re-leyendo caché de Cuotas/Promos (uid={uid})")
+                            return
+                        with cuotas_client:
+                            _render_cuotas_card(fresh_data, _promo_age_minutes(), refreshing=False)
+                        if poll_state["timer"] is not None:
+                            poll_state["timer"].cancel()
+                        return
+                    if poll_state["attempts"] >= MAX_POLL_ATTEMPTS:
+                        logging.warning(
+                            f"[DASHBOARD] refresh de Cuotas/Promos no terminó tras "
+                            f"{MAX_POLL_ATTEMPTS * POLL_INTERVAL:.0f}s (uid={uid}, "
+                            f"n_items={len(rep_ids)}) — se sigue mostrando el dato con "
+                            f"{age:.0f} min de antigüedad")
+                        with cuotas_client:
+                            ui.notify(
+                                "No se pudo actualizar Cuotas/Promos, mostrando el último dato disponible",
+                                color="warning")
+                        if poll_state["timer"] is not None:
+                            poll_state["timer"].cancel()
+
+                with cuotas_client:
+                    with cuotas_card:
+                        poll_state["timer"] = ui.timer(POLL_INTERVAL, _poll_promo_refresh)
 
         except Exception:
+            logging.exception(f"[DASHBOARD] error cargando Cuotas/Publicaciones ML (uid={uid})")
             _susp_lbl.set_text("—")
             prod_header_row.clear()
             with prod_header_row:
@@ -1113,4 +1222,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             with cuotas_card:
                 _card_header("Cuotas", "#6b7280")
                 ui.label("Datos no disponibles").classes("text-xs text-gray-400")
+            with cuotas_client:
+                ui.notify("No se pudieron cargar los datos de Cuotas/Publicaciones ML", color="negative")
 
