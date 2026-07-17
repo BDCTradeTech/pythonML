@@ -1259,7 +1259,13 @@ def build_tab_ventas(container) -> None:
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                     ui.label(f'{v["fecha"]} - {v.get("hora", "")}')
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
-                                                    ui.label(v.get("order_id", "—"))
+                                                    _oid_row = v.get("order_id") or ""
+                                                    if _oid_row:
+                                                        ui.link(_oid_row, f"https://www.mercadolibre.com.ar/ventas/{_oid_row}/detalle", new_tab=True) \
+                                                            .props("rel=noopener noreferrer") \
+                                                            .classes("text-blue-600 hover:underline")
+                                                    else:
+                                                        ui.label("—")
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                     ui.label(v.get("item_id", "—"))
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
