@@ -1375,6 +1375,17 @@ def _mostrar_tabla_precios(
                         _my_qty[_iid] = _qty
             delivery_labels: Dict[str, Any] = {}
 
+            _conn_hist = get_connection()
+            try:
+                _hist_rows = _conn_hist.execute(
+                    """SELECT seller_id, MAX(seller_total_ventas) FROM competidores_snapshots
+                       WHERE user_id=? GROUP BY seller_id""",
+                    (_uid,),
+                ).fetchall()
+            finally:
+                _conn_hist.close()
+            _ventas_hist: Dict[str, int] = {str(r[0]): r[1] for r in _hist_rows if r[1]}
+
             for cat in sku_cats:
                 cpid = cat["catalog_product_id"]
                 fresh = await _sync_one_catalog(access_token, cpid)
@@ -1456,7 +1467,7 @@ def _mostrar_tabla_precios(
                                             _dlv_lbl = ui.label("...").style("font-size:11px;color:#6b7280")
                                             delivery_labels[str(item_id_p)] = _dlv_lbl
                                         nick_p = comp_p.get("seller_nickname") or f"ID {comp_p.get('seller_id', '')}"
-                                        tv_p   = comp_p.get("seller_total_ventas")
+                                        tv_p   = _ventas_hist.get(str(comp_p.get("seller_id", "")))
                                         lvl_p  = comp_p.get("seller_level_id") or ""
                                         np_p = f"{nick_p} ({int(tv_p):,} ventas)".replace(",", ".") if tv_p is not None else nick_p
                                         rep_p  = _LVL_P.get(lvl_p, "") if lvl_p else ""
@@ -1468,7 +1479,9 @@ def _mostrar_tabla_precios(
                                         with ui.element("td").style(
                                             _TD_P + (";color:#1565c0;font-weight:600" if is_ours_p else "")
                                         ):
-                                            ui.label(lbl_p).style("font-size:11px")
+                                            ui.label(lbl_p).style("font-size:11px").tooltip(
+                                                "Ventas históricas totales del vendedor (desde que creó la cuenta), no del período"
+                                            )
                                         with ui.element("td").style(
                                             _TD_P + ";text-align:right;font-family:monospace;font-weight:600"
                                         ):
