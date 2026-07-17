@@ -28,6 +28,7 @@ from ml_api import (
     ml_get_orders,
     ml_get_user_id,
     ml_get_user_profile,
+    ml_merge_payments,
 )
 from tabs.ventas import _get_flex_zona
 
@@ -264,9 +265,11 @@ def _construir_filas(orders: List[Dict], maps: Dict[str, Dict[str, Any]]) -> Lis
             if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                 tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
             _pays = ord_item.get("payments") or []
-            _p_ap = next((p for p in _pays if str(p.get("status", "")).lower() == "approved"), None) or (_pays[0] if _pays else None)
+            _pays_ap = [p for p in _pays if str(p.get("status", "")).lower() == "approved"]
+            _p_ap = (_pays_ap[0] if _pays_ap else None) or (_pays[0] if _pays else None)
             _payment_id = str(_p_ap.get("id") or "") if _p_ap else ""
             _payment_type = str(_p_ap.get("payment_type") or "") if _p_ap else ""
+            _payment_ids_approved = [str(p.get("id")) for p in _pays_ap if p.get("id")]
             dt_v = dt + timedelta(hours=1)
             filas.append({
                 "dt": dt_v,
@@ -282,6 +285,8 @@ def _construir_filas(orders: List[Dict], maps: Dict[str, Dict[str, Any]]) -> Lis
                 "shipping_id": str((ord_item.get("shipping") or {}).get("id") or ""),
                 "payment_id": _payment_id,
                 "payment_type": _payment_type,
+                "payment_ids_approved": _payment_ids_approved,
+                "sale_fee": float(it.get("sale_fee") or 0),
                 "has_refund": has_refund,
                 "titulo": titulo,
             })
@@ -352,6 +357,16 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
         gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
+    _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
+    if _sale_fee_ml > 0:
+        _check_total = meli_fee + cuotas_fee + costo_fijo
+        if abs(_check_total - _sale_fee_ml) > 1.0:
+            log.warning(
+                "[BACKFILL] _compute_venta: meli_fee+cuotas_fee+costo_fijo=%.2f no coincide con "
+                "sale_fee*qty de ML=%.2f (diff=%.2f) order_id=%s payment_id=%s",
+                _check_total, _sale_fee_ml, _check_total - _sale_fee_ml,
+                v.get("order_id"), v.get("payment_id"),
+            )
     return {
         "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
         "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
@@ -538,14 +553,8 @@ def backfill_ventas_periodo(
     procesadas = 0
     errores: List[Dict[str, Any]] = []
 
-    def _fetch_one(pid: str) -> Dict:
-        if not pid:
-            return {}
-        return _get_with_retry(
-            f"https://api.mercadopago.com/v1/payments/{pid}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=15, retries=1,
-        )
+    def _fetch_one(pids: List[str]) -> Dict:
+        return ml_merge_payments(access_token, pids)
 
     def _fetch_ship(sid: str) -> Dict:
         if not sid:
@@ -569,7 +578,7 @@ def backfill_ventas_periodo(
         """Retorna ('db', row) | ('placeholder', row) | ('error', detalle). v siempre tiene payment_id (filtrado antes)."""
         pid = v["payment_id"]
         try:
-            pay_data = _fetch_one(pid)
+            pay_data = _fetch_one(v.get("payment_ids_approved") or ([pid] if pid else []))
             ship_data = _fetch_ship(v.get("shipping_id") or "")
             ship_costs_data = {}
             if v.get("logistic_type") in ("self_service", "flex") and v.get("shipping_id"):

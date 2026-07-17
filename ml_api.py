@@ -571,6 +571,65 @@ def ml_get_fixed_fee(access_token: Optional[str], price: float, category_id: str
     return 0.0
 
 
+def ml_merge_payments(access_token: Optional[str], payment_ids: List[str]) -> Dict[str, Any]:
+    """Trae de MercadoPago TODOS los payment_ids dados (en paralelo, se espera que el
+    caller ya los haya filtrado a status=='approved') y los fusiona en un único dict
+    con la misma forma que /v1/payments/{id}, para que el código que ya suma
+    charges_details por nombre (meli_percentage_fee, financing_add_on_fee,
+    tax_withholding_*, shp_cross_docking) siga funcionando sin cambios.
+
+    Existe porque una orden de ML puede pagarse con más de un payment (p.ej. saldo en
+    cuenta + tarjeta financiada) y ML reparte comisión/financiación/impuestos entre
+    esos payments de forma no uniforme — a veces todo cae en uno solo. Sumar charges
+    de un único payment "elegido" pierde plata cuando la comisión cayó en otro.
+
+    Devuelve {} si la lista viene vacía o si todos los fetch fallan (mismo contrato
+    que antes tenía "no hay datos" para un solo payment) — el caller cae a su
+    comportamiento existente de placeholder/sin cálculo.
+    """
+    if not access_token or not payment_ids:
+        return {}
+    session = get_ml_session()
+
+    def _fetch(pid: str) -> Dict[str, Any]:
+        try:
+            r = session.get(
+                f"https://api.mercadopago.com/v1/payments/{pid}",
+                headers={"Authorization": f"Bearer {access_token}"}, timeout=15,
+            )
+            return r.json() if r.status_code == 200 else {}
+        except Exception:
+            logging.exception("[ML_API] ml_merge_payments: fallo consultando payment_id=%s", pid)
+            return {}
+
+    with ThreadPoolExecutor(max_workers=min(8, len(payment_ids))) as ex:
+        results = [r for r in ex.map(_fetch, payment_ids) if r]
+
+    if not results:
+        return {}
+    if len(results) == 1:
+        return results[0]
+
+    merged_charges: List[Dict[str, Any]] = []
+    net_rcv_sum = 0.0
+    net_rcv_any = False
+    shipping_sum = 0.0
+    for pd in results:
+        merged_charges.extend(pd.get("charges_details") or [])
+        _nr = (pd.get("transaction_details") or {}).get("net_received_amount")
+        if _nr is not None:
+            net_rcv_sum += float(_nr)
+            net_rcv_any = True
+        shipping_sum += float(pd.get("shipping_amount") or 0)
+
+    return {
+        "status": "approved",
+        "charges_details": merged_charges,
+        "transaction_details": {"net_received_amount": net_rcv_sum if net_rcv_any else None},
+        "shipping_amount": shipping_sum,
+    }
+
+
 def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> List[Dict[str, Any]]:
     """GET /seller-promotions/items/{item_id}?app_version=v2 — todas las promos del ítem (todos los status)."""
     if not access_token or not str(item_id).strip():

@@ -5,6 +5,7 @@ Pestaña Ventas: tabla de ventas desde el 1 del mes actual hasta hoy.
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import calendar
 from datetime import date as _date, datetime, timedelta
@@ -23,6 +24,7 @@ from ml_api import (
     ml_get_orders,
     ml_get_user_id,
     ml_get_user_profile,
+    ml_merge_payments,
 )
 
 
@@ -300,9 +302,11 @@ def build_tab_ventas(container) -> None:
                     if tipo_display is None and (tipo_oferta or "").lower() == "promo":
                         tipo_display = item_id_to_promo_display.get(item_id) or item_id_to_promo_display.get(item_id.upper() or "") or item_id_to_promo_display.get(item_id.lower() or "") or "Promo"
                     _pays_r1 = ord_item.get("payments") or []
-                    _p_ap_r1 = next((p for p in _pays_r1 if str(p.get("status", "")).lower() == "approved"), None) or (_pays_r1[0] if _pays_r1 else None)
+                    _pays_ap_r1 = [p for p in _pays_r1 if str(p.get("status", "")).lower() == "approved"]
+                    _p_ap_r1 = (_pays_ap_r1[0] if _pays_ap_r1 else None) or (_pays_r1[0] if _pays_r1 else None)
                     _payment_id = str(_p_ap_r1.get("id") or "") if _p_ap_r1 else ""
                     _payment_type = str(_p_ap_r1.get("payment_type") or "") if _p_ap_r1 else ""
+                    _payment_ids_approved = [str(p.get("id")) for p in _pays_ap_r1 if p.get("id")]
                     dt = dt + timedelta(hours=1)
                     ventas_mes.append({
                         "dt": dt, "fecha": dt.strftime("%d/%m/%Y"), "hora": dt.strftime("%H:%M"), "productos": titulo[:100], "title": titulo[:100],
@@ -318,6 +322,8 @@ def build_tab_ventas(container) -> None:
                         "buyer": (ord_item.get("buyer") or {}).get("nickname", "—"),
                         "payment_id": _payment_id,
                         "payment_type": _payment_type,
+                        "payment_ids_approved": _payment_ids_approved,
+                        "sale_fee": float(it.get("sale_fee") or 0),
                         "gan_pesos": None,
                         "gan_vta_pct": None,
                     })
@@ -363,16 +369,19 @@ def build_tab_ventas(container) -> None:
             _iid = str(row.get("item_id") or "")
             raw_order = next((o for o in (all_orders_ref.get("orders") or []) if str(o.get("id", "")) == _oid), None)
 
-            payment_id      = None
-            shipping_id     = None
-            thumb_url       = ""
-            category_id     = ""
-            listing_type_id = ""
+            payment_id           = None
+            payment_ids_approved: List[str] = []
+            shipping_id          = None
+            thumb_url            = ""
+            category_id          = ""
+            listing_type_id      = ""
             if raw_order:
                 pays = raw_order.get("payments") or []
-                _p_ap = next((p for p in pays if str(p.get("status", "")).lower() == "approved"), None) or (pays[0] if pays else None)
+                pays_ap = [p for p in pays if str(p.get("status", "")).lower() == "approved"]
+                _p_ap = (pays_ap[0] if pays_ap else None) or (pays[0] if pays else None)
                 if _p_ap:
                     payment_id = str(_p_ap.get("id") or "")
+                payment_ids_approved = [str(p.get("id")) for p in pays_ap if p.get("id")]
                 ship = raw_order.get("shipping") or {}
                 if ship.get("id"):
                     shipping_id = str(ship["id"])
@@ -414,11 +423,6 @@ def build_tab_ventas(container) -> None:
             cl = context.client
 
             async def _fetch_real() -> None:
-                def _get_pay(tok, pid):
-                    r = get_ml_session().get(f"https://api.mercadopago.com/v1/payments/{pid}",
-                                     headers={"Authorization": f"Bearer {tok}"}, timeout=15)
-                    return r.json() if r.status_code == 200 else {}
-
                 def _get_item(tok, iid):
                     r = get_ml_session().get(f"https://api.mercadolibre.com/items/{iid}?attributes=thumbnail,pictures",
                                      headers={"Authorization": f"Bearer {tok}"}, timeout=15)
@@ -490,7 +494,8 @@ def build_tab_ventas(container) -> None:
                             _vr["gan_vta_pct"] = gan_vta_pct
                             break
                 else:
-                    pay_coro        = run.io_bound(_get_pay,        access_token, payment_id) if payment_id  else _noop()
+                    _pids_for_fetch = payment_ids_approved or ([payment_id] if payment_id else [])
+                    pay_coro        = run.io_bound(ml_merge_payments, access_token, _pids_for_fetch) if _pids_for_fetch else _noop()
                     item_coro       = run.io_bound(_get_item,       access_token, _iid)        if _iid        else _noop()
                     ship_coro       = run.io_bound(_get_ship,        access_token, shipping_id) if shipping_id else _noop()
                     ship_costs_coro = run.io_bound(_get_ship_costs,  access_token, shipping_id) if shipping_id else _noop()
@@ -536,6 +541,15 @@ def build_tab_ventas(container) -> None:
                         _lt = ""
 
                     envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
+                    _sale_fee_ml = float(row.get("sale_fee") or 0) * cantidad
+                    if _sale_fee_ml > 0:
+                        _check_total = meli_fee + cuotas_fee + fixed_fee
+                        if abs(_check_total - _sale_fee_ml) > 1.0:
+                            logging.warning(
+                                "[VENTAS] _fetch_real: meli_fee+cuotas_fee+costo_fijo=%.2f no coincide con "
+                                "sale_fee*qty de ML=%.2f (diff=%.2f) order_id=%s payment_id=%s",
+                                _check_total, _sale_fee_ml, _check_total - _sale_fee_ml, _oid, payment_id,
+                            )
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if not is_rejected and has_calc:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
@@ -1438,16 +1452,8 @@ def build_tab_ventas(container) -> None:
             total = len(rows_to_enrich)
             _fixed_fee_cache: Dict[tuple, float] = {}
 
-            def _fetch_one(pid: str) -> Dict:
-                try:
-                    r = get_ml_session().get(
-                        f"https://api.mercadopago.com/v1/payments/{pid}",
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        timeout=15,
-                    )
-                    return r.json() if r.status_code == 200 else {}
-                except Exception:
-                    return {}
+            def _fetch_one(pids: List[str]) -> Dict:
+                return ml_merge_payments(access_token, pids)
 
             def _fetch_ship(sid: str) -> Dict:
                 if not sid:
@@ -1534,6 +1540,16 @@ def build_tab_ventas(container) -> None:
                     gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
+                _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
+                if _sale_fee_ml > 0:
+                    _check_total = meli_fee + cuotas_fee + costo_fijo
+                    if abs(_check_total - _sale_fee_ml) > 1.0:
+                        logging.warning(
+                            "[VENTAS] _compute: meli_fee+cuotas_fee+costo_fijo=%.2f no coincide con "
+                            "sale_fee*qty de ML=%.2f (diff=%.2f) order_id=%s payment_id=%s",
+                            _check_total, _sale_fee_ml, _check_total - _sale_fee_ml,
+                            v.get("order_id"), v.get("payment_id"),
+                        )
                 return {
                     "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
                     "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
@@ -1639,7 +1655,7 @@ def build_tab_ventas(container) -> None:
                 def _fetch_batch(batch_rows: List[Dict]) -> List[tuple]:
                     max_w = min(16, len(batch_rows) * 2)
                     with ThreadPoolExecutor(max_workers=max_w) as ex:
-                        pay_futs        = [(v, ex.submit(_fetch_one,        v["payment_id"])) for v in batch_rows]
+                        pay_futs        = [(v, ex.submit(_fetch_one, v.get("payment_ids_approved") or ([v["payment_id"]] if v.get("payment_id") else []))) for v in batch_rows]
                         ship_futs       = [(v, ex.submit(_fetch_ship,       v.get("shipping_id") or "")) for v in batch_rows]
                         ship_costs_futs = [
                             (v, ex.submit(_fetch_ship_costs, v.get("shipping_id") or "")
