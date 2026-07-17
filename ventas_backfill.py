@@ -22,8 +22,6 @@ from db import get_connection, get_cotizador_param
 from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
-    ml_charge_neto,
-    ml_clasificar_pago,
     ml_get_fixed_fee,
     ml_get_item_sale_price_full,
     ml_get_items_multiget_with_attributes,
@@ -301,13 +299,10 @@ def _construir_filas(orders: List[Dict], maps: Dict[str, Dict[str, Any]]) -> Lis
 
 def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, params: Dict[str, Any], costos_sku: Dict[str, Dict[str, Any]], user_id: int, access_token: str, fixed_fee_cache: Dict[tuple, float]) -> Optional[Dict]:
     charges = pay_data.get("charges_details") or []
-    estado = ml_clasificar_pago(
-        pay_data,
-        order_tiene_refund=bool(v.get("has_refund")),
-        order_cancelada=(v.get("status_raw") or "") in ("cancelled", "canceled"),
-    )
-    is_rejected = estado == "rejected"
-    if estado == "pendiente" and not charges:
+    is_rejected = pay_data.get("status") == "rejected"
+    is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
+    has_refund_v = bool(v.get("has_refund"))
+    if not charges and not is_rejected:
         return None
     p = params
     unit_price = float(v.get("unit_price") or 0)
@@ -331,18 +326,18 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     costo_pesos = costo_usd * dolar
     total_costo = costo_pesos * cantidad
     has_calc = total_price > 0 and costo_usd > 0
-    meli_fee = ml_charge_neto(charges, name="meli_percentage_fee")
-    cuotas_fee = ml_charge_neto(charges, name="financing_add_on_fee")
-    deb_cred = ml_charge_neto(charges, contains="debitos_creditos")
-    iibb_ret = ml_charge_neto(charges, contains="iibb")
-    sirtac = ml_charge_neto(charges, contains="sirtac")
+    meli_fee = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "meli_percentage_fee")
+    cuotas_fee = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "financing_add_on_fee")
+    deb_cred = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "debitos_creditos" in (c.get("name") or ""))
+    iibb_ret = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "iibb" in (c.get("name") or "").lower())
+    sirtac = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "sirtac" in (c.get("name") or "").lower())
     net_rcv = (pay_data.get("transaction_details") or {}).get("net_received_amount")
     iibb_perc = total_price * ml_iibb
     iva_venta = total_price * tipo_iva / (1 + tipo_iva)
     iva_meli = meli_fee * 0.21 / 1.21
     iva_impor = 0.09 * costo_usd * dolar * cantidad
     iva_total = iva_venta - iva_meli - iva_impor
-    shp_xd = ml_charge_neto(charges, name="shp_cross_docking")
+    shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
     buyer_shipping = float(pay_data.get("shipping_amount") or 0)
     logistic_type = v.get("logistic_type") or ""
     if logistic_type in ("self_service", "flex"):
@@ -358,18 +353,12 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     ml_env_grat_c = float(p.get("ml_envios_gratuitos") or 33000)
     envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
     gan_pesos = gan_vta_pct = gan_cos_pct = None
-    if estado in ("approved", "in_mediation") and has_calc:
+    if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
         gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
-    elif estado == "refunded":
-        gan_pesos = 0.0
-        gan_vta_pct = 0.0
-    elif estado == "charged_back" and has_calc:
-        gan_pesos = -(total_costo + envio_efectivo + meli_fee + cuotas_fee)
-        gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
     _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
-    if _sale_fee_ml > 0 and estado in ("approved", "in_mediation"):
+    if _sale_fee_ml > 0:
         _check_total = meli_fee + cuotas_fee + costo_fijo
         if abs(_check_total - _sale_fee_ml) > 1.0:
             log.warning(
@@ -384,13 +373,9 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
         "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
         "envio_real": envio_real, "comprador_envio": comprador_envio,
         "logistic_type": logistic_type, "net_rcv": net_rcv,
-        "costo_pesos": total_costo if (estado in ("approved", "in_mediation") and has_calc) else None,
         "costo_fijo": costo_fijo,
-        "pay_status": None if estado == "approved" else estado,
-        "_skip_overwrite": (
-            (estado == "refunded" and pay_data.get("status") != "refunded")
-            or (estado == "cancelled" and pay_data.get("status") != "cancelled")
-        ),
+        "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
+        "_skip_overwrite": is_cancelled or has_refund_v,
     }
 
 
