@@ -1104,32 +1104,34 @@ def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
         return None
     try:
         n_pages = min(doc.page_count, 2)
-        texto = "\n".join(doc[i].get_text() for i in range(n_pages))
-        if len(texto.strip()) < 20:
-            try:
-                import pytesseract
-                from PIL import Image
-                import io as _io
-                texto = "\n".join(
-                    pytesseract.image_to_string(
-                        Image.open(_io.BytesIO(doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72)).tobytes("png"))),
-                        lang="spa+eng",
+        partes = []
+        for i in range(n_pages):
+            t = doc[i].get_text()
+            if len(t.strip()) < 20:
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    import io as _io
+                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                    t = pytesseract.image_to_string(
+                        Image.open(_io.BytesIO(pix.tobytes("png"))), lang="spa+eng"
                     )
-                    for i in range(n_pages)
-                )
-            except Exception as e:
-                logging.warning(f"[HAWB-LHS] OCR fallback error: {e}")
-                texto = ""
+                except Exception as e:
+                    logging.warning(f"[HAWB-LHS] OCR fallback error pagina {i}: {e}")
+            partes.append(t)
+        texto = "\n".join(partes)
     finally:
         doc.close()
     if not texto or not texto.strip():
         return None
     m = re.search(
-        r"Referencia\s+(?:de\s+)?Gu[ií]a\s*N?[°ºoO]?\.?\s*[:\-]?\s*([A-Za-z0-9\*][A-Za-z0-9\*\-]*)",
+        r"Referencia\s+(?:de\s+)?Gu[ií]a\s*N?[°ºoO]?\.?\s*[:;\-]?\s*([A-Za-z0-9\*][A-Za-z0-9\*\-]*)",
         texto,
         re.IGNORECASE,
     )
-    return m.group(1).strip() if m else None
+    if not m or len(m.group(1)) < 2:
+        return None
+    return m.group(1).strip()
 
 
 def _clean_json(raw: str) -> str:
