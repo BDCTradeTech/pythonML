@@ -869,14 +869,21 @@ def _save_pdf_files(
         return p1, ""
 
 
-def _update_pdf_path(guia_id: int, pdf_path: str, pdf_path_2: str = "") -> None:
+def _update_pdf_path(guia_id: int, user_id: int, pdf_path: str, pdf_path_2: str = "") -> None:
     conn = get_connection()
     conn.execute(
-        "UPDATE guias_importacion SET pdf_path=?, pdf_path_2=? WHERE id=?",
-        (pdf_path or None, pdf_path_2 or None, guia_id),
+        "UPDATE guias_importacion SET pdf_path=?, pdf_path_2=? WHERE id=? AND user_id=?",
+        (pdf_path or None, pdf_path_2 or None, guia_id, user_id),
     )
     conn.commit()
     conn.close()
+
+
+def _limpiar_pdfs_huerfanos(rutas_viejas: tuple, rutas_nuevas: tuple) -> None:
+    for path in rutas_viejas:
+        if path and path not in rutas_nuevas and os.path.exists(path):
+            os.remove(path)
+            logging.warning("[REPLACE] PDF huerfano borrado: %s", path)
 
 
 def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
@@ -1635,6 +1642,14 @@ def _show_upload_pdf_dialog(
                     ui.notify("Falta el Invoice BDC", color="warning")
                     return
                 try:
+                    _conn_old = get_connection()
+                    _old_row = _conn_old.execute(
+                        "SELECT pdf_path, pdf_path_2 FROM guias_importacion WHERE id=? AND user_id=?",
+                        (rid, user_id),
+                    ).fetchone()
+                    _conn_old.close()
+                    old_p1 = _old_row["pdf_path"] if _old_row else None
+                    old_p2 = _old_row["pdf_path_2"] if _old_row else None
                     nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
                     if is_lhs:
                         p1, p2 = _save_pdf_files(
@@ -1646,7 +1661,8 @@ def _show_upload_pdf_dialog(
                             user_id, courier, nro_factura,
                             data1[0], mime1[0],
                         )
-                    _update_pdf_path(rid, p1, p2)
+                    _update_pdf_path(rid, user_id, p1, p2)
+                    _limpiar_pdfs_huerfanos((old_p1, old_p2), (p1, p2))
                     d.close()
                     ui.notify("PDF guardado", color="positive")
                     refresh(recien)
@@ -1989,11 +2005,20 @@ def _build_courier_panel(
                     logger.warning("[DBG] _save_guia OK courier=%s id=%s", courier_key, _guia_id)
                     if archivo_data[0]:
                         try:
+                            _conn_old = get_connection()
+                            _old_row = _conn_old.execute(
+                                "SELECT pdf_path, pdf_path_2 FROM guias_importacion WHERE id=? AND user_id=?",
+                                (_guia_id, user_id),
+                            ).fetchone()
+                            _conn_old.close()
+                            _old_p1 = _old_row["pdf_path"] if _old_row else None
+                            _old_p2 = _old_row["pdf_path_2"] if _old_row else None
                             _p1, _p2 = _save_pdf_files(
                                 user_id, courier_key, nro_fac,
                                 archivo_data[0], archivo_mime[0] or "application/pdf",
                             )
-                            _update_pdf_path(_guia_id, _p1, _p2)
+                            _update_pdf_path(_guia_id, user_id, _p1, _p2)
+                            _limpiar_pdfs_huerfanos((_old_p1, _old_p2), (_p1, _p2))
                             logger.warning("[DBG] PDF guardado courier=%s path=%s", courier_key, _p1)
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error courier=%s: %s", courier_key, _pe)
@@ -2277,12 +2302,21 @@ def _build_lhs_panel(
                     recien.add(_guia_id)
                     if archivo_data_lhs1[0] and archivo_data_lhs2[0]:
                         try:
+                            _conn_old = get_connection()
+                            _old_row = _conn_old.execute(
+                                "SELECT pdf_path, pdf_path_2 FROM guias_importacion WHERE id=? AND user_id=?",
+                                (_guia_id, user_id),
+                            ).fetchone()
+                            _conn_old.close()
+                            _old_p1 = _old_row["pdf_path"] if _old_row else None
+                            _old_p2 = _old_row["pdf_path_2"] if _old_row else None
                             _p1, _p2 = _save_pdf_files(
                                 user_id, "LHS", nro_fac,
                                 archivo_data_lhs1[0], archivo_mime_lhs1[0] or "application/pdf",
                                 archivo_data_lhs2[0], archivo_mime_lhs2[0] or "application/pdf",
                             )
-                            _update_pdf_path(_guia_id, _p1, _p2)
+                            _update_pdf_path(_guia_id, user_id, _p1, _p2)
+                            _limpiar_pdfs_huerfanos((_old_p1, _old_p2), (_p1, _p2))
                         except Exception as _pe:
                             logger.warning("[DBG] PDF save error LHS: %s", _pe)
                     refresh(recien)
