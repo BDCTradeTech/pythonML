@@ -559,7 +559,7 @@ def _init_guias_db() -> None:
         )
     """)
     existing = {row[1] for row in conn.execute("PRAGMA table_info(guias_importacion)")}
-    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2", "gastos_en_origen", "revisar_iva"):
+    for col in ("pais_procedencia", "pos_arancelaria", "desc_mercaderia", "fob_total", "pa", "hawb", "iva_21", "total_real", "courier", "gastos_administrativos", "honorarios", "handling", "perc_iibb", "ia_usada", "pdf_path", "pdf_path_2", "gastos_en_origen", "revisar_iva", "pdf_completo"):
         if col not in existing:
             conn.execute(f"ALTER TABLE guias_importacion ADD COLUMN {col} TEXT")
     conn.commit()
@@ -670,7 +670,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         "entrega_domicilio, resolucion_3244, seguro_internacional, servicios_honorarios, "
         "almacenaje, tipo_cambio_1, tipo_cambio_3, total_real, productos, created_at, "
         "gastos_administrativos, honorarios, handling, perc_iibb, ia_usada, pdf_path, pdf_path_2, "
-        "gastos_en_origen, revisar_iva "
+        "gastos_en_origen, revisar_iva, pdf_completo "
         f"FROM guias_importacion WHERE {where_sql} "
         "ORDER BY CAST(nro_invoice AS INTEGER) DESC, nro_invoice DESC",
         params,
@@ -884,6 +884,58 @@ def _limpiar_pdfs_huerfanos(rutas_viejas: tuple, rutas_nuevas: tuple) -> None:
         if path and path not in rutas_nuevas and os.path.exists(path):
             os.remove(path)
             logging.warning("[REPLACE] PDF huerfano borrado: %s", path)
+
+
+def _merge_lhs_docs(
+    factura_path: str, invoice_path: str,
+    dsi_data: bytes, dsi_mime: str,
+    ga_data: bytes, ga_mime: str,
+) -> bytes:
+    import fitz
+
+    def _mime_from_path(path: str) -> str:
+        ext = os.path.splitext(path)[1].lower()
+        if ext in (".jpg", ".jpeg"):
+            return "image/jpeg"
+        if ext == ".png":
+            return "image/png"
+        return "application/pdf"
+
+    with open(factura_path, "rb") as f:
+        factura_data = f.read()
+    with open(invoice_path, "rb") as f:
+        invoice_data = f.read()
+
+    merged = fitz.open()
+    for data, mime in (
+        (factura_data, _mime_from_path(factura_path)),
+        (dsi_data, dsi_mime),
+        (invoice_data, _mime_from_path(invoice_path)),
+        (ga_data, ga_mime),
+    ):
+        if mime and mime.startswith("image/"):
+            img_ext = mime.split("/")[1].replace("jpeg", "jpg")
+            img_doc = fitz.open(stream=data, filetype=img_ext)
+            pdf_bytes = img_doc.convert_to_pdf()
+            img_doc.close()
+            src = fitz.open(stream=pdf_bytes, filetype="pdf")
+        else:
+            src = fitz.open(stream=data, filetype="pdf")
+        merged.insert_pdf(src)
+        src.close()
+    out = merged.tobytes()
+    merged.close()
+    return out
+
+
+def _marcar_lhs_completo(guia_id: int, user_id: int, pdf_path: str) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET pdf_path=?, pdf_path_2=NULL, pdf_completo='1' WHERE id=? AND user_id=?",
+        (pdf_path, guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
 
 
 def _update_pa(guia_id: int, user_id: int, new_pa: float) -> None:
@@ -1405,6 +1457,8 @@ def _rebuild_tabla(
                     _r_pdf2 = r.get("pdf_path_2") or ""
                     _r_courier = r.get("courier") or ""
                     _r_fac = r.get("nro_factura") or ""
+                    _r_completo = bool(r.get("pdf_completo"))
+                    _r_lhs_pendiente = _r_courier.upper() == "LHS" and not _r_completo and _r_pdf and _r_pdf2
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
                         f"gap:3px;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;{_sep};padding:4px 4px;{_row_bg}"
@@ -1418,7 +1472,19 @@ def _rebuild_tabla(
                             icon="visibility",
                             on_click=lambda rid=rid: _show_ver_dialog(rid, user_id),
                         ).props("flat dense").style("color:#1d4ed8;min-width:20px")
-                        if _r_pdf:
+                        if _r_lhs_pendiente:
+                            with ui.element("button").on(
+                                "click",
+                                lambda rid=rid, uid=user_id, p=_r_pdf, p2=_r_pdf2, fac=_r_fac:
+                                    _show_unificar_lhs_dialog(rid, uid, p, p2, fac, refresh, recien),
+                            ).style(
+                                "background:none;border:0.5px dashed #2A7AC7;"
+                                "cursor:pointer;color:#2A7AC7;"
+                                "padding:1px 2px;border-radius:3px;min-width:20px;"
+                                "display:inline-flex;align-items:center;justify-content:center"
+                            ).tooltip("Agregar DSI + Guía Aérea"):
+                                ui.html('<i class="ti ti-plus" style="font-size:12px;pointer-events:none"></i>')
+                        elif _r_pdf:
                             with ui.element("button").on(
                                 "click",
                                 lambda p=_r_pdf, p2=_r_pdf2, c=_r_courier, fac=_r_fac:
@@ -1670,6 +1736,86 @@ def _show_upload_pdf_dialog(
                     ui.notify(f"Error: {exc}", color="negative")
 
             ui.button("Guardar", on_click=_guardar).style(
+                "background:#2A7AC7;color:#FFFFFF;border-radius:4px"
+            )
+    d.open()
+
+
+def _show_unificar_lhs_dialog(
+    rid: int, user_id: int, pdf_path: str, pdf_path_2: str, nro_factura: str,
+    refresh, recien: set | None = None,
+) -> None:
+    dsi_data: list = [None]
+    dsi_mime: list = ["application/pdf"]
+    ga_data: list = [None]
+    ga_mime: list = ["application/pdf"]
+
+    def _on_dsi(e):
+        e.content.seek(0)
+        dsi_data[0] = e.content.read()
+        dsi_mime[0] = e.type or "application/pdf"
+
+    def _on_ga(e):
+        e.content.seek(0)
+        ga_data[0] = e.content.read()
+        ga_mime[0] = e.type or "application/pdf"
+
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:380px"):
+        ui.label("Unificar documentos LHS").style(
+            "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
+        )
+        ui.label("DSI").style("font-size:11px;color:var(--color-text-secondary)")
+        ui.upload(on_upload=_on_dsi, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
+            'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
+        ).style("width:100%")
+        ui.label("Guía Aérea").style(
+            "font-size:11px;color:var(--color-text-secondary);margin-top:8px;display:block"
+        )
+        ui.upload(on_upload=_on_ga, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
+            'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
+        ).style("width:100%")
+
+        spinner = ui.spinner(size="sm").style("margin-top:12px;display:none")
+
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+
+            async def _agregar(d=d):
+                if not dsi_data[0]:
+                    ui.notify("Falta el DSI", color="warning")
+                    return
+                if not ga_data[0]:
+                    ui.notify("Falta la Guía Aérea", color="warning")
+                    return
+                spinner.set_visibility(True)
+                try:
+                    merged_bytes = await run.io_bound(
+                        _merge_lhs_docs,
+                        pdf_path, pdf_path_2,
+                        dsi_data[0], dsi_mime[0],
+                        ga_data[0], ga_mime[0],
+                    )
+                    now = datetime.now()
+                    base = f"/opt/pythonml/pdfs/{user_id}/{now.year}/{now.month:02d}"
+                    os.makedirs(base, exist_ok=True)
+                    nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
+                    merged_path = os.path.join(base, f"lhs_{nro_safe}_completo.pdf")
+                    with open(merged_path, "wb") as f:
+                        f.write(merged_bytes)
+                    _marcar_lhs_completo(rid, user_id, merged_path)
+                    for _old in (pdf_path, pdf_path_2):
+                        if _old and _old != merged_path and os.path.exists(_old):
+                            os.remove(_old)
+                            logging.warning("[UNIFICAR-LHS] PDF original borrado: %s", _old)
+                    d.close()
+                    ui.notify("Documentos unificados", color="positive")
+                    refresh(recien)
+                except Exception as exc:
+                    ui.notify(f"Error al unificar: {exc}", color="negative")
+                finally:
+                    spinner.set_visibility(False)
+
+            ui.button("Agregar", on_click=_agregar).style(
                 "background:#2A7AC7;color:#FFFFFF;border-radius:4px"
             )
     d.open()
