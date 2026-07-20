@@ -1819,6 +1819,14 @@ def _show_upload_pdf_dialog(
     d.open()
 
 
+def _cargotrack_url(hawb: str) -> str:
+    import urllib.parse
+    h = (hawb or "").strip()
+    if h[:2].upper() == "AF" and h[2:].strip():
+        return "https://af.cargotrack.net/appl2.0/client/ship_detail.asp?id=" + urllib.parse.quote(h[2:].strip(), safe="")
+    return "https://af.cargotrack.net/appl2.0/client/results.asp"
+
+
 def _show_unificar_lhs_dialog(
     rid: int, user_id: int, pdf_path: str, pdf_path_2: str, nro_factura: str,
     nro_invoice: str, hawb: str,
@@ -1844,11 +1852,21 @@ def _show_unificar_lhs_dialog(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
         )
         ui.label("DSI").style("font-size:11px;color:var(--color-text-secondary)")
+        ui.html(
+            f'<a href="{_cargotrack_url(hawb)}" target="_blank" rel="noopener" '
+            'style="font-size:10px;color:#2A7AC7;text-decoration:none;display:block;margin:2px 0 4px">'
+            'af.cargotrack.net</a>'
+        )
         ui.upload(on_upload=_on_dsi, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
         ).style("width:100%")
         ui.label("Guía Aérea").style(
             "font-size:11px;color:var(--color-text-secondary);margin-top:8px;display:block"
+        )
+        ui.html(
+            '<a href="http://erp.lhsww.com.ar/dsi/listado.aspx" target="_blank" rel="noopener" '
+            'style="font-size:10px;color:#2A7AC7;text-decoration:none;display:block;margin:2px 0 4px">'
+            'erp.lhsww.com.ar</a>'
         )
         ui.upload(on_upload=_on_ga, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
