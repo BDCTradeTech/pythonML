@@ -1120,6 +1120,7 @@ def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
                     import pytesseract
                     from PIL import Image
                     import io as _io
+                    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
                     pix = doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
                     t = pytesseract.image_to_string(
                         Image.open(_io.BytesIO(pix.tobytes("png"))), lang="spa+eng"
