@@ -1260,7 +1260,7 @@ def _rebuild_tabla(
             )
             return
 
-        with ui.element("div").style("overflow-x:hidden;overflow-y:auto;max-height:calc(100vh - 280px);width:100%"):
+        with ui.element("div").style("overflow-x:hidden;overflow-y:auto;max-height:calc(100vh - 140px);width:100%"):
             # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
@@ -2710,32 +2710,18 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
         _filtros[key] = val
         _refresh()
 
-    # ── Panel superior: couriers colapsable ───────────────────────────────────
+    # ── Popup "Nueva guía" con las 3 tarjetas de carga ─────────────────────────
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
 
-    _couriers_open: list = [True]
-    _chevron_ref: list = [None]
-    _couriers_body_ref: list = [None]
-
-    def _toggle_couriers():
-        _couriers_open[0] = not _couriers_open[0]
-        _couriers_body_ref[0].set_visibility(_couriers_open[0])
-        icon_cls = "ti-chevron-down" if _couriers_open[0] else "ti-chevron-right"
-        _chevron_ref[0].set_content(f'<i class="ti {icon_cls}" style="font-size:13px"></i>')
-
-    with ui.element("div").style("margin:16px 20px 0"):
+    with ui.dialog() as nueva_guia_dialog, ui.card().style(
+        "width:min(1150px, 95vw);max-width:95vw;padding:20px"
+    ):
+        with ui.row().classes("items-center justify-between").style("width:100%;margin-bottom:12px"):
+            ui.label("Nueva guía").style("font-size:15px;font-weight:600;color:#374151")
+            ui.button(icon="close", on_click=nueva_guia_dialog.close).props("flat dense round")
         with ui.element("div").style(
-            "background:var(--color-background-secondary);border-radius:6px;"
-            "padding:6px 10px;font-size:12px;font-weight:500;cursor:pointer;"
-            "display:flex;align-items:center;gap:6px;margin-bottom:8px"
-        ).on("click", _toggle_couriers):
-            _chevron_ref[0] = ui.html('<i class="ti ti-chevron-down" style="font-size:13px"></i>')
-            ui.label("Subir documento")
-        _couriers_body = ui.element("div").style(
-            "display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch"
-        )
-        _couriers_body_ref[0] = _couriers_body
-        with _couriers_body:
+            "display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch;width:100%"
+        ):
             logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
             _build_courier_panel(
                 "NC Supplies", "NC SUPPLIES", PROMPT_GUIA_NC,
@@ -2794,6 +2780,17 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
             ).props("dense outlined").style(
                 "font-size:12px;height:34px;border-radius:4px;width:100%;min-width:280px"
             )
+        with ui.element("button").on(
+            "click",
+            nueva_guia_dialog.open,
+        ).style(
+            "height:34px;font-size:12px;font-weight:500;"
+            "border:1px solid #2A7AC7;"
+            "border-radius:4px;background:#FFFFFF;"
+            "padding:0 14px;cursor:pointer;display:inline-flex;"
+            "align-items:center;gap:6px;color:#2A7AC7"
+        ):
+            ui.html('<i class="ti ti-upload" style="font-size:14px"></i> Nueva guía')
         with ui.element("button").on(
             "click",
             lambda: _descargar_zip_masivo(user_id, _filtros),
