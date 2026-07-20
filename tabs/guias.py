@@ -1848,14 +1848,17 @@ def _show_unificar_lhs_dialog(
         ga_mime[0] = e.type or "application/pdf"
 
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:380px"):
-        ui.label("Unificar documentos LHS").style(
+        _titulo_dialog = "Unificar documentos LHS" + (f" — {hawb.strip()}" if (hawb or "").strip() else "")
+        ui.label(_titulo_dialog).style(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
         )
         ui.label("DSI").style("font-size:11px;color:var(--color-text-secondary)")
         ui.html(
+            '<div style="font-size:10px;margin:2px 0 4px">'
+            '<span style="color:var(--color-text-secondary)">Link: </span>'
             f'<a href="{_cargotrack_url(hawb)}" target="_blank" rel="noopener" '
-            'style="font-size:10px;color:#2A7AC7;text-decoration:none;display:block;margin:2px 0 4px">'
-            'af.cargotrack.net</a>'
+            'style="color:#2A7AC7;text-decoration:none">af.cargotrack.net</a>'
+            '</div>'
         )
         ui.upload(on_upload=_on_dsi, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
@@ -1864,9 +1867,11 @@ def _show_unificar_lhs_dialog(
             "font-size:11px;color:var(--color-text-secondary);margin-top:8px;display:block"
         )
         ui.html(
+            '<div style="font-size:10px;margin:2px 0 4px">'
+            '<span style="color:var(--color-text-secondary)">Link: </span>'
             '<a href="http://erp.lhsww.com.ar/dsi/listado.aspx" target="_blank" rel="noopener" '
-            'style="font-size:10px;color:#2A7AC7;text-decoration:none;display:block;margin:2px 0 4px">'
-            'erp.lhsww.com.ar</a>'
+            'style="color:#2A7AC7;text-decoration:none">erp.lhsww.com.ar</a>'
+            '</div>'
         )
         ui.upload(on_upload=_on_ga, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
