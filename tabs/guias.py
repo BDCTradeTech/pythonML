@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, get_connection, get_cotizador_param, get_setting
+from db import get_app_config, get_connection, get_cotizador_param, get_setting, get_user_ml_razon_social
 
 logger = logging.getLogger(__name__)
 
@@ -485,7 +485,7 @@ _SCALAR_COLS = [
 ]
 
 _TABLE_HEADERS = [
-    "IA", "Fecha", "Courier", "Factura", "HAWB", "PA", "Origen", "Invoice Nro",
+    "IA", "Fecha", "Courier", "Factura", "HAWB/GUIA", "PA", "Origen", "Invoice Nro",
     "FOB Total", "Peso Total", "Derechos", "Estadística", "IVA Aduanero",
     "Flete Aduanero", "Almacenaje", "Total Factura", "Total real", "Alm/KG", "Valor Kg", "Dolar",
     "Traída u$ s/IVA", "Costo s/IVA", "Total Traída %", "Acciones",
@@ -501,7 +501,7 @@ _SORT_KEYS = {
     "Fecha":            lambda r: r["fecha"] or "",
     "Courier":          lambda r: r.get("courier") or r.get("razon_social") or "",
     "Factura":          lambda r: r["nro_factura"] or "",
-    "HAWB":             lambda r: r["hawb"] or "",
+    "HAWB/GUIA":        lambda r: r["hawb"] or "",
     "PA":               lambda r: _to_float(r["pa"]) or 0,
     "Origen":           lambda r: r["pais_procedencia"] or "",
     "Invoice Nro":      lambda r: r["nro_invoice"] or "",
@@ -884,6 +884,14 @@ def _limpiar_pdfs_huerfanos(rutas_viejas: tuple, rutas_nuevas: tuple) -> None:
         if path and path not in rutas_nuevas and os.path.exists(path):
             os.remove(path)
             logging.warning("[REPLACE] PDF huerfano borrado: %s", path)
+
+
+def _sanitize_razon_social(valor: str) -> str:
+    import re
+    valor = (valor or "").strip().upper()
+    valor = re.sub(r"[.,/\\]", "", valor)
+    valor = re.sub(r"\s+", "", valor)
+    return valor
 
 
 def _merge_lhs_docs(
@@ -1514,8 +1522,9 @@ def _rebuild_tabla(
                         if _r_lhs_pendiente:
                             with ui.element("button").on(
                                 "click",
-                                lambda rid=rid, uid=user_id, p=_r_pdf, p2=_r_pdf2, fac=_r_fac:
-                                    _show_unificar_lhs_dialog(rid, uid, p, p2, fac, refresh, recien),
+                                lambda rid=rid, uid=user_id, p=_r_pdf, p2=_r_pdf2, fac=_r_fac,
+                                       inv=r.get("nro_invoice") or "", hawb=r.get("hawb") or "":
+                                    _show_unificar_lhs_dialog(rid, uid, p, p2, fac, inv, hawb, refresh, recien),
                             ).style(
                                 "background:none;border:0.5px dashed #2A7AC7;"
                                 "cursor:pointer;color:#2A7AC7;"
@@ -1694,6 +1703,36 @@ def _download_pdf_handler(pdf_path: str, pdf_path_2: str, courier: str, nro_fact
         ui.notify("Archivo no encontrado en el servidor", color="warning")
 
 
+def _descargar_zip_masivo(user_id: int, filtros: dict) -> None:
+    import zipfile as _zf
+    rows = _list_guias(user_id, filtros)
+    incluidas = 0
+    salteadas = 0
+    buf = io.BytesIO()
+    with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as z:
+        for r in rows:
+            courier = (r.get("courier") or "").upper()
+            completo = bool(r.get("pdf_completo"))
+            pdf_path = r.get("pdf_path") or ""
+            pdf_path_2 = r.get("pdf_path_2") or ""
+            pendiente_lhs = courier == "LHS" and not completo and pdf_path and pdf_path_2
+            if pendiente_lhs or not pdf_path or not os.path.exists(pdf_path):
+                salteadas += 1
+                continue
+            z.write(pdf_path, arcname=os.path.basename(pdf_path))
+            incluidas += 1
+    if incluidas == 0:
+        ui.notify("No hay guías con PDF disponible para descargar", color="warning")
+        return
+    buf.seek(0)
+    hoy = datetime.now().strftime("%Y%m%d")
+    ui.download(buf.read(), f"guias_{hoy}.zip")
+    if salteadas:
+        ui.notify(f"Descargadas {incluidas} guías. Se saltearon {salteadas} sin PDF disponible.", color="info")
+    else:
+        ui.notify(f"Descargadas {incluidas} guías.", color="positive")
+
+
 def _show_upload_pdf_dialog(
     rid: int, user_id: int, courier: str, nro_factura: str,
     refresh,
@@ -1782,6 +1821,7 @@ def _show_upload_pdf_dialog(
 
 def _show_unificar_lhs_dialog(
     rid: int, user_id: int, pdf_path: str, pdf_path_2: str, nro_factura: str,
+    nro_invoice: str, hawb: str,
     refresh, recien: set | None = None,
 ) -> None:
     dsi_data: list = [None]
@@ -1837,8 +1877,18 @@ def _show_unificar_lhs_dialog(
                     now = datetime.now()
                     base = f"/opt/pythonml/pdfs/{user_id}/{now.year}/{now.month:02d}"
                     os.makedirs(base, exist_ok=True)
-                    nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
-                    merged_path = os.path.join(base, f"lhs_{nro_safe}_completo.pdf")
+                    factura_safe = (nro_factura or "").strip().replace("/", "-").replace("\\", "-") or "SINFACTURA"
+                    invoice_safe = (nro_invoice or "").strip().replace("/", "-").replace("\\", "-") or "SININVOICE"
+                    hawb_safe = (hawb or "").strip().replace("/", "-").replace("\\", "-") or "SINGUIA"
+                    razon_safe = _sanitize_razon_social(get_user_ml_razon_social(user_id)) or "SINRAZONSOCIAL"
+                    if factura_safe == "SINFACTURA" or invoice_safe == "SININVOICE" or hawb_safe == "SINGUIA" or razon_safe == "SINRAZONSOCIAL":
+                        logging.warning(
+                            "[UNIFICAR-LHS] campo vacio al nombrar PDF (guia_id=%s): factura=%s invoice=%s hawb=%s razon=%s",
+                            rid, factura_safe, invoice_safe, hawb_safe, razon_safe,
+                        )
+                    merged_path = os.path.join(
+                        base, f"LHS-{razon_safe}_{factura_safe}_{invoice_safe}_{hawb_safe}.pdf"
+                    )
                     with open(merged_path, "wb") as f:
                         f.write(merged_bytes)
                     _marcar_lhs_completo(rid, user_id, merged_path)
@@ -2744,6 +2794,17 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
             ).props("dense outlined").style(
                 "font-size:12px;height:34px;border-radius:4px;width:100%;min-width:280px"
             )
+        with ui.element("button").on(
+            "click",
+            lambda: _descargar_zip_masivo(user_id, _filtros),
+        ).style(
+            "height:34px;font-size:12px;font-weight:500;"
+            "border:1px solid #6b7280;"
+            "border-radius:4px;background:#FFFFFF;"
+            "padding:0 14px;cursor:pointer;display:inline-flex;"
+            "align-items:center;gap:6px;color:#374151"
+        ):
+            ui.html('<i class="ti ti-download" style="font-size:14px"></i> Descargar')
         with ui.element("button").on(
             "click",
             lambda: _refresh(),
