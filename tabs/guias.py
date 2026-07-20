@@ -1260,7 +1260,7 @@ def _rebuild_tabla(
             )
             return
 
-        with ui.element("div").style("overflow-x:hidden;overflow-y:auto;max-height:calc(100vh - 140px);width:100%"):
+        with ui.element("div").style("overflow-x:hidden;overflow-y:auto;max-height:calc(100vh - 330px);width:100%"):
             # Single grid — header + todas las filas comparten el mismo grid para alineación perfecta
             with ui.element("div").style(
                 f"display:grid;grid-template-columns:{_TABLE_COLS};"
