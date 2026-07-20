@@ -1095,6 +1095,43 @@ def _extract_pdf_text(data: bytes, max_pages: int = 4) -> str:
     return result
 
 
+def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
+    import re
+    import fitz
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return None
+    try:
+        n_pages = min(doc.page_count, 2)
+        texto = "\n".join(doc[i].get_text() for i in range(n_pages))
+        if len(texto.strip()) < 20:
+            try:
+                import pytesseract
+                from PIL import Image
+                import io as _io
+                texto = "\n".join(
+                    pytesseract.image_to_string(
+                        Image.open(_io.BytesIO(doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72)).tobytes("png"))),
+                        lang="spa+eng",
+                    )
+                    for i in range(n_pages)
+                )
+            except Exception as e:
+                logging.warning(f"[HAWB-LHS] OCR fallback error: {e}")
+                texto = ""
+    finally:
+        doc.close()
+    if not texto or not texto.strip():
+        return None
+    m = re.search(
+        r"Referencia\s+(?:de\s+)?Gu[ií]a\s*N?[°ºoO]?\.?\s*[:\-]?\s*([A-Za-z0-9\*][A-Za-z0-9\*\-]*)",
+        texto,
+        re.IGNORECASE,
+    )
+    return m.group(1).strip() if m else None
+
+
 def _clean_json(raw: str) -> str:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -2434,6 +2471,9 @@ def _build_lhs_panel(
                 )
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
+                _hawb_extraido = await run.io_bound(_extraer_hawb_lhs, archivo_data_lhs1[0])
+                if _hawb_extraido:
+                    parsed["hawb"] = _hawb_extraido
                 parsed_ref[0] = parsed
                 nro_fac = (parsed.get("nro_factura") or "").strip()
                 if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
