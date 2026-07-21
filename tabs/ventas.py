@@ -18,6 +18,9 @@ from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
     get_ml_session,
+    ml_charge_neto,
+    ml_clasificar_pago,
+    ml_fee_con_fallback,
     ml_get_fixed_fee,
     ml_get_item_sale_price_full,
     ml_get_items_multiget_with_attributes,
@@ -26,6 +29,19 @@ from ml_api import (
     ml_get_user_profile,
     ml_merge_payments,
 )
+
+# Texto que se muestra en la columna "Estado" cuando pay_status no es None
+# (approved). None/"approved" conserva el status_map original (Concretada,
+# En preparación, etc.) — solo se pisa para los estados que ml_clasificar_pago
+# puede devolver.
+ESTADO_PAGO_LABEL = {
+    "rejected": "Cancelada",
+    "cancelled": "Cancelada",
+    "refunded": "Devolución",
+    "charged_back": "Contracargo",
+    "in_mediation": "En mediación",
+    "pendiente": "Pago pendiente",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -455,7 +471,8 @@ def build_tab_ventas(container) -> None:
                     item_data, ship_data, ship_costs_data = await asyncio.gather(item_coro2, ship_coro2, ship_costs_coro2)
                     zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
                     has_api     = True
-                    is_rejected = _cached.get("pay_status") == "rejected"
+                    estado      = _cached.get("pay_status") or "approved"
+                    fee_origen  = _cached.get("fee_origen") or "api"
                     meli_fee    = float(_cached.get("meli_fee") or 0)
                     cuotas_fee  = float(_cached.get("cuotas_fee") or 0)
                     deb_cred    = float(_cached.get("deb_cred") or 0)
@@ -484,10 +501,16 @@ def build_tab_ventas(container) -> None:
                     iva_impor   = 0.09 * costo_usd * dolar * cantidad
                     iva_total   = iva_venta - iva_meli - iva_impor
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
-                    if not is_rejected and has_calc:
+                    if estado in ("approved", "in_mediation", "pendiente") and has_calc:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
+                    elif estado == "refunded":
+                        gan_pesos = 0.0
+                        gan_vta_pct = 0.0
+                    elif estado == "charged_back" and has_calc:
+                        gan_pesos = -(total_costo + envio_efectivo + meli_fee + cuotas_fee)
+                        gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     for _vr in ventas_raw:
                         if _vr.get("payment_id") == payment_id:
                             _vr["gan_pesos"] = gan_pesos
@@ -503,22 +526,26 @@ def build_tab_ventas(container) -> None:
                     pay_data, item_data, ship_data, ship_costs_data, fixed_fee = await asyncio.gather(pay_coro, item_coro, ship_coro, ship_costs_coro, fee_coro)
                     zip_code = (ship_data.get("receiver_address") or {}).get("zip_code") or ""
 
-                    is_rejected = pay_data.get("status") == "rejected"
+                    estado = ml_clasificar_pago(
+                        pay_data,
+                        order_tiene_refund=bool(row.get("has_refund")),
+                        order_cancelada=(row.get("status_raw") or "") in ("cancelled", "canceled"),
+                    )
                     charges    = pay_data.get("charges_details") or []
-                    meli_fee   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "meli_percentage_fee")
-                    cuotas_fee = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "financing_add_on_fee")
-                    deb_cred   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "debitos_creditos" in (c.get("name") or ""))
-                    iibb_ret   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "iibb" in (c.get("name") or "").lower())
-                    sirtac     = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "sirtac" in (c.get("name") or "").lower())
+                    _sale_fee_ml = float(row.get("sale_fee") or 0) * cantidad
+                    meli_fee, cuotas_fee, fee_origen = ml_fee_con_fallback(charges, _sale_fee_ml, total_price)
+                    deb_cred   = ml_charge_neto(charges, contains="debitos_creditos")
+                    iibb_ret   = ml_charge_neto(charges, contains="iibb")
+                    sirtac     = ml_charge_neto(charges, contains="sirtac")
                     net_rcv    = (pay_data.get("transaction_details") or {}).get("net_received_amount")
-                    has_api    = bool(charges) or is_rejected
+                    has_api    = bool(charges) or estado in ("rejected", "cancelled")
                     iibb_perc  = total_price * ml_iibb
                     iva_venta  = total_price * tipo_iva / (1 + tipo_iva)
                     iva_meli   = meli_fee * 0.21 / 1.21
                     iva_impor  = 0.09 * costo_usd * dolar * cantidad
                     iva_total  = iva_venta - iva_meli - iva_impor
 
-                    shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                    shp_xd = ml_charge_neto(charges, name="shp_cross_docking")
                     buyer_shipping = float(pay_data.get("shipping_amount") or 0)
                     if shp_xd > 0:
                         comprador_envio = buyer_shipping
@@ -541,8 +568,7 @@ def build_tab_ventas(container) -> None:
                         _lt = ""
 
                     envio_efectivo = 0.0 if unit_price < ml_env_grat else envio_real
-                    _sale_fee_ml = float(row.get("sale_fee") or 0) * cantidad
-                    if _sale_fee_ml > 0:
+                    if fee_origen == "api" and _sale_fee_ml > 0:
                         _check_total = meli_fee + cuotas_fee + fixed_fee
                         if abs(_check_total - _sale_fee_ml) > 1.0:
                             logging.warning(
@@ -551,10 +577,16 @@ def build_tab_ventas(container) -> None:
                                 _check_total, _sale_fee_ml, _check_total - _sale_fee_ml, _oid, payment_id,
                             )
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
-                    if not is_rejected and has_calc:
+                    if estado in ("approved", "in_mediation", "pendiente") and has_calc:
                         gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
+                    elif estado == "refunded":
+                        gan_pesos = 0.0
+                        gan_vta_pct = 0.0
+                    elif estado == "charged_back" and has_calc:
+                        gan_pesos = -(total_costo + envio_efectivo + meli_fee + cuotas_fee)
+                        gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
 
                     if payment_id and (has_api or has_calc):
                         _now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -566,11 +598,12 @@ def build_tab_ventas(container) -> None:
                             "envio_real": envio_real, "comprador_envio": comprador_envio,
                             "logistic_type": _lt, "net_rcv": net_rcv,
                             "fetched_at": _now,
-                            "pay_status": "rejected" if is_rejected else None,
+                            "pay_status": None if estado == "approved" else estado,
                             "order_date": row["dt"].strftime("%Y-%m-%d") if row.get("dt") else None,
                             "cuotas": cuotas_val,
-                            "costo_pesos": total_costo if (not is_rejected and has_calc) else None,
+                            "costo_pesos": total_costo if (estado in ("approved", "in_mediation", "pendiente") and has_calc) else None,
                             "costo_fijo": fixed_fee,
+                            "fee_origen": fee_origen,
                         }
                         ventas_cache_ref[payment_id] = _ce
                         for _vr in ventas_raw:
@@ -589,8 +622,8 @@ def build_tab_ventas(container) -> None:
                                     "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                     "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                     "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                    "costo_pesos, costo_fijo) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                    "costo_pesos, costo_fijo, fee_origen) "
+                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                     (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
                                      _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
                                      _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
@@ -598,7 +631,8 @@ def build_tab_ventas(container) -> None:
                                      _ce.get("envio_real"), _ce.get("comprador_envio"),
                                      _ce.get("logistic_type"), _ce.get("net_rcv"),
                                      _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date"),
-                                     _ce.get("cuotas"), _ce.get("costo_pesos"), _ce.get("costo_fijo")),
+                                     _ce.get("cuotas"), _ce.get("costo_pesos"), _ce.get("costo_fijo"),
+                                     _ce.get("fee_origen")),
                                 )
                                 conn.commit()
                             finally:
@@ -633,8 +667,9 @@ def build_tab_ventas(container) -> None:
                                 with ui.column().classes("gap-0"):
                                     ui.label(lbl_p).classes("text-xs text-gray-500")
                                     ui.label(val_p).classes("text-xs font-medium")
-                        if is_rejected:
-                            ui.label("Pago rechazado — sin comisión cobrada").classes("text-negative text-sm font-medium py-3 text-center w-full")
+                        if estado in ("rejected", "cancelled"):
+                            _msg_sin_datos = "Pago rechazado" if estado == "rejected" else "Venta cancelada"
+                            ui.label(f"{_msg_sin_datos} — sin comisión cobrada").classes("text-negative text-sm font-medium py-3 text-center w-full")
                         elif not has_api:
                             _ml_com      = float(p.get("ml_comision") or 0.15)
                             _ml_deb      = float(p.get("ml_debcre") or 0.006)
@@ -727,6 +762,18 @@ def build_tab_ventas(container) -> None:
                                     ui.label("Valores estimados con parámetros del cotizador")
                         else:
                             with ui.column().classes("w-full gap-0"):
+                                if estado != "approved" or fee_origen != "api":
+                                    with ui.row().classes("w-full flex-wrap gap-2 mb-2"):
+                                        if estado != "approved":
+                                            _badge_txt = ESTADO_PAGO_LABEL.get(estado, estado)
+                                            ui.label(_badge_txt).classes("text-xs font-medium px-2 py-0.5 rounded-full").style(
+                                                "background:#fee2e2;color:#b91c1c;" if estado in ("charged_back",)
+                                                else "background:#fef3c7;color:#92400e;"
+                                            )
+                                        if fee_origen != "api":
+                                            ui.label("Comisión provisional").classes(
+                                                "text-xs font-medium px-2 py-0.5 rounded-full"
+                                            ).style("background:#ffedd5;color:#c2410c;")
                                 # 1. Precio de venta
                                 with ui.row().classes("w-full justify-between items-center py-1.5 border-b border-gray-200 mb-1"):
                                     _pv_lbl = f"Precio de venta (×{cantidad})" if cantidad > 1 else "Precio de venta"
@@ -1168,11 +1215,19 @@ def build_tab_ventas(container) -> None:
                                                     ui.label(_hm)
                                     with ui.element("tbody"):
                                         for idx, v in enumerate(ventas_orden, 1):
-                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
-                                            _is_rej_row = v.get("pay_status") == "rejected"
-                                            _is_dev_row = bool(v.get("has_refund"))
+                                            _estado_pago_row = v.get("pay_status") or ""
+                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled") or _estado_pago_row in ("rejected", "cancelled")
+                                            _is_rej_row = _estado_pago_row == "rejected"
+                                            _is_dev_row = bool(v.get("has_refund")) or _estado_pago_row == "refunded"
+                                            _is_cb_row = _estado_pago_row == "charged_back"
+                                            _is_med_row = _estado_pago_row in ("in_mediation", "pendiente")
                                             _hide_gan = _is_cancelled_row or _is_rej_row or _is_dev_row
-                                            _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
+                                            _tr_style = (
+                                                "color: #b91c1c; font-weight:600;" if _is_cb_row
+                                                else "color: #d97706;" if _is_med_row
+                                                else "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row)
+                                                else ""
+                                            )
                                             with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs whitespace-nowrap"):
                                                     ui.label(v["fecha"])
@@ -1264,10 +1319,18 @@ def build_tab_ventas(container) -> None:
                                     _build_colgroup_ventas()
                                     with ui.element("tbody"):
                                         for idx, v in enumerate(ventas_orden, 1):
-                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled")
-                                            _is_rej_row = v.get("pay_status") == "rejected"
-                                            _is_dev_row = bool(v.get("has_refund"))
-                                            _tr_style = "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row) else ""
+                                            _estado_pago_row = v.get("pay_status") or ""
+                                            _is_cancelled_row = (v.get("status_raw") or "") in ("cancelled", "canceled") or _estado_pago_row in ("rejected", "cancelled")
+                                            _is_rej_row = _estado_pago_row == "rejected"
+                                            _is_dev_row = bool(v.get("has_refund")) or _estado_pago_row == "refunded"
+                                            _is_cb_row = _estado_pago_row == "charged_back"
+                                            _is_med_row = _estado_pago_row in ("in_mediation", "pendiente")
+                                            _tr_style = (
+                                                "color: #b91c1c; font-weight:600;" if _is_cb_row
+                                                else "color: #d97706;" if _is_med_row
+                                                else "color: #dc2626;" if (_is_cancelled_row or _is_rej_row or _is_dev_row)
+                                                else ""
+                                            )
                                             with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50").style(_tr_style):
                                                 with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-center text-xs"):
                                                     ui.label(str(idx))
@@ -1436,6 +1499,8 @@ def build_tab_ventas(container) -> None:
                 and (force
                      or pid not in ventas_cache_ref
                      or ventas_cache_ref.get(pid, {}).get("gan_pesos") is None
+                     or ventas_cache_ref.get(pid, {}).get("pay_status") in ("in_mediation", "pendiente")
+                     or ventas_cache_ref.get(pid, {}).get("fee_origen") not in (None, "api")
                      or (v.get("payment_type") == "account_money"
                          and float(ventas_cache_ref.get(pid, {}).get("meli_fee") or 0) == 0))
             ]
@@ -1486,11 +1551,13 @@ def build_tab_ventas(container) -> None:
                     return {}
 
             def _compute(pay_data: Dict, v: Dict, zip_code: str = "", bonif_flex: float = 0.0) -> Optional[Dict]:
-                charges     = pay_data.get("charges_details") or []
-                is_rejected = pay_data.get("status") == "rejected"
-                is_cancelled = (v.get("status_raw") or "") in ("cancelled", "canceled")
-                has_refund_v = bool(v.get("has_refund"))
-                if not charges and not is_rejected:
+                charges = pay_data.get("charges_details") or []
+                estado = ml_clasificar_pago(
+                    pay_data,
+                    order_tiene_refund=bool(v.get("has_refund")),
+                    order_cancelada=(v.get("status_raw") or "") in ("cancelled", "canceled"),
+                )
+                if estado == "pendiente" and not charges:
                     return None
                 unit_price  = float(v.get("unit_price") or 0)
                 cantidad    = int(v.get("cantidad") or 1)
@@ -1513,18 +1580,18 @@ def build_tab_ventas(container) -> None:
                 costo_pesos = costo_usd * dolar
                 total_costo = costo_pesos * cantidad
                 has_calc = total_price > 0 and costo_usd > 0
-                meli_fee   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "meli_percentage_fee")
-                cuotas_fee = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "financing_add_on_fee")
-                deb_cred   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "debitos_creditos" in (c.get("name") or ""))
-                iibb_ret   = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "iibb" in (c.get("name") or "").lower())
-                sirtac     = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if "sirtac" in (c.get("name") or "").lower())
+                _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
+                meli_fee, cuotas_fee, fee_origen = ml_fee_con_fallback(charges, _sale_fee_ml, total_price)
+                deb_cred   = ml_charge_neto(charges, contains="debitos_creditos")
+                iibb_ret   = ml_charge_neto(charges, contains="iibb")
+                sirtac     = ml_charge_neto(charges, contains="sirtac")
                 net_rcv    = (pay_data.get("transaction_details") or {}).get("net_received_amount")
                 iibb_perc  = total_price * ml_iibb
                 iva_venta  = total_price * tipo_iva / (1 + tipo_iva)
                 iva_meli   = meli_fee * 0.21 / 1.21
                 iva_impor  = 0.09 * costo_usd * dolar * cantidad
                 iva_total  = iva_venta - iva_meli - iva_impor
-                shp_xd = sum(float((c.get("amounts") or {}).get("original", 0)) for c in charges if c.get("name") == "shp_cross_docking")
+                shp_xd = ml_charge_neto(charges, name="shp_cross_docking")
                 buyer_shipping = float(pay_data.get("shipping_amount") or 0)
                 logistic_type = v.get("logistic_type") or ""
                 if logistic_type in ("self_service", "flex"):
@@ -1540,12 +1607,17 @@ def build_tab_ventas(container) -> None:
                 ml_env_grat_c  = float(p.get("ml_envios_gratuitos") or 33000)
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
-                if not is_rejected and not is_cancelled and not has_refund_v and has_calc:
+                if estado in ("approved", "in_mediation", "pendiente") and has_calc:
                     gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
-                _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
-                if _sale_fee_ml > 0:
+                elif estado == "refunded":
+                    gan_pesos = 0.0
+                    gan_vta_pct = 0.0
+                elif estado == "charged_back" and has_calc:
+                    gan_pesos = -(total_costo + envio_efectivo + meli_fee + cuotas_fee)
+                    gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
+                if fee_origen == "api" and _sale_fee_ml > 0:
                     _check_total = meli_fee + cuotas_fee + costo_fijo
                     if abs(_check_total - _sale_fee_ml) > 1.0:
                         logging.warning(
@@ -1560,10 +1632,14 @@ def build_tab_ventas(container) -> None:
                     "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
                     "envio_real": envio_real, "comprador_envio": comprador_envio,
                     "logistic_type": logistic_type, "net_rcv": net_rcv,
-                    "pay_status": "rejected" if is_rejected else ("cancelled" if is_cancelled else None),
-                    "costo_pesos": total_costo if (not is_rejected and not is_cancelled and not has_refund_v and has_calc) else None,
+                    "pay_status": None if estado == "approved" else estado,
+                    "costo_pesos": total_costo if (estado in ("approved", "in_mediation", "pendiente") and has_calc) else None,
                     "costo_fijo": costo_fijo,
-                    "_skip_overwrite": is_cancelled or has_refund_v,
+                    "fee_origen": fee_origen,
+                    "_skip_overwrite": (
+                        (estado == "refunded" and pay_data.get("status") != "refunded")
+                        or (estado == "cancelled" and pay_data.get("status") != "cancelled")
+                    ),
                 }
 
             def _save_batch(db_rows: List[Dict]) -> None:
@@ -1577,8 +1653,8 @@ def build_tab_ventas(container) -> None:
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                 "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                "costo_pesos, costo_fijo) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "costo_pesos, costo_fijo, fee_origen) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
@@ -1586,7 +1662,8 @@ def build_tab_ventas(container) -> None:
                                  rd.get("envio_real"), rd.get("comprador_envio"),
                                  rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
-                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo")),
+                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo"),
+                                 rd.get("fee_origen")),
                             )
                             if rd.get("pay_status"):
                                 cur.execute(
@@ -1599,8 +1676,8 @@ def build_tab_ventas(container) -> None:
                                 "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
                                 "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
                                 "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                "costo_pesos, costo_fijo) "
-                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                                "costo_pesos, costo_fijo, fee_origen) "
+                                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                                 (rd["payment_id"], rd["user_id"], rd.get("order_id"),
                                  rd.get("gan_pesos"), rd.get("gan_vta_pct"), rd.get("gan_cos_pct"),
                                  rd.get("meli_fee"), rd.get("cuotas_fee"), rd.get("iva_total"),
@@ -1608,7 +1685,8 @@ def build_tab_ventas(container) -> None:
                                  rd.get("envio_real"), rd.get("comprador_envio"),
                                  rd.get("logistic_type"), rd.get("net_rcv"),
                                  rd.get("fetched_at"), rd.get("pay_status"), rd.get("order_date"),
-                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo")),
+                                 rd.get("cuotas"), rd.get("costo_pesos"), rd.get("costo_fijo"),
+                                 rd.get("fee_origen")),
                             )
                     conn.commit()
                 finally:
@@ -1739,8 +1817,9 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = calc["gan_cos_pct"]
                     v["logistic_type"] = calc["logistic_type"]
                     v["pay_status"] = calc.get("pay_status")
-                    if calc.get("pay_status") == "rejected" and v.get("status") not in ("Cancelada", "Devolución"):
-                        v["status"] = "Cancelada"
+                    _badge = ESTADO_PAGO_LABEL.get(calc.get("pay_status") or "")
+                    if _badge and v.get("status") not in ESTADO_PAGO_LABEL.values():
+                        v["status"] = _badge
                     ventas_cache_ref[pid] = db_row
                     procesadas += 1
 
@@ -2160,7 +2239,7 @@ def build_tab_ventas(container) -> None:
                     cur = conn.cursor()
                     cur.execute(
                         "SELECT payment_id, gan_pesos, gan_vta_pct, gan_cos_pct, meli_fee, cuotas_fee, "
-                        "iva_total, deb_cred, iibb_ret, sirtac, envio_real, logistic_type, net_rcv, pay_status "
+                        "iva_total, deb_cred, iibb_ret, sirtac, envio_real, logistic_type, net_rcv, pay_status, fee_origen "
                         "FROM ventas_datos WHERE user_id=?",
                         (uid,)
                     )
@@ -2179,8 +2258,9 @@ def build_tab_ventas(container) -> None:
                     v["gan_cos_pct"] = c.get("gan_cos_pct")
                     v["pay_status"] = c.get("pay_status")
                     v["logistic_type"] = c.get("logistic_type") or v.get("logistic_type") or ""
-                    if c.get("pay_status") == "rejected" and v.get("status") not in ("Cancelada", "Devolución"):
-                        v["status"] = "Cancelada"
+                    _badge = ESTADO_PAGO_LABEL.get(c.get("pay_status") or "")
+                    if _badge and v.get("status") not in ESTADO_PAGO_LABEL.values():
+                        v["status"] = _badge
             ventas_raw = ventas_mes
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(not is_mobile_ref.get("val"))

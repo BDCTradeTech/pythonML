@@ -630,6 +630,74 @@ def ml_merge_payments(access_token: Optional[str], payment_ids: List[str]) -> Di
     }
 
 
+def ml_charge_neto(charges: List[Dict[str, Any]], name: Optional[str] = None, contains: Optional[str] = None) -> float:
+    """Suma neta (original - refunded) de los charges que matchean por nombre exacto
+    (name) o por substring (contains, case-insensitive). Usar refunded en vez de
+    original a secas es necesario porque MP a veces devuelve un charge (ej. la
+    comisión en un reembolso) sin devolver otro (ej. el envío) del mismo payment —
+    confirmado con datos reales, no es un caso hipotético.
+    """
+    total = 0.0
+    for c in charges:
+        cname = c.get("name") or ""
+        if name is not None and cname != name:
+            continue
+        if contains is not None and contains not in cname.lower():
+            continue
+        amounts = c.get("amounts") or {}
+        total += float(amounts.get("original") or 0) - float(amounts.get("refunded") or 0)
+    return total
+
+
+def ml_clasificar_pago(pay_data: Dict[str, Any], order_tiene_refund: bool = False, order_cancelada: bool = False) -> str:
+    """Clasifica el estado real de un payment de MP (los 9 status oficiales de la
+    Payments API) en uno de los 7 baldes que importan para calcular una venta:
+    approved, in_mediation, refunded, charged_back, rejected, cancelled, pendiente
+    (pendiente agrupa pending/in_process/authorized: todavía sin resolver).
+
+    order_tiene_refund/order_cancelada son señales a nivel ORDEN (no payment) que ya
+    existían en el código antes de esto: se usan como escalamiento adicional, nunca
+    para bajar la severidad de lo que diga el status real del payment.
+    """
+    status = (pay_data.get("status") or "").lower()
+    if status == "charged_back":
+        return "charged_back"
+    if status == "refunded" or order_tiene_refund:
+        return "refunded"
+    if status == "in_mediation":
+        return "in_mediation"
+    if status == "rejected":
+        return "rejected"
+    if status == "cancelled" or order_cancelada:
+        return "cancelled"
+    if status == "approved":
+        return "approved"
+    return "pendiente"
+
+
+def ml_fee_con_fallback(charges: List[Dict[str, Any]], sale_fee_ml: float, total_price: float) -> tuple[float, float, str]:
+    """Escalera de fallback para meli_fee/cuotas_fee cuando el payment todavia no
+    tiene charges reales (payment recien creado, pendiente sin resolver, etc.):
+
+    1. charges del payment (ml_charge_neto) -- si aparece algun charge de fee real,
+       fee_origen='api'.
+    2. sale_fee de la orden (ya viene cacheado en el row, v["sale_fee"]) x cantidad
+       -- ML no separa ahi comision de cuotas, así que se guarda todo en meli_fee y
+       cuotas_fee=0, fee_origen='orden'.
+    3. 15% del monto de venta como ultima estimacion, fee_origen='estimada'.
+
+    Devuelve (meli_fee, cuotas_fee, fee_origen). sale_fee_ml ya viene multiplicado
+    por cantidad (ver _sale_fee_ml en los call sites).
+    """
+    meli_fee = ml_charge_neto(charges, name="meli_percentage_fee")
+    cuotas_fee = ml_charge_neto(charges, name="financing_add_on_fee")
+    if meli_fee > 0 or cuotas_fee > 0:
+        return meli_fee, cuotas_fee, "api"
+    if sale_fee_ml > 0:
+        return sale_fee_ml, 0.0, "orden"
+    return total_price * 0.15, 0.0, "estimada"
+
+
 def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> List[Dict[str, Any]]:
     """GET /seller-promotions/items/{item_id}?app_version=v2 — todas las promos del ítem (todos los status)."""
     if not access_token or not str(item_id).strip():
