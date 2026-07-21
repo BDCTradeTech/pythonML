@@ -838,7 +838,8 @@ def build_tab_ventas(container) -> None:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
                     ui.label("Cargando ventas...").classes("text-xl text-gray-700")
-            background_tasks.create(_cargar_ventas_async(), name="cargar_ventas")
+            cl_ventas = context.client
+            background_tasks.create(_cargar_ventas_async(cl_ventas), name="cargar_ventas")
 
         def _sort_key_ventas(row: Dict[str, Any], col: str) -> Any:
             if col == "dt":
@@ -1440,11 +1441,14 @@ def build_tab_ventas(container) -> None:
             ]
             if not rows_to_enrich:
                 if dlg and lbl_progreso:
-                    with cl:
-                        lbl_progreso.set_text("No hay ventas para completar.")
-                    await asyncio.sleep(1.5)
-                    with cl:
-                        dlg.close()
+                    try:
+                        with cl:
+                            lbl_progreso.set_text("No hay ventas para completar.")
+                        await asyncio.sleep(1.5)
+                        with cl:
+                            dlg.close()
+                    except Exception as e:
+                        logging.warning("[VENTAS] _enriquecer_ventas_async: cliente desconectado al cerrar dialog vacio: %s", e)
                 return
 
             _uid = user["id"]
@@ -1747,10 +1751,13 @@ def build_tab_ventas(container) -> None:
 
                 # CAMBIO 2: actualizar dialog sin llamar _pintar_tabla en cada batch
                 if dlg and lbl_progreso and barra:
-                    with cl:
-                        _pct = round(procesadas / total * 100) if total > 0 else 0
-                        lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas... ({_pct}%)")
-                        barra.set_value(procesadas / total if total > 0 else 1.0)
+                    try:
+                        with cl:
+                            _pct = round(procesadas / total * 100) if total > 0 else 0
+                            lbl_progreso.set_text(f"Actualizando {procesadas} de {total} ventas... ({_pct}%)")
+                            barra.set_value(procesadas / total if total > 0 else 1.0)
+                    except Exception as e:
+                        logging.warning("[VENTAS] _enriquecer_ventas_async: cliente desconectado al actualizar progreso (batch %d/%d, sigue guardando en DB): %s", procesadas, total, e)
 
                 # CAMBIO 4: yield al event loop entre batches
                 await asyncio.sleep(0)
@@ -1846,21 +1853,24 @@ def build_tab_ventas(container) -> None:
                     pass
 
             # Al terminar: mostrar resultado, esperar 1.5s y cerrar automáticamente
-            if dlg and lbl_progreso:
-                with cl:
-                    lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas. (100%)")
-                    if barra:
-                        barra.set_value(1.0)
-                await asyncio.sleep(1.5)
-                with cl:
-                    dlg.close()
-                    _pintar_tabla()
-            else:
-                # Llamada sin dialog (carga inicial automática): _pintar_tabla al terminar
-                with cl:
-                    _pintar_tabla()
+            try:
+                if dlg and lbl_progreso:
+                    with cl:
+                        lbl_progreso.set_text(f"Completado: {procesadas} ventas actualizadas. (100%)")
+                        if barra:
+                            barra.set_value(1.0)
+                    await asyncio.sleep(1.5)
+                    with cl:
+                        dlg.close()
+                        _pintar_tabla()
+                else:
+                    # Llamada sin dialog (carga inicial automática): _pintar_tabla al terminar
+                    with cl:
+                        _pintar_tabla()
+            except Exception as e:
+                logging.warning("[VENTAS] _enriquecer_ventas_async: cliente desconectado al finalizar (datos ya guardados en DB): %s", e)
 
-        async def _cargar_ventas_async() -> None:
+        async def _cargar_ventas_async(cl_ventas) -> None:
             nonlocal ventas_raw
             try:
                 profile = await run.io_bound(ml_get_user_profile, access_token)
@@ -2175,8 +2185,7 @@ def build_tab_ventas(container) -> None:
             if filtro_controls_ref:
                 filtro_controls_ref[0].set_visibility(not is_mobile_ref.get("val"))
             _pintar_tabla()
-            _enrich_cl = context.client
-            background_tasks.create(_enriquecer_ventas_async(_enrich_cl), name="enriquecer_ventas")
+            background_tasks.create(_enriquecer_ventas_async(cl_ventas), name="enriquecer_ventas")
 
         filtro_controls_ref: List[Any] = []  # Referencia al row de controles para mostrar/ocultar
 
