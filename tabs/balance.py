@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, background_tasks, run, ui
 
 from db import get_cotizador_param, get_cotizador_tabla, set_cotizador_tabla, COTIZADOR_DEFAULTS
-from ml_api import get_ml_access_token, ml_get_orders, ml_get_user_id, ml_get_user_profile
+from ml_api import get_ml_access_token, ml_get_orders_incremental, ml_get_user_id, ml_get_user_profile
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ def build_tab_balance(container) -> None:
                 profile = await run.io_bound(ml_get_user_profile, access_token)
                 seller_id = (profile or {}).get("id") or await run.io_bound(ml_get_user_id, access_token)
                 if seller_id:
-                    orders_data = await run.io_bound(ml_get_orders, access_token, str(seller_id), 1000, 0)
+                    orders_data = await run.io_bound(ml_get_orders_incremental, access_token, str(seller_id), uid)
                 ingresos_ref["data"] = _compute_ingresos_from_orders(orders_data, uid, "mes_actual")
             except Exception:
                 ingresos_ref["data"] = None
