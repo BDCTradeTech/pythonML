@@ -637,7 +637,7 @@ def _render_comparador(uid: int, mis_ids: set):
 
     with ui.element("div").style("display:flex;gap:6px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
         orden_col = ui.element("div").style(
-            "display:flex;flex-direction:column;gap:4px;width:60px;flex-shrink:0;height:100%"
+            "display:flex;flex-direction:column;gap:4px;width:76px;flex-shrink:0;height:100%"
         )
 
         tabla_refs: list = []
@@ -648,7 +648,7 @@ def _render_comparador(uid: int, mis_ids: set):
 
         right_col = ui.element("div").style(
             "display:flex;flex-direction:column;gap:8px;align-items:flex-start;"
-            "width:170px;flex-shrink:0;padding-left:4px"
+            "width:340px;flex-shrink:0;padding-left:4px"
         )
 
         def _render_tabla_comp():
@@ -766,7 +766,7 @@ def _render_comparador(uid: int, mis_ids: set):
                     with ui.element("div").on("click", _click).style(
                         estilo +
                         "flex:1;display:flex;align-items:center;justify-content:center;"
-                        "font-size:10px;font-weight:600;padding:7.2px 8px;border-radius:4px;cursor:pointer;"
+                        "font-size:12px;font-weight:600;font-family:inherit;padding:7.92px 8px;border-radius:4px;cursor:pointer;"
                         "text-align:center;white-space:nowrap;user-select:none"
                     ):
                         ui.html(label)
@@ -1103,7 +1103,7 @@ def build_tab_competidores() -> None:
             with ui.element("div").style("display:flex;gap:0;width:100%"):
                 inp = ui.input(placeholder="Link de una publicación de catálogo...").props(
                     "dense outlined"
-                ).style("width:100%;font-size:12px;border-radius:4px 0 0 4px")
+                ).style("width:100%;font-size:13px;font-family:inherit;border-radius:4px 0 0 4px")
                 with ui.element("button").on(
                     "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
                 ).style(
@@ -1115,15 +1115,15 @@ def build_tab_competidores() -> None:
             # 2. Input buscador de competidor
             filtro_input = ui.input(placeholder="Buscar competidor en las tablas...").props(
                 "dense outlined clearable"
-            ).style("width:100%;font-size:12px")
+            ).style("width:100%;font-size:13px;font-family:inherit")
 
             def _on_filtro(e):
                 filtro_ref[0]["texto"] = (e.value or "").strip()
                 _recargar_tablas()
             filtro_input.on_value_change(_on_filtro)
 
-            # 3. Boton actualizar + fecha
-            with ui.element("div").style("display:flex;flex-direction:column;align-items:flex-start;width:100%"):
+            # 3. Boton actualizar + fecha (ancho fijo: NO acompaña el ensanche de los inputs de arriba)
+            with ui.element("div").style("display:flex;flex-direction:column;align-items:flex-start;width:170px"):
                 with ui.button(on_click=_lanzar_actualizacion).props(
                     "unelevated no-caps"
                 ).style(
