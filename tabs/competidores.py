@@ -635,7 +635,7 @@ def _render_comparador(uid: int, mis_ids: set):
 
     comparador_ref = [{"sellers": _get_comparador(uid)}]  # lista de {seller_id, nickname, hist}
 
-    with ui.element("div").style("display:flex;gap:8px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
+    with ui.element("div").style("display:flex;gap:6px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
         orden_col = ui.element("div").style(
             "display:flex;flex-direction:column;gap:4px;min-width:82px;flex-shrink:0;height:100%"
         )
@@ -643,12 +643,12 @@ def _render_comparador(uid: int, mis_ids: set):
         tabla_refs: list = []
         for _ in DIVISIONES:
             tabla_refs.append(ui.element("div").style(
-                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;min-width:230px;flex-shrink:0"
+                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;flex:1 1 190px;min-width:190px"
             ))
 
         right_col = ui.element("div").style(
             "display:flex;flex-direction:column;gap:8px;align-items:flex-start;"
-            "width:230px;flex-shrink:0;padding-left:4px"
+            "width:190px;flex-shrink:1;padding-left:4px"
         )
 
         def _render_tabla_comp():
