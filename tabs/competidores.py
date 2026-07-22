@@ -601,7 +601,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
             ui.label("Sin datos aun — cargando al completarse el snapshot").style("font-size:10px;color:#9ca3af;padding:20px;text-align:center;display:block")
             return
 
-        with ui.element("div").classes("comp-tabla-scroll").style("overflow-y:auto;max-height:calc(100vh - 420px)"):
+        with ui.element("div").classes("comp-tabla-scroll").style("overflow-y:auto;max-height:calc(100vh - 445px)"):
             with ui.element("table").style("width:100%;border-collapse:collapse;table-layout:fixed"):
                 with ui.element("thead"):
                     with ui.element("tr"):
@@ -683,17 +683,17 @@ def _render_comparador(uid: int, mis_ids: set):
                     _render_tabla_comp()
 
                 with ui.element("tr"):
-                    with ui.element("td").style("padding:2px 3px;border-bottom:0.5px solid var(--color-border);overflow:hidden"):
-                        with ui.row().style("gap:2px;align-items:center;flex-wrap:nowrap"):
+                    with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border);overflow:hidden"):
+                        with ui.row().style("gap:4px;align-items:center;flex-wrap:nowrap"):
                             with ui.element("span").on("click", _quitar).style(
                                 "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center;flex-shrink:0"
                             ):
-                                ui.html('<i class="ti ti-trash" style="font-size:10px" aria-hidden="true"></i>')
+                                ui.html('<i class="ti ti-trash" style="font-size:11px" aria-hidden="true"></i>')
                             ui.html(
                                 f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
                                 f'title="{html.escape(nick)}" '
-                                f'style="font-size:9px;font-weight:500;color:#185FA5;text-decoration:none;'
-                                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">'
+                                f'style="font-size:12px;font-weight:500;color:#185FA5;text-decoration:none;'
+                                f'font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">'
                                 f'{html.escape(nick)}</a>'
                             ).style("flex:1;min-width:0;overflow:hidden")
                     for key, _label, _dias, _corto in ORDEN_OPCIONES:
@@ -702,21 +702,22 @@ def _render_comparador(uid: int, mis_ids: set):
                         bg = "background:#EEF6FD;" if activo else ""
                         fw = "700" if activo else "400"
                         with ui.element("td").style(
-                            f"padding:2px 3px;border-bottom:0.5px solid var(--color-border);"
-                            f"text-align:right;font-size:9px;overflow:hidden;{bg}font-weight:{fw}"
+                            f"padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
+                            f"text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"
+                            f"font-family:inherit;overflow:hidden;{bg}font-weight:{fw}"
                         ):
                             ui.html(f"{int(val):,}".replace(",",".") if val else "—")
 
             def _fila_vacia(placeholder: str):
                 with ui.element("tr"):
                     with ui.element("td").style(
-                        "padding:2px 3px;border-bottom:0.5px solid var(--color-border);"
-                        "font-size:9px;color:var(--color-text-secondary);font-style:italic;"
+                        "padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
+                        "font-size:11px;font-family:inherit;color:var(--color-text-secondary);font-style:italic;"
                         "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     ):
                         ui.html(placeholder)
                     for _ in range(len(ORDEN_OPCIONES)):
-                        ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
+                        ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border)")
 
             for idx, (titulo, con_boton) in enumerate(DIVISIONES):
                 grupo = sellers_ordenados[idx * POR_DIVISION:(idx + 1) * POR_DIVISION]
@@ -726,7 +727,7 @@ def _render_comparador(uid: int, mis_ids: set):
                     with ui.element("table").style("border-collapse:collapse;table-layout:fixed"):
                         with ui.element("thead"):
                             with ui.element("tr"):
-                                with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:4px 3px;text-align:left;width:140px;overflow:hidden"):
+                                with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:12px;font-weight:500;font-family:inherit;padding:4px 8px;text-align:left;width:160px;overflow:hidden"):
                                     with ui.row().style("gap:3px;align-items:center;flex-wrap:nowrap"):
                                         ui.html(titulo)
                                         if con_boton:
@@ -740,8 +741,8 @@ def _render_comparador(uid: int, mis_ids: set):
                                     activo = key == col_actual
                                     bg = "background:#185FA5;" if activo else "background:#2A7AC7;"
                                     with ui.element("th").style(
-                                        f"{bg}color:#fff;font-size:9px;font-weight:500;"
-                                        f"padding:4px 3px;text-align:right;width:36px;white-space:nowrap"
+                                        f"{bg}color:#fff;font-size:11px;font-weight:500;font-family:inherit;"
+                                        f"padding:4px 6px;text-align:right;width:44px;white-space:nowrap"
                                     ):
                                         ui.html(corto)
                         with ui.element("tbody"):
