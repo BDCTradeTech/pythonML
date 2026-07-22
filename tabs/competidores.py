@@ -621,29 +621,62 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
 
 
 def _render_comparador(uid: int, mis_ids: set):
-    """Ranking de hasta 12 competidores seguidos, repartido en 3 divisiones de 4 por Hist. desc."""
+    """Ranking de hasta 12 competidores seguidos, repartido en 3 divisiones de 4, ordenable por periodo."""
     MAX_COMPARADOR = 12
     DIVISIONES = [("Primera A", True), ("Nacional B", False), ("Primera C", False)]
+    ORDEN_OPCIONES = [
+        ("hist",    "Histórica", None, "Hist."),
+        ("mensual", "Mensual",   30,   "Mens."),
+        ("semanal", "Semanal",   7,    "Sem."),
+        ("diaria",  "Diaria",    1,    "Día"),
+    ]
+    orden_state = {"col": "hist"}
 
-    comparador_ref = [{"sellers": _get_comparador(uid)}]  # lista de {seller_id, nickname}
+    comparador_ref = [{"sellers": _get_comparador(uid)}]  # lista de {seller_id, nickname, hist}
 
-    with ui.element("div").style("display:flex;gap:8px;align-items:flex-start;flex-shrink:0;flex-wrap:wrap"):
+    with ui.element("div").style("display:flex;gap:8px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
+        orden_col = ui.element("div").style(
+            "display:flex;flex-direction:column;gap:4px;min-width:82px;flex-shrink:0"
+        )
+
         tabla_refs: list = []
         for _ in DIVISIONES:
             tabla_refs.append(ui.element("div").style(
-                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;min-width:200px;flex-shrink:0"
+                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;min-width:230px;flex-shrink:0"
             ))
 
+        right_col = ui.element("div").style(
+            "display:flex;flex-direction:column;gap:8px;align-items:flex-start;"
+            "width:230px;flex-shrink:0;padding-left:4px"
+        )
+
         def _render_tabla_comp():
-            sellers = _get_comparador(uid)  # ya viene ORDER BY hist DESC
+            sellers = _get_comparador(uid)  # {seller_id, nickname, hist}
             comparador_ref[0]["sellers"] = sellers
 
-            # Usar la misma lógica que las 5 tablas principales
-            ranking_hist   = {str(r["seller_id"]): r for r in _get_ranking_global(uid, None)}
-            ranking_seman  = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 7)}
-            ranking_diaria = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 1)}
+            rankings = {
+                key: {str(r["seller_id"]): r for r in _get_ranking_global(uid, dias)}
+                for key, _label, dias, _corto in ORDEN_OPCIONES
+            }
 
-            def _fila(sid, nick, hist, seman, diaria):
+            def _valor(entry, key):
+                if key == "hist":
+                    return entry.get("hist")
+                r = rankings[key].get(entry["seller_id"])
+                return r.get("ventas") if r else None
+
+            col_actual = orden_state["col"]
+
+            def _sort_key(entry):
+                val = _valor(entry, col_actual)
+                return (0 if val is not None else 1, -(val or 0))
+
+            sellers_ordenados = sorted(sellers, key=_sort_key)
+
+            def _fila(entry):
+                sid  = entry["seller_id"]
+                nick = entry["nickname"]
+
                 def _quitar(s=sid):
                     _remove_comparador(uid, s)
                     _render_tabla_comp()
@@ -660,8 +693,15 @@ def _render_comparador(uid: int, mis_ids: set):
                                 f'style="font-size:10px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
                                 f'{html.escape(nick[:18])}</a>'
                             )
-                    for val in (hist, seman, diaria):
-                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:10px"):
+                    for key, _label, _dias, _corto in ORDEN_OPCIONES:
+                        val = _valor(entry, key)
+                        activo = key == col_actual
+                        bg = "background:#EEF6FD;" if activo else ""
+                        fw = "700" if activo else "400"
+                        with ui.element("td").style(
+                            f"padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
+                            f"text-align:right;font-size:10px;{bg}font-weight:{fw}"
+                        ):
                             ui.html(f"{int(val):,}".replace(",",".") if val else "—")
 
             def _fila_vacia(placeholder: str):
@@ -671,11 +711,11 @@ def _render_comparador(uid: int, mis_ids: set):
                         "font-size:10px;color:var(--color-text-secondary);font-style:italic"
                     ):
                         ui.html(placeholder)
-                    for _ in range(3):
+                    for _ in range(len(ORDEN_OPCIONES)):
                         ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
 
             for idx, (titulo, con_boton) in enumerate(DIVISIONES):
-                grupo = sellers[idx * 4:(idx + 1) * 4]
+                grupo = sellers_ordenados[idx * 4:(idx + 1) * 4]
                 cont = tabla_refs[idx]
                 cont.clear()
                 with cont:
@@ -692,22 +732,42 @@ def _render_comparador(uid: int, mis_ids: set):
                                                 "cursor:pointer"
                                             ).on("click", lambda: _abrir_popup_competidores()):
                                                 ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
-                                for h, a in [("Hist.","right"),("Sem.","right"),("Día","right")]:
+                                for key, _label, _dias, corto in ORDEN_OPCIONES:
+                                    activo = key == col_actual
+                                    bg = "background:#185FA5;" if activo else "background:#2A7AC7;"
                                     with ui.element("th").style(
-                                        f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
-                                        f"padding:4px 6px;text-align:{a}"
+                                        f"{bg}color:#fff;font-size:9px;font-weight:500;"
+                                        f"padding:4px 6px;text-align:right"
                                     ):
-                                        ui.html(h)
+                                        ui.html(corto)
                         with ui.element("tbody"):
                             for entry in grupo:
-                                sid    = entry["seller_id"]
-                                nick   = entry["nickname"]
-                                hist   = (ranking_hist.get(sid)   or {}).get("ventas") or 0
-                                seman  = (ranking_seman.get(sid)  or {}).get("ventas") or 0
-                                diaria = (ranking_diaria.get(sid) or {}).get("ventas") or 0
-                                _fila(sid, nick, hist, seman, diaria)
+                                _fila(entry)
                             for _ in range(4 - len(grupo)):
                                 _fila_vacia("— agregar competidor" if con_boton else "—")
+
+        def _render_orden_botones():
+            orden_col.clear()
+            with orden_col:
+                ui.label("Ordenar por").style(
+                    "font-size:9px;font-weight:600;color:var(--color-text-secondary);"
+                    "margin-bottom:2px;white-space:nowrap"
+                )
+                for key, label, _dias, _corto in ORDEN_OPCIONES:
+                    activo = orden_state["col"] == key
+
+                    def _click(k=key):
+                        orden_state["col"] = k
+                        _render_orden_botones()
+                        _render_tabla_comp()
+
+                    estilo = "background:#2A7AC7;color:#fff;" if activo else "background:#EEF6FD;color:#185FA5;"
+                    with ui.element("div").on("click", _click).style(
+                        estilo +
+                        "font-size:10px;font-weight:600;padding:6px 8px;border-radius:4px;cursor:pointer;"
+                        "text-align:center;white-space:nowrap;user-select:none"
+                    ):
+                        ui.html(label)
 
         def _abrir_popup_competidores():
             sellers_actual = comparador_ref[0]["sellers"]
@@ -821,11 +881,12 @@ def _render_comparador(uid: int, mis_ids: set):
 
             dlg.open()
 
+        _render_orden_botones()
         _render_tabla_comp()
 
     comparador_ref[0]["_render"] = _render_tabla_comp
 
-    return comparador_ref
+    return comparador_ref, right_col
 
 
 def build_tab_competidores() -> None:
@@ -834,7 +895,6 @@ def build_tab_competidores() -> None:
             .comp-tablas { flex-direction: column !important; }
             .comp-tablas > div { min-width: 100% !important; flex: none !important; }
             .comp-tabla-scroll { max-height: 60vh !important; }
-            .comp-btn-texto { display: none !important; }
         }
     """)
     user = app.storage.user.get("user")
@@ -981,35 +1041,67 @@ def build_tab_competidores() -> None:
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
     with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
-        # Fila unica: input catalogo+lupa | buscador competidor | spacer | boton actualizar + fecha
         filtro_ref: list = [{"texto": ""}]
 
-        with ui.element("div").style(
-            "display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px"
-        ):
-            comparador_ref = _render_comparador(uid, mis_ids)
+        with ui.element("div").style("margin-bottom:8px"):
+            comparador_ref, right_col = _render_comparador(uid, mis_ids)
 
-            def _agregar_al_comparador(seller_id: str, nickname: str):
-                sellers = comparador_ref[0]["sellers"]
-                if len(sellers) >= 12:
-                    ui.notify("Máximo 12 competidores en el comparador", color="warning", timeout=2000)
-                    return
-                if any(s["seller_id"] == seller_id for s in sellers):
-                    ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
-                    return
-                _add_comparador(uid, seller_id, nickname)
-                comparador_ref[0]["sellers"] = _get_comparador(uid)
-                comparador_ref[0]["_render"]()
-                ui.notify(f"{nickname} agregado al comparador", color="positive", timeout=1500)
+        def _agregar_al_comparador(seller_id: str, nickname: str):
+            sellers = comparador_ref[0]["sellers"]
+            if len(sellers) >= 12:
+                ui.notify("Máximo 12 competidores en el comparador", color="warning", timeout=2000)
+                return
+            if any(s["seller_id"] == seller_id for s in sellers):
+                ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
+                return
+            _add_comparador(uid, seller_id, nickname)
+            comparador_ref[0]["sellers"] = _get_comparador(uid)
+            comparador_ref[0]["_render"]()
+            ui.notify(f"{nickname} agregado al comparador", color="positive", timeout=1500)
 
-            def _on_click_nick(sid: str, nick: str):
-                _agregar_al_comparador(sid, nick)
+        def _on_click_nick(sid: str, nick: str):
+            _agregar_al_comparador(sid, nick)
 
+        async def _lanzar_actualizacion():
+            cancelar_ref = [False]
+
+            with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
+                ui.label("Actualizando ventas históricas").style(
+                    "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
+                )
+                ui.spinner(size="xl", color="#2A7AC7")
+                prog = ui.label("Iniciando...").style(
+                    "font-size:12px;color:#6b7280;margin-top:12px;display:block"
+                )
+
+                def _cancelar():
+                    cancelar_ref[0] = True
+                    dlg.close()
+                    ui.notify("Actualización cancelada", color="warning", timeout=2000)
+
+                ui.button("Cancelar", on_click=_cancelar).props(
+                    "flat no-caps"
+                ).style("color:#dc2626;font-size:12px;margin-top:16px")
+
+            dlg.open()
+            resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
+            if not cancelar_ref[0]:
+                dlg.close()
+                ui.notify(
+                    f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
+                    color="positive", timeout=4000
+                )
+                _recargar_tablas()
+            from datetime import datetime, timedelta
+            ahora = (datetime.utcnow() - timedelta(hours=3)).strftime("%d/%m/%y — %H:%M")
+            ultima_act_ref[0].set_text(f"Últ. act: {ahora}")
+
+        with right_col:
             # 1. Input catálogo + lupa
-            with ui.element("div").style("display:flex;gap:0"):
+            with ui.element("div").style("display:flex;gap:0;width:100%"):
                 inp = ui.input(placeholder="Link de una publicación de catálogo...").props(
                     "dense outlined"
-                ).style("width:320px;font-size:12px;border-radius:4px 0 0 4px")
+                ).style("width:100%;font-size:12px;border-radius:4px 0 0 4px")
                 with ui.element("button").on(
                     "click", lambda: ui.timer(0.05, lambda: _buscar(inp.value), once=True)
                 ).style(
@@ -1021,63 +1113,23 @@ def build_tab_competidores() -> None:
             # 2. Input buscador de competidor
             filtro_input = ui.input(placeholder="Buscar competidor en las tablas...").props(
                 "dense outlined clearable"
-            ).style("width:260px;font-size:12px")
+            ).style("width:100%;font-size:12px")
 
             def _on_filtro(e):
                 filtro_ref[0]["texto"] = (e.value or "").strip()
                 _recargar_tablas()
             filtro_input.on_value_change(_on_filtro)
 
-            # 3. Spacer para empujar el boton a la derecha
-            ui.element("div").style("flex:1")
-
-            async def _lanzar_actualizacion():
-                cancelar_ref = [False]
-
-                with ui.dialog().props("persistent") as dlg, ui.card().style("min-width:340px;padding:24px;text-align:center"):
-                    ui.label("Actualizando ventas históricas").style(
-                        "font-size:14px;font-weight:500;color:#185FA5;margin-bottom:12px;display:block"
-                    )
-                    ui.spinner(size="xl", color="#2A7AC7")
-                    prog = ui.label("Iniciando...").style(
-                        "font-size:12px;color:#6b7280;margin-top:12px;display:block"
-                    )
-
-                    def _cancelar():
-                        cancelar_ref[0] = True
-                        dlg.close()
-                        ui.notify("Actualización cancelada", color="warning", timeout=2000)
-
-                    ui.button("Cancelar", on_click=_cancelar).props(
-                        "flat no-caps"
-                    ).style("color:#dc2626;font-size:12px;margin-top:16px")
-
-                dlg.open()
-                resultado = await run.io_bound(_actualizar_ventas_db, uid, prog, cancelar_ref)
-                if not cancelar_ref[0]:
-                    dlg.close()
-                    ui.notify(
-                        f"✓ {resultado['actualizados']} actualizados · {resultado['sin_ventas']} sin ventas eliminados",
-                        color="positive", timeout=4000
-                    )
-                    _recargar_tablas()
-                from datetime import datetime, timedelta
-                ahora = (datetime.utcnow() - timedelta(hours=3)).strftime("%d/%m/%y — %H:%M")
-                ultima_act_ref[0].set_text(f"Últ. act: {ahora}")
-
-            # 4. Boton + fecha
-            with ui.element("div").style(
-                "display:flex;flex-direction:column;align-items:flex-end;flex-shrink:0"
-            ):
+            # 3. Boton actualizar + fecha
+            with ui.element("div").style("display:flex;flex-direction:column;align-items:flex-start;width:100%"):
                 with ui.button(on_click=_lanzar_actualizacion).props(
                     "unelevated no-caps"
                 ).style(
-                    "background:#185FA5;color:#fff;height:36px;border-radius:4px;"
-                    "flex-shrink:0;min-width:36px"
+                    "background:#185FA5;color:#fff;height:36px;border-radius:4px;width:100%"
                 ).tooltip("Actualizar ventas históricas"):
                     ui.html('''
                         <i class="ti ti-refresh" style="font-size:16px"></i>
-                        <span class="comp-btn-texto" style="margin-left:6px;font-size:12px">Actualizar ventas</span>
+                        <span style="margin-left:6px;font-size:12px">Actualizar ventas</span>
                     ''')
                 lbl_ultima = ui.label(f"Últ. act: {_get_ultima_actualizacion(uid)}").style(
                     "font-size:9px;color:#9ca3af;margin-top:2px;white-space:nowrap"
