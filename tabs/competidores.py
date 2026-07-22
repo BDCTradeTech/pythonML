@@ -1041,10 +1041,10 @@ def build_tab_competidores() -> None:
                         "dense no-caps unelevated"
                     ).style("background:#2A7AC7;color:#fff;font-size:11px;padding:4px 12px;border-radius:4px")
 
-    with ui.element("div").style("padding:8px 16px;display:flex;flex-direction:column"):
+    with ui.element("div").style("padding:4px 16px;display:flex;flex-direction:column"):
         filtro_ref: list = [{"texto": ""}]
 
-        with ui.element("div").style("margin-bottom:8px"):
+        with ui.element("div").style("margin-bottom:4px"):
             comparador_ref, right_col = _render_comparador(uid, mis_ids)
 
         def _agregar_al_comparador(seller_id: str, nickname: str):
