@@ -637,18 +637,18 @@ def _render_comparador(uid: int, mis_ids: set):
 
     with ui.element("div").style("display:flex;gap:6px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
         orden_col = ui.element("div").style(
-            "display:flex;flex-direction:column;gap:4px;min-width:82px;flex-shrink:0;height:100%"
+            "display:flex;flex-direction:column;gap:4px;width:60px;flex-shrink:0;height:100%"
         )
 
         tabla_refs: list = []
         for _ in DIVISIONES:
             tabla_refs.append(ui.element("div").style(
-                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;flex:1 1 190px;min-width:190px"
+                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;flex:0 0 auto"
             ))
 
         right_col = ui.element("div").style(
             "display:flex;flex-direction:column;gap:8px;align-items:flex-start;"
-            "width:190px;flex-shrink:1;padding-left:4px"
+            "width:170px;flex-shrink:0;padding-left:4px"
         )
 
         def _render_tabla_comp():
@@ -683,33 +683,36 @@ def _render_comparador(uid: int, mis_ids: set):
                     _render_tabla_comp()
 
                 with ui.element("tr"):
-                    with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border);white-space:nowrap"):
-                        with ui.row().style("gap:4px;align-items:center;flex-wrap:nowrap"):
+                    with ui.element("td").style("padding:2px 3px;border-bottom:0.5px solid var(--color-border);overflow:hidden"):
+                        with ui.row().style("gap:2px;align-items:center;flex-wrap:nowrap"):
                             with ui.element("span").on("click", _quitar).style(
-                                "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center"
+                                "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center;flex-shrink:0"
                             ):
-                                ui.html('<i class="ti ti-trash" style="font-size:12px" aria-hidden="true"></i>')
+                                ui.html('<i class="ti ti-trash" style="font-size:10px" aria-hidden="true"></i>')
                             ui.html(
                                 f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
-                                f'style="font-size:10px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
-                                f'{html.escape(nick[:18])}</a>'
-                            )
+                                f'title="{html.escape(nick)}" '
+                                f'style="font-size:9px;font-weight:500;color:#185FA5;text-decoration:none;'
+                                f'overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">'
+                                f'{html.escape(nick)}</a>'
+                            ).style("flex:1;min-width:0;overflow:hidden")
                     for key, _label, _dias, _corto in ORDEN_OPCIONES:
                         val = _valor(entry, key)
                         activo = key == col_actual
                         bg = "background:#EEF6FD;" if activo else ""
                         fw = "700" if activo else "400"
                         with ui.element("td").style(
-                            f"padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
-                            f"text-align:right;font-size:10px;{bg}font-weight:{fw}"
+                            f"padding:2px 3px;border-bottom:0.5px solid var(--color-border);"
+                            f"text-align:right;font-size:9px;overflow:hidden;{bg}font-weight:{fw}"
                         ):
                             ui.html(f"{int(val):,}".replace(",",".") if val else "—")
 
             def _fila_vacia(placeholder: str):
                 with ui.element("tr"):
                     with ui.element("td").style(
-                        "padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
-                        "font-size:10px;color:var(--color-text-secondary);font-style:italic"
+                        "padding:2px 3px;border-bottom:0.5px solid var(--color-border);"
+                        "font-size:9px;color:var(--color-text-secondary);font-style:italic;"
+                        "overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
                     ):
                         ui.html(placeholder)
                     for _ in range(len(ORDEN_OPCIONES)):
@@ -720,25 +723,25 @@ def _render_comparador(uid: int, mis_ids: set):
                 cont = tabla_refs[idx]
                 cont.clear()
                 with cont:
-                    with ui.element("table").style("width:100%;border-collapse:collapse"):
+                    with ui.element("table").style("border-collapse:collapse;table-layout:fixed"):
                         with ui.element("thead"):
                             with ui.element("tr"):
-                                with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:4px 6px;text-align:left"):
-                                    with ui.row().style("gap:6px;align-items:center"):
+                                with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:4px 3px;text-align:left;width:140px;overflow:hidden"):
+                                    with ui.row().style("gap:3px;align-items:center;flex-wrap:nowrap"):
                                         ui.html(titulo)
                                         if con_boton:
                                             with ui.element("span").style(
                                                 "display:inline-flex;align-items:center;justify-content:center;"
-                                                "width:16px;height:16px;border-radius:3px;background:rgba(255,255,255,.2);"
-                                                "cursor:pointer"
+                                                "width:14px;height:14px;border-radius:3px;background:rgba(255,255,255,.2);"
+                                                "cursor:pointer;flex-shrink:0"
                                             ).on("click", lambda: _abrir_popup_competidores()):
-                                                ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
+                                                ui.html('<i class="ti ti-plus" style="font-size:10px;color:#fff" aria-hidden="true"></i>')
                                 for key, _label, _dias, corto in ORDEN_OPCIONES:
                                     activo = key == col_actual
                                     bg = "background:#185FA5;" if activo else "background:#2A7AC7;"
                                     with ui.element("th").style(
                                         f"{bg}color:#fff;font-size:9px;font-weight:500;"
-                                        f"padding:4px 6px;text-align:right"
+                                        f"padding:4px 3px;text-align:right;width:36px;white-space:nowrap"
                                     ):
                                         ui.html(corto)
                         with ui.element("tbody"):
