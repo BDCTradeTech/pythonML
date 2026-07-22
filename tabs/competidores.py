@@ -3,7 +3,7 @@ tabs/competidores.py
 Ranking global de competidores con buscador por nickname/URL/ID.
 """
 from __future__ import annotations
-import html, json, re, requests
+import html, json, logging, re, requests
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 from nicegui import app, run, ui
@@ -14,6 +14,35 @@ _LVL_ICON = {
     "4_green":"⚪","5_yellow":"🟡","6_red":"🔴",
 }
 _ML_API = "https://api.mercadolibre.com"
+_MAX_VARIANTES_FAMILIA = 40
+
+
+def _resolver_familia_catalogo(catalog_id: str, headers: dict) -> List[str]:
+    """Resuelve catalog_id + sus variantes hermanas (largo/diametro/color, etc.)
+    via parent_id -> children_ids. Devuelve lista dedup con tope de seguridad."""
+    ids = [catalog_id]
+    try:
+        r = requests.get(f"{_ML_API}/products/{catalog_id}", headers=headers, timeout=15)
+        if r.status_code == 200:
+            d = r.json()
+            hermanos = list(d.get("children_ids") or [])
+            parent_id = d.get("parent_id")
+            if parent_id:
+                rp = requests.get(f"{_ML_API}/products/{parent_id}", headers=headers, timeout=15)
+                if rp.status_code == 200:
+                    hermanos = list(rp.json().get("children_ids") or [])
+            for cid in hermanos:
+                if cid and cid not in ids:
+                    ids.append(cid)
+    except Exception:
+        pass
+    if len(ids) > _MAX_VARIANTES_FAMILIA:
+        logging.getLogger(__name__).warning(
+            "[COMPETIDORES] familia de %s truncada de %d a %d variantes",
+            catalog_id, len(ids), _MAX_VARIANTES_FAMILIA,
+        )
+        ids = ids[:_MAX_VARIANTES_FAMILIA]
+    return ids
 
 
 def _get_mis_seller_ids(user_id: int) -> set:
@@ -121,20 +150,30 @@ def _remove_comparador(user_id: int, seller_id: str):
 
 def _buscar_y_agregar_catalogo(catalog_id: str, user_id: int, access_token: str) -> Dict:
     """
-    Trae todos los sellers de un catálogo ML y los agrega a competidores_seguidos.
+    Trae todos los sellers del catálogo ML y de toda su familia de variantes
+    (largo/diámetro/color, etc.) y los agrega a competidores_seguidos.
     Retorna dict con resultados: total, agregados, ya_existian.
     """
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
 
-    # Traer todos los sellers del catálogo
-    r = requests.get(
-        f"{_ML_API}/products/{catalog_id}/items",
-        headers=headers, timeout=15
-    )
-    if r.status_code != 200:
-        return {"error": f"No se pudo consultar el catálogo ({r.status_code})"}
+    catalog_ids = _resolver_familia_catalogo(catalog_id, headers)
 
-    seller_ids = list({str(it.get("seller_id","")) for it in r.json().get("results",[]) if it.get("seller_id")})
+    seller_ids_set = set()
+    ok_alguno = False
+    for cid in catalog_ids:
+        r = requests.get(f"{_ML_API}/products/{cid}/items", headers=headers, timeout=15)
+        if r.status_code != 200:
+            continue  # variante inactiva (404) u otro error puntual de esa variante
+        ok_alguno = True
+        for it in r.json().get("results", []):
+            sid = it.get("seller_id")
+            if sid:
+                seller_ids_set.add(str(sid))
+
+    if not ok_alguno:
+        return {"error": f"No se pudo consultar el catálogo ({catalog_id})"}
+
+    seller_ids = list(seller_ids_set)
 
     agregados = 0
     ya_existian = 0
@@ -989,9 +1028,10 @@ def build_tab_competidores() -> None:
         if not v:
             with resultado_area:
                 ui.label(
-                    "No encontrado. Si el vendedor no está en tus catálogos, ingresá su seller ID "
-                    "numérico directamente (lo encontrás en el código fuente de su perfil en ML o "
-                    "en las requests de red del browser)."
+                    "No encontrado por nickname ni por link (la API de MercadoLibre no permite "
+                    "esa búsqueda para esta cuenta). Pegá el seller ID NUMÉRICO del vendedor "
+                    "(ej: 123456789, no el nickname) — se consigue abriendo su perfil en ML, "
+                    "F12 → pestaña Network, y buscando el id en alguna respuesta de /users/..."
                 ).style("font-size:11px;color:#dc2626")
             return
         with resultado_area:
