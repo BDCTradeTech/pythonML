@@ -636,7 +636,7 @@ def _render_comparador(uid: int, mis_ids: set):
 
     with ui.element("div").style("display:flex;gap:8px;align-items:stretch;flex-shrink:0;flex-wrap:wrap"):
         orden_col = ui.element("div").style(
-            "display:flex;flex-direction:column;gap:4px;min-width:82px;flex-shrink:0"
+            "display:flex;flex-direction:column;gap:4px;min-width:82px;flex-shrink:0;height:100%"
         )
 
         tabla_refs: list = []
@@ -749,10 +749,6 @@ def _render_comparador(uid: int, mis_ids: set):
         def _render_orden_botones():
             orden_col.clear()
             with orden_col:
-                ui.label("Ordenar por").style(
-                    "font-size:9px;font-weight:600;color:var(--color-text-secondary);"
-                    "margin-bottom:2px;white-space:nowrap"
-                )
                 for key, label, _dias, _corto in ORDEN_OPCIONES:
                     activo = orden_state["col"] == key
 
@@ -764,6 +760,7 @@ def _render_comparador(uid: int, mis_ids: set):
                     estilo = "background:#2A7AC7;color:#fff;" if activo else "background:#EEF6FD;color:#185FA5;"
                     with ui.element("div").on("click", _click).style(
                         estilo +
+                        "flex:1;display:flex;align-items:center;justify-content:center;"
                         "font-size:10px;font-weight:600;padding:6px 8px;border-radius:4px;cursor:pointer;"
                         "text-align:center;white-space:nowrap;user-select:none"
                     ):
