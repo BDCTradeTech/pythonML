@@ -621,18 +621,21 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
 
 
 def _render_comparador(uid: int, mis_ids: set):
-    """Mini-tabla comparadora de hasta 4 competidores seleccionados."""
+    """Ranking de hasta 12 competidores seguidos, repartido en 3 divisiones de 4 por Hist. desc."""
+    MAX_COMPARADOR = 12
+    DIVISIONES = [("Primera A", True), ("Nacional B", False), ("Primera C", False)]
+
     comparador_ref = [{"sellers": _get_comparador(uid)}]  # lista de {seller_id, nickname}
 
-    with ui.element("div").style(
-        "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;"
-        "min-width:440px;flex-shrink:0"
-    ):
-        tabla_ref = [None]
+    with ui.element("div").style("display:flex;gap:8px;align-items:flex-start;flex-shrink:0;flex-wrap:wrap"):
+        tabla_refs: list = []
+        for _ in DIVISIONES:
+            tabla_refs.append(ui.element("div").style(
+                "border:1px solid #d0e8f8;border-radius:8px;overflow:hidden;min-width:200px;flex-shrink:0"
+            ))
 
         def _render_tabla_comp():
-            tabla_ref[0].clear()
-            sellers = _get_comparador(uid)
+            sellers = _get_comparador(uid)  # ya viene ORDER BY hist DESC
             comparador_ref[0]["sellers"] = sellers
 
             # Usar la misma lógica que las 5 tablas principales
@@ -640,45 +643,71 @@ def _render_comparador(uid: int, mis_ids: set):
             ranking_seman  = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 7)}
             ranking_diaria = {str(r["seller_id"]): r for r in _get_ranking_global(uid, 1)}
 
-            with tabla_ref[0]:
-                n_vacias = 4 - len(sellers)
+            def _fila(sid, nick, hist, seman, diaria):
+                def _quitar(s=sid):
+                    _remove_comparador(uid, s)
+                    _render_tabla_comp()
 
-                for entry in sellers:
-                    sid  = entry["seller_id"]
-                    nick = entry["nickname"]
-                    hist   = (ranking_hist.get(sid)   or {}).get("ventas") or 0
-                    seman  = (ranking_seman.get(sid)  or {}).get("ventas") or 0
-                    diaria = (ranking_diaria.get(sid) or {}).get("ventas") or 0
+                with ui.element("tr"):
+                    with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border);white-space:nowrap"):
+                        with ui.row().style("gap:4px;align-items:center;flex-wrap:nowrap"):
+                            with ui.element("span").on("click", _quitar).style(
+                                "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center"
+                            ):
+                                ui.html('<i class="ti ti-trash" style="font-size:12px" aria-hidden="true"></i>')
+                            ui.html(
+                                f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
+                                f'style="font-size:10px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
+                                f'{html.escape(nick[:18])}</a>'
+                            )
+                    for val in (hist, seman, diaria):
+                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:10px"):
+                            ui.html(f"{int(val):,}".replace(",",".") if val else "—")
 
-                    def _quitar(s=sid):
-                        _remove_comparador(uid, s)
-                        _render_tabla_comp()
+            def _fila_vacia(placeholder: str):
+                with ui.element("tr"):
+                    with ui.element("td").style(
+                        "padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
+                        "font-size:10px;color:var(--color-text-secondary);font-style:italic"
+                    ):
+                        ui.html(placeholder)
+                    for _ in range(3):
+                        ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
 
-                    with ui.element("tr"):
-                        with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);white-space:nowrap"):
-                            with ui.row().style("gap:6px;align-items:center;flex-wrap:nowrap"):
-                                with ui.element("span").on("click", _quitar).style(
-                                    "cursor:pointer;color:var(--color-text-secondary);display:inline-flex;align-items:center"
-                                ):
-                                    ui.html('<i class="ti ti-trash" style="font-size:13px" aria-hidden="true"></i>')
-                                ui.html(
-                                    f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
-                                    f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none;white-space:nowrap">'
-                                    f'{html.escape(nick[:22])}</a>'
-                                )
-                        for val in [hist, seman, diaria]:
-                            with ui.element("td").style("padding:4px 8px;border-bottom:0.5px solid var(--color-border);text-align:right;font-size:11px"):
-                                ui.html(f"{int(val):,}".replace(",",".") if val else "—")
-
-                for _ in range(n_vacias):
-                    with ui.element("tr"):
-                        with ui.element("td").style(
-                            "padding:4px 8px;border-bottom:0.5px solid var(--color-border);"
-                            "font-size:11px;color:var(--color-text-secondary);font-style:italic"
-                        ):
-                            ui.html("— agregar competidor")
-                        for _ in range(3):
-                            ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
+            for idx, (titulo, con_boton) in enumerate(DIVISIONES):
+                grupo = sellers[idx * 4:(idx + 1) * 4]
+                cont = tabla_refs[idx]
+                cont.clear()
+                with cont:
+                    with ui.element("table").style("width:100%;border-collapse:collapse"):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:4px 6px;text-align:left"):
+                                    with ui.row().style("gap:6px;align-items:center"):
+                                        ui.html(titulo)
+                                        if con_boton:
+                                            with ui.element("span").style(
+                                                "display:inline-flex;align-items:center;justify-content:center;"
+                                                "width:16px;height:16px;border-radius:3px;background:rgba(255,255,255,.2);"
+                                                "cursor:pointer"
+                                            ).on("click", lambda: _abrir_popup_competidores()):
+                                                ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
+                                for h, a in [("Hist.","right"),("Sem.","right"),("Día","right")]:
+                                    with ui.element("th").style(
+                                        f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
+                                        f"padding:4px 6px;text-align:{a}"
+                                    ):
+                                        ui.html(h)
+                        with ui.element("tbody"):
+                            for entry in grupo:
+                                sid    = entry["seller_id"]
+                                nick   = entry["nickname"]
+                                hist   = (ranking_hist.get(sid)   or {}).get("ventas") or 0
+                                seman  = (ranking_seman.get(sid)  or {}).get("ventas") or 0
+                                diaria = (ranking_diaria.get(sid) or {}).get("ventas") or 0
+                                _fila(sid, nick, hist, seman, diaria)
+                            for _ in range(4 - len(grupo)):
+                                _fila_vacia("— agregar competidor" if con_boton else "—")
 
         def _abrir_popup_competidores():
             sellers_actual = comparador_ref[0]["sellers"]
@@ -691,8 +720,8 @@ def _render_comparador(uid: int, mis_ids: set):
                     with ui.element("div").style("background:#2A7AC7;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;flex-shrink:0"):
                         with ui.element("div"):
                             ui.label("Agregar competidor").style("font-size:13px;font-weight:500;color:#fff;display:block")
-                            n_slots = 4 - len(sellers_actual)
-                            ui.label(f"{len(sellers_actual)} de 4 slots usados · {n_slots} disponibles").style("font-size:9px;color:rgba(255,255,255,.7);display:block")
+                            n_slots = MAX_COMPARADOR - len(sellers_actual)
+                            ui.label(f"{len(sellers_actual)} de {MAX_COMPARADOR} slots usados · {n_slots} disponibles").style("font-size:9px;color:rgba(255,255,255,.7);display:block")
                         ui.button(icon="close", on_click=dlg.close).props("flat dense").style("color:#fff")
 
                     # Buscador
@@ -747,8 +776,8 @@ def _render_comparador(uid: int, mis_ids: set):
                                         ya_agregado = sid in ids_actuales
 
                                         def _agregar(s=sid, n=v["nickname"]):
-                                            if len(comparador_ref[0]["sellers"]) >= 4:
-                                                ui.notify("Máximo 4 competidores", color="warning", timeout=2000)
+                                            if len(comparador_ref[0]["sellers"]) >= MAX_COMPARADOR:
+                                                ui.notify(f"Máximo {MAX_COMPARADOR} competidores", color="warning", timeout=2000)
                                                 return
                                             _add_comparador(uid, s, n)
                                             comparador_ref[0]["sellers"] = _get_comparador(uid)
@@ -792,30 +821,9 @@ def _render_comparador(uid: int, mis_ids: set):
 
             dlg.open()
 
-        # Header
-        with ui.element("table").style("width:100%;border-collapse:collapse"):
-            with ui.element("thead"):
-                with ui.element("tr"):
-                    with ui.element("th").style("background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;padding:5px 8px;text-align:left"):
-                        with ui.row().style("gap:6px;align-items:center"):
-                            ui.html("Competidores")
-                            with ui.element("span").style(
-                                "display:inline-flex;align-items:center;justify-content:center;"
-                                "width:16px;height:16px;border-radius:3px;background:rgba(255,255,255,.2);"
-                                "cursor:pointer"
-                            ).on("click", lambda: _abrir_popup_competidores()):
-                                ui.html('<i class="ti ti-plus" style="font-size:11px;color:#fff" aria-hidden="true"></i>')
-                    for h, a in [("Hist.","right"),("Sem.","right"),("Día","right")]:
-                        with ui.element("th").style(
-                            f"background:#2A7AC7;color:#fff;font-size:9px;font-weight:500;"
-                            f"padding:5px 8px;text-align:{a}"
-                        ):
-                            ui.html(h)
-            tbody = ui.element("tbody")
-            tabla_ref[0] = tbody
-            _render_tabla_comp()
+        _render_tabla_comp()
 
-        comparador_ref[0]["_render"] = _render_tabla_comp
+    comparador_ref[0]["_render"] = _render_tabla_comp
 
     return comparador_ref
 
@@ -983,8 +991,8 @@ def build_tab_competidores() -> None:
 
             def _agregar_al_comparador(seller_id: str, nickname: str):
                 sellers = comparador_ref[0]["sellers"]
-                if len(sellers) >= 4:
-                    ui.notify("Máximo 4 competidores en el comparador", color="warning", timeout=2000)
+                if len(sellers) >= 12:
+                    ui.notify("Máximo 12 competidores en el comparador", color="warning", timeout=2000)
                     return
                 if any(s["seller_id"] == seller_id for s in sellers):
                     ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
