@@ -552,9 +552,9 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
                 fw     = "700" if es_mio else ("600" if isinstance(rank,int) and rank<=3 else "400")
 
                 with ui.element("tr").style(bg):
-                    with ui.element("td").style(f"padding:2px 4px;text-align:center;border-bottom:0.5px solid #f1f5f9;font-weight:{fw};color:{pc};font-size:10px;white-space:nowrap"):
+                    with ui.element("td").style(f"padding:2px 4px;text-align:center;border-bottom:0.5px solid #f1f5f9;font-weight:{fw};color:{pc};font-size:11px;white-space:nowrap"):
                         ui.html(str(rank))
-                    with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
+                    with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;font-size:11px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         prefijo = "⭐ " if es_mio else (icon+" " if icon else "")
                         nick_full = (r.get("seller_nickname") or f"ID {sid}")
                         url = f"https://www.mercadolibre.com.ar/perfil/{nick_full}"
@@ -568,7 +568,7 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
                         if on_click_nick:
                             nick_el.on("click", lambda sid=sid, nick_full=nick_full: on_click_nick(sid, nick_full))
                             nick_el.tooltip("Agregar al comparador")
-                    with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:10px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
+                    with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:11px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
                         if ventas is not None and int(ventas) >= 0:
                             ui.html(f"{int(ventas):,}".replace(",","."))
                         else:
@@ -648,7 +648,7 @@ def _render_comparador(uid: int, mis_ids: set):
 
         right_col = ui.element("div").style(
             "display:flex;flex-direction:column;gap:8px;align-items:flex-start;"
-            "width:340px;flex-shrink:0;padding-left:4px"
+            "width:289px;flex-shrink:0;padding-left:4px"
         )
 
         def _render_tabla_comp():
@@ -692,7 +692,7 @@ def _render_comparador(uid: int, mis_ids: set):
                             ui.html(
                                 f'<a href="https://www.mercadolibre.com.ar/perfil/{html.escape(nick)}" target="_blank" '
                                 f'title="{html.escape(nick)}" '
-                                f'style="font-size:12px;font-weight:500;color:#185FA5;text-decoration:none;'
+                                f'style="font-size:11px;font-weight:500;color:#185FA5;text-decoration:none;'
                                 f'font-family:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block">'
                                 f'{html.escape(nick)}</a>'
                             ).style("flex:1;min-width:0;overflow:hidden")
@@ -703,7 +703,7 @@ def _render_comparador(uid: int, mis_ids: set):
                         fw = "700" if activo else "400"
                         with ui.element("td").style(
                             f"padding:2px 6px;border-bottom:0.5px solid var(--color-border);"
-                            f"text-align:right;font-size:12px;font-variant-numeric:tabular-nums;"
+                            f"text-align:right;font-size:11px;font-variant-numeric:tabular-nums;"
                             f"font-family:inherit;overflow:hidden;{bg}font-weight:{fw}"
                         ):
                             ui.html(f"{int(val):,}".replace(",",".") if val else "—")
