@@ -621,10 +621,10 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
 
 
 def _render_comparador(uid: int, mis_ids: set):
-    """Ranking de hasta 15 competidores seguidos, repartido en 3 divisiones de 5, ordenable por periodo."""
+    """Ranking de hasta 20 competidores seguidos, repartido en 4 divisiones de 5, ordenable por periodo."""
     POR_DIVISION = 5
-    MAX_COMPARADOR = POR_DIVISION * 3
-    DIVISIONES = [("Primera A", True), ("Nacional B", False), ("Primera C", False)]
+    MAX_COMPARADOR = POR_DIVISION * 4
+    DIVISIONES = [("Primera A", True), ("Nacional B", False), ("Primera C", False), ("Primera D", False)]
     ORDEN_OPCIONES = [
         ("hist",    "Histórica", None, "Hist."),
         ("mensual", "Mensual",   30,   "Mens."),
@@ -765,7 +765,7 @@ def _render_comparador(uid: int, mis_ids: set):
                     with ui.element("div").on("click", _click).style(
                         estilo +
                         "flex:1;display:flex;align-items:center;justify-content:center;"
-                        "font-size:10px;font-weight:600;padding:6px 8px;border-radius:4px;cursor:pointer;"
+                        "font-size:10px;font-weight:600;padding:7.2px 8px;border-radius:4px;cursor:pointer;"
                         "text-align:center;white-space:nowrap;user-select:none"
                     ):
                         ui.html(label)
@@ -1049,8 +1049,8 @@ def build_tab_competidores() -> None:
 
         def _agregar_al_comparador(seller_id: str, nickname: str):
             sellers = comparador_ref[0]["sellers"]
-            if len(sellers) >= 15:
-                ui.notify("Máximo 15 competidores en el comparador", color="warning", timeout=2000)
+            if len(sellers) >= 20:
+                ui.notify("Máximo 20 competidores en el comparador", color="warning", timeout=2000)
                 return
             if any(s["seller_id"] == seller_id for s in sellers):
                 ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
