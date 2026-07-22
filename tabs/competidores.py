@@ -621,8 +621,9 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
 
 
 def _render_comparador(uid: int, mis_ids: set):
-    """Ranking de hasta 12 competidores seguidos, repartido en 3 divisiones de 4, ordenable por periodo."""
-    MAX_COMPARADOR = 12
+    """Ranking de hasta 15 competidores seguidos, repartido en 3 divisiones de 5, ordenable por periodo."""
+    POR_DIVISION = 5
+    MAX_COMPARADOR = POR_DIVISION * 3
     DIVISIONES = [("Primera A", True), ("Nacional B", False), ("Primera C", False)]
     ORDEN_OPCIONES = [
         ("hist",    "Histórica", None, "Hist."),
@@ -715,7 +716,7 @@ def _render_comparador(uid: int, mis_ids: set):
                         ui.element("td").style("border-bottom:0.5px solid var(--color-border)")
 
             for idx, (titulo, con_boton) in enumerate(DIVISIONES):
-                grupo = sellers_ordenados[idx * 4:(idx + 1) * 4]
+                grupo = sellers_ordenados[idx * POR_DIVISION:(idx + 1) * POR_DIVISION]
                 cont = tabla_refs[idx]
                 cont.clear()
                 with cont:
@@ -743,7 +744,7 @@ def _render_comparador(uid: int, mis_ids: set):
                         with ui.element("tbody"):
                             for entry in grupo:
                                 _fila(entry)
-                            for _ in range(4 - len(grupo)):
+                            for _ in range(POR_DIVISION - len(grupo)):
                                 _fila_vacia("— agregar competidor" if con_boton else "—")
 
         def _render_orden_botones():
@@ -1045,8 +1046,8 @@ def build_tab_competidores() -> None:
 
         def _agregar_al_comparador(seller_id: str, nickname: str):
             sellers = comparador_ref[0]["sellers"]
-            if len(sellers) >= 12:
-                ui.notify("Máximo 12 competidores en el comparador", color="warning", timeout=2000)
+            if len(sellers) >= 15:
+                ui.notify("Máximo 15 competidores en el comparador", color="warning", timeout=2000)
                 return
             if any(s["seller_id"] == seller_id for s in sellers):
                 ui.notify(f"{nickname} ya está en el comparador", timeout=1500)
