@@ -178,20 +178,104 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     }
 
 
-def _calcular_ticket_ventas(per_sku_series: Dict[str, List[Dict]]) -> Dict[str, Any]:
+_ESTADOS_VENTA_VALIDA = ("paid", "handling", "shipped", "delivered")
+
+
+def _get_item_id_a_sku(user_id: int) -> Dict[str, str]:
+    """Mapea item_id (ML) -> seller_sku. Fallback para order items que no traen
+    item.seller_sku directo. Fuente: ml_stock_snapshots, unica tabla persistida con ambos
+    campos. Si un item_id tuvo mas de un seller_sku historico (relist), se queda con el mas
+    reciente (ORDER BY snapshot_date ASC + overwrite)."""
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT item_id, seller_sku FROM ml_stock_snapshots
+        WHERE user_id=? AND item_id IS NOT NULL AND seller_sku IS NOT NULL AND seller_sku != ''
+        ORDER BY snapshot_date ASC
+    """, (user_id,)).fetchall()
+    conn.close()
+    out: Dict[str, str] = {}
+    for r in rows:
+        out[r["item_id"]] = r["seller_sku"]
+    return out
+
+
+def _get_ventas_reales_por_sku_dia(user_id: int, desde: str, hasta: str) -> Dict[str, Dict[str, List[tuple]]]:
+    """sku -> dia (YYYY-MM-DD) -> [(qty, unit_price), ...], desde ordenes reales cacheadas en
+    ml_orders_cache (misma fuente que Ventas). unit_price es el precio real cobrado al
+    comprador, ya neto de descuentos -- incluidos los subsidiados por campanas de cuotas
+    (confirmado en docs de ML: gross_price = (unit_price + discounts.full) * qty). Filtra por
+    status valido (paid/handling/shipped/delivered, igual que Ventas) para que una orden
+    cancelada no fije el precio real de ese dia."""
+    import json as _json
+    item_id_a_sku = _get_item_id_a_sku(user_id)
+    conn = get_connection()
+    rows = conn.execute("""
+        SELECT date_created, status, items_json FROM ml_orders_cache
+        WHERE user_id=? AND substr(date_created,1,10) BETWEEN ? AND ?
+    """, (user_id, desde, hasta)).fetchall()
+    conn.close()
+
+    out: Dict[str, Dict[str, List[tuple]]] = defaultdict(lambda: defaultdict(list))
+    for r in rows:
+        status = (r["status"] or "").strip().lower()
+        if status not in _ESTADOS_VENTA_VALIDA:
+            continue
+        dia = (r["date_created"] or "")[:10]
+        if not dia:
+            continue
+        try:
+            items = _json.loads(r["items_json"] or "[]")
+        except Exception:
+            continue
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            obj = it.get("item") or {}
+            sku = (obj.get("seller_sku") or "").strip() if isinstance(obj, dict) else ""
+            if not sku:
+                item_id = (str(obj.get("id") or it.get("item_id") or "").strip()
+                           if isinstance(obj, dict) else str(it.get("item_id") or "").strip())
+                sku = item_id_a_sku.get(item_id, "")
+            if not sku:
+                continue
+            qty = int(it.get("quantity") or it.get("qty") or 0)
+            unit_price = it.get("unit_price")
+            if qty <= 0 or unit_price is None:
+                continue
+            try:
+                unit_price = float(unit_price)
+            except (TypeError, ValueError):
+                continue
+            out[sku][dia].append((qty, unit_price))
+    return {sku: dict(dias) for sku, dias in out.items()}
+
+
+def _calcular_ticket_ventas(per_sku_series: Dict[str, List[Dict]],
+                             ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None) -> Dict[str, Any]:
     """Ticket ponderado por unidades VENDIDAS (no por stock). per_sku_series: sku -> filas
-    {snapshot_date, stock, price} ordenadas por fecha. Ticket = SUM(precio_dia * unidades
-    vendidas ese dia) / SUM(unidades vendidas), usando solo variaciones negativas de stock
-    (excluye repos) -- mismo criterio que _calcular_metricas para no contar un restock como
-    venta. Dias/periodos sin ventas devuelven None (no se inventa un numero con el mix del
-    stock)."""
+    {snapshot_date, stock, price} ordenadas por fecha. Fuente primaria del precio: unit_price
+    real cobrado en ordenes (ventas_reales, ver _get_ventas_reales_por_sku_dia) para ese
+    (sku, dia) -- pondera por la cantidad REAL de esas ordenes, no por el delta de stock (el
+    delta puede traer ruido -- ajustes manuales, multiples item_id por SKU -- que no debe
+    filtrarse al precio). Si un (sku, dia) con venta inferida por delta de stock no tiene
+    ordenes cacheadas ese dia, fallback al price del snapshot (precio de PUBLICACION, puede
+    estar inflado) ponderado por el delta -- mismo criterio que antes de este fix. Dias sin
+    venta devuelven None (no se inventa un numero con el mix del stock)."""
+    ventas_reales = ventas_reales or {}
     por_dia: Dict[str, List[tuple]] = defaultdict(list)  # date -> [(unidades, precio), ...]
-    for serie in per_sku_series.values():
+    for sku, serie in per_sku_series.items():
+        reales_sku = ventas_reales.get(sku) or {}
         for i in range(1, len(serie)):
             prev, curr = serie[i - 1], serie[i]
             stock_prev, stock_curr = prev.get("stock") or 0, curr.get("stock") or 0
-            if stock_prev > stock_curr and curr.get("price"):
-                por_dia[curr["snapshot_date"]].append((stock_prev - stock_curr, float(curr["price"])))
+            if not (stock_prev > stock_curr):
+                continue
+            dia = curr["snapshot_date"]
+            lineas_reales = reales_sku.get(dia)
+            if lineas_reales:
+                por_dia[dia].extend(lineas_reales)
+            elif curr.get("price"):
+                por_dia[dia].append((stock_prev - stock_curr, float(curr["price"])))
 
     ticket_dia: Dict[str, Optional[float]] = {}
     tot_unidades, tot_valor = 0, 0.0
@@ -211,7 +295,8 @@ def _calcular_ticket_ventas(per_sku_series: Dict[str, List[Dict]]) -> Dict[str, 
     }
 
 
-def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
+def _calcular_resumen_marcas(rows: List[Dict],
+                              ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None) -> List[Dict[str, Any]]:
     """rows: filas per-sku-dia (marca, snapshot_date, seller_sku, stock, price) de
     _get_resumen_marcas. Agrupa por marca->dia (stock sumado, para _calcular_metricas sin
     cambios) y por marca->sku (para el ticket ponderado por ventas). Ordena por velocidad
@@ -228,7 +313,7 @@ def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
         met = _calcular_metricas(serie)
         if not met:
             continue
-        ticket_info = _calcular_ticket_ventas(series_por_marca_sku[marca])
+        ticket_info = _calcular_ticket_ventas(series_por_marca_sku[marca], ventas_reales)
         resumen.append({
             "marca": marca,
             "stock": met.get("stock_actual", 0),
@@ -414,6 +499,36 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
         + "</tr></thead><tbody>" + "".join(rows_html) + "</tbody></table>"
     )
 
+    _desglose_html = ""
+    desglose = datos.get("desglose")
+    if marca and desglose:
+        _desglose_cols = [("SKU — Nombre", "left"), ("Stock", "right"), ("Ventas", "right"),
+                           ("Velocidad", "right"), ("Días Restantes", "right"), ("Ticket Promedio", "right")]
+        _desglose_rows_html = []
+        for row_i in desglose:
+            dias_ri = row_i.get("dias_restantes")
+            dc_i = "#dc2626" if dias_ri and dias_ri < 7 else "#ca6d00" if dias_ri and dias_ri < 20 else "#166534"
+            _desglose_rows_html.append(
+                "<tr>"
+                f'<td style="padding:1.5px 6px;text-align:left;color:#374151">{row_i.get("nombre") or row_i["sku"]}</td>'
+                f'<td style="padding:1.5px 6px;text-align:right;color:#0C447C">{_fmt_num(row_i["stock"])}</td>'
+                f'<td style="padding:1.5px 6px;text-align:right;color:#991B1B">{_fmt_num(row_i.get("ventas", 0))}</td>'
+                f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;color:#C2410C">{row_i["vel"]}/d</td>'
+                f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;color:{dc_i}">{dias_ri if dias_ri else "—"}</td>'
+                f'<td style="padding:1.5px 6px;text-align:right;color:#374151">{_fmt_precio(row_i.get("ticket_prom"))}</td>'
+                "</tr>"
+            )
+        _desglose_html = (
+            '<div style="font-size:9px;font-weight:700;color:#185FA5;margin:10px 0 4px">Desglose por SKU</div>'
+            '<table style="width:100%;border-collapse:collapse;font-size:8.5px">'
+            "<thead><tr>"
+            + "".join(
+                f'<th style="padding:3px 6px;background:#2A7AC7;color:#fff;font-weight:600;text-align:{align}">{h}</th>'
+                for h, align in _desglose_cols
+            )
+            + "</tr></thead><tbody>" + "".join(_desglose_rows_html) + "</tbody></table>"
+        )
+
     _style = (
         "@page { size: A4 landscape; margin: 12mm 10mm 16mm 10mm; "
         '@bottom-center { content: "Pagina " counter(page) " de " counter(pages); '
@@ -421,7 +536,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
         "body { font-family: 'Segoe UI', Arial, sans-serif; color: #222; margin: 0; }"
     )
 
-    body = _header_html + _pills_html + _detalle_html + _chart_html + _tabla_html
+    body = _header_html + _pills_html + _detalle_html + _chart_html + _tabla_html + _desglose_html
     return f"<html><head><style>{_style}</style></head><body>{body}</body></html>"
 
 
@@ -561,7 +676,8 @@ def build_tab_stock() -> None:
     )
 
     def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None,
-                per_sku_series: Optional[Dict[str, List[Dict]]] = None):
+                per_sku_series: Optional[Dict[str, List[Dict]]] = None,
+                ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
@@ -575,8 +691,8 @@ def build_tab_stock() -> None:
                 _set_pdf_habilitado(False)
                 return
 
-            if marca and per_sku_series:
-                ticket_info = _calcular_ticket_ventas(per_sku_series)
+            if per_sku_series:
+                ticket_info = _calcular_ticket_ventas(per_sku_series, ventas_reales)
                 for r in rows:
                     r["price"] = ticket_info["ticket_dia"].get(r["snapshot_date"])
                 metricas = {
@@ -590,7 +706,11 @@ def build_tab_stock() -> None:
             if marca:
                 ui.label(
                     f"Vista agregada — marca: {marca} · {n_skus} SKUs con historial · "
-                    "Ticket = promedio ponderado por ventas."
+                    "Ticket = promedio ponderado por ventas reales (no precio de publicacion)."
+                ).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
+            elif per_sku_series:
+                ui.label(
+                    "Ticket = precio real de venta en dias con venta (no el de publicacion)."
                 ).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
 
             vel    = metricas.get("vel_diaria", 0)
@@ -663,10 +783,31 @@ def build_tab_stock() -> None:
                 vel_acum = round(running_sales / running_stock_days, 1) if running_stock_days > 0 else None
                 data.append({**r, "vend": vend, "repo": repo, "vel_acum": vel_acum})
 
+            # Desglose por SKU (solo vista de marca) -- se calcula antes del layout porque
+            # lo usan tanto la tabla en pantalla como el PDF (pdf_state["datos"]["desglose"]).
+            desglose = None
+            if marca and per_sku_series:
+                desglose = []
+                for sku_i, serie_i in per_sku_series.items():
+                    met_i = _calcular_metricas(serie_i)
+                    if not met_i:
+                        continue
+                    ticket_i = _calcular_ticket_ventas({sku_i: serie_i}, ventas_reales)
+                    desglose.append({
+                        "sku": sku_i,
+                        "nombre": sku_options.get(sku_i, sku_i),
+                        "stock": met_i.get("stock_actual", 0),
+                        "ventas": met_i.get("ventas_total", 0),
+                        "vel": met_i.get("vel_diaria", 0),
+                        "dias_restantes": met_i.get("dias_restantes"),
+                        "ticket_prom": ticket_i["ticket_prom_periodo"],
+                    })
+                desglose.sort(key=lambda x: x["vel"], reverse=True)
+
             pdf_state["datos"] = {
                 "sku": sku, "marca": marca, "n_skus": n_skus,
                 "desde": estado["desde"], "hasta": estado["hasta"],
-                "metricas": metricas, "data": data,
+                "metricas": metricas, "data": data, "desglose": desglose,
             }
             _set_pdf_habilitado(True)
 
@@ -717,78 +858,103 @@ def build_tab_stock() -> None:
                 else:
                     precio_serie.append({"value": p, "label": {"show": False}})
 
-            # Grid: tabla fija izquierda + grafico ancho completo derecha
-            with ui.element("div").style(
-                "display:grid;grid-template-columns:340px 1fr;gap:0;align-items:start;width:100%"
-            ):
-                # Tabla
-                with ui.element("div").style(
-                    "border:0.5px solid #e2e8f0;border-radius:8px 0 0 8px;overflow:hidden;margin-right:10px"
-                ):
-                    with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 450px)"):
-                        with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
-                            with ui.element("thead"):
+            def _render_tabla_diaria():
+                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
+                    with ui.element("thead"):
+                        with ui.element("tr"):
+                            for h, align in [("Dia", "left"), ("Stock", "right"), ("Variacion", "right"), ("Vel. acum.", "right"), ("Ticket prom.", "right")]:
+                                with ui.element("th").style(
+                                    f"padding:3px 6px;background:#2A7AC7;color:#fff;"
+                                    f"font-weight:500;text-align:{align};white-space:nowrap;"
+                                    "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                    "position:sticky;top:0;z-index:2"
+                                ):
+                                    ui.html(h)
+                    with ui.element("tbody"):
+                        cur_mes = None
+                        for r in reversed(data):
+                            fecha_str = r["snapshot_date"]
+                            try:
+                                d = _dt.strptime(fecha_str, "%Y-%m-%d")
+                                mes_key   = f"{d.year}-{d.month:02d}"
+                                mes_label = f"{MESES[d.month-1]} {d.year}"
+                                dia_label = str(d.day)
+                            except Exception:
+                                mes_key = mes_label = fecha_str
+                                dia_label = fecha_str
+                            if mes_key != cur_mes:
+                                cur_mes = mes_key
                                 with ui.element("tr"):
-                                    for h, align in [("Dia", "left"), ("Stock", "right"), ("Variacion", "right"), ("Vel. acum.", "right"), ("Ticket prom.", "right")]:
-                                        with ui.element("th").style(
-                                            f"padding:3px 6px;background:#2A7AC7;color:#fff;"
-                                            f"font-weight:500;text-align:{align};white-space:nowrap;"
-                                            "border-right:0.5px solid rgba(255,255,255,0.15);"
-                                            "position:sticky;top:0;z-index:2"
-                                        ):
-                                            ui.html(h)
-                            with ui.element("tbody"):
-                                cur_mes = None
-                                for r in reversed(data):
-                                    fecha_str = r["snapshot_date"]
-                                    try:
-                                        d = _dt.strptime(fecha_str, "%Y-%m-%d")
-                                        mes_key   = f"{d.year}-{d.month:02d}"
-                                        mes_label = f"{MESES[d.month-1]} {d.year}"
-                                        dia_label = str(d.day)
-                                    except Exception:
-                                        mes_key = mes_label = fecha_str
-                                        dia_label = fecha_str
-                                    if mes_key != cur_mes:
-                                        cur_mes = mes_key
-                                        with ui.element("tr"):
-                                            with ui.element("td").style(
-                                                "padding:2px 6px;background:#EEF6FD;"
-                                                "border-bottom:0.5px solid #d0e8f8;"
-                                                "font-size:9px;font-weight:600;color:#185FA5"
-                                            ).props('colspan="5"'):
-                                                ui.html(mes_label)
-                                    stock  = r.get("stock") or 0
-                                    vend   = r["vend"]
-                                    repo   = r["repo"]
-                                    va     = r.get("vel_acum")
-                                    precio = _fmt_precio(r.get("price"))
-                                    bg = "background:#F0FDF4;" if repo > 0 else ""
-                                    with ui.element("tr").style(bg):
-                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:left;color:#6b7280"):
-                                            ui.html(dia_label)
-                                        with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
-                                            ui.html(_fmt_num(stock))
-                                        if repo > 0:
-                                            vc, vt = "#166534", f"+{_fmt_num(repo)}"
-                                        elif vend > 0:
-                                            vc, vt = "#dc2626", f"\u2212{_fmt_num(vend)}"
-                                        else:
-                                            vc, vt = "#9ca3af", "\u2014"
-                                        with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
-                                            ui.html(vt)
-                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
-                                            ui.html(f"{va}/d" if va is not None else "\u2014")
-                                        with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151;min-width:60px"):
-                                            ui.html(precio)
+                                    with ui.element("td").style(
+                                        "padding:2px 6px;background:#EEF6FD;"
+                                        "border-bottom:0.5px solid #d0e8f8;"
+                                        "font-size:9px;font-weight:600;color:#185FA5"
+                                    ).props('colspan="5"'):
+                                        ui.html(mes_label)
+                            stock  = r.get("stock") or 0
+                            vend   = r["vend"]
+                            repo   = r["repo"]
+                            va     = r.get("vel_acum")
+                            precio = _fmt_precio(r.get("price"))
+                            bg = "background:#F0FDF4;" if repo > 0 else ""
+                            with ui.element("tr").style(bg):
+                                with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:left;color:#6b7280"):
+                                    ui.html(dia_label)
+                                with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{'#166534' if stock > 0 else '#9ca3af'}"):
+                                    ui.html(_fmt_num(stock))
+                                if repo > 0:
+                                    vc, vt = "#166534", f"+{_fmt_num(repo)}"
+                                elif vend > 0:
+                                    vc, vt = "#dc2626", f"\u2212{_fmt_num(vend)}"
+                                else:
+                                    vc, vt = "#9ca3af", "\u2014"
+                                with ui.element("td").style(f"padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{vc}"):
+                                    ui.html(vt)
+                                with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#6b7280"):
+                                    ui.html(f"{va}/d" if va is not None else "\u2014")
+                                with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151;min-width:60px"):
+                                    ui.html(precio)
 
-                # Grafico dual: stock (izq) + precio (der)
-                with ui.element("div").style("display:flex;flex-direction:column;gap:4px;min-width:0"):
-                    if dias_r:
-                        ui.label(
-                            f"Con {metricas.get('stock_actual')} unidades y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
-                        ).style(f"font-size:11px;color:{dc};display:block")
-                    pdf_state["chart"] = ui.echart({
+            def _render_tabla_desglose():
+                with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px;table-layout:fixed"):
+                    with ui.element("thead"):
+                        with ui.element("tr"):
+                            for h, align, w in [("SKU \u2014 Nombre", "left", None), ("Stock", "right", "68px"),
+                                                 ("Ventas", "right", "68px"), ("Velocidad", "right", "78px"),
+                                                 ("D\u00edas Restantes", "right", "100px"), ("Ticket Promedio", "right", "112px")]:
+                                with ui.element("th").style(
+                                    f"padding:5px 8px;background:#2A7AC7;color:#fff;"
+                                    f"font-weight:500;text-align:{align};white-space:nowrap;"
+                                    "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                    "position:sticky;top:0;z-index:2"
+                                    + (f";width:{w}" if w else "")
+                                ):
+                                    ui.html(h)
+                    with ui.element("tbody"):
+                        for row_i in desglose:
+                            dias_ri = row_i.get("dias_restantes")
+                            dc_i = "#dc2626" if dias_ri and dias_ri < 7 else "#ca6d00" if dias_ri and dias_ri < 20 else "#166534"
+                            with ui.element("tr").style("cursor:pointer").on(
+                                "click", lambda sk=row_i["sku"]: sel.set_value(sk)
+                            ):
+                                with ui.element("td").style(
+                                    "padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:left;"
+                                    "font-weight:500;color:#374151;overflow:hidden;"
+                                    "text-overflow:ellipsis;white-space:nowrap"
+                                ):
+                                    ui.html(row_i["nombre"])
+                                with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
+                                    ui.html(_fmt_num(row_i["stock"]))
+                                with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#991B1B"):
+                                    ui.html(_fmt_num(row_i.get("ventas", 0)))
+                                with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
+                                    ui.html(f"{row_i['vel']}/d")
+                                with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc_i}"):
+                                    ui.html(str(dias_ri) if dias_ri else "\u2014")
+                                with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
+                                    ui.html(_fmt_precio(row_i.get("ticket_prom")))
+
+            _chart_option = {
                         "grid": {"top": 20, "bottom": 40, "left": 46, "right": 60},
                         "legend": {
                             "data": ["Stock", "Precio"],
@@ -862,64 +1028,49 @@ def build_tab_stock() -> None:
                             "trigger": "axis",
                             "formatter": "{b}<br/>Stock: <b>{c0}</b> unidades<br/>Precio: ${c1}k",
                         },
-                    }).style("height:calc(100vh - 450px);width:100%")
+                    }
 
-            # Desglose por SKU (solo vista de marca especifica)
-            if marca and per_sku_series:
-                desglose = []
-                for sku_i, serie_i in per_sku_series.items():
-                    met_i = _calcular_metricas(serie_i)
-                    if not met_i:
-                        continue
-                    ticket_i = _calcular_ticket_ventas({sku_i: serie_i})
-                    desglose.append({
-                        "sku": sku_i,
-                        "stock": met_i.get("stock_actual", 0),
-                        "ventas": met_i.get("ventas_total", 0),
-                        "vel": met_i.get("vel_diaria", 0),
-                        "dias_restantes": met_i.get("dias_restantes"),
-                        "ticket_prom": ticket_i["ticket_prom_periodo"],
-                    })
-                desglose.sort(key=lambda x: x["vel"], reverse=True)
-
-                if desglose:
-                    ui.label("Desglose por SKU").style(
-                        "font-size:11px;color:#185FA5;font-weight:600;margin:14px 0 6px;display:block"
-                    )
+            if marca:
+                # Vista de marca: dos filas -- arriba tabla diaria (38%) + desglose por SKU
+                # (62%) lado a lado con la misma altura fija, abajo el grafico a lo ancho
+                # completo. El total de alto disponible es el mismo presupuesto (100vh menos
+                # el resto de la UI) que antes usaban tabla+grafico lado a lado.
+                _h_top = "calc((100vh - 450px) * 0.42)"
+                _h_bottom = "calc((100vh - 450px) * 0.58 - 12px)"
+                with ui.element("div").style("display:flex;flex-direction:column;gap:12px;width:100%"):
+                    with ui.element("div").style(f"display:grid;grid-template-columns:38% 62%;gap:10px;height:{_h_top}"):
+                        with ui.element("div").style(
+                            "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;height:100%"
+                        ):
+                            with ui.element("div").style("overflow-y:auto;height:100%"):
+                                _render_tabla_diaria()
+                        with ui.element("div").style(
+                            "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;height:100%"
+                        ):
+                            with ui.element("div").style("overflow-y:auto;height:100%"):
+                                _render_tabla_desglose()
+                    with ui.element("div").style(f"display:flex;flex-direction:column;gap:4px;height:{_h_bottom};width:100%"):
+                        if dias_r:
+                            ui.label(
+                                f"Con {metricas.get('stock_actual')} unidades y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
+                            ).style(f"font-size:11px;color:{dc};display:block")
+                        pdf_state["chart"] = ui.echart(_chart_option).style("flex:1;min-height:0;width:100%")
+            else:
+                # Vista de SKU individual: layout anterior, tabla angosta + grafico lado a lado.
+                with ui.element("div").style(
+                    "display:grid;grid-template-columns:340px 1fr;gap:0;align-items:start;width:100%"
+                ):
                     with ui.element("div").style(
-                        "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:820px"
+                        "border:0.5px solid #e2e8f0;border-radius:8px 0 0 8px;overflow:hidden;margin-right:10px"
                     ):
-                        with ui.element("div").style("overflow-y:auto;max-height:400px"):
-                            with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
-                                with ui.element("thead"):
-                                    with ui.element("tr"):
-                                        for h, align in [("SKU — Nombre", "left"), ("Stock", "right"), ("Ventas", "right"), ("Velocidad", "right"), ("Días Restantes", "right"), ("Ticket Promedio", "right")]:
-                                            with ui.element("th").style(
-                                                f"padding:5px 8px;background:#2A7AC7;color:#fff;"
-                                                f"font-weight:500;text-align:{align};white-space:nowrap;"
-                                                "border-right:0.5px solid rgba(255,255,255,0.15);"
-                                                "position:sticky;top:0;z-index:2"
-                                            ):
-                                                ui.html(h)
-                                with ui.element("tbody"):
-                                    for row_i in desglose:
-                                        dias_ri = row_i.get("dias_restantes")
-                                        dc_i = "#dc2626" if dias_ri and dias_ri < 7 else "#ca6d00" if dias_ri and dias_ri < 20 else "#166534"
-                                        with ui.element("tr").style("cursor:pointer").on(
-                                            "click", lambda sk=row_i["sku"]: sel.set_value(sk)
-                                        ):
-                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:left;font-weight:500;color:#374151"):
-                                                ui.html(sku_options.get(row_i["sku"], row_i["sku"]))
-                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
-                                                ui.html(_fmt_num(row_i["stock"]))
-                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#991B1B"):
-                                                ui.html(_fmt_num(row_i.get("ventas", 0)))
-                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
-                                                ui.html(f"{row_i['vel']}/d")
-                                            with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc_i}"):
-                                                ui.html(str(dias_ri) if dias_ri else "—")
-                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
-                                                ui.html(_fmt_precio(row_i.get("ticket_prom")))
+                        with ui.element("div").style("overflow-y:auto;max-height:calc(100vh - 450px)"):
+                            _render_tabla_diaria()
+                    with ui.element("div").style("display:flex;flex-direction:column;gap:4px;min-width:0"):
+                        if dias_r:
+                            ui.label(
+                                f"Con {metricas.get('stock_actual')} unidades y vel. {vel}/d -> estimados {dias_r} dias de stock restantes."
+                            ).style(f"font-size:11px;color:{dc};display:block")
+                        pdf_state["chart"] = ui.echart(_chart_option).style("height:calc(100vh - 450px);width:100%")
 
     def _pintar_resumen_marcas(resumen: List[Dict], desde: str, hasta: str):
         contenido_ref[0].clear()
@@ -966,7 +1117,10 @@ def build_tab_stock() -> None:
     async def _cargar():
         if estado.get("vista_resumen"):
             rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
-            resumen = _calcular_resumen_marcas(rows)
+            ventas_reales = await run.io_bound(
+                _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
+            )
+            resumen = _calcular_resumen_marcas(rows, ventas_reales)
             _pintar_resumen_marcas(resumen, estado["desde"], estado["hasta"])
             pdf_state["chart"] = None
             pdf_state["datos"] = None
@@ -981,8 +1135,11 @@ def build_tab_stock() -> None:
             n_skus = await run.io_bound(
                 _get_marca_n_skus, user_id, marca, estado["desde"], estado["hasta"]
             )
+            ventas_reales = await run.io_bound(
+                _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
+            )
             met = _calcular_metricas(rows)
-            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series)
+            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales)
             return
         if not sku:
             contenido_ref[0].clear()
@@ -997,8 +1154,11 @@ def build_tab_stock() -> None:
         rows = await run.io_bound(
             _get_stock_history, user_id, sku, estado["desde"], estado["hasta"]
         )
+        ventas_reales = await run.io_bound(
+            _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
+        )
         met = _calcular_metricas(rows)
-        _pintar(rows, met, sku=sku)
+        _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales)
 
     # Layout principal
     with ui.element("div").style("padding:10px 20px 0"):
@@ -1126,7 +1286,10 @@ def build_tab_stock() -> None:
                 marcas_spinner.style("display:inline-block")
                 try:
                     rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
-                    resumen = _calcular_resumen_marcas(rows)
+                    ventas_reales = await run.io_bound(
+                        _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
+                    )
+                    resumen = _calcular_resumen_marcas(rows, ventas_reales)
                     razon_social = await run.io_bound(get_user_ml_razon_social, user_id) or user.get("username", "")
                     path, nombre = await run.io_bound(
                         _generar_pdf_marcas, resumen, estado["desde"], estado["hasta"], razon_social
