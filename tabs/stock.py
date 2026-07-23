@@ -1285,7 +1285,7 @@ def build_tab_stock() -> None:
                 inp_desde.on_value_change(_on_desde)
                 with inp_desde.add_slot("append"):
                     icon_desde = ui.icon("edit_calendar").classes("cursor-pointer").on(
-                        "click", lambda: menu_desde.open()
+                        "click", lambda: menu_desde.open() if estado["fecha_preset"] == "Fecha predeterminada" else None
                     ).style("opacity:0.35;pointer-events:none" if _pickers_disabled_inicial else "")
                 with ui.menu() as menu_desde:
                     ui.date(value=_iso_a_ddmmyyyy(estado["desde"])).props(
@@ -1307,7 +1307,7 @@ def build_tab_stock() -> None:
                 inp_hasta.on_value_change(_on_hasta)
                 with inp_hasta.add_slot("append"):
                     icon_hasta = ui.icon("edit_calendar").classes("cursor-pointer").on(
-                        "click", lambda: menu_hasta.open()
+                        "click", lambda: menu_hasta.open() if estado["fecha_preset"] == "Fecha predeterminada" else None
                     ).style("opacity:0.35;pointer-events:none" if _pickers_disabled_inicial else "")
                 with ui.menu() as menu_hasta:
                     ui.date(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
