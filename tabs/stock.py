@@ -384,6 +384,19 @@ def _ddmmyyyy_a_iso(v: str):
         return None
 
 
+def _caption_recorte(desde: str, hasta: str, recorte: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Aviso de una linea cuando un preset de N dias se recorto por la fecha minima del
+    usuario (rango real mostrado mas corto que el pedido). None si no hubo recorte."""
+    if not recorte:
+        return None
+    dias_reales = (datetime.strptime(hasta, "%Y-%m-%d").date()
+                    - datetime.strptime(desde, "%Y-%m-%d").date()).days + 1
+    return (
+        f"Mostrando {_iso_a_ddmm(desde)} al {_iso_a_ddmm(hasta)} ({dias_reales} días) — "
+        f"se pidieron {recorte['dias_pedidos']}, el historial arranca el {_iso_a_ddmm(desde)}."
+    )
+
+
 def _slug_nombre(s: str) -> str:
     s = re.sub(r"\s+", "-", (s or "").strip())
     s = re.sub(r"[^A-Za-z0-9_-]", "", s)
@@ -667,10 +680,17 @@ def build_tab_stock() -> None:
     }
 
     def _calc_rango_preset(preset: str):
-        """(desde, hasta) ISO para un preset de Fecha, o None si es 'Fecha predeterminada'
+        """(desde, hasta, recorte) ISO para un preset de Fecha, o None si es 'Fecha predeterminada'
         (en ese caso los pickers manuales mandan, sin recalcular nada). 'hasta' parte de ayer,
         pero si el snapshot de ayer todavia no corrio cae al ultimo dia con snapshot real
-        disponible. 'desde' nunca puede quedar antes de la fecha minima del usuario."""
+        disponible.
+        Presets de N dias: 'desde' se recorta a la fecha minima del usuario si el rango pedido
+        arranca antes -- 'recorte' devuelve {"desde_pedido", "dias_pedidos"} en ese caso (None
+        si no hubo recorte), para avisar en pantalla que se esta mostrando menos de lo pedido.
+        'Mes anterior' es un rango de calendario fijo (el mes calendario anterior completo) y
+        NUNCA se recorta -- se devuelve tal cual aunque caiga entero antes de la fecha minima
+        (recorta aca lo dejaria con desde == hasta, un rango de un solo dia que no es lo que
+        se pidio); si no hay datos en ese rango, el aviso de 'sin datos' ya lo explica."""
         if preset == "Fecha predeterminada":
             return None
         iso_min = fecha_minima or "1970-01-01"
@@ -679,8 +699,12 @@ def build_tab_stock() -> None:
 
         if preset in _FECHA_PRESET_DIAS:
             hasta = hasta_base
-            desde = (datetime.strptime(hasta, "%Y-%m-%d").date()
-                      - timedelta(days=_FECHA_PRESET_DIAS[preset])).isoformat()
+            dias = _FECHA_PRESET_DIAS[preset]
+            desde_pedido = (datetime.strptime(hasta, "%Y-%m-%d").date()
+                             - timedelta(days=dias)).isoformat()
+            desde = max(desde_pedido, iso_min)
+            recorte = {"desde_pedido": desde_pedido, "dias_pedidos": dias} if desde > desde_pedido else None
+            return desde, hasta, recorte
         elif preset == "Mes anterior":
             primer_dia_mes_actual = hoy.replace(day=1)
             ultimo_dia_mes_ant = primer_dia_mes_actual - timedelta(days=1)
@@ -688,23 +712,18 @@ def build_tab_stock() -> None:
             dia_base = primer_dia_mes_ant - timedelta(days=1)
             hasta = ultimo_dia_mes_ant.isoformat()
             desde = dia_base.isoformat()
-        else:
-            return None
-
-        if desde < iso_min:
-            desde = iso_min
-        if desde > hasta:
-            desde = hasta
-        return desde, hasta
+            return desde, hasta, None
+        return None
 
     _rango_inicial = _calc_rango_preset("Ayer")
     if _rango_inicial:
-        desde_default, hasta_default = _rango_inicial
+        desde_default, hasta_default, recorte_inicial = _rango_inicial
     else:
         desde_default = (hoy - timedelta(days=29)).isoformat()
         if fecha_minima and desde_default < fecha_minima:
             desde_default = fecha_minima
         hasta_default = hoy.isoformat()
+        recorte_inicial = None
     estado = {
         "sku": None,
         "marca": None,
@@ -714,6 +733,7 @@ def build_tab_stock() -> None:
         "_syncing": False,
         "fecha_preset": "Ayer",
         "_load_seq": 0,
+        "recorte": recorte_inicial,
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
@@ -738,12 +758,18 @@ def build_tab_stock() -> None:
 
     def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None,
                 per_sku_series: Optional[Dict[str, List[Dict]]] = None,
-                ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None):
+                ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None,
+                recorte: Optional[Dict[str, Any]] = None,
+                desde: Optional[str] = None, hasta: Optional[str] = None):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not rows:
-                msg = "Sin datos para esta marca y periodo." if marca else "Sin datos para este SKU y periodo."
+                sujeto = "esta marca" if marca else "este SKU"
+                if fecha_minima:
+                    msg = f"Sin datos para {sujeto} en este período — el historial comienza el {_iso_a_ddmmyyyy(fecha_minima)}."
+                else:
+                    msg = f"Sin datos para {sujeto} y periodo."
                 ui.label(msg).style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
@@ -773,6 +799,10 @@ def build_tab_stock() -> None:
                 ui.label(
                     "Ticket = precio real de venta en dias con venta (no el de publicacion)."
                 ).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
+
+            _caption_rec = _caption_recorte(desde, hasta, recorte) if desde and hasta else None
+            if _caption_rec:
+                ui.label(_caption_rec).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
 
             vel    = metricas.get("vel_diaria", 0)
             dias_r = metricas.get("dias_restantes")
@@ -1133,14 +1163,21 @@ def build_tab_stock() -> None:
                             ).style(f"font-size:11px;color:{dc};display:block")
                         pdf_state["chart"] = ui.echart(_chart_option).style("height:calc(100vh - 450px);width:100%")
 
-    def _pintar_resumen_marcas(resumen: List[Dict], desde: str, hasta: str):
+    def _pintar_resumen_marcas(resumen: List[Dict], desde: str, hasta: str, recorte: Optional[Dict[str, Any]] = None):
         contenido_ref[0].clear()
         with contenido_ref[0]:
             if not resumen:
-                ui.label("Sin datos de marcas para este periodo.").style(
+                if fecha_minima:
+                    msg = f"Sin datos de marcas para este período — el historial comienza el {_iso_a_ddmmyyyy(fecha_minima)}."
+                else:
+                    msg = "Sin datos de marcas para este periodo."
+                ui.label(msg).style(
                     "font-size:13px;color:#9ca3af;padding:24px"
                 )
                 return
+            _caption_rec = _caption_recorte(desde, hasta, recorte)
+            if _caption_rec:
+                ui.label(_caption_rec).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block;padding:0 4px")
             marca_header = f"Marca ({_iso_a_ddmm(desde)} al {_iso_a_ddmm(hasta)})"
             with ui.element("div").style(
                 "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:820px"
@@ -1184,6 +1221,7 @@ def build_tab_stock() -> None:
         estado["_load_seq"] = estado.get("_load_seq", 0) + 1
         mi_seq = estado["_load_seq"]
         desde, hasta = estado["desde"], estado["hasta"]
+        recorte = estado.get("recorte")
 
         if estado.get("vista_resumen"):
             rows = await run.io_bound(_get_resumen_marcas, user_id, desde, hasta)
@@ -1191,7 +1229,7 @@ def build_tab_stock() -> None:
             if estado["_load_seq"] != mi_seq:
                 return
             resumen = _calcular_resumen_marcas(rows, ventas_reales)
-            _pintar_resumen_marcas(resumen, desde, hasta)
+            _pintar_resumen_marcas(resumen, desde, hasta, recorte)
             pdf_state["chart"] = None
             pdf_state["datos"] = None
             _set_pdf_habilitado(False)
@@ -1205,7 +1243,7 @@ def build_tab_stock() -> None:
             if estado["_load_seq"] != mi_seq:
                 return
             met = _calcular_metricas(rows)
-            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales)
+            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta)
             return
         if not sku:
             contenido_ref[0].clear()
@@ -1222,7 +1260,7 @@ def build_tab_stock() -> None:
         if estado["_load_seq"] != mi_seq:
             return
         met = _calcular_metricas(rows)
-        _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales)
+        _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta)
 
     # Layout principal
     with ui.element("div").style("padding:10px 20px 0"):
@@ -1340,11 +1378,12 @@ def build_tab_stock() -> None:
                 estado["fecha_preset"] = e.value
                 rango = _calc_rango_preset(e.value)
                 if rango:
-                    estado["desde"], estado["hasta"] = rango
+                    estado["desde"], estado["hasta"], estado["recorte"] = rango
                     inp_desde.set_value(_iso_a_ddmmyyyy(estado["desde"]))
                     inp_hasta.set_value(_iso_a_ddmmyyyy(estado["hasta"]))
                     _set_pickers_disabled(True)
                 else:
+                    estado["recorte"] = None
                     _set_pickers_disabled(False)
                 ui.timer(0.05, _cargar, once=True)
             sel_fecha.on_value_change(_on_fecha_preset)
