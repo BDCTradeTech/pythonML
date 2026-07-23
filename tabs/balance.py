@@ -160,13 +160,19 @@ def build_tab_balance(container) -> None:
                 header_card = ui.column().classes("w-full mb-2 p-4").style("flex:none")
                 with ui.row().classes("w-full gap-4 p-4 items-start flex-wrap").style("flex:1;min-height:0"):
                     # Columna izquierda: Gastos (tabla + botones)
-                    # align-self:stretch es necesario porque la fila padre tiene items-start
-                    # (para no estirar la columna derecha) -- sin esto, flex:1 en una fila solo
-                    # controla el ANCHO de esta columna, no el alto, y la columna quedaba con
-                    # alto "fit-content" (todas las filas de la tabla), rompiendo la cadena de
-                    # min-height:0 de mas abajo aunque estuviera bien puesta.
+                    # height:100% (no solo align-self:stretch) porque la fila padre tiene
+                    # flex-wrap -- medido en vivo con DevTools: en un flex-row con wrap,
+                    # align-self:stretch estira los items HASTA el alto de su linea, pero el
+                    # alto de la linea se calcula primero a partir del contenido natural de
+                    # los items sin estirar -- como esta columna es la mas alta (por la tabla
+                    # larga), termina siendo ella misma la que define la linea, y stretch no
+                    # hace nada (868px medidos, igual a su contenido sin recortar). height:100%
+                    # SI resuelve contra el alto ya acotado de la fila (flex:1;min-height:0, un
+                    # valor definido gracias al calc(100vh - Npx) del contenedor de arriba) y
+                    # fuerza el achique real -- confirmado en vivo: bajo de 868px a 537px y
+                    # cont paso a scrollHeight(724) > clientHeight(393), con barra visible.
                     with ui.column().classes("gap-2").style(
-                        "max-width:500px;flex:1;min-height:0;align-self:stretch;"
+                        "max-width:500px;flex:1;min-height:0;height:100%;"
                         "display:flex;flex-direction:column"
                     ):
                         with ui.card().classes("w-full p-4").style(
