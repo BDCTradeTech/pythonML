@@ -713,6 +713,7 @@ def build_tab_stock() -> None:
         "vista_resumen": True,
         "_syncing": False,
         "fecha_preset": "Ayer",
+        "_load_seq": 0,
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
@@ -1175,13 +1176,22 @@ def build_tab_stock() -> None:
                                         ui.html(_fmt_precio(row.get("ticket_prom")))
 
     async def _cargar():
+        """Snapshotea desde/hasta al inicio (consistentes durante todo el llamado, aun con
+        varios awaits de por medio) y usa un contador de generacion para descartar el pintado
+        si mientras tanto se disparo un _cargar() mas nuevo (ej. el usuario cambia el preset
+        de Fecha antes de que termine la consulta anterior) -- evita que una carga vieja y
+        lenta pise en pantalla el resultado de una mas nueva."""
+        estado["_load_seq"] = estado.get("_load_seq", 0) + 1
+        mi_seq = estado["_load_seq"]
+        desde, hasta = estado["desde"], estado["hasta"]
+
         if estado.get("vista_resumen"):
-            rows = await run.io_bound(_get_resumen_marcas, user_id, estado["desde"], estado["hasta"])
-            ventas_reales = await run.io_bound(
-                _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
-            )
+            rows = await run.io_bound(_get_resumen_marcas, user_id, desde, hasta)
+            ventas_reales = await run.io_bound(_get_ventas_reales_por_sku_dia, user_id, desde, hasta)
+            if estado["_load_seq"] != mi_seq:
+                return
             resumen = _calcular_resumen_marcas(rows, ventas_reales)
-            _pintar_resumen_marcas(resumen, estado["desde"], estado["hasta"])
+            _pintar_resumen_marcas(resumen, desde, hasta)
             pdf_state["chart"] = None
             pdf_state["datos"] = None
             _set_pdf_habilitado(False)
@@ -1189,15 +1199,11 @@ def build_tab_stock() -> None:
         sku = estado.get("sku")
         marca = estado.get("marca")
         if marca:
-            rows, per_sku_series = await run.io_bound(
-                _get_stock_history_marca, user_id, marca, estado["desde"], estado["hasta"]
-            )
-            n_skus = await run.io_bound(
-                _get_marca_n_skus, user_id, marca, estado["desde"], estado["hasta"]
-            )
-            ventas_reales = await run.io_bound(
-                _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
-            )
+            rows, per_sku_series = await run.io_bound(_get_stock_history_marca, user_id, marca, desde, hasta)
+            n_skus = await run.io_bound(_get_marca_n_skus, user_id, marca, desde, hasta)
+            ventas_reales = await run.io_bound(_get_ventas_reales_por_sku_dia, user_id, desde, hasta)
+            if estado["_load_seq"] != mi_seq:
+                return
             met = _calcular_metricas(rows)
             _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales)
             return
@@ -1211,12 +1217,10 @@ def build_tab_stock() -> None:
             pdf_state["datos"] = None
             _set_pdf_habilitado(False)
             return
-        rows = await run.io_bound(
-            _get_stock_history, user_id, sku, estado["desde"], estado["hasta"]
-        )
-        ventas_reales = await run.io_bound(
-            _get_ventas_reales_por_sku_dia, user_id, estado["desde"], estado["hasta"]
-        )
+        rows = await run.io_bound(_get_stock_history, user_id, sku, desde, hasta)
+        ventas_reales = await run.io_bound(_get_ventas_reales_por_sku_dia, user_id, desde, hasta)
+        if estado["_load_seq"] != mi_seq:
+            return
         met = _calcular_metricas(rows)
         _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales)
 
