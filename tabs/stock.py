@@ -55,6 +55,19 @@ def _get_fecha_minima(user_id: int) -> str | None:
     return row[0] if row and row[0] else None
 
 
+def _get_ultimo_snapshot_hasta(user_id: int, limite: str) -> str | None:
+    """Ultimo dia con snapshot real disponible, <= limite (ISO). Usado como 'hasta' efectivo
+    de los presets de Fecha cuando el snapshot de ayer todavia no corrio (cron puede correr
+    mas tarde en el dia)."""
+    conn = get_connection()
+    row = conn.execute("""
+        SELECT MAX(snapshot_date) FROM ml_stock_snapshots
+        WHERE user_id=? AND snapshot_date <= ? AND seller_sku != 'TEST-PRODUCTO-DEMO'
+    """, (user_id, limite)).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
 def _get_marcas(user_id: int) -> List[str]:
     conn = get_connection()
     rows = conn.execute("""
@@ -643,16 +656,63 @@ def build_tab_stock() -> None:
 
     hoy = date.today()
     fecha_minima = _get_fecha_minima(user_id)
-    desde_default = (hoy - timedelta(days=29)).isoformat()
-    if fecha_minima and desde_default < fecha_minima:
-        desde_default = fecha_minima
+
+    FECHA_PRESETS = [
+        "Ayer", "Últimos 2 días", "Últimos 3 días", "Última semana",
+        "Últimos 15 días", "Últimos 30 días", "Mes anterior", "Fecha predeterminada",
+    ]
+    _FECHA_PRESET_DIAS = {
+        "Ayer": 1, "Últimos 2 días": 2, "Últimos 3 días": 3,
+        "Última semana": 7, "Últimos 15 días": 15, "Últimos 30 días": 30,
+    }
+
+    def _calc_rango_preset(preset: str):
+        """(desde, hasta) ISO para un preset de Fecha, o None si es 'Fecha predeterminada'
+        (en ese caso los pickers manuales mandan, sin recalcular nada). 'hasta' parte de ayer,
+        pero si el snapshot de ayer todavia no corrio cae al ultimo dia con snapshot real
+        disponible. 'desde' nunca puede quedar antes de la fecha minima del usuario."""
+        if preset == "Fecha predeterminada":
+            return None
+        iso_min = fecha_minima or "1970-01-01"
+        ayer_iso = (hoy - timedelta(days=1)).isoformat()
+        hasta_base = _get_ultimo_snapshot_hasta(user_id, ayer_iso) or ayer_iso
+
+        if preset in _FECHA_PRESET_DIAS:
+            hasta = hasta_base
+            desde = (datetime.strptime(hasta, "%Y-%m-%d").date()
+                      - timedelta(days=_FECHA_PRESET_DIAS[preset])).isoformat()
+        elif preset == "Mes anterior":
+            primer_dia_mes_actual = hoy.replace(day=1)
+            ultimo_dia_mes_ant = primer_dia_mes_actual - timedelta(days=1)
+            primer_dia_mes_ant = ultimo_dia_mes_ant.replace(day=1)
+            dia_base = primer_dia_mes_ant - timedelta(days=1)
+            hasta = ultimo_dia_mes_ant.isoformat()
+            desde = dia_base.isoformat()
+        else:
+            return None
+
+        if desde < iso_min:
+            desde = iso_min
+        if desde > hasta:
+            desde = hasta
+        return desde, hasta
+
+    _rango_inicial = _calc_rango_preset("Ayer")
+    if _rango_inicial:
+        desde_default, hasta_default = _rango_inicial
+    else:
+        desde_default = (hoy - timedelta(days=29)).isoformat()
+        if fecha_minima and desde_default < fecha_minima:
+            desde_default = fecha_minima
+        hasta_default = hoy.isoformat()
     estado = {
         "sku": None,
         "marca": None,
         "desde": desde_default,
-        "hasta": hoy.isoformat(),
+        "hasta": hasta_default,
         "vista_resumen": True,
         "_syncing": False,
+        "fecha_preset": "Ayer",
     }
     contenido_ref: list = [None]
     pdf_state: Dict[str, Any] = {"habilitado": False, "chart": None, "datos": None}
@@ -1209,10 +1269,12 @@ def build_tab_stock() -> None:
                 ui.timer(0.05, _cargar, once=True)
             sel_marca.on_value_change(_on_marca)
 
+            _pickers_disabled_inicial = estado["fecha_preset"] != "Fecha predeterminada"
             with ui.column().style("gap:3px"):
                 ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
                 inp_desde = ui.input(value=_iso_a_ddmmyyyy(estado["desde"])).props(
                     "dense outlined mask='##/##/####'"
+                    + (" disable" if _pickers_disabled_inicial else "")
                 ).style("width:140px")
                 def _on_desde(e):
                     iso = _ddmmyyyy_a_iso(e.value)
@@ -1222,9 +1284,9 @@ def build_tab_stock() -> None:
                         estado["desde"] = iso
                 inp_desde.on_value_change(_on_desde)
                 with inp_desde.add_slot("append"):
-                    ui.icon("edit_calendar").classes("cursor-pointer").on(
+                    icon_desde = ui.icon("edit_calendar").classes("cursor-pointer").on(
                         "click", lambda: menu_desde.open()
-                    )
+                    ).style("opacity:0.35;pointer-events:none" if _pickers_disabled_inicial else "")
                 with ui.menu() as menu_desde:
                     ui.date(value=_iso_a_ddmmyyyy(estado["desde"])).props(
                         _date_range_props
@@ -1234,6 +1296,7 @@ def build_tab_stock() -> None:
                 ui.label("Hasta").style("font-size:11px;color:var(--color-text-secondary)")
                 inp_hasta = ui.input(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
                     "dense outlined mask='##/##/####'"
+                    + (" disable" if _pickers_disabled_inicial else "")
                 ).style("width:140px")
                 def _on_hasta(e):
                     iso = _ddmmyyyy_a_iso(e.value)
@@ -1243,14 +1306,45 @@ def build_tab_stock() -> None:
                         estado["hasta"] = iso
                 inp_hasta.on_value_change(_on_hasta)
                 with inp_hasta.add_slot("append"):
-                    ui.icon("edit_calendar").classes("cursor-pointer").on(
+                    icon_hasta = ui.icon("edit_calendar").classes("cursor-pointer").on(
                         "click", lambda: menu_hasta.open()
-                    )
+                    ).style("opacity:0.35;pointer-events:none" if _pickers_disabled_inicial else "")
                 with ui.menu() as menu_hasta:
                     ui.date(value=_iso_a_ddmmyyyy(estado["hasta"])).props(
                         _date_range_props
                     ).bind_value(inp_hasta)
                 menu_hasta.on("hide", lambda: ui.timer(0.05, _cargar, once=True))
+
+            def _set_pickers_disabled(disabled: bool) -> None:
+                if disabled:
+                    inp_desde.props("disable")
+                    inp_hasta.props("disable")
+                    icon_desde.style("opacity:0.35;pointer-events:none")
+                    icon_hasta.style("opacity:0.35;pointer-events:none")
+                else:
+                    inp_desde.props(remove="disable")
+                    inp_hasta.props(remove="disable")
+                    icon_desde.style("opacity:1;pointer-events:auto")
+                    icon_hasta.style("opacity:1;pointer-events:auto")
+
+            with ui.column().style("gap:3px"):
+                ui.label("Fecha").style("font-size:11px;color:var(--color-text-secondary)")
+                sel_fecha = ui.select(options=FECHA_PRESETS, value=estado["fecha_preset"], label="").props(
+                    "dense outlined"
+                ).style("width:190px;font-size:12px")
+
+            def _on_fecha_preset(e):
+                estado["fecha_preset"] = e.value
+                rango = _calc_rango_preset(e.value)
+                if rango:
+                    estado["desde"], estado["hasta"] = rango
+                    inp_desde.set_value(_iso_a_ddmmyyyy(estado["desde"]))
+                    inp_hasta.set_value(_iso_a_ddmmyyyy(estado["hasta"]))
+                    _set_pickers_disabled(True)
+                else:
+                    _set_pickers_disabled(False)
+                ui.timer(0.05, _cargar, once=True)
+            sel_fecha.on_value_change(_on_fecha_preset)
 
             pdf_spinner = ui.spinner(size="sm", color="#2A7AC7").style("display:none;align-self:flex-end;margin-bottom:8px")
             with ui.element("button").on(
