@@ -160,8 +160,14 @@ def build_tab_balance(container) -> None:
                 header_card = ui.column().classes("w-full mb-2 p-4").style("flex:none")
                 with ui.row().classes("w-full gap-4 p-4 items-start flex-wrap").style("flex:1;min-height:0"):
                     # Columna izquierda: Gastos (tabla + botones)
+                    # align-self:stretch es necesario porque la fila padre tiene items-start
+                    # (para no estirar la columna derecha) -- sin esto, flex:1 en una fila solo
+                    # controla el ANCHO de esta columna, no el alto, y la columna quedaba con
+                    # alto "fit-content" (todas las filas de la tabla), rompiendo la cadena de
+                    # min-height:0 de mas abajo aunque estuviera bien puesta.
                     with ui.column().classes("gap-2").style(
-                        "max-width:500px;flex:1;min-height:0;display:flex;flex-direction:column"
+                        "max-width:500px;flex:1;min-height:0;align-self:stretch;"
+                        "display:flex;flex-direction:column"
                     ):
                         with ui.card().classes("w-full p-4").style(
                             "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden"
@@ -357,15 +363,21 @@ def build_tab_balance(container) -> None:
                 datos.sort(key=lambda r: _parse_importe(r.get("importe")), reverse=rev)
             with cont:
                 with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
+                    # sticky se pone en cada <th> (no en el <tr>) con el fondo pintado ahi
+                    # mismo -- mismo patron que tabs/stock.py. sticky en <tr> es poco fiable
+                    # entre navegadores, y si el fondo azul solo estuviera en el <tr> (que no
+                    # es sticky), las filas de abajo se transparentarian a traves del <th> al
+                    # scrollear por debajo del header.
+                    _th_sticky = "position:sticky;top:0;z-index:2;background:#1976D2;color:#fff;"
                     with ui.element("thead"):
-                        with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
-                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 60%;").on("click", lambda: toggle_sort("gasto")):
+                        with ui.element("tr").classes("font-semibold"):
+                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer").style(_th_sticky + "width: 60%;").on("click", lambda: toggle_sort("gasto")):
                                 ui.label("Gasto")
-                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 30%;").on("click", lambda: toggle_sort("importe")):
+                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer").style(_th_sticky + "width: 30%;").on("click", lambda: toggle_sort("importe")):
                                 ui.label("Importe")
-                            with ui.element("th").classes("px-1 py-2 border text-center").style("width: 70px;"):
+                            with ui.element("th").classes("px-1 py-2 border text-center").style(_th_sticky + "width: 70px;"):
                                 ui.label("Ordenar")
-                            with ui.element("th").classes("px-1 py-2 border text-center").style("width: 50px;"):
+                            with ui.element("th").classes("px-1 py-2 border text-center").style(_th_sticky + "width: 50px;"):
                                 ui.label("Borrar")
                     with ui.element("tbody"):
                         for idx, row in enumerate(datos):
