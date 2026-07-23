@@ -67,33 +67,38 @@ def _get_marcas(user_id: int) -> List[str]:
     return [r[0] for r in rows]
 
 
-def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
+def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -> tuple:
     """Igual que _get_stock_history pero sumado entre todos los SKUs de la marca.
     Colapsa primero por (seller_sku, snapshot_date) con MAX -- un mismo seller_sku puede
     tener mas de un item_id reportando stock el mismo dia -- y recien despues suma entre
     SKUs, para no sobrecontar (un SUM directo sobre ml_stock_snapshots llega a sobrecontar
-    7-8x en SKUs con varios item_id). Precio = promedio ponderado por stock, no tiene
-    sentido sumar precios."""
+    7-8x en SKUs con varios item_id). El ticket (precio de venta) NO se pondera aca por
+    stock -- ver _calcular_ticket_ventas, que pondera por unidades vendidas usando
+    per_sku_series. Devuelve (rows_stock_sumado, per_sku_series)."""
     conn = get_connection()
     rows = conn.execute("""
-        WITH per_sku_dia AS (
-            SELECT s.snapshot_date, s.seller_sku,
-                   MAX(s.available_qty) AS stock,
-                   MAX(s.price)         AS price
-            FROM ml_stock_snapshots s
-            INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
-            WHERE p.marca=? AND s.user_id=? AND s.snapshot_date BETWEEN ? AND ?
-            GROUP BY s.snapshot_date, s.seller_sku
-        )
-        SELECT snapshot_date,
-               SUM(stock) AS stock,
-               SUM(price * stock) * 1.0 / NULLIF(SUM(stock), 0) AS price
-        FROM per_sku_dia
-        GROUP BY snapshot_date
-        ORDER BY snapshot_date ASC
+        SELECT s.snapshot_date, s.seller_sku,
+               MAX(s.available_qty) AS stock,
+               MAX(s.price)         AS price
+        FROM ml_stock_snapshots s
+        INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+        WHERE p.marca=? AND s.user_id=? AND s.snapshot_date BETWEEN ? AND ?
+        GROUP BY s.snapshot_date, s.seller_sku
+        ORDER BY s.seller_sku, s.snapshot_date
     """, (marca, user_id, desde, hasta)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    per_sku_series: Dict[str, List[Dict]] = defaultdict(list)
+    stock_por_dia: Dict[str, int] = defaultdict(int)
+    for r in rows:
+        d = dict(r)
+        per_sku_series[d["seller_sku"]].append(d)
+        stock_por_dia[d["snapshot_date"]] += d["stock"] or 0
+
+    rows_stock_sumado = [
+        {"snapshot_date": d, "stock": s} for d, s in sorted(stock_por_dia.items())
+    ]
+    return rows_stock_sumado, dict(per_sku_series)
 
 
 def _get_marca_n_skus(user_id: int, marca: str, desde: str, hasta: str) -> int:
@@ -109,26 +114,21 @@ def _get_marca_n_skus(user_id: int, marca: str, desde: str, hasta: str) -> int:
 
 
 def _get_resumen_marcas(user_id: int, desde: str, hasta: str) -> List[Dict[str, Any]]:
-    """Serie diaria de stock/precio por marca (todas las marcas del usuario) en el rango dado.
-    Mismo patron anti-sobreconteo que _get_stock_history_marca -- colapsa por (seller_sku, dia)
-    con MAX antes de sumar entre SKUs, para no inflar el stock en SKUs con varios item_id."""
+    """Filas per-sku-dia (marca, snapshot_date, seller_sku, stock, price) de todas las marcas
+    del usuario en el rango dado. Mismo patron anti-sobreconteo que _get_stock_history_marca --
+    colapsa por (seller_sku, dia) con MAX para no inflar el stock en SKUs con varios item_id.
+    No suma/pondera aca -- _calcular_resumen_marcas agrupa en Python (stock por dia para
+    velocidad, y por sku para el ticket ponderado por ventas via _calcular_ticket_ventas)."""
     conn = get_connection()
     rows = conn.execute("""
-        WITH per_sku_dia AS (
-            SELECT p.marca, s.snapshot_date, s.seller_sku,
-                   MAX(s.available_qty) AS stock,
-                   MAX(s.price)         AS price
-            FROM ml_stock_snapshots s
-            INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
-            WHERE s.user_id=? AND p.marca IS NOT NULL AND s.snapshot_date BETWEEN ? AND ?
-            GROUP BY p.marca, s.snapshot_date, s.seller_sku
-        )
-        SELECT marca, snapshot_date,
-               SUM(stock) AS stock,
-               SUM(price * stock) * 1.0 / NULLIF(SUM(stock), 0) AS price
-        FROM per_sku_dia
-        GROUP BY marca, snapshot_date
-        ORDER BY marca, snapshot_date ASC
+        SELECT p.marca, s.snapshot_date, s.seller_sku,
+               MAX(s.available_qty) AS stock,
+               MAX(s.price)         AS price
+        FROM ml_stock_snapshots s
+        INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
+        WHERE s.user_id=? AND p.marca IS NOT NULL AND s.snapshot_date BETWEEN ? AND ?
+        GROUP BY p.marca, s.snapshot_date, s.seller_sku
+        ORDER BY p.marca, s.seller_sku, s.snapshot_date
     """, (user_id, desde, hasta)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -178,25 +178,64 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     }
 
 
+def _calcular_ticket_ventas(per_sku_series: Dict[str, List[Dict]]) -> Dict[str, Any]:
+    """Ticket ponderado por unidades VENDIDAS (no por stock). per_sku_series: sku -> filas
+    {snapshot_date, stock, price} ordenadas por fecha. Ticket = SUM(precio_dia * unidades
+    vendidas ese dia) / SUM(unidades vendidas), usando solo variaciones negativas de stock
+    (excluye repos) -- mismo criterio que _calcular_metricas para no contar un restock como
+    venta. Dias/periodos sin ventas devuelven None (no se inventa un numero con el mix del
+    stock)."""
+    por_dia: Dict[str, List[tuple]] = defaultdict(list)  # date -> [(unidades, precio), ...]
+    for serie in per_sku_series.values():
+        for i in range(1, len(serie)):
+            prev, curr = serie[i - 1], serie[i]
+            stock_prev, stock_curr = prev.get("stock") or 0, curr.get("stock") or 0
+            if stock_prev > stock_curr and curr.get("price"):
+                por_dia[curr["snapshot_date"]].append((stock_prev - stock_curr, float(curr["price"])))
+
+    ticket_dia: Dict[str, Optional[float]] = {}
+    tot_unidades, tot_valor = 0, 0.0
+    for d, lineas in por_dia.items():
+        u = sum(x[0] for x in lineas)
+        val = sum(x[0] * x[1] for x in lineas)
+        ticket_dia[d] = round(val / u, 2) if u else None
+        tot_unidades += u
+        tot_valor += val
+
+    vals = [v for v in ticket_dia.values() if v is not None]
+    return {
+        "ticket_dia": ticket_dia,
+        "ticket_prom_periodo": round(tot_valor / tot_unidades) if tot_unidades else None,
+        "ticket_min": min(vals) if vals else None,
+        "ticket_max": max(vals) if vals else None,
+    }
+
+
 def _calcular_resumen_marcas(rows: List[Dict]) -> List[Dict[str, Any]]:
-    """Agrupa la serie diaria por marca y reutiliza _calcular_metricas (misma logica de
-    velocidad ya corregida) para cada una. Ordena por velocidad descendente."""
-    por_marca: Dict[str, List[Dict]] = defaultdict(list)
+    """rows: filas per-sku-dia (marca, snapshot_date, seller_sku, stock, price) de
+    _get_resumen_marcas. Agrupa por marca->dia (stock sumado, para _calcular_metricas sin
+    cambios) y por marca->sku (para el ticket ponderado por ventas). Ordena por velocidad
+    descendente."""
+    stock_por_marca_dia: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    series_por_marca_sku: Dict[str, Dict[str, List[Dict]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        por_marca[r["marca"]].append(r)
+        stock_por_marca_dia[r["marca"]][r["snapshot_date"]] += r["stock"] or 0
+        series_por_marca_sku[r["marca"]][r["seller_sku"]].append(r)
 
     resumen = []
-    for marca, serie in por_marca.items():
+    for marca, stock_dias in stock_por_marca_dia.items():
+        serie = [{"snapshot_date": d, "stock": s} for d, s in sorted(stock_dias.items())]
         met = _calcular_metricas(serie)
         if not met:
             continue
+        ticket_info = _calcular_ticket_ventas(series_por_marca_sku[marca])
         resumen.append({
             "marca": marca,
             "stock": met.get("stock_actual", 0),
             "ventas": met.get("ventas_total", 0),
             "vel": met.get("vel_diaria", 0),
             "dias_restantes": met.get("dias_restantes"),
-            "ticket_prom": met.get("precio_actual"),
+            "ticket_prom": ticket_info["ticket_prom_periodo"],
         })
     resumen.sort(key=lambda x: x["vel"], reverse=True)
     return resumen
@@ -521,7 +560,8 @@ def build_tab_stock() -> None:
         f"navigation-max-year-month=\"{_max_slash[:7]}\""
     )
 
-    def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None):
+    def _pintar(rows: List[Dict], metricas: Dict, sku: str = None, marca: str = None, n_skus: int = None,
+                per_sku_series: Optional[Dict[str, List[Dict]]] = None):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
@@ -535,10 +575,22 @@ def build_tab_stock() -> None:
                 _set_pdf_habilitado(False)
                 return
 
+            if marca and per_sku_series:
+                ticket_info = _calcular_ticket_ventas(per_sku_series)
+                for r in rows:
+                    r["price"] = ticket_info["ticket_dia"].get(r["snapshot_date"])
+                metricas = {
+                    **metricas,
+                    "precio_actual": ticket_info["ticket_prom_periodo"],
+                    "precio_prom":   ticket_info["ticket_prom_periodo"],
+                    "precio_min":    ticket_info["ticket_min"],
+                    "precio_max":    ticket_info["ticket_max"],
+                }
+
             if marca:
                 ui.label(
                     f"Vista agregada — marca: {marca} · {n_skus} SKUs con historial · "
-                    "Precio = promedio ponderado por stock."
+                    "Ticket = promedio ponderado por ventas."
                 ).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
 
             vel    = metricas.get("vel_diaria", 0)
@@ -812,6 +864,63 @@ def build_tab_stock() -> None:
                         },
                     }).style("height:calc(100vh - 450px);width:100%")
 
+            # Desglose por SKU (solo vista de marca especifica)
+            if marca and per_sku_series:
+                desglose = []
+                for sku_i, serie_i in per_sku_series.items():
+                    met_i = _calcular_metricas(serie_i)
+                    if not met_i:
+                        continue
+                    ticket_i = _calcular_ticket_ventas({sku_i: serie_i})
+                    desglose.append({
+                        "sku": sku_i,
+                        "stock": met_i.get("stock_actual", 0),
+                        "ventas": met_i.get("ventas_total", 0),
+                        "vel": met_i.get("vel_diaria", 0),
+                        "dias_restantes": met_i.get("dias_restantes"),
+                        "ticket_prom": ticket_i["ticket_prom_periodo"],
+                    })
+                desglose.sort(key=lambda x: x["vel"], reverse=True)
+
+                if desglose:
+                    ui.label("Desglose por SKU").style(
+                        "font-size:11px;color:#185FA5;font-weight:600;margin:14px 0 6px;display:block"
+                    )
+                    with ui.element("div").style(
+                        "border:0.5px solid #e2e8f0;border-radius:8px;overflow:hidden;max-width:820px"
+                    ):
+                        with ui.element("div").style("overflow-y:auto;max-height:400px"):
+                            with ui.element("table").style("width:100%;border-collapse:collapse;font-size:10px"):
+                                with ui.element("thead"):
+                                    with ui.element("tr"):
+                                        for h, align in [("SKU — Nombre", "left"), ("Stock", "right"), ("Ventas", "right"), ("Velocidad", "right"), ("Días Restantes", "right"), ("Ticket Promedio", "right")]:
+                                            with ui.element("th").style(
+                                                f"padding:5px 8px;background:#2A7AC7;color:#fff;"
+                                                f"font-weight:500;text-align:{align};white-space:nowrap;"
+                                                "border-right:0.5px solid rgba(255,255,255,0.15);"
+                                                "position:sticky;top:0;z-index:2"
+                                            ):
+                                                ui.html(h)
+                                with ui.element("tbody"):
+                                    for row_i in desglose:
+                                        dias_ri = row_i.get("dias_restantes")
+                                        dc_i = "#dc2626" if dias_ri and dias_ri < 7 else "#ca6d00" if dias_ri and dias_ri < 20 else "#166534"
+                                        with ui.element("tr").style("cursor:pointer").on(
+                                            "click", lambda sk=row_i["sku"]: sel.set_value(sk)
+                                        ):
+                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:left;font-weight:500;color:#374151"):
+                                                ui.html(sku_options.get(row_i["sku"], row_i["sku"]))
+                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#0C447C"):
+                                                ui.html(_fmt_num(row_i["stock"]))
+                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#991B1B"):
+                                                ui.html(_fmt_num(row_i.get("ventas", 0)))
+                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:600;color:#C2410C"):
+                                                ui.html(f"{row_i['vel']}/d")
+                                            with ui.element("td").style(f"padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;font-weight:500;color:{dc_i}"):
+                                                ui.html(str(dias_ri) if dias_ri else "—")
+                                            with ui.element("td").style("padding:3px 8px;border-bottom:0.5px solid #f1f5f9;text-align:right;color:#374151"):
+                                                ui.html(_fmt_precio(row_i.get("ticket_prom")))
+
     def _pintar_resumen_marcas(resumen: List[Dict], desde: str, hasta: str):
         contenido_ref[0].clear()
         with contenido_ref[0]:
@@ -866,14 +975,14 @@ def build_tab_stock() -> None:
         sku = estado.get("sku")
         marca = estado.get("marca")
         if marca:
-            rows = await run.io_bound(
+            rows, per_sku_series = await run.io_bound(
                 _get_stock_history_marca, user_id, marca, estado["desde"], estado["hasta"]
             )
             n_skus = await run.io_bound(
                 _get_marca_n_skus, user_id, marca, estado["desde"], estado["hasta"]
             )
             met = _calcular_metricas(rows)
-            _pintar(rows, met, marca=marca, n_skus=n_skus)
+            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series)
             return
         if not sku:
             contenido_ref[0].clear()
