@@ -1275,6 +1275,11 @@ def build_tab_stock() -> None:
 
             _pickers_disabled_inicial = estado["fecha_preset"] != "Fecha predeterminada"
             with ui.column().style("gap:3px"):
+                ui.label("Fecha").style("font-size:11px;color:var(--color-text-secondary)")
+                sel_fecha = ui.select(options=FECHA_PRESETS, value=estado["fecha_preset"], label="").props(
+                    "dense outlined"
+                ).style("width:190px;font-size:12px")
+            with ui.column().style("gap:3px"):
                 ui.label("Desde").style("font-size:11px;color:var(--color-text-secondary)")
                 inp_desde = ui.input(value=_iso_a_ddmmyyyy(estado["desde"])).props(
                     "dense outlined mask='##/##/####'"
@@ -1330,12 +1335,6 @@ def build_tab_stock() -> None:
                     inp_hasta.props(remove="disable")
                     icon_desde.style("opacity:1;pointer-events:auto")
                     icon_hasta.style("opacity:1;pointer-events:auto")
-
-            with ui.column().style("gap:3px"):
-                ui.label("Fecha").style("font-size:11px;color:var(--color-text-secondary)")
-                sel_fecha = ui.select(options=FECHA_PRESETS, value=estado["fecha_preset"], label="").props(
-                    "dense outlined"
-                ).style("width:190px;font-size:12px")
 
             def _on_fecha_preset(e):
                 estado["fecha_preset"] = e.value
