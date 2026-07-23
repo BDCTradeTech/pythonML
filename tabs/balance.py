@@ -148,20 +148,33 @@ def build_tab_balance(container) -> None:
     def _pintar_contenido() -> None:
         container.clear()
         with container:
-            header_card = ui.column().classes("w-full mb-2 p-4")
-            with ui.row().classes("w-full gap-4 p-4 items-start flex-wrap"):
-                # Columna izquierda: Gastos (tabla + botones)
-                with ui.column().classes("gap-2").style("max-width: 500px;"):
-                    with ui.card().classes("w-full p-4"):
-                        ui.label("Gastos").classes("text-lg font-semibold mb-2")
-                        cont = ui.column().classes("w-full gap-2")
-                        edit_rows_ref: List[Dict[str, Any]] = []
-                        gastos_buttons_row = ui.row().classes("gap-2 mt-2")
-                # Columna derecha: Parámetros, Ingresos y Resultados Netos
-                with ui.row().classes("gap-4 flex-wrap"):
-                    parametros_card = ui.column().classes("gap-1")
-                    ingresos_card = ui.column().classes("gap-1")
-                    resultados_card = ui.column().classes("gap-1")
+            # Alto acotado a la ventana (estimacion conservadora del chrome compartido de
+            # arriba -- nav + tabs) para que la pagina no scrollee. El header_card (KPIs)
+            # mantiene su alto natural (flex:none); la fila principal y la tarjeta de Gastos
+            # son flex:1, asi absorben lo que sobre debajo del header_card sin depender de
+            # adivinar su altura exacta (que varia si el KPI bar hace wrap).
+            with ui.element("div").classes("w-full").style(
+                "height:calc(100vh - 210px);min-height:0;overflow:hidden;"
+                "display:flex;flex-direction:column"
+            ):
+                header_card = ui.column().classes("w-full mb-2 p-4").style("flex:none")
+                with ui.row().classes("w-full gap-4 p-4 items-start flex-wrap").style("flex:1;min-height:0"):
+                    # Columna izquierda: Gastos (tabla + botones)
+                    with ui.column().classes("gap-2").style(
+                        "max-width:500px;flex:1;min-height:0;display:flex;flex-direction:column"
+                    ):
+                        with ui.card().classes("w-full p-4").style(
+                            "flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden"
+                        ):
+                            ui.label("Gastos").classes("text-lg font-semibold mb-2").style("flex:none")
+                            cont = ui.column().classes("w-full gap-2").style("flex:1;min-height:0;overflow-y:auto")
+                            edit_rows_ref: List[Dict[str, Any]] = []
+                            gastos_buttons_row = ui.row().classes("gap-2 mt-2").style("flex:none")
+                    # Columna derecha: Parámetros, Ingresos y Resultados Netos
+                    with ui.row().classes("gap-4 flex-wrap"):
+                        parametros_card = ui.column().classes("gap-1")
+                        ingresos_card = ui.column().classes("gap-1")
+                        resultados_card = ui.column().classes("gap-1")
         def toggle_sort(col: str) -> None:
             if sort_col_gastos[0] == col:
                 sort_asc_gastos[0] = not sort_asc_gastos[0]
@@ -343,53 +356,56 @@ def build_tab_balance(container) -> None:
                 rev = not sort_asc_gastos[0]
                 datos.sort(key=lambda r: _parse_importe(r.get("importe")), reverse=rev)
             with cont:
-                with ui.element("div").classes("w-full overflow-auto").style("max-height: 70vh;"):
-                    with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
-                        with ui.element("thead"):
-                            with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
-                                with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 60%;").on("click", lambda: toggle_sort("gasto")):
-                                    ui.label("Gasto")
-                                with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 30%;").on("click", lambda: toggle_sort("importe")):
-                                    ui.label("Importe")
-                                with ui.element("th").classes("px-1 py-2 border text-center").style("width: 70px;"):
-                                    ui.label("Ordenar")
-                                with ui.element("th").classes("px-1 py-2 border text-center").style("width: 50px;"):
-                                    ui.label("Borrar")
-                        with ui.element("tbody"):
-                            for idx, row in enumerate(datos):
-                                rinputs: Dict[str, Any] = {}
-                                row_idx_in_data = gastos_data.index(row) if row in gastos_data else idx
-                                imp_raw = str(row.get("importe", ""))
-                                imp_display = _fmt_importe_display(imp_raw) if imp_raw else ""
-                                with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100").style("width: 60%;"):
-                                        inp_gasto = ui.input(value=str(row.get("gasto", ""))).classes("w-full border-0").props("dense")
-                                        rinputs["gasto"] = inp_gasto
-                                    with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right").style("width: 30%;"):
-                                        with ui.row().classes("w-full items-center gap-1 justify-end text-right"):
-                                            ui.label("$").classes("text-gray-600 text-sm")
-                                            inp_imp = ui.input(value=imp_display).classes("flex-1 min-w-0 border-0").props("dense").style("text-align: right;")
-                                            rinputs["importe"] = inp_imp
-                                    with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
-                                        def subir(i: int) -> None:
-                                            if 0 <= i < len(gastos_data) and i > 0:
-                                                gastos_data[i], gastos_data[i - 1] = gastos_data[i - 1], gastos_data[i]
-                                                repintar()
-                                        def bajar(i: int) -> None:
-                                            if 0 <= i < len(gastos_data) and i < len(gastos_data) - 1:
-                                                gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
-                                                repintar()
-                                        with ui.row().classes("gap-0 justify-center"):
-                                            ui.button("▲", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                            ui.button("▼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
-                                    with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
-                                        def borrar_fila(r: Dict[str, Any]) -> None:
-                                            if r in gastos_data:
-                                                gastos_data.remove(r)
-                                                repintar()
-                                        ui.button("×", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
-                                edit_rows_ref.append(rinputs)
-                                row_to_inputs.append((row, rinputs))
+                with ui.element("table").classes("w-full border-collapse text-sm").style("table-layout: fixed;"):
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold sticky top-0"):
+                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 60%;").on("click", lambda: toggle_sort("gasto")):
+                                ui.label("Gasto")
+                            with ui.element("th").classes("px-2 py-2 border text-center cursor-pointer hover:bg-primary/80").style("width: 30%;").on("click", lambda: toggle_sort("importe")):
+                                ui.label("Importe")
+                            with ui.element("th").classes("px-1 py-2 border text-center").style("width: 70px;"):
+                                ui.label("Ordenar")
+                            with ui.element("th").classes("px-1 py-2 border text-center").style("width: 50px;"):
+                                ui.label("Borrar")
+                    with ui.element("tbody"):
+                        for idx, row in enumerate(datos):
+                            rinputs: Dict[str, Any] = {}
+                            row_idx_in_data = gastos_data.index(row) if row in gastos_data else idx
+                            imp_raw = str(row.get("importe", ""))
+                            imp_display = _fmt_importe_display(imp_raw) if imp_raw else ""
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100").style("width: 60%;"):
+                                    inp_gasto = ui.input(value=str(row.get("gasto", ""))).classes("w-full border-0").props("dense")
+                                    rinputs["gasto"] = inp_gasto
+                                with ui.element("td").classes("px-2 py-1 border-b border-gray-100 text-right").style("width: 30%;"):
+                                    with ui.row().classes("w-full items-center gap-1 justify-end text-right"):
+                                        ui.label("$").classes("text-gray-600 text-sm")
+                                        inp_imp = ui.input(value=imp_display).classes("flex-1 min-w-0 border-0").props("dense").style("text-align: right;")
+                                        rinputs["importe"] = inp_imp
+                                with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
+                                    def subir(i: int) -> None:
+                                        if 0 <= i < len(gastos_data) and i > 0:
+                                            sync_inputs_to_rows()
+                                            gastos_data[i], gastos_data[i - 1] = gastos_data[i - 1], gastos_data[i]
+                                            set_cotizador_tabla("gastos", gastos_data, uid)
+                                            repintar()
+                                    def bajar(i: int) -> None:
+                                        if 0 <= i < len(gastos_data) and i < len(gastos_data) - 1:
+                                            sync_inputs_to_rows()
+                                            gastos_data[i], gastos_data[i + 1] = gastos_data[i + 1], gastos_data[i]
+                                            set_cotizador_tabla("gastos", gastos_data, uid)
+                                            repintar()
+                                    with ui.row().classes("gap-0 justify-center"):
+                                        ui.button("▲", on_click=lambda i=row_idx_in_data: subir(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                        ui.button("▼", on_click=lambda i=row_idx_in_data: bajar(i)).classes("min-w-0 px-0.5 text-xs").props("flat dense no-caps")
+                                with ui.element("td").classes("px-1 py-1 border-b border-gray-100 text-center"):
+                                    def borrar_fila(r: Dict[str, Any]) -> None:
+                                        if r in gastos_data:
+                                            gastos_data.remove(r)
+                                            repintar()
+                                    ui.button("×", on_click=lambda r=row: borrar_fila(r)).classes("text-red-600 font-bold text-lg min-w-0 px-1").props("flat dense no-caps")
+                            edit_rows_ref.append(rinputs)
+                            row_to_inputs.append((row, rinputs))
             _pintar_header()
 
         repintar()
