@@ -649,15 +649,22 @@ def build_tab_promos(container) -> None:
                     if cand["meli_pct"] > by_rep[rep_id]["best"]["meli_pct"]:
                         by_rep[rep_id]["best"] = cand
 
-                rows = sorted(by_rep.values(), key=lambda x: x["best"]["meli_pct"], reverse=True)
+                # Activas (promo_status=started) primero, pendientes (todavia no arrancaron)
+                # despues; dentro de cada grupo, mayor aporte de ML primero.
+                rows = sorted(
+                    by_rep.values(),
+                    key=lambda x: (0 if x["best"].get("promo_status") == "started" else 1, -x["best"]["meli_pct"]),
+                )
 
                 candidatos_col.clear()
                 candidatos_col.style("display:block")
                 with candidatos_col:
                     if not rows:
-                        ui.label("No hay candidatos en promos co-financiadas actualmente.").classes(
-                            "text-gray-500 p-4 italic"
-                        )
+                        ui.label(
+                            "No hay candidatos en promos co-financiadas (Smart / Price Matching) por ahora. "
+                            "Este listado no incluye Lightning, Deal, Price Discount ni Cupón vendedor — esas "
+                            "salen 100% de tu bolsillo y no se muestran acá."
+                        ).classes("text-gray-500 p-4 italic")
                         return
 
                     def _fdate(d: str) -> str:
@@ -691,6 +698,13 @@ def build_tab_promos(container) -> None:
                             continue
                         sd = _fdate(cand.get("start_date") or "")
                         fd = _fdate(cand.get("finish_date") or "")
+                        promo_status = cand.get("promo_status") or ""
+                        if promo_status == "pending" and sd:
+                            vigencia = f"Arranca {sd}"
+                        elif sd or fd:
+                            vigencia = f"{sd} — {fd}"
+                        else:
+                            vigencia = ""
                         _prelim.append({
                             "sku":         sku,
                             "mlas":        mlas,
@@ -702,7 +716,8 @@ def build_tab_promos(container) -> None:
                             "all_items":   list(_all_vars),
                             "smart_price": float(cand.get("price") or 0),
                             "promo":       cand.get("promo_name") or "",
-                            "vigencia":    f"{sd} — {fd}" if (sd or fd) else "",
+                            "promo_status": promo_status,
+                            "vigencia":    vigencia,
                             "meli_pct":    cand["meli_pct"],
                             "seller_pct":  cand["seller_pct"],
                         })
@@ -743,6 +758,7 @@ def build_tab_promos(container) -> None:
                             "precio_ml":   p_ml,
                             "precio_rec":  round(p_ml * 1.8) if p_ml > 0 else 0,
                             "promo":       pr["promo"],
+                            "promo_status": pr["promo_status"],
                             "vigencia":    pr["vigencia"],
                             "meli_pct":    pr["meli_pct"],
                             "seller_pct":  pr["seller_pct"],
@@ -1290,7 +1306,8 @@ def build_tab_promos(container) -> None:
                                             with ui.element("td").style(f"{_TD};text-align:left"):
                                                 ui.label(_r["promo"] or "")
                                             with ui.element("td").style(f"{_TD};text-align:center"):
-                                                ui.label(_r["vigencia"])
+                                                _vig_color = "#2e7d32" if _r.get("promo_status") == "started" else "#e65100"
+                                                ui.label(_r["vigencia"]).style(f"color:{_vig_color};font-weight:600")
 
                     def _on_sort(col) -> None:
                         if _sort_state["col"] == col:
