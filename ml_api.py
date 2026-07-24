@@ -760,15 +760,21 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
             params={"app_version": "v2"}, headers=headers, timeout=15,
         )
         if resp.status_code != 200:
+            logging.warning(f"[ML_API] ml_get_smart_candidates HTTP {resp.status_code} seller_id={seller_id} - sin candidatos")
             return []
         promos = resp.json().get("results", [])
     except Exception:
+        logging.exception(f"[ML_API] ml_get_smart_candidates error consultando /seller-promotions/users/{seller_id}")
         return []
 
+    # "pending" = campaña aprobada que todavia no arranco pero ya acepta inscripcion (el item
+    # ya figura status=candidate y el deadline_date de la campaña llega hasta su finish_date,
+    # verificado en la doc de ML y con datos reales) -- si solo mostramos "started" el vendedor
+    # se entera de la campaña recien cuando ya arranco, perdiendo la ventana para anotarse antes.
     co_funded = [
         p for p in promos
         if (p.get("type") or "").upper() in _CO_FUNDED_TYPES
-        and (p.get("status") or "").lower() == "started"
+        and (p.get("status") or "").lower() in ("started", "pending")
     ]
 
     candidates: Dict[str, Any] = {}
@@ -793,9 +799,10 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
                     params=params, headers=headers, timeout=15,
                 )
                 if r.status_code != 200:
+                    logging.warning(f"[ML_API] ml_get_smart_candidates HTTP {r.status_code} promotion_id={pid} seller_id={seller_id} - paginado interrumpido")
                     break
                 idata = r.json()
-                items = idata.get("results", [])
+                items = idata.get("results") or []  # la API a veces devuelve "results": null (no [])
                 for item in items:
                     if (item.get("status") or "").lower() != "candidate":
                         continue
@@ -815,6 +822,7 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
                             "promo_id":      pid,
                             "promo_type":    ptype,
                             "promo_name":    promo.get("name") or "",
+                            "promo_status":  (promo.get("status") or "").lower(),
                             "start_date":    promo.get("start_date") or "",
                             "finish_date":   promo.get("finish_date") or "",
                         }
@@ -822,6 +830,7 @@ def ml_get_smart_candidates(access_token: str, seller_id: str) -> List[Dict[str,
                 if not search_after or not items:
                     break
             except Exception:
+                logging.exception(f"[ML_API] ml_get_smart_candidates error paginando promotion_id={pid} seller_id={seller_id}")
                 break
 
     return list(candidates.values())
