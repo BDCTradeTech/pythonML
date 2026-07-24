@@ -944,7 +944,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     ui.label("Sin cuenta ML vinculada").classes("text-xs text-gray-400")
                 return
 
-            from tabs.cuotas import _cuotas_key, _get_promo_data
+            from tabs.cuotas import _cuotas_key, _get_promo_data, PROMO_ITEM_CACHE_PREFIX
 
             data      = await run.io_bound(ml_get_my_items, access_token, True)
             all_items = data.get("results", [])
@@ -1105,7 +1105,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             # el mismo patrón stale-while-revalidate de tabs/precios.py (fresh 15min/stale
             # 60min, ver helpers/cache_swr.py) más paralelización de la parte que sí hace
             # falta pedir (igual que _enriquecer_items en precios.py). [PERF-DASHBOARD]
-            promo_cache_prefix = f"dash_promo_{uid}"
+            # Mismo prefijo que tabs/cuotas.py (unificado: ambas páginas piden la misma
+            # _get_promo_data por item_id, así un item ya cacheado por una no se vuelve a
+            # pedir desde la otra).
+            promo_cache_prefix = f"{PROMO_ITEM_CACHE_PREFIX}_{uid}"
 
             def _fetch_promo_batch(ids_to_fetch: List[str]) -> Dict[str, Any]:
                 out: Dict[str, Any] = {}
@@ -1115,9 +1118,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     for fut in as_completed(futures):
                         iid = futures[fut]
                         try:
-                            out[iid] = fut.result()
+                            val = fut.result()
                         except Exception:
                             logging.exception(f"[DASHBOARD] error _get_promo_data iid={iid} uid={uid}")
+                            continue
+                        if val is not None:
+                            out[iid] = val
                 return out
 
             def _promo_age_minutes() -> float:

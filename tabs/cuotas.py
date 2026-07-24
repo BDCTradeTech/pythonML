@@ -8,15 +8,19 @@ from typing import Any, Dict, List, Optional
 
 import asyncio
 
+import logging
+
 import re
 
-import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_connection, get_cotizador_param, get_financiacion_cuotas_ml
+from db import get_cache_age_minutes, get_connection, get_cotizador_param, get_financiacion_cuotas_ml, set_cached
+from helpers.cache_swr import FRESH_MIN, cached_or_refresh_bulk
 from ml_api import (
+    MLTransientFetchError,
     get_ml_access_token,
     _cuotas_desde_item,
     ml_get_my_items,
@@ -42,8 +46,11 @@ def _require_login() -> Optional[Dict[str, Any]]:
     return user
 
 
-_promo_cache: Dict[str, Any] = {}   # key: f"promo_{seller_id}" -> {"data": {...}, "ts": float}
-_PROMO_CACHE_TTL = 900  # 15 minutos
+# Prefijo de caché por-item (helpers/cache_swr.py: SQLite, stale-while-revalidate, fresh 15min/
+# stale 60min) para los datos de promo/cuotas de cada publicación individual. Compartido con
+# tabs/dashboard.py, que consulta la misma _get_promo_data para su card de "Cuotas" — así un
+# item ya cacheado por una página no se vuelve a pedir desde la otra.
+PROMO_ITEM_CACHE_PREFIX = "promo_item"
 
 
 # ---------------------------------------------------------------------------
@@ -68,10 +75,17 @@ def _cuotas_score(it: dict) -> tuple:
     return (status_score, cuotas_score, stock_score)
 
 
-def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> dict:
-    """Obtiene precio promo, % ML y % vendedor. Misma cascada de 3 intentos que el popup de precios."""
+def _get_promo_data(access_token: str, item_id: str, seller_id: str = "") -> Optional[dict]:
+    """Obtiene precio promo, % ML y % vendedor. Misma cascada de 3 intentos que el popup de precios.
+    Devuelve None (no un dict) si la consulta a ML falló por un problema transitorio (timeout/5xx) —
+    a diferencia del dict "sin promo" (que sí es un resultado confirmado), un None indica que no se
+    pudo saber. cached_or_refresh_bulk (helpers/cache_swr.py) solo persiste valores no-None, así un
+    fallo de red no queda cacheado como "confirmado sin promo" y se reintenta en la próxima carga."""
     empty: dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
-    sp = ml_get_item_sale_price_full(access_token, item_id)
+    try:
+        sp = ml_get_item_sale_price_full(access_token, item_id, raise_on_transient_error=True)
+    except MLTransientFetchError:
+        return None
     if not sp or sp.get("amount") is None:
         return empty
     amt_f = float(sp["amount"])
@@ -117,7 +131,7 @@ def _is_reacondicionado(row: dict) -> bool:
 # Tabla de cuotas
 # ---------------------------------------------------------------------------
 
-async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None) -> None:
+async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token: str, promo_data: Optional[Dict[str, Dict]] = None, container=None, user_id: Optional[int] = None, promo_age_min: Optional[float] = None) -> None:
     """Pinta la tabla de cuotas con columnas agrupadas por tipo de publicación."""
     items = data.get("results", [])
     result_area.clear()
@@ -414,7 +428,16 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                 ui.label(f"{_nc} cuotas").style("font-size:11px;color:#9e9e9e;line-height:1.3")
                 if container is not None:
                     ui.element("div").style("width:1px;height:48px;background:#bdbdbd;align-self:center;margin:0 4px")
-                    ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container, force_refresh=True)).props("flat dense")
+                    with ui.column().classes("items-center gap-1"):
+                        if promo_age_min is not None:
+                            if promo_age_min < 1:
+                                _age_txt = "hace instantes"
+                            elif promo_age_min < 60:
+                                _age_txt = f"hace {promo_age_min:.0f} min"
+                            else:
+                                _age_txt = f"hace {promo_age_min / 60:.1f} h"
+                            ui.label(f"Promos actualizadas {_age_txt}").classes("text-xs text-gray-500")
+                        ui.button("Sincronizar", icon="sync", on_click=lambda: build_tab_cuotas(container, force_refresh=True)).props("flat dense")
 
         with ui.row().classes("items-center gap-3 mb-3"):
             filtro_cuotas_sel = ui.select(
@@ -1048,63 +1071,121 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                 profile = await run.io_bound(ml_get_user_profile, access_token)
                 seller_id = str((profile or {}).get("id") or "")
             except Exception:
-                pass
-            total_grupos = len(rep_ids)
+                logging.exception(f"[CUOTAS] no se pudo obtener el perfil ML (user_id={user['id']})")
+            if not seller_id:
+                logging.warning(
+                    f"[CUOTAS] seller_id vacío tras resolver perfil ML (user_id={user['id']}) — "
+                    "se continúa sin el 3er fallback de detección de promos "
+                    "(ml_get_promotion_item_discounts_by_user); el caché sigue scopeado por "
+                    "user_id de la app, no por seller_id, así que esto no afecta a otros usuarios."
+                )
+
             result_area.clear()
-            promo_lbl = None
             with result_area:
                 with ui.card().classes("w-full p-8 items-center gap-4"):
                     ui.spinner(size="xl")
-                    promo_lbl = ui.label(f"Cargando cuotas 0/{total_grupos}...").classes("text-xl text-gray-700")
+                    ui.label("Cargando cuotas...").classes("text-xl text-gray-700")
+
             _empty_pd: Dict = {"price_promo": None, "meli_pct": None, "seller_pct": None}
+            # Todos los items individuales de todos los grupos (propia + catálogo + cada variante
+            # x3/x6/x9/x12): cualquiera puede ser el que tiene la promo activa, así que se consultan
+            # todos — no se recorta por performance (ver _get_promo_data).
+            _all_item_ids: List[str] = sorted({_iid for _iids in _all_iids_per_grp for _iid in _iids})
+            _cache_prefix = f"{PROMO_ITEM_CACHE_PREFIX}_{user['id']}"
 
-            _cache_key = f"promo_{seller_id}"
-            _cached = _promo_cache.get(_cache_key)
-            if _cached and (_time.time() - _cached["ts"]) < _PROMO_CACHE_TTL and not force_refresh:
-                promo_data = _cached["data"]
-                if promo_lbl:
-                    promo_lbl.set_text("Datos de cuotas desde caché...")
-            else:
-                async def _fetch_grupo(rep_id: str, iids: list) -> tuple:
-                    if not iids:
-                        return rep_id, _empty_pd
-                    _pds = await asyncio.gather(*[
-                        run.io_bound(_get_promo_data, access_token, _iid, seller_id)
-                        for _iid in iids
-                    ])
+            def _fetch_promo_batch(ids_to_fetch: List[str]) -> Dict[str, Any]:
+                """Sync (corre dentro de run.io_bound): trae _get_promo_data en paralelo, acotado
+                a 16 hilos, solo para los ids que cache_swr determinó que faltan/vencieron. Los que
+                devuelven None (fallo transitorio, ver _get_promo_data) se omiten del dict de salida
+                a propósito: cached_or_refresh_bulk no cachea valores None, así ese item queda
+                pendiente de reintento en la próxima carga en vez de "confirmado sin promo"."""
+                out: Dict[str, Any] = {}
+                with ThreadPoolExecutor(max_workers=min(16, len(ids_to_fetch) or 1)) as ex:
+                    futures = {ex.submit(_get_promo_data, access_token, iid, seller_id): iid for iid in ids_to_fetch}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            val = fut.result()
+                        except Exception:
+                            logging.exception(f"[CUOTAS] error _get_promo_data iid={iid} user_id={user['id']}")
+                            continue
+                        if val is not None:
+                            out[iid] = val
+                return out
+
+            def _aggregate(by_item: Dict[str, Any]) -> Dict[str, Dict]:
+                """Por grupo, el item con el price_promo más bajo representa la fila (misma regla
+                que antes: cualquier variante del grupo puede ser la que tiene la promo activa)."""
+                agg: Dict[str, Dict] = {}
+                for rep_id, iids in zip(rep_ids, _all_iids_per_grp):
                     best_pd, best_price = _empty_pd, None
-                    for _pd in _pds:
-                        _pp = _pd.get("price_promo")
-                        if _pp is not None and (best_price is None or float(_pp) < best_price):
-                            best_price, best_pd = float(_pp), _pd
-                    return rep_id, best_pd
+                    for iid in iids:
+                        pd_ = by_item.get(iid)
+                        if not pd_:
+                            continue
+                        pp = pd_.get("price_promo")
+                        if pp is not None and (best_price is None or float(pp) < best_price):
+                            best_price, best_pd = float(pp), pd_
+                    agg[rep_id] = best_pd
+                return agg
 
-                _completadas = 0
+            if force_refresh:
+                # "Sincronizar": el usuario pidió explícitamente no servir nada stale.
+                _by_item = await run.io_bound(_fetch_promo_batch, _all_item_ids)
+                for _iid, _val in _by_item.items():
+                    await run.io_bound(set_cached, f"{_cache_prefix}_{_iid}", _val)
+            else:
+                _by_item = await run.io_bound(cached_or_refresh_bulk, _cache_prefix, _all_item_ids, _fetch_promo_batch)
 
-                async def _fetch_grupo_tracked(rep_id: str, iids: list) -> tuple:
-                    nonlocal _completadas
-                    resultado = await _fetch_grupo(rep_id, iids)
-                    _completadas += 1
-                    if promo_lbl:
-                        promo_lbl.set_text(f"Cargando cuotas {_completadas}/{total_grupos}...")
-                    return resultado
+            promo_data = _aggregate(_by_item)
 
-                if promo_lbl:
-                    promo_lbl.set_text(f"Cargando cuotas 0/{total_grupos}...")
+            def _oldest_age() -> float:
+                ages = [a for a in (get_cache_age_minutes(f"{_cache_prefix}_{iid}") for iid in _all_item_ids) if a is not None]
+                return max(ages) if ages else 0.0
 
-                resultados = await asyncio.gather(*[
-                    _fetch_grupo_tracked(rep_id, iids)
-                    for rep_id, iids in zip(rep_ids, _all_iids_per_grp)
-                ])
-                promo_data: Dict[str, Dict] = {}
-                for rep_id, pd in resultados:
-                    promo_data[rep_id] = pd
-                _promo_cache[_cache_key] = {"data": promo_data, "ts": _time.time()}
+            promo_age_min = _oldest_age()
+
             try:
-                await _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"])
+                await _mostrar_tabla_cuotas(result_area, data, access_token, promo_data, container, user["id"], promo_age_min)
             except Exception as e:
                 result_area.clear()
                 with result_area:
                     ui.label(f"❌ Error al mostrar datos: {e}").classes("text-negative")
+                return
+
+            if not force_refresh and promo_age_min > FRESH_MIN:
+                # Se sirvieron datos stale — cached_or_refresh_bulk ya disparó un refresh en
+                # background. Sondeamos hasta que esté fresco y re-pintamos en silencio (mismo
+                # patrón que tabs/dashboard.py _poll_promo_refresh). El client/container se
+                # capturan acá, en contexto síncrono, antes de que el timer dispare callbacks async.
+                _client = context.client
+                _poll_state: Dict[str, Any] = {"attempts": 0, "timer": None}
+                MAX_POLL_ATTEMPTS = 24  # ~120s
+
+                async def _poll_promo_refresh() -> None:
+                    _poll_state["attempts"] += 1
+                    _age = _oldest_age()
+                    if _age <= FRESH_MIN:
+                        _fresh_by_item = await run.io_bound(cached_or_refresh_bulk, _cache_prefix, _all_item_ids, _fetch_promo_batch)
+                        with _client:
+                            await _mostrar_tabla_cuotas(
+                                result_area, data, access_token, _aggregate(_fresh_by_item), container, user["id"], _oldest_age()
+                            )
+                        if _poll_state["timer"] is not None:
+                            _poll_state["timer"].deactivate()
+                        return
+                    if _poll_state["attempts"] >= MAX_POLL_ATTEMPTS:
+                        logging.warning(
+                            f"[CUOTAS] refresh de promos no terminó tras "
+                            f"{MAX_POLL_ATTEMPTS * 5}s (user_id={user['id']}, n_items={len(_all_item_ids)}) "
+                            f"— se sigue mostrando el dato con {_age:.0f} min de antigüedad"
+                        )
+                        with _client:
+                            ui.notify("No se pudieron actualizar todas las promos, mostrando el último dato disponible", color="warning")
+                        if _poll_state["timer"] is not None:
+                            _poll_state["timer"].deactivate()
+
+                with _client:
+                    _poll_state["timer"] = ui.timer(5.0, _poll_promo_refresh)
 
         background_tasks.create(_cargar_cuotas_async(), name="cargar_cuotas")

@@ -29,6 +29,13 @@ _SESSION: Optional[requests.Session] = None
 _SESSION_LOCK = threading.Lock()
 
 
+class MLTransientFetchError(Exception):
+    """La llamada a la API de ML falló por un problema transitorio (timeout, error de
+    conexión, 5xx) — distinto de una respuesta válida que indica ausencia de datos (4xx
+    o 200 sin promo activa). Solo la usan callers que pasan raise_on_transient_error=True
+    (ver ml_get_item_sale_price_full); el resto del código sigue viendo el None de siempre."""
+
+
 def get_ml_session() -> requests.Session:
     """Session HTTP compartida para todas las llamadas a la API de ML/MP: reutiliza el pool de
     conexiones TCP/TLS en vez de abrir una conexión nueva por request (relevante en los loops de
@@ -507,9 +514,14 @@ def ml_get_item_sale_price(access_token: Optional[str], item_id: str) -> Optiona
     return None
 
 
-def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
+def ml_get_item_sale_price_full(
+    access_token: Optional[str], item_id: str, raise_on_transient_error: bool = False,
+) -> Optional[Dict[str, Any]]:
     """Obtiene amount, regular_amount, promotion_id, promotion_type y campaign_id de GET /items/{id}/sale_price.
-    promotion_id/type pueden estar en metadata (API ML a veces los pone ahí)."""
+    promotion_id/type pueden estar en metadata (API ML a veces los pone ahí).
+    raise_on_transient_error: si True, un timeout/error de conexión/5xx levanta MLTransientFetchError
+    en vez de devolver None — permite al caller distinguir 'la API falló' de 'no hay promo' (default
+    False, no cambia el comportamiento de los callers existentes que no pasan este parámetro)."""
     if not access_token or not str(item_id).strip():
         return None
     try:
@@ -538,8 +550,20 @@ def ml_get_item_sale_price_full(access_token: Optional[str], item_id: str) -> Op
                     return out
                 except (TypeError, ValueError):
                     pass
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else None
+        if status is not None and status >= 500:
+            logging.exception(f"[ML_API] ml_get_item_sale_price_full HTTP {status} (transitorio) item_id={item_id}")
+            if raise_on_transient_error:
+                raise MLTransientFetchError(f"HTTP {status} en sale_price item_id={item_id}") from e
+        else:
+            logging.warning(f"[ML_API] ml_get_item_sale_price_full HTTP {status} item_id={item_id} - sin datos")
+    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+        logging.exception(f"[ML_API] ml_get_item_sale_price_full timeout/conexión item_id={item_id}")
+        if raise_on_transient_error:
+            raise MLTransientFetchError(f"timeout/conexión en sale_price item_id={item_id}") from e
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_item_sale_price_full error inesperado item_id={item_id}")
     return None
 
 
@@ -714,7 +738,7 @@ def ml_get_seller_promotions_item(access_token: Optional[str], item_id: str) -> 
             if isinstance(data, list):
                 return data
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_seller_promotions_item error item_id={item_id}")
     return []
 
 
@@ -990,9 +1014,12 @@ def ml_get_promotion_item_discounts_by_user(
                                 return {"meli_pct": meli_f, "seller_pct": seller_f}
                         break
             except Exception:
+                logging.exception(
+                    f"[ML_API] ml_get_promotion_item_discounts_by_user error consultando promo_id={promo_id} item_id={item_id}"
+                )
                 continue
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_promotion_item_discounts_by_user error item_id={item_id} user_id={user_id}")
     return None
 
 
@@ -1040,7 +1067,7 @@ def ml_get_promotion_item_discounts_by_campaign(
                 if out:
                     return out
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_promotion_item_discounts_by_campaign error campaign_id={campaign_id} item_id={item_id}")
     return None
 
 
@@ -1136,7 +1163,7 @@ def ml_get_promotion_item_discounts(
                         meli_inferred = max(0, total_discount_pct - seller_f)
                         return {"meli_pct": meli_inferred, "seller_pct": seller_f}
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_promotion_item_discounts error promotion_id={promotion_id} item_id={item_id}")
     return None
 
 
