@@ -53,40 +53,60 @@ def get_seller_id(raw_data: str) -> str | None:
 
 
 def get_all_item_ids(token: str, seller_id: str) -> tuple[list[str], bool]:
-    """Devuelve (ids, truncated). truncated=True si la paginacion se corto antes de
-    llegar al total real (p.ej. el limite offset+limit<=1000 que impone ML en este
-    endpoint) -- en ese caso se devuelven los ids ya recolectados en vez de perderlos."""
+    """Devuelve (ids, truncated). Pagina con search_type=scan + scroll_id (sin techo de 1000,
+    a diferencia de offset/limit). truncated=True solo si el scroll se corta a mitad de camino
+    (scroll_id vencido/invalido o error de red) -- en ese caso se devuelven los ids ya
+    recolectados en vez de perderlos. limit=100 es el maximo real que acepta ML en modo scan
+    (confirmado en vivo: pedir 200 o mas se ignora y devuelve 100 igual)."""
     ids = []
-    offset, limit = 0, 100
-    total = None
+    scroll_id = None
     truncated = False
+    base_params = {'status': 'active', 'search_type': 'scan', 'limit': 100}
     while True:
+        params = dict(base_params)
+        if scroll_id:
+            params['scroll_id'] = scroll_id
         try:
             r = requests.get(
                 f'https://api.mercadolibre.com/users/{seller_id}/items/search',
-                params={'status': 'active', 'offset': offset, 'limit': limit},
+                params=params,
                 headers={'Authorization': f'Bearer {token}'},
                 timeout=30
             )
             r.raise_for_status()
-        except requests.exceptions.RequestException:
+        except requests.exceptions.HTTPError as e:
             if not ids:
                 # Fallo en la primera pagina: no hay nada que recuperar, es un error real.
                 raise
             truncated = True
-            log.warning(
-                "  Paginacion cortada en offset=%d (recuperados %d de %s items activos) -- "
-                "probable limite de ML de offset+limit<=1000 en este endpoint, ver fix de scroll pendiente",
-                offset, len(ids), total if total is not None else "?"
-            )
+            resp = e.response
+            if resp is not None and resp.status_code == 400 and 'scroll' in resp.text.lower():
+                log.warning(
+                    "  Scroll cortado tras %d items: scroll_id vencido/invalido (%s) -- "
+                    "si esto se repite seguido, hay que revisar el volumen de items o paralelizar",
+                    len(ids), resp.text[:200]
+                )
+            else:
+                log.warning(
+                    "  Scroll cortado tras %d items: error HTTP %s -- %s",
+                    len(ids), resp.status_code if resp is not None else '?',
+                    resp.text[:200] if resp is not None else str(e)
+                )
+            break
+        except requests.exceptions.RequestException as e:
+            if not ids:
+                raise
+            truncated = True
+            log.warning("  Scroll cortado tras %d items: fallo de red (%s)", len(ids), e)
             break
         data = r.json()
-        total = data.get('paging', {}).get('total', 0)
         results = data.get('results', [])
-        ids.extend(results)
-        if offset + limit >= total:
+        if not results:
             break
-        offset += limit
+        ids.extend(results)
+        scroll_id = data.get('scroll_id')
+        if not scroll_id:
+            break
     return ids, truncated
 
 
