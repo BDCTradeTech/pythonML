@@ -8,6 +8,7 @@ Lógica eficiente en 4 pasos:
 Cron: 0 4 * * * /opt/pythonml/venv/bin/python3 /opt/pythonml/competidores_snapshot.py
 """
 import sys, json, logging, time
+from collections import Counter
 from datetime import date
 sys.path.insert(0, '/opt/pythonml')
 
@@ -21,6 +22,31 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 log = logging.getLogger(__name__)
 
 ML_API = "https://api.mercadolibre.com"
+
+SLEEP_BETWEEN_REQUESTS = 0.15  # throttling conservador (~6-7 req/s) para no chocar con el rate limit de ML
+MAX_RETRIES_429 = 3
+
+
+def _get_with_retry(url, headers, timeout=10, max_retries=MAX_RETRIES_429):
+    """GET con reintento y backoff exponencial (2s, 4s, 8s) ante 429 (rate limit de ML)."""
+    backoff = 2
+    resp = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.get(url, headers=headers, timeout=timeout)
+        except Exception:
+            if attempt == max_retries:
+                raise
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        if resp.status_code == 429 and attempt < max_retries:
+            log.warning("429 rate limit en %s — reintento %d/%d en %ds", url, attempt + 1, max_retries, backoff)
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        return resp
+    return resp
 
 
 def get_all_credentials():
@@ -98,6 +124,7 @@ async def run():
 
     for cred in creds:
         user_id = cred["user_id"]
+        own_seller_id = cred["seller_id"]
         try:
             token = get_ml_access_token(user_id)
             if not token:
@@ -111,13 +138,11 @@ async def run():
             # PASO 1: Recolectar seller_ids de todos los catálogos
             # Estructura: {catalog_product_id: [seller_ids]}
             catalog_sellers = {}  # cpid -> list of {seller_id, price, item_id}
+            status_counts = Counter()
 
             for cpid in catalog_ids:
                 try:
-                    r = requests.get(
-                        f"{ML_API}/products/{cpid}/items",
-                        headers=headers, timeout=10
-                    )
+                    r = _get_with_retry(f"{ML_API}/products/{cpid}/items", headers=headers, timeout=10)
                     if r.status_code == 200:
                         items = r.json().get("results", [])
                         catalog_sellers[cpid] = [
@@ -126,11 +151,24 @@ async def run():
                                 "price": it.get("price"),
                                 "item_id": it.get("item_id") or it.get("id"),
                             }
-                            for it in items if it.get("seller_id")
+                            for it in items
+                            if it.get("seller_id") and str(it.get("seller_id", "")) != own_seller_id
                         ]
+                        status_counts[200] += 1
+                    else:
+                        status_counts[r.status_code] += 1
+                        log.warning("Catálogo %s status=%s body=%s", cpid, r.status_code, (r.text or "")[:200])
                 except Exception as e:
+                    status_counts["exception"] += 1
                     log.error("Error catálogo %s: %s", cpid, e)
+                time.sleep(SLEEP_BETWEEN_REQUESTS)
 
+            fails = {k: v for k, v in status_counts.items() if k != 200}
+            fail_detail = ", ".join(f"{k}={v}" for k, v in sorted(fails.items(), key=lambda kv: str(kv[0])))
+            log.info(
+                "user_id=%s — catálogos: OK=%d FAIL=%d (%s)",
+                user_id, status_counts.get(200, 0), sum(fails.values()), fail_detail or "sin fallos"
+            )
             log.info("Catálogos procesados: %d", len(catalog_sellers))
 
             # PASO 2: Seller IDs únicos (de catálogos + competidores_seguidos)
@@ -160,7 +198,7 @@ async def run():
 
             for sid in all_seller_ids:
                 try:
-                    r = requests.get(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
+                    r = _get_with_retry(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
                     if r.status_code == 200:
                         d = r.json()
                         rep = d.get("seller_reputation") or {}
@@ -184,6 +222,7 @@ async def run():
                             }
                 except Exception as e:
                     log.error("Error usuario %s: %s", sid, e)
+                time.sleep(SLEEP_BETWEEN_REQUESTS)
 
             log.info("Sellers con ventas históricas: %d", len(seller_data))
 
