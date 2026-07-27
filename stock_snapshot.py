@@ -52,24 +52,42 @@ def get_seller_id(raw_data: str) -> str | None:
         return None
 
 
-def get_all_item_ids(token: str, seller_id: str) -> list[str]:
+def get_all_item_ids(token: str, seller_id: str) -> tuple[list[str], bool]:
+    """Devuelve (ids, truncated). truncated=True si la paginacion se corto antes de
+    llegar al total real (p.ej. el limite offset+limit<=1000 que impone ML en este
+    endpoint) -- en ese caso se devuelven los ids ya recolectados en vez de perderlos."""
     ids = []
     offset, limit = 0, 100
+    total = None
+    truncated = False
     while True:
-        r = requests.get(
-            f'https://api.mercadolibre.com/users/{seller_id}/items/search',
-            params={'status': 'active', 'offset': offset, 'limit': limit},
-            headers={'Authorization': f'Bearer {token}'},
-            timeout=30
-        )
-        r.raise_for_status()
+        try:
+            r = requests.get(
+                f'https://api.mercadolibre.com/users/{seller_id}/items/search',
+                params={'status': 'active', 'offset': offset, 'limit': limit},
+                headers={'Authorization': f'Bearer {token}'},
+                timeout=30
+            )
+            r.raise_for_status()
+        except requests.exceptions.RequestException:
+            if not ids:
+                # Fallo en la primera pagina: no hay nada que recuperar, es un error real.
+                raise
+            truncated = True
+            log.warning(
+                "  Paginacion cortada en offset=%d (recuperados %d de %s items activos) -- "
+                "probable limite de ML de offset+limit<=1000 en este endpoint, ver fix de scroll pendiente",
+                offset, len(ids), total if total is not None else "?"
+            )
+            break
         data = r.json()
+        total = data.get('paging', {}).get('total', 0)
         results = data.get('results', [])
         ids.extend(results)
-        if offset + limit >= data.get('paging', {}).get('total', 0):
+        if offset + limit >= total:
             break
         offset += limit
-    return ids
+    return ids, truncated
 
 
 def get_items_batch(token: str, item_ids: list[str]) -> list[dict]:
@@ -100,6 +118,7 @@ def run_snapshot():
     conn.close()
 
     total_saved = 0
+    truncated_sellers = []
     for i, (cred_id, user_id, raw_data) in enumerate(creds):
         if i > 0:
             # Espaciar el refresh de token entre usuarios: procesarlos en menos de 1s
@@ -124,8 +143,13 @@ def run_snapshot():
         is_multiwarehouse = seller_id in MULTIWAREHOUSE_SELLER_IDS
         log.info("Procesando seller_id=%s (user_id=%s, multiwarehouse=%s)", seller_id, user_id, is_multiwarehouse)
         try:
-            item_ids = get_all_item_ids(token, seller_id)
-            log.info("  %d items activos encontrados", len(item_ids))
+            item_ids, truncated = get_all_item_ids(token, seller_id)
+            if truncated:
+                truncated_sellers.append(seller_id)
+            log.info(
+                "  %d items activos encontrados%s",
+                len(item_ids), " (TRUNCADO por limite de paginacion)" if truncated else ""
+            )
 
             items = get_items_batch(token, item_ids)
             log.info("  %d items con datos obtenidos", len(items))
@@ -160,7 +184,13 @@ def run_snapshot():
         except Exception as e:
             log.error("Error procesando seller_id=%s: %s", seller_id, e)
 
-    log.info("=== Snapshot completado: %d registros totales ===", total_saved)
+    if truncated_sellers:
+        log.info(
+            "=== Snapshot completado: %d registros totales -- TRUNCADOS por limite de paginacion (seller_id): %s ===",
+            total_saved, ", ".join(truncated_sellers)
+        )
+    else:
+        log.info("=== Snapshot completado: %d registros totales ===", total_saved)
 
 
 if __name__ == '__main__':
