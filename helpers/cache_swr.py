@@ -20,21 +20,24 @@ FRESH_MIN = 15
 STALE_MIN = 60
 
 
-def cached_or_refresh(cache_key: str, fetch_fn):
+def cached_or_refresh(cache_key: str, fetch_fn, force: bool = False):
     """Cache de un solo valor global (ej. bulk de promos de todo el vendedor).
-    fetch_fn: callable sin argumentos que hace el trabajo real y devuelve el valor a cachear."""
-    cached = get_cached(cache_key, max_age_minutes=FRESH_MIN)
-    if cached is not None:
-        return cached
-    stale = get_cached_stale_ok(cache_key, max_age_minutes=STALE_MIN)
-    if stale is not None:
-        def _refresh_bg() -> None:
-            try:
-                set_cached(cache_key, fetch_fn())
-            except Exception:
-                logging.exception(f"[CACHE-SWR] cache_bg_refresh_error key={cache_key}")
-        threading.Thread(target=_refresh_bg, daemon=True, name="cache_swr_bg_refresh").start()
-        return stale
+    fetch_fn: callable sin argumentos que hace el trabajo real y devuelve el valor a cachear.
+    force=True: saltea fresh y stale, llama fetch_fn() directo (mismo patrón que
+    ml_get_my_items force_refresh) -- usado cuando el usuario pide "Actualizar" explícito."""
+    if not force:
+        cached = get_cached(cache_key, max_age_minutes=FRESH_MIN)
+        if cached is not None:
+            return cached
+        stale = get_cached_stale_ok(cache_key, max_age_minutes=STALE_MIN)
+        if stale is not None:
+            def _refresh_bg() -> None:
+                try:
+                    set_cached(cache_key, fetch_fn())
+                except Exception:
+                    logging.exception(f"[CACHE-SWR] cache_bg_refresh_error key={cache_key}")
+            threading.Thread(target=_refresh_bg, daemon=True, name="cache_swr_bg_refresh").start()
+            return stale
     valor = fetch_fn()
     set_cached(cache_key, valor)
     return valor

@@ -172,7 +172,7 @@ def build_tab_precios(container) -> None:
             )
             _t_fase = time.perf_counter()
             try:
-                _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref)
+                _mostrar_tabla_precios(area, data, token, usr, on_actualizar, inc_paused_ref, f_stock_ref, force_refresh=force_refresh)
             except Exception as e:
                 logging.exception(f"[PERF-PRODUCTOS] fase='mostrar_tabla_precios_EXCEPTION' user_id={_t_perf_uid} error={e}")
                 area.clear()
@@ -561,6 +561,7 @@ def _show_item_detail_dialog(
 def _mostrar_tabla_precios(
     result_area, data: Dict[str, Any], access_token: str, user: Dict[str, Any], on_actualizar=None,
     include_paused_ref: Optional[Dict[str, bool]] = None, filtro_stock_ref: Optional[Dict[str, str]] = None,
+    force_refresh: bool = False,
 ) -> None:
     """Pinta la tabla de precios con celda de precio clickable para editar."""
     def fmt_moneda(val: Any) -> str:
@@ -912,6 +913,11 @@ def _mostrar_tabla_precios(
     # tanto en la carga inicial como cuando un cambio de filtro revela items todavía no
     # enriquecidos (en ese caso hay un delay adicional acotado a esos items nuevos).
     _enriquecidos_ids: set = set()
+    # force_refresh llega de "Actualizar" (_cargar_precios_async) -- se consume una sola vez
+    # en el primer enriquecimiento tras la carga, para que ese pase bypasee la caché de 15/60min
+    # de enriq_promo_* (ver cache_swr.cached_or_refresh) igual que hace el popup "Ganando".
+    # Cambios de filtro posteriores en la misma carga vuelven a usar la caché normal.
+    _force_next_enriq: Dict[str, bool] = {"val": force_refresh}
 
     # Progreso en vivo del enriquecimiento (mismo espíritu que el contador "X de N" de
     # Cuotas, pero acá el trabajo lo hacen hilos de ThreadPoolExecutor, no corutinas
@@ -930,7 +936,7 @@ def _mostrar_tabla_precios(
         with _progress_lock:
             _progress_ref["done"] = _progress_ref.get("done", 0) + 1
 
-    def _enriquecer_items(items_subset: List[Dict[str, Any]]) -> None:
+    def _enriquecer_items(items_subset: List[Dict[str, Any]], force: bool = False) -> None:
         _t_ptw = time.perf_counter()
         _items_para_ptw = [
             r for r in items_subset
@@ -1072,6 +1078,7 @@ def _mostrar_tabla_precios(
                     _cached_or_refresh(
                         f"enriq_promo_{_uid}",
                         lambda: ml_get_active_promo_prices_bulk(access_token, seller_id_ref),
+                        force=force,
                     ) if seller_id_ref else None
                 )
                 logging.warning(
@@ -3051,7 +3058,8 @@ def _mostrar_tabla_precios(
             # [FIX freeze global] corre en un thread aparte (run.io_bound) para NO bloquear
             # el event loop de NiceGUI mientras esperan las requests HTTP a ML — si no,
             # se congela la app entera para todos los usuarios conectados, no solo este.
-            await run.io_bound(_enriquecer_items, _pendientes_enriq)
+            await run.io_bound(_enriquecer_items, _pendientes_enriq, _force_next_enriq["val"])
+            _force_next_enriq["val"] = False
             logging.warning(
                 f"[PERF-PRODUCTOS] fase='enriquecimiento_bajo_demanda' user_id={_perf_uid} "
                 f"tiempo={time.perf_counter() - _t_enriq_od:.3f}s items={len(_pendientes_enriq)}"
