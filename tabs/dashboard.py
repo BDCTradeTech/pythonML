@@ -209,6 +209,14 @@ def _query_cron_runs(user_id: int) -> Dict[str, Dict[str, Dict[str, Any]]]:
     return by_job
 
 
+def _fmt_dt(iso: Optional[str]) -> str:
+    """'YYYY-MM-DDTHH:MM:SS' -> 'DD/MM HH:MM', compacto para la card angosta."""
+    iso = iso or ""
+    if len(iso) < 16:
+        return iso
+    return f"{iso[8:10]}/{iso[5:7]} {iso[11:16]}"
+
+
 def _query_arca(user_id: int) -> Dict[str, Any]:
     return {
         "siper":   get_arca_datos("siper", user_id),
@@ -292,9 +300,9 @@ def _rep_alerts(metrics: Dict) -> List[Tuple[str, str]]:
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
-def _dot(color: str):
+def _dot(color: str, size: int = 10):
     return ui.element("span").style(
-        f"display:inline-block;width:10px;height:10px;border-radius:9999px;"
+        f"display:inline-block;width:{size}px;height:{size}px;border-radius:9999px;"
         f"background:{color};flex-shrink:0")
 
 def _card_header(title: str, color: str):
@@ -594,7 +602,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     _susp_items_ref: Dict[str, Any] = {"val": []}
     desde_sql = desde_dt.strftime("%Y-%m-%d")
 
-    is_mobile_ref: Dict[str, bool] = {"val": False}
+    width_ref: Dict[str, int] = {"val": 9999}  # ancho de ventana detectado (px), define cuántas columnas entran
     # pre-declare para nonlocal en _render_cards
     prod_color      = _GREEN
     prod_header_row = None
@@ -650,14 +658,14 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         arrow_btn.props("icon=expand_more")
                 arrow_btn.on_click(_toggle_alerts)
 
-            # ── GRILLA PRINCIPAL: responsive (3 col desktop / 2 col mobile) ─────
-            # Fila 1: Productos | Ventas | Cuotas
-            # Fila 2: Estadísticas ML | Publicaciones ML | ARCA
+            # ── GRILLA PRINCIPAL: responsive (4 col desktop / 3 col tablet / 2 col mobile) ─
+            # Fila 1: Productos | Ventas — últimos 30 días | Cuotas | Tus tareas nocturnas
+            # Fila 2: Estadísticas ML | Publicaciones ML | ARCA — Resumen Fiscal
             cards_area = ui.column().classes("w-full")
 
             async def _detect_mobile() -> None:
                 w = await ui.run_javascript("window.innerWidth")
-                is_mobile_ref["val"] = int(w or 9999) < 768
+                width_ref["val"] = int(w or 9999)
                 _render_cards()
 
             ui.timer(0, _detect_mobile, once=True)
@@ -665,8 +673,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             def _render_cards() -> None:
                 nonlocal prod_color, prod_header_row, _susp_dot, _susp_lbl
                 nonlocal cuotas_card, rep_card, ml_pubs_card, cuotas_client
-                cols = 2 if is_mobile_ref["val"] else 3
-                gap  = "gap-2" if is_mobile_ref["val"] else "gap-4"
+                w = width_ref["val"]
+                cols = 2 if w < 768 else 3 if w < 1100 else 4
+                gap  = "gap-2" if w < 768 else "gap-3" if w < 1100 else "gap-4"
                 cards_area.clear()
                 with cards_area:
                     with ui.grid(columns=cols).classes(f"w-full {gap}"):
@@ -784,6 +793,59 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 ui.label("Cuotas").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
 
+                        # --- Fila 1, Col 4: Tus tareas nocturnas (scoped por usuario) ---
+                        dias_list = [(datetime.now().date() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+                        last_by_job: Dict[str, Optional[Dict[str, Any]]] = {}
+                        cron_ov = _GREEN
+                        for job_key, _job_label in _CRON_JOBS:
+                            days_map = cron_data.get(job_key, {})
+                            last_row = days_map[max(days_map)] if days_map else None
+                            last_by_job[job_key] = last_row
+                            if last_row is None or last_row["status"] == "fail":
+                                cron_ov = _RED
+                            elif last_row["status"] == "partial" and cron_ov == _GREEN:
+                                cron_ov = _YELLOW
+
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            _card_header("Tus tareas nocturnas — 7 días", cron_ov)
+                            with ui.column().classes("w-full gap-2"):
+                                for job_key, job_label in _CRON_JOBS:
+                                    days_map = cron_data.get(job_key, {})
+                                    last_row = last_by_job[job_key]
+                                    if last_row is None:
+                                        estado_txt, estado_color = "Sin corridas", "#9ca3af"
+                                    elif last_row["status"] == "ok":
+                                        estado_txt = f"OK · {last_row['count']} · {_fmt_dt(last_row['run_datetime'])}"
+                                        estado_color = _GREEN
+                                    elif last_row["status"] == "partial":
+                                        estado_txt = f"Parcial · {last_row['count']} · {_fmt_dt(last_row['run_datetime'])}"
+                                        estado_color = _YELLOW
+                                    else:
+                                        estado_txt = f"Falló · {_fmt_dt(last_row['run_datetime'])}"
+                                        estado_color = _RED
+
+                                    with ui.column().classes("w-full gap-0.5"):
+                                        ui.label(job_label).classes("text-xs font-semibold").style("color:#374151")
+                                        ui.label(estado_txt).classes("text-xs").style(f"color:{estado_color}")
+                                        with ui.row().classes("items-center gap-1 flex-wrap"):
+                                            for d in dias_list:
+                                                row = days_map.get(d)
+                                                c = (_GREEN if row and row["status"] == "ok"
+                                                     else _YELLOW if row and row["status"] == "partial"
+                                                     else _RED if row and row["status"] == "fail"
+                                                     else "#d1d5db")
+                                                dot = _dot(c, size=8)
+                                                if row:
+                                                    tip = f"{d}: {row['status']} — {row['count']} registros"
+                                                    if row.get("error"):
+                                                        tip += f" — {row['error']}"
+                                                else:
+                                                    tip = f"{d}: no corrió"
+                                                dot.tooltip(tip)
+                                        fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
+                                        if fails > 0:
+                                            ui.label(f"Falló {fails}/7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
+
                         # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
                         rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
                         with rep_card:
@@ -852,60 +914,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                             ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
                                     else:
                                         ui.label("Sin datos").classes("text-xs text-gray-400")
-
-                        # --- Cron nocturnos (scoped por usuario) ---
-                        dias_list = [(datetime.now().date() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
-                        last_by_job: Dict[str, Optional[Dict[str, Any]]] = {}
-                        cron_ov = _GREEN
-                        for job_key, _job_label in _CRON_JOBS:
-                            days_map = cron_data.get(job_key, {})
-                            last_row = days_map[max(days_map)] if days_map else None
-                            last_by_job[job_key] = last_row
-                            if last_row is None or last_row["status"] == "fail":
-                                cron_ov = _RED
-                            elif last_row["status"] == "partial" and cron_ov == _GREEN:
-                                cron_ov = _YELLOW
-
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                            _card_header("Tus tareas nocturnas — últimos 7 días", cron_ov)
-                            with ui.column().classes("w-full gap-3"):
-                                for job_key, job_label in _CRON_JOBS:
-                                    days_map = cron_data.get(job_key, {})
-                                    last_row = last_by_job[job_key]
-                                    if last_row is None:
-                                        estado_txt, estado_color = "Sin corridas registradas", "#9ca3af"
-                                    elif last_row["status"] == "ok":
-                                        estado_txt = f"OK — {last_row['count']} — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
-                                        estado_color = _GREEN
-                                    elif last_row["status"] == "partial":
-                                        estado_txt = f"Parcial — {last_row['count']} — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
-                                        estado_color = _YELLOW
-                                    else:
-                                        estado_txt = f"Falló — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
-                                        estado_color = _RED
-
-                                    with ui.column().classes("w-full gap-1"):
-                                        with ui.row().classes("items-center gap-2 w-full"):
-                                            ui.label(job_label).classes("text-xs font-semibold flex-1").style("color:#374151")
-                                            ui.label(estado_txt).classes("text-xs font-semibold").style(f"color:{estado_color}")
-                                        with ui.row().classes("items-center gap-1"):
-                                            for d in dias_list:
-                                                row = days_map.get(d)
-                                                c = (_GREEN if row and row["status"] == "ok"
-                                                     else _YELLOW if row and row["status"] == "partial"
-                                                     else _RED if row and row["status"] == "fail"
-                                                     else "#d1d5db")
-                                                dot = _dot(c)
-                                                if row:
-                                                    tip = f"{d}: {row['status']} — {row['count']} registros"
-                                                    if row.get("error"):
-                                                        tip += f" — {row['error']}"
-                                                else:
-                                                    tip = f"{d}: no corrió"
-                                                dot.tooltip(tip)
-                                        fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
-                                        if fails > 0:
-                                            ui.label(f"{job_label} falló {fails} de los últimos 7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
 
                 if not access_token:
                     rep_card.clear()
