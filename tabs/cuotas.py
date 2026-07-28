@@ -172,9 +172,18 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
         dolar_oficial = 1475.0
 
     # ── Agrupación ────────────────────────────────────────────────────────────
+    # cpid_to_skus: ver comentario en _cargar_cuotas_async (mismo cálculo, debe coincidir para
+    # que los rep_ids computados ahí matcheen estos grupos).
+    _cpid_to_skus: Dict[str, set] = {}
+    for it in items:
+        _cpid = (it.get("catalog_product_id") or "").strip()
+        _sku_it = (it.get("seller_sku") or "").strip()
+        if _cpid and _sku_it:
+            _cpid_to_skus.setdefault(_cpid, set()).add(_sku_it.lower())
+
     groups: Dict[tuple, List[Dict[str, Any]]] = {}
     for it in items:
-        groups.setdefault(_cuotas_key(it), []).append(it)
+        groups.setdefault(_cuotas_key(it, _cpid_to_skus), []).append(it)
 
     def _slot(it: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if not it:
@@ -1061,9 +1070,20 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                 return
             # Construir grupos para identificar el item representante por grupo
             items_raw = data.get("results", [])
+            # cpid_to_skus (misma regla conservadora que tabs/precios.py): una publicación de
+            # catálogo sin seller_sku se pega al SKU hermano solo si su catalog_product_id tiene
+            # exactamente un SKU no vacío entre todas sus publicaciones. Debe calcularse igual acá
+            # y en _mostrar_tabla_cuotas para que rep_ids matchee con los grupos que esa función
+            # recalcula -- si difieren, se rompe la asociación de promo_data por grupo.
+            _cpid_to_skus_pre: Dict[str, set] = {}
+            for _it in items_raw:
+                _cpid_pre = (_it.get("catalog_product_id") or "").strip()
+                _sku_pre = (_it.get("seller_sku") or "").strip()
+                if _cpid_pre and _sku_pre:
+                    _cpid_to_skus_pre.setdefault(_cpid_pre, set()).add(_sku_pre.lower())
             grps: Dict[tuple, list] = {}
             for _it in items_raw:
-                grps.setdefault(_cuotas_key(_it), []).append(_it)
+                grps.setdefault(_cuotas_key(_it, _cpid_to_skus_pre), []).append(_it)
             _grp_list = list(grps.values())
             rep_ids: list = [str(max(_g, key=_cuotas_score).get("id") or "") for _g in _grp_list if _g]
             _all_iids_per_grp: List[List[str]] = [
