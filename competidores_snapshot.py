@@ -191,6 +191,22 @@ async def run():
             for s in seguidos:
                 all_seller_ids.add(str(s[0]))
 
+            # Agregar los del comparador (favoritos armados a mano), incluso si
+            # coinciden con own_seller_id: el usuario los eligió explícitamente
+            # y deben recibir snapshot diario aunque el PASO 1 los excluya del
+            # ranking automático por catálogo.
+            comparador = []
+            try:
+                conn = get_connection()
+                comparador = conn.execute(
+                    "SELECT seller_id FROM comparador_competidores WHERE user_id=?", (user_id,)
+                ).fetchall()
+                conn.close()
+            except Exception as e:
+                log.error("Error leyendo comparador_competidores: %s", e)
+            for s in comparador:
+                all_seller_ids.add(str(s[0]))
+
             log.info("Sellers únicos a consultar: %d", len(all_seller_ids))
 
             # PASO 3: Consultar /users/{seller_id} UNA sola vez por vendedor
@@ -267,6 +283,28 @@ async def run():
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         user_id, "SEGUIDO", sid,
+                        sd["nickname"], sd["total_ventas"],
+                        sd["level_id"], sd["power_status"], today
+                    ))
+                except Exception:
+                    pass
+
+            # También guardar los del comparador que no están en ningún catálogo
+            # ni en seguidos (ej. own_seller_id agregado a mano como benchmark)
+            for s in comparador:
+                sid = str(s[0])
+                if sid not in seller_data:
+                    continue
+                sd = seller_data[sid]
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO competidores_snapshots
+                            (user_id, catalog_product_id, seller_id, seller_nickname,
+                             seller_total_ventas, seller_level_id, seller_power_status,
+                             snapshot_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        user_id, "COMPARADOR", sid,
                         sd["nickname"], sd["total_ventas"],
                         sd["level_id"], sd["power_status"], today
                     ))
