@@ -57,12 +57,16 @@ PROMO_ITEM_CACHE_PREFIX = "promo_item"
 # Helpers de agrupación/clasificación (exportados para tabs/precios.py)
 # ---------------------------------------------------------------------------
 
-def _cuotas_key(it: dict) -> tuple:
+def _cuotas_key(it: dict, cpid_to_skus: Optional[Dict[str, set]] = None) -> tuple:
     sku = (it.get("seller_sku") or "").strip()
     if sku:
         return ("sku", sku.lower())
     cpid = (it.get("catalog_product_id") or "").strip()
     if cpid:
+        if cpid_to_skus:
+            skus = cpid_to_skus.get(cpid, set())
+            if len(skus) == 1:
+                return ("sku", next(iter(skus)))  # huérfana sin SKU -> se pega al hermano
         return ("catalog", cpid)
     return ("id", str(it.get("id") or ""))
 

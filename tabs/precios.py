@@ -603,10 +603,21 @@ def _mostrar_tabla_precios(
     _perf_uid = user["id"]
     _t_fase = time.perf_counter()
 
-    # Agrupación dinámica por SKU (misma lógica que _mostrar_tabla_cuotas).
+    # Agrupación dinámica por SKU (misma lógica que _mostrar_tabla_cuotas). Las publicaciones
+    # de catálogo huérfanas (sin seller_sku propio) se pegan al SKU hermano de su
+    # catalog_product_id solo cuando ese catalog_product_id tiene un único SKU no vacío entre
+    # todas sus publicaciones -- si hay 0 o 2+ SKUs distintos, no se puede saber a cuál pegarlas
+    # y se agrupan por catalog_product_id como antes (evita fusionar SKUs distintos).
+    _cpid_to_skus: Dict[str, set] = {}
+    for i in items:
+        _cpid = (i.get("catalog_product_id") or "").strip()
+        _sku_i = (i.get("seller_sku") or "").strip()
+        if _cpid and _sku_i:
+            _cpid_to_skus.setdefault(_cpid, set()).add(_sku_i.lower())
+
     groups_sku: Dict[tuple, List[Dict[str, Any]]] = {}
     for i in items:
-        groups_sku.setdefault(_cuotas_key(i), []).append(i)
+        groups_sku.setdefault(_cuotas_key(i, _cpid_to_skus), []).append(i)
 
     items_dedup: List[Dict[str, Any]] = []
     _grp_ids_map: Dict[str, List[str]] = {}
