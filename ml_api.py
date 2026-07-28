@@ -278,7 +278,6 @@ def ml_get_my_items(
         # ML limita offset a 1000; pasarlo devuelve 400 Bad Request.
         item_ids = []
         seen: set = set()
-        MAX_OFFSET = 1000
         param_sets = [{"status": "active"}]
         if include_paused:
             param_sets += [
@@ -287,20 +286,36 @@ def ml_get_my_items(
                 {"sub_status": "pending_documentation"},
                 {"sub_status": "held"},
             ]
+        search_data: Dict[str, Any] = {}
         for extra_params in param_sets:
             _t_grupo = time.perf_counter()
             _n_paginas = 0
             _n_ids_grupo = 0
-            offset = 0
-            limit = 50
-            while offset <= MAX_OFFSET:
-                search = get_ml_session().get(
-                    f"{base}/users/{ml_user_id}/items/search",
-                    headers=headers,
-                    params={"limit": limit, "offset": offset, **extra_params},
-                    timeout=15,
-                )
-                search.raise_for_status()
+            scroll_id = None
+            base_params = {"search_type": "scan", "limit": 100, **extra_params}
+            while True:
+                params = dict(base_params)
+                if scroll_id:
+                    params["scroll_id"] = scroll_id
+                try:
+                    search = get_ml_session().get(
+                        f"{base}/users/{ml_user_id}/items/search",
+                        headers=headers,
+                        params=params,
+                        timeout=15,
+                    )
+                    search.raise_for_status()
+                except requests.exceptions.HTTPError as e:
+                    if _n_paginas == 0:
+                        raise
+                    resp = e.response
+                    logging.warning(
+                        "[ML_API] ml_get_my_items scroll cortado grupo=%s tras %d items: HTTP %s -- %s",
+                        extra_params, _n_ids_grupo,
+                        resp.status_code if resp is not None else "?",
+                        resp.text[:200] if resp is not None else str(e),
+                    )
+                    break
                 search_data = search.json()
                 chunk = search_data.get("results", [])
                 _n_paginas += 1
@@ -309,9 +324,11 @@ def ml_get_my_items(
                         seen.add(_id)
                         item_ids.append(_id)
                         _n_ids_grupo += 1
-                if len(chunk) < limit or offset + limit > MAX_OFFSET:
+                if not chunk:
                     break
-                offset += limit
+                scroll_id = search_data.get("scroll_id")
+                if not scroll_id:
+                    break
             _grupo_label = "_".join(f"{k}={v}" for k, v in extra_params.items())
             logging.warning(
                 f"[PERF-PRODUCTOS] fase='api_search_{_grupo_label}' user_id={perf_uid} "
