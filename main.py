@@ -145,6 +145,7 @@ from tabs.constants import TAB_KEYS, TABS_BASE, TABS_ML, TABS_QB, TAB_DESCRIPTIO
 from tabs.home import build_tab_home_welcome
 from tabs.compras_lista import build_tab_compras_lista
 from tabs.activity import build_tab_actividad
+from tabs.cron_log import build_tab_log
 from tabs.guias import build_tab_guias
 from tabs.transferencias import build_tab_transferencias
 from helpers.activity_logger import log_event
@@ -152,7 +153,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.28.01"
+VERSION = "3.26.07.28.02"
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -388,6 +389,7 @@ def show_main_layout(container) -> None:
                 tab_config = ui.tab("Configuración")
                 tab_admin = ui.tab("Admin")
                 tab_actividad = ui.tab("Actividad")
+                tab_log = ui.tab("Log")
 
         tab_map = {
             "Home": tab_home,
@@ -419,8 +421,9 @@ def show_main_layout(container) -> None:
             "Configuración": tab_config,
             "Admin": tab_admin,
             "Actividad": tab_actividad,
+            "Log": tab_log,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "Couriers": "couriers", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "Couriers": "couriers", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad", "Log": "log"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -442,6 +445,7 @@ def show_main_layout(container) -> None:
         arca_cargado = [False]
         gastos_cargado = [False]
         actividad_cargado = [False]
+        log_cargado = [False]
         guias_cargado = [False]
         guias_clear_ref: List[Any] = [None]
         transferencias_cargado = [False]
@@ -506,6 +510,9 @@ def show_main_layout(container) -> None:
             elif val == "Actividad" and not actividad_cargado[0]:
                 actividad_cargado[0] = True
                 build_tab_actividad(actividad_container)
+            elif val == "Log" and not log_cargado[0]:
+                log_cargado[0] = True
+                build_tab_log(log_container)
             elif val == "Guias" and not guias_cargado[0]:
                 guias_cargado[0] = True
                 with guias_container:
@@ -668,6 +675,7 @@ def show_main_layout(container) -> None:
                                 ui.menu_item("PERMISOS", _go("Admin"))
                                 if perms.get("actividad", False):
                                     ui.menu_item("ACTIVIDAD", _go("Actividad"))
+                                ui.menu_item("LOG", _go("Log"))
             ui.space()
             _mini_card = (
                 "background:#f9fafb;padding:5px 12px;border-radius:6px;"
@@ -883,6 +891,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_actividad):
                 actividad_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_log):
+                log_container = ui.column().classes("w-full")
 
         tab_enter_times: Dict[str, Any] = {}
 

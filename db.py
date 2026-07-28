@@ -123,6 +123,53 @@ def init_competidores_snapshots_db() -> None:
     conn.close()
 
 
+def init_cron_runs_db() -> None:
+    """Log de corridas de los crons nocturnos (stock_snapshot / competidores_snapshot), una fila por job+usuario+día."""
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS cron_runs (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            job              TEXT NOT NULL,
+            user_id          INTEGER NOT NULL,
+            run_date         DATE NOT NULL,
+            run_datetime     DATETIME NOT NULL,
+            status           TEXT NOT NULL,
+            count            INTEGER NOT NULL DEFAULT 0,
+            duration_seconds REAL,
+            error            TEXT,
+            created_at       DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(job, user_id, run_date)
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def log_cron_run(job: str, user_id: int, status: str, count: int = 0,
+                  duration_seconds: Optional[float] = None, error: Optional[str] = None) -> None:
+    """Upsert del resultado de una corrida de cron para job+user_id+hoy."""
+    now = datetime.now()
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO cron_runs (job, user_id, run_date, run_datetime, status, count, duration_seconds, error)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(job, user_id, run_date) DO UPDATE SET
+            run_datetime=excluded.run_datetime,
+            status=excluded.status,
+            count=excluded.count,
+            duration_seconds=excluded.duration_seconds,
+            error=excluded.error
+        """,
+        (job, user_id, now.date().isoformat(), now.isoformat(timespec="seconds"),
+         status, count, duration_seconds, error),
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_db() -> None:
     """Crea las tablas si no existen."""
     conn = get_connection()
@@ -901,6 +948,7 @@ def init_db() -> None:
 
     conn.commit()
     conn.close()
+    init_cron_runs_db()
 
 
 # ---------------------------------------------------------------------------

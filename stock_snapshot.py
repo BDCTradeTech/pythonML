@@ -25,7 +25,7 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 import requests
-from db import get_connection
+from db import get_connection, init_cron_runs_db, log_cron_run
 from ml_api import get_ml_access_token
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -130,6 +130,7 @@ def get_items_batch(token: str, item_ids: list[str]) -> list[dict]:
 def run_snapshot():
     today = date.today().isoformat()
     log.info("=== Stock snapshot %s ===", today)
+    init_cron_runs_db()
 
     conn = get_connection()
     creds = conn.execute(
@@ -144,25 +145,30 @@ def run_snapshot():
             # Espaciar el refresh de token entre usuarios: procesarlos en menos de 1s
             # puede colisionar con el rate limit de ML para /oauth/token.
             time.sleep(5)
-        seller_id = get_seller_id(raw_data)
-        token = get_ml_access_token(user_id)
-        if not token:
-            log.warning("Sin token para user_id=%s, salteando", user_id)
-            continue
-        if not seller_id:
-            me = requests.get(
-                'https://api.mercadolibre.com/users/me',
-                headers={'Authorization': f'Bearer {token}'},
-                timeout=10
-            )
-            seller_id = str(me.json().get('id')) if me.ok else None
-        if not seller_id:
-            log.warning("No se pudo resolver seller_id para user_id=%s, salteando", user_id)
-            continue
-
-        is_multiwarehouse = seller_id in MULTIWAREHOUSE_SELLER_IDS
-        log.info("Procesando seller_id=%s (user_id=%s, multiwarehouse=%s)", seller_id, user_id, is_multiwarehouse)
+        t0 = time.time()
+        status, count, error, truncated, seller_id = "fail", 0, None, False, None
         try:
+            seller_id = get_seller_id(raw_data)
+            token = get_ml_access_token(user_id)
+            if not token:
+                error = "Sin token ML"
+                log.warning("Sin token para user_id=%s, salteando", user_id)
+                continue
+            if not seller_id:
+                me = requests.get(
+                    'https://api.mercadolibre.com/users/me',
+                    headers={'Authorization': f'Bearer {token}'},
+                    timeout=10
+                )
+                seller_id = str(me.json().get('id')) if me.ok else None
+            if not seller_id:
+                error = "No se pudo resolver seller_id"
+                log.warning("No se pudo resolver seller_id para user_id=%s, salteando", user_id)
+                continue
+
+            is_multiwarehouse = seller_id in MULTIWAREHOUSE_SELLER_IDS
+            log.info("Procesando seller_id=%s (user_id=%s, multiwarehouse=%s)", seller_id, user_id, is_multiwarehouse)
+
             item_ids, truncated = get_all_item_ids(token, seller_id)
             if truncated:
                 truncated_sellers.append(seller_id)
@@ -200,9 +206,17 @@ def run_snapshot():
             conn.close()
             log.info("  %d snapshots guardados para seller %s", saved, seller_id)
             total_saved += saved
+            count = saved
+            status = "partial" if truncated else "ok"
 
         except Exception as e:
+            error = str(e)
             log.error("Error procesando seller_id=%s: %s", seller_id, e)
+        finally:
+            try:
+                log_cron_run("stock", user_id, status, count, time.time() - t0, error)
+            except Exception as log_e:
+                log.error("No se pudo loguear cron_runs: %s", log_e)
 
     if truncated_sellers:
         log.info(

@@ -187,6 +187,28 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
         conn.close()
 
 
+_CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores")]
+
+
+def _query_cron_runs(user_id: int) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """{job: {run_date_iso: {status, count, run_datetime, error}}} para los últimos 7 días, scoped a user_id."""
+    desde = (datetime.now().date() - timedelta(days=6)).isoformat()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT job, run_date, status, count, run_datetime, error FROM cron_runs"
+            " WHERE user_id=? AND run_date>=?",
+            (user_id, desde))
+        rows = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+    by_job: Dict[str, Dict[str, Dict[str, Any]]] = {k: {} for k, _ in _CRON_JOBS}
+    for r in rows:
+        by_job.setdefault(r["job"], {})[r["run_date"]] = r
+    return by_job
+
+
 def _query_arca(user_id: int) -> Dict[str, Any]:
     return {
         "siper":   get_arca_datos("siper", user_id),
@@ -548,6 +570,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     ventas       = _query_ventas(uid)
     arca_data    = _query_arca(uid)
     arca_al      = _arca_alerts(arca_data)
+    cron_data    = _query_cron_runs(uid)
     access_token = get_ml_access_token(uid)
     desde_dt     = datetime.now() - timedelta(days=30)
     desde_fmt    = desde_dt.strftime("%d/%m/%Y")
@@ -829,6 +852,60 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                             ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
                                     else:
                                         ui.label("Sin datos").classes("text-xs text-gray-400")
+
+                        # --- Cron nocturnos (scoped por usuario) ---
+                        dias_list = [(datetime.now().date() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
+                        last_by_job: Dict[str, Optional[Dict[str, Any]]] = {}
+                        cron_ov = _GREEN
+                        for job_key, _job_label in _CRON_JOBS:
+                            days_map = cron_data.get(job_key, {})
+                            last_row = days_map[max(days_map)] if days_map else None
+                            last_by_job[job_key] = last_row
+                            if last_row is None or last_row["status"] == "fail":
+                                cron_ov = _RED
+                            elif last_row["status"] == "partial" and cron_ov == _GREEN:
+                                cron_ov = _YELLOW
+
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            _card_header("Tus tareas nocturnas — últimos 7 días", cron_ov)
+                            with ui.column().classes("w-full gap-3"):
+                                for job_key, job_label in _CRON_JOBS:
+                                    days_map = cron_data.get(job_key, {})
+                                    last_row = last_by_job[job_key]
+                                    if last_row is None:
+                                        estado_txt, estado_color = "Sin corridas registradas", "#9ca3af"
+                                    elif last_row["status"] == "ok":
+                                        estado_txt = f"OK — {last_row['count']} — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
+                                        estado_color = _GREEN
+                                    elif last_row["status"] == "partial":
+                                        estado_txt = f"Parcial — {last_row['count']} — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
+                                        estado_color = _YELLOW
+                                    else:
+                                        estado_txt = f"Falló — {(last_row['run_datetime'] or '')[:16].replace('T', ' ')}"
+                                        estado_color = _RED
+
+                                    with ui.column().classes("w-full gap-1"):
+                                        with ui.row().classes("items-center gap-2 w-full"):
+                                            ui.label(job_label).classes("text-xs font-semibold flex-1").style("color:#374151")
+                                            ui.label(estado_txt).classes("text-xs font-semibold").style(f"color:{estado_color}")
+                                        with ui.row().classes("items-center gap-1"):
+                                            for d in dias_list:
+                                                row = days_map.get(d)
+                                                c = (_GREEN if row and row["status"] == "ok"
+                                                     else _YELLOW if row and row["status"] == "partial"
+                                                     else _RED if row and row["status"] == "fail"
+                                                     else "#d1d5db")
+                                                dot = _dot(c)
+                                                if row:
+                                                    tip = f"{d}: {row['status']} — {row['count']} registros"
+                                                    if row.get("error"):
+                                                        tip += f" — {row['error']}"
+                                                else:
+                                                    tip = f"{d}: no corrió"
+                                                dot.tooltip(tip)
+                                        fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
+                                        if fails > 0:
+                                            ui.label(f"{job_label} falló {fails} de los últimos 7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
 
                 if not access_token:
                     rep_card.clear()

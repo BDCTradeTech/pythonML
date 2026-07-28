@@ -13,7 +13,7 @@ from datetime import date
 sys.path.insert(0, '/opt/pythonml')
 
 import requests
-from db import get_connection
+from db import get_connection, init_cron_runs_db, log_cron_run
 from ml_api import get_ml_access_token
 from tabs.catalogos import _sync_one_catalog
 import asyncio
@@ -117,6 +117,7 @@ def ensure_table():
 
 async def run():
     ensure_table()
+    init_cron_runs_db()
     today = date.today().isoformat()
     log.info("=== Snapshot competidores %s ===", today)
 
@@ -125,9 +126,12 @@ async def run():
     for cred in creds:
         user_id = cred["user_id"]
         own_seller_id = cred["seller_id"]
+        t0 = time.time()
+        status, count, error = "fail", 0, None
         try:
             token = get_ml_access_token(user_id)
             if not token:
+                error = "Sin token ML"
                 log.warning("Sin token para user_id=%s", user_id)
                 continue
 
@@ -314,6 +318,7 @@ async def run():
             conn.commit()
             conn.close()
             log.info("Snapshots guardados: %d", saved)
+            count = saved
 
             # PASO 5: Borrar vendedores con 0 ventas históricas
             conn = get_connection()
@@ -330,9 +335,15 @@ async def run():
             conn.close()
             if n:
                 log.info("Eliminados %d registros con 0 ventas", n)
+            status = "ok"
         except Exception as e:
+            error = str(e)
             log.error("ERROR procesando user_id=%s: %s — continuando con el siguiente", user_id, e)
-            continue
+        finally:
+            try:
+                log_cron_run("competidores", user_id, status, count, time.time() - t0, error)
+            except Exception as log_e:
+                log.error("No se pudo loguear cron_runs: %s", log_e)
 
     log.info("=== COMPLETADO ===")
 
