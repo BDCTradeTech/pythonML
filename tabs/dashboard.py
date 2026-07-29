@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -217,8 +218,6 @@ def _fmt_dt(iso: Optional[str]) -> str:
     return f"{iso[8:10]}/{iso[5:7]} {iso[11:16]}"
 
 
-_DIAS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-
 _CRON_LOG_FILES = {
     "stock":        "/var/log/pythonml_stock.log",
     "competidores": "/var/log/pythonml_comp.log",
@@ -227,43 +226,58 @@ _CRON_LOG_MARKERS = {
     "stock":        ("Stock snapshot {date}", "Snapshot completado"),
     "competidores": ("Snapshot competidores {date}", "COMPLETADO"),
 }
+_CRON_LOG_USER_START = {
+    "stock":        re.compile(r"Procesando seller_id=\S+ \(user_id=(\d+),"),
+    "competidores": re.compile(r"user_id=(\d+) — \d+ catálogos\s*$"),
+}
 
 
-def _read_cron_log_block(job: str, date_iso: str, max_lines: int = 500) -> str:
-    """Extrae el bloque de log de una corrida puntual entre sus marcadores de inicio/fin."""
+def _read_cron_log_block(job: str, date_iso: str, user_id: int, max_lines: int = 400) -> str:
+    """Extrae SOLO el tramo de log del user_id dado, dentro del bloque del día."""
     path = _CRON_LOG_FILES.get(job)
     if not path:
         return "Log no disponible para este job."
     start_pat, end_pat = _CRON_LOG_MARKERS[job]
     start_pat = start_pat.format(date=date_iso)
+    user_re = _CRON_LOG_USER_START.get(job)
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
     except OSError as e:
         return f"No se pudo leer el log: {e}"
-    start_idx = next((i for i, l in enumerate(lines) if start_pat in l), None)
-    if start_idx is None:
+    day_start = next((i for i, l in enumerate(lines) if start_pat in l), None)
+    if day_start is None:
         return f"No se encontró bloque de log para {date_iso}."
-    end_idx = next((i for i in range(start_idx + 1, len(lines)) if end_pat in lines[i]),
+    day_end = next((i for i in range(day_start + 1, len(lines)) if end_pat in lines[i]),
                     len(lines) - 1)
-    block = lines[start_idx:end_idx + 1]
+    if user_re is None:
+        block = lines[day_start:day_end + 1]
+    else:
+        user_starts = [(int(m.group(1)), i) for i in range(day_start, day_end + 1)
+                        for m in [user_re.search(lines[i])] if m]
+        my_idx = next((i for uid, i in user_starts if uid == user_id), None)
+        if my_idx is None:
+            return f"No se encontró actividad de tu cuenta en el log de {date_iso}."
+        later = [i for uid, i in user_starts if i > my_idx]
+        block_end = (min(later) - 1) if later else day_end
+        block = lines[my_idx:block_end + 1]
     if len(block) > max_lines:
         block = block[:max_lines] + [f"... (truncado, {len(block) - max_lines} líneas más) ...\n"]
     return "".join(block)
 
 
-def _open_cron_log_dialog(job_label: str, job_key: str, date_iso: str, row: Optional[Dict]) -> None:
+def _open_cron_log_dialog(job_label: str, job_key: str, date_iso: str, row: Optional[Dict], user_id: int) -> None:
     with ui.dialog() as d, ui.card().classes("w-full").style("max-width:800px"):
         ui.label(f"{job_label} — {date_iso}").classes("font-bold text-base")
         if row:
-            meta = f"status={row['status']} · count={row['count']} · {row['run_datetime']}"
+            meta = f"status={row['status']} · count={_fmt_miles(row['count'])} · {row['run_datetime']}"
             if row.get("error"):
                 meta += f" · error={row['error']}"
         else:
             meta = "Sin registro en cron_runs para esta fecha (no corrió)."
         ui.label(meta).classes("text-xs text-gray-600")
         with ui.scroll_area().classes("w-full").style("height:400px;background:#111;border-radius:4px"):
-            ui.label(_read_cron_log_block(job_key, date_iso)).classes(
+            ui.label(_read_cron_log_block(job_key, date_iso, user_id)).classes(
                 "text-xs whitespace-pre-wrap font-mono").style("color:#d1d5db;padding:8px")
         ui.button("Cerrar", on_click=d.close)
     d.open()
@@ -868,10 +882,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 cron_ov = _YELLOW
 
                         with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                            _card_header(
-                                "Tus tareas nocturnas — 7 días", cron_ov,
-                                info_tooltip="Verde = OK · Amarillo = parcial · Rojo = falló · "
-                                             "Gris = no corrió (sin registro) · click en un punto = ver log")
+                            _card_header("Tus tareas nocturnas — 7 días", cron_ov)
                             with ui.column().classes("w-full gap-2"):
                                 for job_key, job_label in _CRON_JOBS:
                                     days_map = cron_data.get(job_key, {})
@@ -879,10 +890,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                     if last_row is None:
                                         estado_txt, estado_color = "Sin corridas", "#9ca3af"
                                     elif last_row["status"] == "ok":
-                                        estado_txt = f"OK · {last_row['count']} · {_fmt_dt(last_row['run_datetime'])}"
+                                        estado_txt = f"OK · {_fmt_miles(last_row['count'])} · {_fmt_dt(last_row['run_datetime'])}"
                                         estado_color = _GREEN
                                     elif last_row["status"] == "partial":
-                                        estado_txt = f"Parcial · {last_row['count']} · {_fmt_dt(last_row['run_datetime'])}"
+                                        estado_txt = f"Parcial · {_fmt_miles(last_row['count'])} · {_fmt_dt(last_row['run_datetime'])}"
                                         estado_color = _YELLOW
                                     else:
                                         estado_txt = f"Falló · {_fmt_dt(last_row['run_datetime'])}"
@@ -890,8 +901,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
 
                                     with ui.column().classes("w-full gap-0.5"):
                                         ui.label(job_label).classes("text-xs font-semibold").style("color:#374151")
-                                        ui.label(estado_txt).classes("text-xs").style(f"color:{estado_color}")
-                                        with ui.row().classes("items-center gap-1 flex-wrap"):
+                                        with ui.row().classes("items-center gap-1"):
+                                            ui.label("Última corrida:").classes("text-xs font-semibold").style("color:#6b7280")
+                                            ui.label(estado_txt).classes("text-xs").style(f"color:{estado_color}")
+                                        with ui.row().classes("items-end gap-1 flex-wrap"):
                                             for d in dias_list:
                                                 row = days_map.get(d)
                                                 c = (_GREEN if row and row["status"] == "ok"
@@ -899,23 +912,32 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                      else _RED if row and row["status"] == "fail"
                                                      else "#d1d5db")
                                                 es_hoy = (d == dias_list[-1])
-                                                dot = _dot(c, size=8, ring=es_hoy).classes("cursor-pointer")
-                                                dia_nombre = _DIAS_ES[datetime.fromisoformat(d).weekday()]
-                                                fecha_corta = f"{d[8:10]}/{d[5:7]}"
+                                                dia_num = d[8:10].lstrip("0") or "0"
+                                                estado_legible = {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(
+                                                    row["status"] if row else "", "Sin corrida")
+                                                tip = f"{d}: {estado_legible}"
                                                 if row:
-                                                    tip = f"{dia_nombre} {fecha_corta}: {row['status']} — {row['count']} registros"
+                                                    tip += f" — {_fmt_miles(row['count'])} registros"
                                                     if row.get("error"):
                                                         tip += f" — {row['error']}"
-                                                else:
-                                                    tip = f"{dia_nombre} {fecha_corta}: no corrió"
                                                 if es_hoy:
                                                     tip += " (hoy)"
-                                                dot.tooltip(tip)
-                                                dot.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
-                                                        _open_cron_log_dialog(jl, jk, dd, rr))
+                                                with ui.column().classes("items-center gap-0"):
+                                                    dot = _dot(c, size=8, ring=es_hoy).classes("cursor-pointer")
+                                                    dot.tooltip(tip)
+                                                    dot.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
+                                                            _open_cron_log_dialog(jl, jk, dd, rr, uid))
+                                                    ui.label(dia_num).classes(
+                                                        "text-[10px] leading-none " + ("font-bold" if es_hoy else "")
+                                                    ).style(f"color:{'#111827' if es_hoy else '#6b7280'}")
                                         fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
+                                        oks = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "ok")
                                         if fails > 0:
                                             ui.label(f"Falló {fails}/7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
+                                        else:
+                                            ui.label(f"OK {oks}/7 días").classes("text-xs font-semibold").style(f"color:{_GREEN}")
+                                        ui.label("● Verde OK   ● Rojo Falló   ● Gris sin corrida").classes(
+                                            "text-[10px]").style("color:#9ca3af")
 
                         # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
                         rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
