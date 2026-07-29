@@ -859,13 +859,17 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
     bulk único '/seller-promotions/items?seller_id=X' (verificado: devuelve 404) — se arma
     combinando:
       1. GET /seller-promotions/users/{seller_id} — lista de promociones del vendedor (1 llamada).
-      2. Para cada promo con status=started (de CUALQUIER tipo, no solo co-financiadas — cualquier
-         promo activa cambia el precio efectivo del item), paginar
+      2. Para cada promo con status started O pending (de CUALQUIER tipo, no solo co-financiadas —
+         cualquier promo activa o programada cambia el precio efectivo del item), paginar
          /seller-promotions/promotions/{id}/items con el cursor search_after (NO offset, ver
          bugfix en ml_get_smart_candidates) hasta agotar páginas.
     Devuelve dict item_id -> {amount, regular_amount, promotion_id, promotion_type, campaign_id}
-    — misma forma que ml_get_item_sale_price_full, solo para items con status='started' (precio
-    con descuento vigente). Items sin promo activa simplemente no aparecen en el dict.
+    — misma forma que ml_get_item_sale_price_full, para items con status='started' o 'pending'
+    (precio con descuento vigente o ya negociado/programado). Items sin promo simplemente no
+    aparecen en el dict. Si un item participa en más de una campaña a la vez, se queda el
+    descuento más profundo (menor amount) de forma determinística, no "el último thread que
+    termina" (bug de carrera detectado: sin esto, dos campañas concurrentes pueden pisarse el
+    campaign_id/meli_percentage entre sí de forma no reproducible).
     Devuelve None (en vez de {}) si la llamada en sí falló (sin access_token/seller_id, error de
     red, o status != 200) — permite al llamador distinguir "no se pudo verificar" (usar fallback
     individual) de "se verificó y no hay ninguna promo activa" (dict vacío legítimo)."""
@@ -884,8 +888,10 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
     except Exception:
         return None
 
-    started = [p for p in promos if (p.get("status") or "").lower() == "started"]
+    _ACTIVE = {"started", "pending"}
+    activas = [p for p in promos if (p.get("status") or "").lower() in _ACTIVE]
     out: Dict[str, Dict[str, Any]] = {}
+    _out_lock = threading.Lock()
 
     def _fetch_promo_items(promo: Dict[str, Any]) -> None:
         pid   = promo.get("id")
@@ -907,16 +913,17 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
                 idata = r.json()
                 items = idata.get("results", [])
                 for item in items:
-                    if (item.get("status") or "").lower() != "started":
+                    if (item.get("status") or "").lower() not in _ACTIVE:
                         continue
                     iid = str(item.get("id") or "")
                     amount = item.get("price")
                     if not iid or amount is None:
                         continue
                     try:
+                        amount_f = float(amount)
                         reg = item.get("original_price")
-                        out[iid] = {
-                            "amount": float(amount),
+                        entry = {
+                            "amount": amount_f,
                             "regular_amount": float(reg) if reg is not None else None,
                             "promotion_id": item.get("offer_id"),
                             "promotion_type": ptype,
@@ -924,16 +931,20 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
                             "meli_percentage": float(item.get("meli_percentage") or item.get("meli_percent") or 0),
                         }
                     except (TypeError, ValueError):
-                        pass
+                        continue
+                    with _out_lock:
+                        actual = out.get(iid)
+                        if actual is None or amount_f < actual["amount"]:
+                            out[iid] = entry
                 search_after = idata.get("paging", {}).get("searchAfter")
                 if not search_after or not items:
                     break
             except Exception:
                 break
 
-    if started:
-        with ThreadPoolExecutor(max_workers=min(8, len(started))) as ex:
-            list(ex.map(_fetch_promo_items, started))
+    if activas:
+        with ThreadPoolExecutor(max_workers=min(8, len(activas))) as ex:
+            list(ex.map(_fetch_promo_items, activas))
 
     return out
 

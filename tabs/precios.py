@@ -1965,7 +1965,7 @@ def _mostrar_tabla_precios(
                             reg_f = float(reg)
                             _act = next(
                                 (p for p in (sp_promos or [])
-                                 if (p.get("status") or "").lower() == "started"
+                                 if (p.get("status") or "").lower() in ("started", "pending")
                                  and p.get("meli_percentage") is not None),
                                 None
                             )
