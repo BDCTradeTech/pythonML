@@ -353,6 +353,9 @@ def _cuotas_row(label: str, pct: float):
         ui.label(f"{pct:.0f}%").style(
             f"min-width:32px;text-align:right;font-size:12px;font-weight:600;color:{color}")
 
+def _fmt_miles(n) -> str:
+    return f"{int(n):,}".replace(",", ".")
+
 def _stat_row(label: str, value: str, color: str):
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
@@ -761,10 +764,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             _card_header("Ventas — últimos 30 días", ven_color)
                             with ui.column().classes("w-full gap-2"):
                                 _vt = ventas.get("total", 0)
-                                _pct_neg = f" ({ventas['gan_neg']/_vt*100:.0f}%)" if _vt else ""
-                                _pct_sin = f" ({ventas['sin_revisar']/_vt*100:.0f}%)" if _vt else ""
+                                _pct_neg = f" ({ventas['gan_neg']/_vt*100:.1f}%)".replace(".", ",") if _vt else ""
+                                _pct_sin = f" ({ventas['sin_revisar']/_vt*100:.1f}%)".replace(".", ",") if _vt else ""
                                 _stat_row_popup(
-                                    "A pérdida", f"{ventas['gan_neg']} / {_vt}{_pct_neg}",
+                                    "A pérdida", f"{_fmt_miles(ventas['gan_neg'])} / {_fmt_miles(_vt)}{_pct_neg}",
                                     _RED if ventas["gan_neg"] > 0 else _GREEN,
                                     lambda: _open_popup_list(
                                         "A pérdida — Ventas",
@@ -774,7 +777,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                          ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—"),
                                          ("Gan$",   lambda r: f"${r['gan_pesos']:,.0f}" if r.get("gan_pesos") is not None else "—")]))
                                 _stat_row_popup(
-                                    "Sin revisar", f"{ventas['sin_revisar']} / {_vt}{_pct_sin}",
+                                    "Sin revisar", f"{_fmt_miles(ventas['sin_revisar'])} / {_fmt_miles(_vt)}{_pct_sin}",
                                     _YELLOW if ventas["sin_revisar"] > 0 else _GREEN,
                                     lambda: _open_popup_list(
                                         "Ventas sin revisar",
@@ -1076,16 +1079,16 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 _card_header("Publicaciones ML", ml_pubs_ov)
                 with ui.column().classes("w-full gap-2"):
                     _stat_row_popup(
-                        "Documentación pendiente", str(len(ur_pend_doc)),
+                        "Documentación pendiente", _fmt_miles(len(ur_pend_doc)),
                         _RED if ur_pend_doc else _GREEN,
                         lambda rows=ur_pend_doc: _open_popup_list(
                             "Documentación pendiente", rows, _col_defs_ur))
                     _stat_row_popup(
-                        "Retenidas por ML", str(len(ur_held)),
+                        "Retenidas por ML", _fmt_miles(len(ur_held)),
                         _YELLOW if ur_held else _GREEN,
                         lambda rows=ur_held: _open_popup_list(
                             "Retenidas por ML", rows, _col_defs_ur))
-                    _stat_row("Activas sin problemas", str(active_count), _GREEN)
+                    _stat_row("Activas sin problemas", _fmt_miles(active_count), _GREEN)
                     q_list = list(questions or [])
                     q_row_container = ui.element("div").classes("w-full")
 
@@ -1103,7 +1106,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             with ui.row().classes("items-center gap-2 w-full"):
                                 _dot(color)
                                 ui.label("Preguntas sin responder").classes("text-xs text-gray-700 flex-1")
-                                ui.label(str(n_q)).classes(
+                                ui.label(_fmt_miles(n_q)).classes(
                                     "text-xs font-semibold cursor-pointer hover:underline"
                                 ).style("color:#1a1a1a").on(
                                     "click", lambda tok=tok, ql=ql, cont=cont: _open_questions_popup(
