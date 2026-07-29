@@ -189,6 +189,7 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
 
 
 _CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores")]
+_DIAS_LETRA = ["L", "M", "X", "J", "V", "S", "D"]  # datetime.weekday(): 0=lunes ... 6=domingo
 
 
 def _query_cron_runs(user_id: int) -> Dict[str, Dict[str, Dict[str, Any]]]:
@@ -904,7 +905,8 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                         with ui.row().classes("items-center gap-1"):
                                             ui.label("Última corrida:").classes("text-xs font-semibold").style("color:#6b7280")
                                             ui.label(estado_txt).classes("text-xs").style(f"color:{estado_color}")
-                                        with ui.row().classes("items-end gap-1 flex-wrap"):
+                                        with ui.element("div").classes("w-full").style(
+                                                "display:grid;grid-template-columns:repeat(7,1fr);gap:4px"):
                                             for d in dias_list:
                                                 row = days_map.get(d)
                                                 c = (_GREEN if row and row["status"] == "ok"
@@ -912,7 +914,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                      else _RED if row and row["status"] == "fail"
                                                      else "#d1d5db")
                                                 es_hoy = (d == dias_list[-1])
-                                                dia_num = d[8:10].lstrip("0") or "0"
+                                                letra = _DIAS_LETRA[datetime.fromisoformat(d).weekday()]
                                                 estado_legible = {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(
                                                     row["status"] if row else "", "Sin corrida")
                                                 tip = f"{d}: {estado_legible}"
@@ -922,22 +924,34 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                         tip += f" — {row['error']}"
                                                 if es_hoy:
                                                     tip += " (hoy)"
-                                                with ui.column().classes("items-center gap-0"):
-                                                    dot = _dot(c, size=8, ring=es_hoy).classes("cursor-pointer")
-                                                    dot.tooltip(tip)
-                                                    dot.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
-                                                            _open_cron_log_dialog(jl, jk, dd, rr, uid))
-                                                    ui.label(dia_num).classes(
-                                                        "text-[10px] leading-none " + ("font-bold" if es_hoy else "")
-                                                    ).style(f"color:{'#111827' if es_hoy else '#6b7280'}")
+                                                txt_color = "#374151" if c == "#d1d5db" else "#fff"
+                                                tile_style = (
+                                                    f"background:{c};border-radius:7px;height:30px;"
+                                                    "display:flex;align-items:center;justify-content:center;"
+                                                    f"color:{txt_color};font-size:11px;font-weight:700;cursor:pointer"
+                                                )
+                                                if es_hoy:
+                                                    tile_style += ";box-shadow:0 0 0 2px #fff,0 0 0 3.5px #374151"
+                                                tile = ui.element("div").style(tile_style)
+                                                with tile:
+                                                    ui.label(letra)
+                                                tile.tooltip(tip)
+                                                tile.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
+                                                        _open_cron_log_dialog(jl, jk, dd, rr, uid))
                                         fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
                                         oks = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "ok")
                                         if fails > 0:
                                             ui.label(f"Falló {fails}/7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
                                         else:
                                             ui.label(f"OK {oks}/7 días").classes("text-xs font-semibold").style(f"color:{_GREEN}")
-                                        ui.label("● Verde OK   ● Rojo Falló   ● Gris sin corrida").classes(
-                                            "text-[10px]").style("color:#9ca3af")
+
+                                ui.element("div").classes("w-full").style(
+                                    "border-top:1px solid #e5e7eb;margin-top:2px;padding-top:6px")
+                                with ui.row().classes("items-center gap-3"):
+                                    for leg_color, leg_label in ((_GREEN, "OK"), (_RED, "Falló"), ("#d1d5db", "Sin corrida")):
+                                        with ui.row().classes("items-center gap-1"):
+                                            _dot(leg_color, size=8)
+                                            ui.label(leg_label).classes("text-[10px]").style("color:#6b7280")
 
                         # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
                         rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
