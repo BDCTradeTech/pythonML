@@ -407,11 +407,10 @@ def _progress_bar(label: str, pct: float, count: int, total: int):
                 f"background:{_BLUE};border-radius:4px;transition:width 0.3s")
 
 def _cuotas_color(pct: float) -> str:
-    if pct <= 25:  return "#A32D2D"
-    if pct <= 34:  return "#E24B4A"
-    if pct <= 49:  return "#BA7517"
-    if pct <= 75:  return "#639922"
-    return "#3B6D11"
+    if pct <= 34:  return "#c0392b"
+    if pct <= 49:  return "#8a5a2b"
+    if pct <= 75:  return "#7cb342"
+    return "#2e7d32"
 
 def _cuotas_row(label: str, pct: float):
     color = _cuotas_color(pct)
@@ -1340,15 +1339,14 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         _cuotas_row("6 cuotas",  n_x6  / denom * 100)
                         _cuotas_row("9 cuotas",  n_x9  / denom * 100)
                         _cuotas_row("12 cuotas", n_x12 / denom * 100)
-                    with ui.row().classes("w-full gap-3 mt-2 flex-wrap"):
-                        for col, rng in [("#A32D2D", "0–25%"),   ("#E24B4A", "26–34%"),
-                                         ("#BA7517", "35–49%"),  ("#639922", "50–75%"),
-                                         ("#3B6D11", "76–100%")]:
-                            with ui.row().classes("items-center gap-1"):
-                                ui.element("span").style(
-                                    f"display:inline-block;width:10px;height:10px;"
-                                    f"border-radius:2px;background:{col};flex-shrink:0")
-                                ui.label(rng).style("font-size:12px;color:#6b7280")
+                    with ui.element("div").classes("w-full mt-2").style(
+                            "display:grid;grid-template-columns:repeat(4,1fr);gap:8px"):
+                        for col, rng in [("#c0392b", "0–34%"),  ("#8a5a2b", "35–49%"),
+                                         ("#7cb342", "50–75%"), ("#2e7d32", "76–100%")]:
+                            with ui.column().classes("items-center gap-1").style("width:100%"):
+                                ui.element("div").classes("w-full").style(
+                                    f"height:8px;border-radius:4px;background:{col}")
+                                ui.label(rng).style("font-size:11px;color:#6b7280;text-align:center")
                     with ui.row().classes("items-center gap-1 mt-2"):
                         if refreshing:
                             ui.spinner(size="xs")
