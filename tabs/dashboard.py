@@ -217,6 +217,58 @@ def _fmt_dt(iso: Optional[str]) -> str:
     return f"{iso[8:10]}/{iso[5:7]} {iso[11:16]}"
 
 
+_DIAS_ES = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+
+_CRON_LOG_FILES = {
+    "stock":        "/var/log/pythonml_stock.log",
+    "competidores": "/var/log/pythonml_comp.log",
+}
+_CRON_LOG_MARKERS = {
+    "stock":        ("Stock snapshot {date}", "Snapshot completado"),
+    "competidores": ("Snapshot competidores {date}", "COMPLETADO"),
+}
+
+
+def _read_cron_log_block(job: str, date_iso: str, max_lines: int = 500) -> str:
+    """Extrae el bloque de log de una corrida puntual entre sus marcadores de inicio/fin."""
+    path = _CRON_LOG_FILES.get(job)
+    if not path:
+        return "Log no disponible para este job."
+    start_pat, end_pat = _CRON_LOG_MARKERS[job]
+    start_pat = start_pat.format(date=date_iso)
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+    except OSError as e:
+        return f"No se pudo leer el log: {e}"
+    start_idx = next((i for i, l in enumerate(lines) if start_pat in l), None)
+    if start_idx is None:
+        return f"No se encontró bloque de log para {date_iso}."
+    end_idx = next((i for i in range(start_idx + 1, len(lines)) if end_pat in lines[i]),
+                    len(lines) - 1)
+    block = lines[start_idx:end_idx + 1]
+    if len(block) > max_lines:
+        block = block[:max_lines] + [f"... (truncado, {len(block) - max_lines} líneas más) ...\n"]
+    return "".join(block)
+
+
+def _open_cron_log_dialog(job_label: str, job_key: str, date_iso: str, row: Optional[Dict]) -> None:
+    with ui.dialog() as d, ui.card().classes("w-full").style("max-width:800px"):
+        ui.label(f"{job_label} — {date_iso}").classes("font-bold text-base")
+        if row:
+            meta = f"status={row['status']} · count={row['count']} · {row['run_datetime']}"
+            if row.get("error"):
+                meta += f" · error={row['error']}"
+        else:
+            meta = "Sin registro en cron_runs para esta fecha (no corrió)."
+        ui.label(meta).classes("text-xs text-gray-600")
+        with ui.scroll_area().classes("w-full").style("height:400px;background:#111;border-radius:4px"):
+            ui.label(_read_cron_log_block(job_key, date_iso)).classes(
+                "text-xs whitespace-pre-wrap font-mono").style("color:#d1d5db;padding:8px")
+        ui.button("Cerrar", on_click=d.close)
+    d.open()
+
+
 def _query_arca(user_id: int) -> Dict[str, Any]:
     return {
         "siper":   get_arca_datos("siper", user_id),
@@ -300,15 +352,21 @@ def _rep_alerts(metrics: Dict) -> List[Tuple[str, str]]:
 
 # ── UI helpers ────────────────────────────────────────────────────────────────
 
-def _dot(color: str, size: int = 10):
-    return ui.element("span").style(
-        f"display:inline-block;width:{size}px;height:{size}px;border-radius:9999px;"
-        f"background:{color};flex-shrink:0")
+def _dot(color: str, size: int = 10, ring: bool = False):
+    style = (f"display:inline-block;width:{size}px;height:{size}px;border-radius:9999px;"
+             f"background:{color};flex-shrink:0")
+    if ring:
+        style += ";box-shadow:0 0 0 2px #fff,0 0 0 3.5px #374151"
+    return ui.element("span").style(style)
 
-def _card_header(title: str, color: str):
+def _card_header(title: str, color: str, info_tooltip: Optional[str] = None):
     with ui.row().classes("items-center gap-2 w-full mb-2"):
         _dot(color)
         ui.label(title).classes("font-bold text-base text-gray-800")
+        if info_tooltip:
+            ui.element("i").classes("ti ti-info-circle").style(
+                "font-size:14px;color:#9ca3af;cursor:help"
+            ).tooltip(info_tooltip)
 
 def _alert_row(container, color: str, msg: str, on_nav=None):
     with container:
@@ -810,7 +868,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 cron_ov = _YELLOW
 
                         with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                            _card_header("Tus tareas nocturnas — 7 días", cron_ov)
+                            _card_header(
+                                "Tus tareas nocturnas — 7 días", cron_ov,
+                                info_tooltip="Verde = OK · Amarillo = parcial · Rojo = falló · "
+                                             "Gris = no corrió (sin registro) · click en un punto = ver log")
                             with ui.column().classes("w-full gap-2"):
                                 for job_key, job_label in _CRON_JOBS:
                                     days_map = cron_data.get(job_key, {})
@@ -837,14 +898,21 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                      else _YELLOW if row and row["status"] == "partial"
                                                      else _RED if row and row["status"] == "fail"
                                                      else "#d1d5db")
-                                                dot = _dot(c, size=8)
+                                                es_hoy = (d == dias_list[-1])
+                                                dot = _dot(c, size=8, ring=es_hoy).classes("cursor-pointer")
+                                                dia_nombre = _DIAS_ES[datetime.fromisoformat(d).weekday()]
+                                                fecha_corta = f"{d[8:10]}/{d[5:7]}"
                                                 if row:
-                                                    tip = f"{d}: {row['status']} — {row['count']} registros"
+                                                    tip = f"{dia_nombre} {fecha_corta}: {row['status']} — {row['count']} registros"
                                                     if row.get("error"):
                                                         tip += f" — {row['error']}"
                                                 else:
-                                                    tip = f"{d}: no corrió"
+                                                    tip = f"{dia_nombre} {fecha_corta}: no corrió"
+                                                if es_hoy:
+                                                    tip += " (hoy)"
                                                 dot.tooltip(tip)
+                                                dot.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
+                                                        _open_cron_log_dialog(jl, jk, dd, rr))
                                         fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
                                         if fails > 0:
                                             ui.label(f"Falló {fails}/7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
