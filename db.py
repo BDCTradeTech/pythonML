@@ -2901,6 +2901,52 @@ def get_ads_items_stock(user_id: int) -> Dict[str, Optional[int]]:
         conn.close()
 
 
+def get_ganancia_real_por_item(user_id: int, date_from: str, date_to: str) -> Dict[str, Any]:
+    """Ganancia real por item_id en [date_from, date_to] (order_date, YYYY-MM-DD inclusive),
+    sumando gan_pesos ya persistido en ventas_datos (calculado en tabs/ventas.py /
+    ventas_backfill.py -- NO se recalcula acá). ventas_datos no guarda item_id/sku, así que
+    se resuelve por orden via ml_orders_cache.items_json. Ninguna orden observada en
+    produccion trae mas de un item_id distinto (siempre 1 sola linea por orden) -- si alguna
+    vez apareciera una orden multi-item, se excluye de "por_item" (no se prorratea) para no
+    inventar un numero, pero SI se cuenta en "total" (ganancia a nivel tienda, no por producto).
+    Devuelve {"por_item": {item_id: gan_pesos_sumado}, "total": float, "n_ordenes": int}."""
+    import json
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT v.gan_pesos, o.items_json
+            FROM ventas_datos v
+            JOIN ml_orders_cache o ON o.order_id = v.order_id AND o.user_id = v.user_id
+            WHERE v.user_id = ? AND v.order_date BETWEEN ? AND ? AND v.gan_pesos IS NOT NULL
+            """,
+            (user_id, date_from, date_to),
+        ).fetchall()
+    finally:
+        conn.close()
+    por_item: Dict[str, float] = {}
+    total = 0.0
+    for r in rows:
+        gan = r["gan_pesos"]
+        total += gan
+        try:
+            items = json.loads(r["items_json"] or "[]")
+        except Exception:
+            items = []
+        ids = set()
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            obj = it.get("item") or it
+            iid = (obj.get("id") if isinstance(obj, dict) else None) or it.get("item_id")
+            if iid:
+                ids.add(str(iid))
+        if len(ids) == 1:
+            iid = next(iter(ids))
+            por_item[iid] = por_item.get(iid, 0.0) + gan
+    return {"por_item": por_item, "total": total, "n_ordenes": len(rows)}
+
+
 def get_last_cron_run_at(job: str, user_id: int) -> Optional[str]:
     """Fecha/hora del ultimo intento de corrida de un cron para un usuario (cualquier status,
     incluido 'skip'/'fail'). Sirve para distinguir "todavia no corrio nunca" de "corrio pero

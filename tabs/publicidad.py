@@ -19,6 +19,7 @@ from ml_api import (
 from db import (
     get_ads_advertiser, get_ads_campaigns, get_ads_campaign_daily_range,
     get_ads_item_snapshot, get_ads_sync_freshness, get_last_cron_run_at, get_ads_items_stock,
+    get_ganancia_real_por_item,
 )
 from tabs.estadisticas import fmt_m, fmt_n
 
@@ -35,13 +36,25 @@ KPI_TOOLTIPS = {
     "tacos": "TACOS = Inversión en ads / Ventas TOTALES de la tienda en el período (no solo "
              "las de ads). Mide qué tan dependiente sos de la publicidad para vender.",
     "unidades": "Unidades vendidas atribuidas a publicidad (directas + indirectas) en el período.",
+    "pub_ganancia": "Cuánto de tu ganancia real se va en publicidad: Inversión ads ÷ Ganancia "
+                    "real del período (la ganancia ANTES de restar la publicidad). Ganancia "
+                    "real = lo que efectivamente ganás después de costos, comisiones e "
+                    "impuestos (no las ventas brutas). Si no hay ninguna venta con ganancia "
+                    "calculada en el período (falta costo cargado en Productos), no se puede "
+                    "calcular.",
 }
 
 # Columnas comunes a la tabla de campañas, las filas de ítem expandidas y "Por producto" --
 # se comparten los mismos anchos para que quede todo alineado (punto 1 del refinamiento).
 COL_WIDTHS = {"nombre": "34%", "inversion": "12%", "ventas": "12%", "unidades": "10%",
               "stock": "10%", "acos": "11%", "roas": "11%"}
+# Solo "Por producto": agrega Ganancia real y Ganancia neta (= ganancia - inversión ads).
+# "Por campaña" no lleva estas columnas.
+COL_WIDTHS_PRODUCTO = {"nombre": "26%", "inversion": "9%", "ventas": "9%", "unidades": "8%",
+                        "stock": "8%", "acos": "9%", "roas": "9%",
+                        "ganancia": "11%", "ganancia_neta": "11%"}
 N_COLS = 7  # para los colspan de filas "nota" (sin actividad / ocultos / cap de 50)
+N_COLS_PRODUCTO = 9
 ACOS_ALERTA_PCT = 20.0  # a partir de este ACOS, se pinta en ámbar (nivel "alto")
 
 # Estado del anuncio (item-level, ads/search) o de la campaña (campaigns/search) -- documentado
@@ -154,26 +167,32 @@ def _th(label: str, align: str, width: str) -> None:
         ui.label(label)
 
 
-def _render_header(nombre_label: str) -> None:
+def _render_header(nombre_label: str, widths: Dict[str, str] = COL_WIDTHS, con_ganancia: bool = False) -> None:
     with ui.element("thead"):
         with ui.element("tr").style("background:#f9fafb"):
-            _th(nombre_label, "left", COL_WIDTHS["nombre"])
-            _th("Inversión", "right", COL_WIDTHS["inversion"])
-            _th("Ventas", "right", COL_WIDTHS["ventas"])
-            _th("Unid.", "right", COL_WIDTHS["unidades"])
-            _th("Stock", "right", COL_WIDTHS["stock"])
-            _th("ACOS", "right", COL_WIDTHS["acos"])
-            _th("ROAS", "right", COL_WIDTHS["roas"])
+            _th(nombre_label, "left", widths["nombre"])
+            _th("Inversión", "right", widths["inversion"])
+            _th("Ventas", "right", widths["ventas"])
+            _th("Unid.", "right", widths["unidades"])
+            _th("Stock", "right", widths["stock"])
+            _th("ACOS", "right", widths["acos"])
+            _th("ROAS", "right", widths["roas"])
+            if con_ganancia:
+                _th("Ganancia", "right", widths["ganancia"])
+                _th("Ganancia neta", "right", widths["ganancia_neta"])
 
 
 def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: float,
                           units: float, *, sufijo: str = "", stock: Optional[int] = None,
-                          stock_aplica: bool = True, indent: bool = False, muted: bool = False,
-                          font_size: str = "12px", on_click=None) -> None:
-    """Fila con las columnas comunes Nombre | Inversión | Ventas | Unid. | Stock | ACOS | ROAS,
-    usada tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y
-    con el header (punto 1). El ACOS por ítem sale calculado y coloreado por nivel, y el gasto
-    sin ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3)."""
+                          stock_aplica: bool = True, ganancia: Optional[float] = None,
+                          ganancia_neta: Optional[float] = None, mostrar_ganancia: bool = False,
+                          widths: Dict[str, str] = COL_WIDTHS, indent: bool = False,
+                          muted: bool = False, font_size: str = "12px", on_click=None) -> None:
+    """Fila con las columnas comunes Nombre | Inversión | Ventas | Unid. | Stock | ACOS | ROAS
+    (+ Ganancia | Ganancia neta si mostrar_ganancia=True, solo usado por "Por producto"), usada
+    tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y con el
+    header (punto 1). El ACOS por ítem sale calculado y coloreado por nivel, y el gasto sin
+    ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3)."""
     acos_txt, acos_color, es_alerta = _acos_estado(cost, amt)
     dot_color, dot_tooltip = STATUS_META.get(status, ("#9ca3af", f"Estado: {status}" if status else "Sin dato"))
     tr = ui.element("tr").style(f"border-bottom:1px solid {'#f5f5f5' if muted else '#f3f4f6'}")
@@ -181,7 +200,7 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
         tr = tr.classes("hover:bg-gray-50 cursor-pointer").on("click", on_click)
     with tr:
         with ui.element("td").style(
-            f"padding:6px 10px 6px {'30px' if indent else '10px'};width:{COL_WIDTHS['nombre']};max-width:0"
+            f"padding:6px 10px 6px {'30px' if indent else '10px'};width:{widths['nombre']};max-width:0"
         ):
             with ui.element("div").style("display:flex;align-items:center;gap:6px;min-width:0"):
                 ui.element("span").style(
@@ -199,13 +218,13 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
                         f"font-size:{font_size};color:{'#6b7280' if muted else '#111827'};"
                         f"font-weight:{'400' if muted else '500'}"
                     )
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['inversion']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['inversion']}"):
             ui.label(fmt_m(cost)).style(f"font-size:{font_size};color:#dc2626")
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['ventas']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['ventas']}"):
             ui.label(fmt_m(amt)).style(f"font-size:{font_size};color:#16a34a")
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['unidades']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['unidades']}"):
             ui.label(fmt_n(units)).style(f"font-size:{font_size};color:{'#6b7280' if muted else '#374151'}")
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['stock']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['stock']}"):
             if stock is None:
                 tooltip = "Sin snapshot de stock para este ítem" if stock_aplica else "No aplica a nivel campaña"
                 ui.label("—").style(f"font-size:{font_size};color:#d1d5db").tooltip(tooltip)
@@ -214,13 +233,32 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
                     f"font-size:{font_size};font-weight:{'700' if stock == 0 else '400'};"
                     f"color:{'#dc2626' if stock == 0 else ('#6b7280' if muted else '#374151')}"
                 )
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['acos']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['acos']}"):
             ui.label(acos_txt).style(f"font-size:{font_size};color:{acos_color};font-weight:600")
         roas = (amt / cost) if cost > 0 else 0.0
-        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['roas']}"):
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['roas']}"):
             ui.label(f"{roas:.2f}x".replace(".", ",")).style(
                 f"font-size:{font_size};color:{'#dc2626' if es_alerta else '#1d4ed8'};font-weight:600"
             )
+        if mostrar_ganancia:
+            with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['ganancia']}"):
+                if ganancia is None:
+                    ui.label("s/dato").style(f"font-size:{font_size};color:#9ca3af").tooltip(
+                        "Sin ganancia real calculada para este producto en el período "
+                        "(sin ventas reales registradas, o falta costo cargado en Productos)"
+                    )
+                else:
+                    ui.label(fmt_m(ganancia)).style(f"font-size:{font_size};color:#374151;font-weight:500")
+            with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['ganancia_neta']}"):
+                if ganancia_neta is None:
+                    ui.label("s/dato").style(f"font-size:{font_size};color:#9ca3af").tooltip(
+                        "No se puede calcular sin la ganancia real de este producto"
+                    )
+                else:
+                    ui.label(fmt_m(ganancia_neta)).style(
+                        f"font-size:{font_size};font-weight:700;"
+                        f"color:{'#16a34a' if ganancia_neta >= 0 else '#dc2626'}"
+                    )
 
 
 def build_tab_publicidad(container) -> None:
@@ -261,6 +299,7 @@ def build_tab_publicidad(container) -> None:
             datos_periodo[periodo] = {
                 "por_campania": _agrupar_daily_por_campania(daily_rows),
                 "items": get_ads_item_snapshot(uid, periodo),
+                "ganancia": get_ganancia_real_por_item(uid, d_from.isoformat(), d_to.isoformat()),
                 "d_from": d_from, "d_to": d_to,
             }
 
@@ -375,6 +414,8 @@ def build_tab_publicidad(container) -> None:
                     acos = (total_cost / total_amount * 100) if total_amount > 0 else 0.0
                     roas = (total_amount / total_cost) if total_cost > 0 else 0.0
                     tacos = (total_cost / ventas_tienda * 100) if ventas_tienda > 0 else 0.0
+                    ganancia_total = d["ganancia"]["total"]
+                    pub_gan_pct = (total_cost / ganancia_total * 100) if ganancia_total > 0 else None
                     with kpi_row:
                         _kpi_tile("Inversión", fmt_m(total_cost), "", "#dc2626", KPI_TOOLTIPS["inversion"])
                         _kpi_tile("Ventas x ads", fmt_m(total_amount), "", "#16a34a", KPI_TOOLTIPS["ventas"])
@@ -383,6 +424,13 @@ def build_tab_publicidad(container) -> None:
                         _kpi_tile("TACOS", f"{tacos:.1f}%".replace(".", ","),
                                   f"vs. {fmt_m(ventas_tienda)} facturado", "#7c3aed", KPI_TOOLTIPS["tacos"])
                         _kpi_tile("Unidades", fmt_n(total_units), "", "#374151", KPI_TOOLTIPS["unidades"])
+                        _kpi_tile(
+                            "Ads / Ganancia",
+                            f"{pub_gan_pct:.1f}%".replace(".", ",") if pub_gan_pct is not None else "s/dato",
+                            f"vs. {fmt_m(ganancia_total)} ganancia real" if ganancia_total > 0
+                                else "Sin ganancia real calculada en el período",
+                            "#be185d", KPI_TOOLTIPS["pub_ganancia"],
+                        )
 
                 def _toggle_ocultos(key: str) -> None:
                     if key in estado["mostrar_ocultos"]:
@@ -391,12 +439,12 @@ def build_tab_publicidad(container) -> None:
                         estado["mostrar_ocultos"].add(key)
                     _render_tabla()
 
-                def _render_nota_ocultos(n_ocultos: int, key: str) -> None:
+                def _render_nota_ocultos(n_ocultos: int, key: str, n_cols: int = N_COLS) -> None:
                     if n_ocultos <= 0:
                         return
                     mostrando = key in estado["mostrar_ocultos"]
                     with ui.element("tr"):
-                        with ui.element("td").props(f"colspan={N_COLS}").style(
+                        with ui.element("td").props(f"colspan={n_cols}").style(
                             "padding:6px 10px 6px 30px;background:#fafafa"
                         ):
                             with ui.element("div").style(
@@ -482,31 +530,37 @@ def build_tab_publicidad(container) -> None:
                     sufijos = _dedupe_titulos(base)
                     CAP = 50
                     capped = base[:CAP]
+                    por_item_gan = d["ganancia"]["por_item"]
                     with ui.element("div").style(
                         "background:#fff;border:1px solid #e0e2e7;border-radius:10px;overflow:hidden"
                     ):
                         with ui.element("table").style("width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed"):
-                            _render_header("Producto")
+                            _render_header("Producto", widths=COL_WIDTHS_PRODUCTO, con_ganancia=True)
                             with ui.element("tbody"):
                                 if not capped:
                                     with ui.element("tr"):
-                                        with ui.element("td").props(f"colspan={N_COLS}").style("padding:12px"):
+                                        with ui.element("td").props(f"colspan={N_COLS_PRODUCTO}").style("padding:12px"):
                                             ui.label("Sin actividad de productos en este período.").style(
                                                 "color:#9ca3af;font-size:11px"
                                             )
                                 for it in capped:
                                     titulo = it.get("title") or it.get("item_id") or "—"
+                                    cost_i = float(it.get("cost") or 0)
+                                    gan_i = por_item_gan.get(it.get("item_id"))
+                                    neta_i = (gan_i - cost_i) if gan_i is not None else None
                                     _render_fila_metrica(
-                                        titulo, it.get("status"), float(it.get("cost") or 0),
+                                        titulo, it.get("status"), cost_i,
                                         float(it.get("total_amount") or 0), float(it.get("units_quantity") or 0),
                                         sufijo=sufijos.get(it.get("item_id"), ""),
                                         stock=stock_por_item.get(it.get("item_id")),
+                                        ganancia=gan_i, ganancia_neta=neta_i, mostrar_ganancia=True,
+                                        widths=COL_WIDTHS_PRODUCTO,
                                     )
                                 if not mostrando_ocultos:
-                                    _render_nota_ocultos(n_ocultos, key)
+                                    _render_nota_ocultos(n_ocultos, key, n_cols=N_COLS_PRODUCTO)
                                 if len(base) > CAP:
                                     with ui.element("tr"):
-                                        with ui.element("td").props(f"colspan={N_COLS}").style("padding:6px 10px"):
+                                        with ui.element("td").props(f"colspan={N_COLS_PRODUCTO}").style("padding:6px 10px"):
                                             ui.label(
                                                 f"Mostrando los primeros {CAP} de {len(base)} productos "
                                                 "(ordenados por ROAS)."
