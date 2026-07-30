@@ -2873,3 +2873,17 @@ def get_ads_sync_freshness(user_id: int) -> Optional[str]:
         return row[0] if row and row[0] else None
     finally:
         conn.close()
+
+
+def get_last_cron_run_at(job: str, user_id: int) -> Optional[str]:
+    """Fecha/hora del ultimo intento de corrida de un cron para un usuario (cualquier status,
+    incluido 'skip'/'fail'). Sirve para distinguir "todavia no corrio nunca" de "corrio pero
+    no aplica" en las pantallas que leen de cache (ver tabs/publicidad.py)."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(run_datetime) FROM cron_runs WHERE job = ? AND user_id = ?", (job, user_id),
+        ).fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
