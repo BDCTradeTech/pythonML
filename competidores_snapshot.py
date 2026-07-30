@@ -1,21 +1,24 @@
 """
 competidores_snapshot.py
 Lógica eficiente en 4 pasos:
-1. Recorrer catálogos → recolectar seller_ids nuevos (sin llamar a /users todavía)
-2. Deduplicar seller_ids únicos de toda la DB
+1. Recorrer catálogos activo_con_stock → recolectar seller_ids nuevos (sin
+   llamar a /users todavía) y dejar constancia en competidores_conocidos
+   (tracking persistente, independiente de si el catálogo sigue activo mañana)
+2. Deduplicar seller_ids únicos: catálogos de hoy + seguidos + comparador +
+   competidores_conocidos
 3. Llamar /users/{seller_id} UNA sola vez por vendedor único
-4. Guardar snapshot + borrar vendedores con 0 ventas históricas
+4. Guardar snapshot (huérfanos sin catálogo hoy → catalog_product_id='CONOCIDO')
+   + borrar vendedores con 0 ventas históricas
 Cron: 0 4 * * * /opt/pythonml/venv/bin/python3 /opt/pythonml/competidores_snapshot.py
 """
 import sys, json, logging, time
 from collections import Counter
-from datetime import date
+from datetime import date, datetime
 sys.path.insert(0, '/opt/pythonml')
 
 import requests
 from db import get_connection, init_cron_runs_db, log_cron_run
 from ml_api import get_ml_access_token
-from tabs.catalogos import _sync_one_catalog
 import asyncio
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -113,12 +116,40 @@ def ensure_table():
             UNIQUE(user_id, seller_id)
         )
     """)
+    # competidores_conocidos: registro persistente de todo seller_id alguna vez
+    # descubierto vía catálogo, para trackearlo aunque su catálogo de origen
+    # deje de estar activo_con_stock. last_seen_in_catalog queda para una futura
+    # poda (hoy no se poda nada).
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS competidores_conocidos (
+            user_id INTEGER NOT NULL,
+            seller_id TEXT NOT NULL,
+            last_seen_in_catalog DATETIME,
+            PRIMARY KEY (user_id, seller_id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def backfill_competidores_conocidos():
+    """Siembra competidores_conocidos con todo seller_id que ya tenga algún
+    snapshot histórico. Idempotente (INSERT OR IGNORE + PK) — se puede correr
+    en cada ejecución del cron sin efecto secundario."""
+    conn = get_connection()
+    conn.execute("""
+        INSERT OR IGNORE INTO competidores_conocidos (user_id, seller_id)
+        SELECT DISTINCT user_id, seller_id
+        FROM competidores_snapshots
+        WHERE seller_id IS NOT NULL AND seller_id != ''
+    """)
     conn.commit()
     conn.close()
 
 
 async def run():
     ensure_table()
+    backfill_competidores_conocidos()
     init_cron_runs_db()
     today = date.today().isoformat()
     log.info("=== Snapshot competidores %s ===", today)
@@ -177,6 +208,31 @@ async def run():
             )
             log.info("Catálogos procesados: %d", len(catalog_sellers))
 
+            # Actualizar competidores_conocidos con los seller_id descubiertos
+            # hoy vía catálogo (descubrimiento sigue acotado a activo_con_stock;
+            # esto solo deja constancia persistente de que existen).
+            descubiertos_hoy = set()
+            for items in catalog_sellers.values():
+                for it in items:
+                    if it["seller_id"]:
+                        descubiertos_hoy.add(it["seller_id"])
+            if descubiertos_hoy:
+                now_iso = datetime.now().isoformat(timespec="seconds")
+                conn = get_connection()
+                try:
+                    for sid in descubiertos_hoy:
+                        conn.execute("""
+                            INSERT INTO competidores_conocidos (user_id, seller_id, last_seen_in_catalog)
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(user_id, seller_id)
+                            DO UPDATE SET last_seen_in_catalog=excluded.last_seen_in_catalog
+                        """, (user_id, sid, now_iso))
+                    conn.commit()
+                except Exception as e:
+                    log.error("Error actualizando competidores_conocidos: %s", e)
+                finally:
+                    conn.close()
+
             # PASO 2: Seller IDs únicos (de catálogos + competidores_seguidos)
             all_seller_ids = set()
             for items in catalog_sellers.values():
@@ -211,6 +267,22 @@ async def run():
             except Exception as e:
                 log.error("Error leyendo comparador_competidores: %s", e)
             for s in comparador:
+                all_seller_ids.add(str(s[0]))
+
+            # Agregar los de competidores_conocidos: tracking persistente de todo
+            # seller alguna vez descubierto, independiente de si su catálogo de
+            # origen sigue activo_con_stock hoy (evita que "huérfanos" dejen de
+            # actualizarse).
+            conocidos = []
+            try:
+                conn = get_connection()
+                conocidos = conn.execute(
+                    "SELECT seller_id FROM competidores_conocidos WHERE user_id=?", (user_id,)
+                ).fetchall()
+                conn.close()
+            except Exception as e:
+                log.error("Error leyendo competidores_conocidos: %s", e)
+            for s in conocidos:
                 all_seller_ids.add(str(s[0]))
 
             log.info("Sellers únicos a consultar: %d", len(all_seller_ids))
@@ -251,6 +323,7 @@ async def run():
             # PASO 4: Guardar snapshots
             conn = get_connection()
             saved = 0
+            sids_guardados_hoy = set()
             for cpid, items in catalog_sellers.items():
                 for it in items:
                     sid = it["seller_id"]
@@ -271,6 +344,7 @@ async def run():
                             it["price"], it["item_id"], today
                         ))
                         saved += 1
+                        sids_guardados_hoy.add(sid)
                     except Exception as e:
                         log.error("Error insert %s/%s: %s", cpid, sid, e)
 
@@ -292,6 +366,7 @@ async def run():
                         sd["nickname"], sd["total_ventas"],
                         sd["level_id"], sd["power_status"], today
                     ))
+                    sids_guardados_hoy.add(sid)
                 except Exception:
                     pass
 
@@ -314,6 +389,32 @@ async def run():
                         sd["nickname"], sd["total_ventas"],
                         sd["level_id"], sd["power_status"], today
                     ))
+                    sids_guardados_hoy.add(sid)
+                except Exception:
+                    pass
+
+            # También guardar los "conocidos" (tracking persistente) que quedaron
+            # huérfanos: no aparecieron en ningún catálogo activo hoy, ni están en
+            # seguidos/comparador. Snapshot a nivel vendedor puro, sin contexto de
+            # catálogo — price/item_id quedan NULL igual que en SEGUIDO/COMPARADOR.
+            for s in conocidos:
+                sid = str(s[0])
+                if sid in sids_guardados_hoy or sid not in seller_data:
+                    continue
+                sd = seller_data[sid]
+                try:
+                    conn.execute("""
+                        INSERT OR IGNORE INTO competidores_snapshots
+                            (user_id, catalog_product_id, seller_id, seller_nickname,
+                             seller_total_ventas, seller_level_id, seller_power_status,
+                             snapshot_date)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        user_id, "CONOCIDO", sid,
+                        sd["nickname"], sd["total_ventas"],
+                        sd["level_id"], sd["power_status"], today
+                    ))
+                    sids_guardados_hoy.add(sid)
                 except Exception:
                     pass
 
