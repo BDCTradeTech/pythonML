@@ -2902,14 +2902,20 @@ def get_ads_items_stock(user_id: int) -> Dict[str, Optional[int]]:
 
 
 def get_ganancia_real_por_item(user_id: int, date_from: str, date_to: str) -> Dict[str, Any]:
-    """Ganancia real por item_id en [date_from, date_to] (order_date, YYYY-MM-DD inclusive),
-    sumando gan_pesos ya persistido en ventas_datos (calculado en tabs/ventas.py /
-    ventas_backfill.py -- NO se recalcula acá). ventas_datos no guarda item_id/sku, así que
-    se resuelve por orden via ml_orders_cache.items_json. Ninguna orden observada en
-    produccion trae mas de un item_id distinto (siempre 1 sola linea por orden) -- si alguna
-    vez apareciera una orden multi-item, se excluye de "por_item" (no se prorratea) para no
-    inventar un numero, pero SI se cuenta en "total" (ganancia a nivel tienda, no por producto).
-    Devuelve {"por_item": {item_id: gan_pesos_sumado}, "total": float, "n_ordenes": int}."""
+    """Ganancia real y unidades reales por item_id en [date_from, date_to] (order_date,
+    YYYY-MM-DD inclusive), sumando gan_pesos ya persistido en ventas_datos (calculado en
+    tabs/ventas.py / ventas_backfill.py -- NO se recalcula acá). ventas_datos no guarda
+    item_id/sku, así que se resuelve por orden via ml_orders_cache.items_json. Ninguna orden
+    observada en produccion trae mas de un item_id distinto (siempre 1 sola linea por orden) --
+    si alguna vez apareciera una orden multi-item, se excluye de "por_item"/"unidades_por_item"
+    (no se prorratea) para no inventar un numero, pero SI se cuenta en "total" (ganancia a nivel
+    tienda, no por producto). "unidades_por_item" sale de la MISMA orden que "por_item" (mismo
+    set de ordenes single-item) para que ganancia_total / unidades_totales dé el margen promedio
+    real del producto (ver tabs/publicidad.py, columna "Ganancia est." de "Por producto": estima
+    la ganancia de las unidades vendidas por ads aplicando ese margen promedio, porque ML no
+    expone qué ventas puntuales vinieron de publicidad). Devuelve {"por_item": {item_id:
+    gan_pesos_sumado}, "unidades_por_item": {item_id: unidades_reales_sumadas}, "total": float,
+    "n_ordenes": int}."""
     import json
     conn = get_connection()
     try:
@@ -2925,6 +2931,7 @@ def get_ganancia_real_por_item(user_id: int, date_from: str, date_to: str) -> Di
     finally:
         conn.close()
     por_item: Dict[str, float] = {}
+    unidades_por_item: Dict[str, float] = {}
     total = 0.0
     for r in rows:
         gan = r["gan_pesos"]
@@ -2934,17 +2941,22 @@ def get_ganancia_real_por_item(user_id: int, date_from: str, date_to: str) -> Di
         except Exception:
             items = []
         ids = set()
+        qty_por_id: Dict[str, float] = {}
         for it in items:
             if not isinstance(it, dict):
                 continue
             obj = it.get("item") or it
             iid = (obj.get("id") if isinstance(obj, dict) else None) or it.get("item_id")
             if iid:
-                ids.add(str(iid))
+                iid = str(iid)
+                ids.add(iid)
+                qty_por_id[iid] = qty_por_id.get(iid, 0) + float(it.get("quantity") or 0)
         if len(ids) == 1:
             iid = next(iter(ids))
             por_item[iid] = por_item.get(iid, 0.0) + gan
-    return {"por_item": por_item, "total": total, "n_ordenes": len(rows)}
+            unidades_por_item[iid] = unidades_por_item.get(iid, 0.0) + qty_por_id.get(iid, 0.0)
+    return {"por_item": por_item, "unidades_por_item": unidades_por_item, "total": total,
+            "n_ordenes": len(rows)}
 
 
 def get_last_cron_run_at(job: str, user_id: int) -> Optional[str]:
