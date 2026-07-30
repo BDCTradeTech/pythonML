@@ -159,11 +159,14 @@ def _kpi_tile(label: str, value: str, sub: str, color: str, tooltip: str) -> Non
             ui.label(sub).style("font-size:11px;color:#6b7280")
 
 
-def _th(label: str, align: str, width: str) -> None:
-    with ui.element("th").style(
+def _th(label: str, align: str, width: str, tooltip: Optional[str] = None) -> None:
+    el = ui.element("th").style(
         f"padding:6px 10px;text-align:{align};font-weight:600;color:#6b7280;"
         f"border-bottom:1px solid #e0e2e7;width:{width}"
-    ):
+    )
+    if tooltip:
+        el = el.tooltip(tooltip)
+    with el:
         ui.label(label)
 
 
@@ -173,7 +176,7 @@ def _render_header(nombre_label: str, widths: Dict[str, str] = COL_WIDTHS, con_g
             _th(nombre_label, "left", widths["nombre"])
             _th("Inversión", "right", widths["inversion"])
             _th("Ventas", "right", widths["ventas"])
-            _th("Unid.", "right", widths["unidades"])
+            _th("Vendidas", "right", widths["unidades"], tooltip=KPI_TOOLTIPS["unidades"])
             _th("Stock", "right", widths["stock"])
             _th("ACOS", "right", widths["acos"])
             _th("ROAS", "right", widths["roas"])
@@ -184,7 +187,7 @@ def _render_header(nombre_label: str, widths: Dict[str, str] = COL_WIDTHS, con_g
 
 def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: float,
                           units: float, *, sufijo: str = "", stock: Optional[int] = None,
-                          stock_aplica: bool = True, ganancia: Optional[float] = None,
+                          stock_resumen: Optional[tuple] = None, ganancia: Optional[float] = None,
                           ganancia_neta: Optional[float] = None, mostrar_ganancia: bool = False,
                           widths: Dict[str, str] = COL_WIDTHS, indent: bool = False,
                           muted: bool = False, font_size: str = "12px", on_click=None) -> None:
@@ -192,7 +195,10 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
     (+ Ganancia | Ganancia neta si mostrar_ganancia=True, solo usado por "Por producto"), usada
     tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y con el
     header (punto 1). El ACOS por ítem sale calculado y coloreado por nivel, y el gasto sin
-    ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3)."""
+    ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3). El stock no se
+    puede sumar/promediar a nivel campaña (mezclaría productos distintos) -- filas de campaña
+    pasan stock_resumen=(con_stock, con_dato) y se muestra "X/Y con stock"; filas de ítem/
+    producto pasan stock (el número) como antes."""
     acos_txt, acos_color, es_alerta = _acos_estado(cost, amt)
     dot_color, dot_tooltip = STATUS_META.get(status, ("#9ca3af", f"Estado: {status}" if status else "Sin dato"))
     tr = ui.element("tr").style(f"border-bottom:1px solid {'#f5f5f5' if muted else '#f3f4f6'}")
@@ -225,9 +231,24 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['unidades']}"):
             ui.label(fmt_n(units)).style(f"font-size:{font_size};color:{'#6b7280' if muted else '#374151'}")
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['stock']}"):
-            if stock is None:
-                tooltip = "Sin snapshot de stock para este ítem" if stock_aplica else "No aplica a nivel campaña"
-                ui.label("—").style(f"font-size:{font_size};color:#d1d5db").tooltip(tooltip)
+            if stock_resumen is not None:
+                con_stock, con_dato = stock_resumen
+                if con_dato == 0:
+                    ui.label("s/dato").style(f"font-size:{font_size};color:#9ca3af").tooltip(
+                        "Ningún producto de esta campaña tiene snapshot de stock"
+                    )
+                else:
+                    ui.label(f"{con_stock}/{con_dato} con stock").style(
+                        f"font-size:{font_size};color:{'#dc2626' if con_stock == 0 else '#374151'}"
+                    ).tooltip(
+                        f"{con_dato} producto(s) de esta campaña tienen dato de stock conocido; "
+                        f"de esos, {con_stock} tienen stock disponible (>0). El stock es un dato "
+                        "por producto -- no se suma ni promedia a nivel campaña."
+                    )
+            elif stock is None:
+                ui.label("—").style(f"font-size:{font_size};color:#d1d5db").tooltip(
+                    "Sin snapshot de stock para este ítem"
+                )
             else:
                 ui.label(fmt_n(stock)).style(
                     f"font-size:{font_size};font-weight:{'700' if stock == 0 else '400'};"
@@ -506,13 +527,16 @@ def build_tab_publicidad(container) -> None:
                                 for cid, dim, m in filas:
                                     expandida = estado["campania_expandida"] == cid
                                     nombre = f"{'▾' if expandida else '▸'} {dim.get('name') or cid}"
+                                    items_camp = [it for it in d["items"] if it.get("campaign_id") == cid]
+                                    stocks_camp = [stock_por_item.get(it.get("item_id")) for it in items_camp]
+                                    con_dato = sum(1 for s in stocks_camp if s is not None)
+                                    con_stock = sum(1 for s in stocks_camp if (s or 0) > 0)
                                     _render_fila_metrica(
                                         nombre, dim.get("status"), m["cost"], m["total_amount"],
-                                        m["units_quantity"], stock_aplica=False,
+                                        m["units_quantity"], stock_resumen=(con_stock, con_dato),
                                         on_click=lambda c=cid: _toggle_expandir(c),
                                     )
                                     if expandida:
-                                        items_camp = [it for it in d["items"] if it.get("campaign_id") == cid]
                                         _render_items_filas(items_camp, cid)
 
                 def _render_tabla_productos(d: Dict[str, Any]) -> None:
