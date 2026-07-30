@@ -154,7 +154,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.30.06"
+VERSION = "3.26.07.30.07"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -163,6 +163,11 @@ VERSION = "3.26.07.30.06"
 ML_MENU_STYLE = "grouped"
 # Mostrar iconos junto a cada ítem (solo aplica a ML_MENU_STYLE == "grouped").
 ML_MENU_ICONS = True
+
+# Mostrar iconos en los ítems de los demás menús de navegación (BDC, COMEX,
+# IMPUESTOS, CONFIG, ADMIN). Flag independiente de ML_MENU_ICONS: poner en
+# False saca los iconos de estos menús sin re-codear.
+NAV_MENU_ICONS = True
 
 # Grupos del mega-menú. Cada ítem: (etiqueta mostrada, tab interno, permiso, icono, tag opcional).
 # Reordenar/mover ítems entre grupos es solo editar esta lista.
@@ -590,6 +595,17 @@ def show_main_layout(container) -> None:
             _open_menus.append(menu_obj)
             menu_obj.open()
 
+        def _nav_item(label: str, icon: Optional[str], on_click: Any) -> None:
+            """Ítem de menú de navegación (BDC/COMEX/IMPUESTOS/CONFIG/ADMIN), con
+            icono opcional según NAV_MENU_ICONS. Revertible sin re-codear."""
+            if NAV_MENU_ICONS and icon:
+                with ui.menu_item(on_click=on_click):
+                    with ui.row().classes("items-center gap-2 no-wrap"):
+                        ui.icon(icon, size="20px", color="grey-7")
+                        ui.label(label)
+            else:
+                ui.menu_item(label, on_click)
+
         with ui.row().classes("w-full items-center q-pa-md bg-grey-2 gap-2 flex-wrap"):
             with ui.row().classes("items-center gap-1 flex-wrap"):
                 _nav_font = "text-lg font-medium"
@@ -644,31 +660,31 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Invoices")
                                         tab_panels.value = tab_compras
                                         app.storage.user["last_tab"] = "Invoices"
-                                    ui.menu_item("INVOICES", _compras_click)
+                                    _nav_item("INVOICES", "receipt_long", _compras_click)
                                 if perms.get("stock_bdc", True):
                                     def _stock_bdc_click():
                                         _lazy_load("Stock BDC")
                                         tab_panels.value = tab_stock_bdc
                                         app.storage.user["last_tab"] = "Stock BDC"
-                                    ui.menu_item("STOCK BDC", _stock_bdc_click)
+                                    _nav_item("STOCK BDC", "warehouse", _stock_bdc_click)
                                 if perms.get("compras_lista", True):
                                     def _compras_lista_click():
                                         _lazy_load("Compras")
                                         tab_panels.value = tab_compras_lista
                                         app.storage.user["last_tab"] = "Compras"
-                                    ui.menu_item("COMPRAS", _compras_lista_click)
+                                    _nav_item("COMPRAS", "shopping_cart", _compras_lista_click)
                                 if perms.get("pedidos", True):
                                     def _pedidos_click():
                                         _lazy_load("Pedidos")
                                         tab_panels.value = tab_pedidos
                                         app.storage.user["last_tab"] = "Pedidos"
-                                    ui.menu_item("PEDIDOS", _pedidos_click)
+                                    _nav_item("PEDIDOS", "list_alt", _pedidos_click)
                                 if perms.get("historicos", True):
                                     def _historicos_click():
                                         _lazy_load("Históricos")
                                         tab_panels.value = tab_historicos
                                         app.storage.user["last_tab"] = "Históricos"
-                                    ui.menu_item("HISTÓRICOS", _historicos_click)
+                                    _nav_item("HISTÓRICOS", "history", _historicos_click)
                 if perms.get("importacion", True) or perms.get("pesos", True) or perms.get("guias", True) or perms.get("couriers", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(comex_menu)):
                         with ui.button("COMEX").props("flat dense no-caps").classes(_nav_font):
@@ -678,31 +694,31 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Importacion")
                                         tab_panels.value = tab_importacion
                                         app.storage.user["last_tab"] = "Importacion"
-                                    ui.menu_item("IMPORTACION", _imp_click)
+                                    _nav_item("IMPORTACION", "flight_takeoff", _imp_click)
                                 if perms.get("guias", True):
                                     def _guias_click():
                                         _lazy_load("Guias")
                                         tab_panels.value = tab_guias
                                         app.storage.user["last_tab"] = "Guias"
-                                    ui.menu_item("GUÍAS", _guias_click)
+                                    _nav_item("GUÍAS", "assignment", _guias_click)
                                 if perms.get("transferencias", True):
                                     def _transferencias_click():
                                         _lazy_load("Transferencias")
                                         tab_panels.value = tab_transferencias
                                         app.storage.user["last_tab"] = "Transferencias"
-                                    ui.menu_item("TRANSFERENCIAS", _transferencias_click)
+                                    _nav_item("TRANSFERENCIAS", "swap_horiz", _transferencias_click)
                                 if perms.get("pesos", True):
                                     def _pesos_click():
                                         _lazy_load("Pesos")
                                         tab_panels.value = tab_pesos
                                         app.storage.user["last_tab"] = "Pesos"
-                                    ui.menu_item("PESOS", _pesos_click)
+                                    _nav_item("PESOS", "monitor_weight", _pesos_click)
                                 if perms.get("couriers", True):
                                     def _couriers_click():
                                         _lazy_load("Couriers")
                                         tab_panels.value = tab_couriers
                                         app.storage.user["last_tab"] = "Couriers"
-                                    ui.menu_item("COURIERS", _couriers_click)
+                                    _nav_item("COURIERS", "local_shipping", _couriers_click)
                 if perms.get("arca", True) or perms.get("gastos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(impuestos_menu)):
                         with ui.button("IMPUESTOS").props("flat dense no-caps").classes(_nav_font):
@@ -712,13 +728,13 @@ def show_main_layout(container) -> None:
                                         _lazy_load("ARCA")
                                         tab_panels.value = tab_arca
                                         app.storage.user["last_tab"] = "ARCA"
-                                    ui.menu_item("ARCA", _arca_click)
+                                    _nav_item("ARCA", "gavel", _arca_click)
                                 if perms.get("gastos", True):
                                     def _gastos_click():
                                         _lazy_load("Gastos")
                                         tab_panels.value = tab_gastos
                                         app.storage.user["last_tab"] = "Gastos"
-                                    ui.menu_item("GASTOS", _gastos_click)
+                                    _nav_item("GASTOS", "payments", _gastos_click)
                 if perms.get("datos", True) or perms.get("configuracion", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(config_menu)):
                         with ui.button("CONFIG").props("flat dense no-caps").classes(_nav_font):
@@ -728,21 +744,21 @@ def show_main_layout(container) -> None:
                                         _lazy_load("Datos")
                                         tab_panels.value = tab_datos
                                         app.storage.user["last_tab"] = "Datos"
-                                    ui.menu_item("DATOS", _datos_click)
+                                    _nav_item("DATOS", "storage", _datos_click)
                                 if perms.get("configuracion", True):
                                     def _config_click():
                                         _lazy_load("Configuración")
                                         tab_panels.value = tab_config
                                         app.storage.user["last_tab"] = "Configuración"
-                                    ui.menu_item("CONFIGURACIÓN", _config_click)
+                                    _nav_item("CONFIGURACIÓN", "settings", _config_click)
                 if perms.get("admin", False):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(admin_menu)):
                         with ui.button("ADMIN").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as admin_menu:
-                                ui.menu_item("PERMISOS", _go("Admin"))
+                                _nav_item("PERMISOS", "admin_panel_settings", _go("Admin"))
                                 if perms.get("actividad", False):
-                                    ui.menu_item("ACTIVIDAD", _go("Actividad"))
-                                ui.menu_item("LOG", _go("Log"))
+                                    _nav_item("ACTIVIDAD", "history", _go("Actividad"))
+                                _nav_item("LOG", "article", _go("Log"))
             ui.space()
             _mini_card = (
                 "background:#f9fafb;padding:5px 12px;border-radius:6px;"
