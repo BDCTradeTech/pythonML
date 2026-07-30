@@ -798,6 +798,18 @@ def init_db() -> None:
         conn.execute("ALTER TABLE sku_catalogos_new RENAME TO sku_catalogos")
         conn.commit()
 
+    # Migration: columnas para el resync de mapeo vigente (ver resync_sku_catalogos.py).
+    # No se toca 'activo' -- eso sigue siendo resorte de la UI/usuario.
+    try:
+        conn.execute("ALTER TABLE sku_catalogos ADD COLUMN estado_publicacion TEXT")
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE sku_catalogos ADD COLUMN last_resync_at TEXT")
+    except sqlite3.OperationalError:
+        pass
+    conn.commit()
+
     init_competidores_snapshots_db()
 
     cur.execute(
@@ -1078,6 +1090,25 @@ def delete_sku_catalogo(id_: int, user_id: int) -> None:
     try:
         conn.execute("DELETE FROM sku_catalogos WHERE id=? AND user_id=?", (id_, user_id))
         conn.commit()
+    finally:
+        conn.close()
+
+
+def supersede_old_sku_catalogo_mappings(user_id: int, sku: str, new_catalog_product_id: str) -> int:
+    """Marca como obsoletas (estado_publicacion='mapeo_obsoleto_superseded') las filas de
+    sku_catalogos del mismo (user_id, sku) con un catalog_product_id distinto al vigente.
+    No toca 'activo' -- eso sigue siendo resorte del usuario/UI, no del mapeo automático.
+    Devuelve la cantidad de filas marcadas."""
+    conn = get_connection()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        cur = conn.execute(
+            "UPDATE sku_catalogos SET estado_publicacion='mapeo_obsoleto_superseded', last_resync_at=? "
+            "WHERE user_id=? AND sku=? AND catalog_product_id != ?",
+            (now, user_id, sku, new_catalog_product_id),
+        )
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 

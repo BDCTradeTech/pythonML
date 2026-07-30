@@ -70,7 +70,9 @@ def get_all_credentials():
 def get_catalog_ids(user_id: int) -> list:
     conn = get_connection()
     rows = conn.execute(
-        "SELECT DISTINCT catalog_product_id FROM sku_catalogos WHERE user_id=? AND catalog_product_id IS NOT NULL AND catalog_product_id != ''",
+        "SELECT DISTINCT catalog_product_id FROM sku_catalogos "
+        "WHERE user_id=? AND catalog_product_id IS NOT NULL AND catalog_product_id != '' "
+        "AND estado_publicacion='activo_con_stock'",
         (user_id,)
     ).fetchall()
     conn.close()

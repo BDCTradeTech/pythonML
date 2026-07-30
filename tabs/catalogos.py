@@ -19,6 +19,7 @@ from db import (
     add_sku_catalogo,
     delete_sku_catalogo,
     upsert_catalogo_competidores,
+    supersede_old_sku_catalogo_mappings,
 )
 from ml_api import (
     get_ml_access_token,
@@ -386,6 +387,7 @@ def build_tab_catalogos(container) -> None:
                         cpid = str(item.get("catalog_product_id") or "").strip()
                         if item_sku and cpid and (item_sku, cpid) not in existing_pairs:
                             add_sku_catalogo(uid, item_sku, cpid, "")
+                            supersede_old_sku_catalogo_mappings(uid, item_sku, cpid)
                             existing_pairs.add((item_sku, cpid))
 
                     # price_to_win por item (solo SKUs con catálogos)

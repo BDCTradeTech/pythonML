@@ -25,6 +25,7 @@ from db import (
     get_catalogo_competidores, upsert_catalogo_competidores,
     get_app_config,
     get_marca_override_map,
+    supersede_old_sku_catalogo_mappings,
 )
 from helpers.cache_swr import _cached_or_refresh, _cached_or_refresh_bulk
 from ml_api import (
@@ -144,6 +145,7 @@ def build_tab_precios(container) -> None:
                     _cpid = str(_item_ac.get("catalog_product_id") or "").strip()
                     if _item_sku and _cpid and (_item_sku, _cpid) not in _existing_pairs:
                         add_sku_catalogo(_uid_ac, _item_sku, _cpid, "")
+                        supersede_old_sku_catalogo_mappings(_uid_ac, _item_sku, _cpid)
                         _existing_pairs.add((_item_sku, _cpid))
                         _cpids_nuevos.add(_cpid)
                         _nuevos += 1
