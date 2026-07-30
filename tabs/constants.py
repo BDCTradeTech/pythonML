@@ -19,6 +19,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
     ("productos", "Productos"),
     ("cuotas", "Cuotas"),
     ("promos", "Promos"),
+    ("publicidad", "Publicidad"),
     ("preguntas", "Preguntas"),
     ("flex", "Flex"),
     ("busqueda", "Busquedas"),
@@ -42,7 +43,7 @@ TAB_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "preguntas", "flex", "historicos", "stock_bdc", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "busqueda", "balance", "dashboard", "cuotas", "promos", "publicidad", "preguntas", "flex", "historicos", "stock_bdc", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -57,6 +58,7 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "balance": "gastos, ingresos y resultados.",
     "dashboard": "resumen ejecutivo con alertas, KPIs de productos, ventas y reputación ML.",
     "promos": "descuentos activos en MercadoLibre: precio promo, descuento ML y del vendedor.",
+    "publicidad": "campañas de Publicidad (Product Ads): inversión, ventas por ads, ACOS, ROAS y TACOS.",
     "preguntas": "ver y responder preguntas sin responder recibidas en MercadoLibre.",
     "flex": "gestión de zonas de envíos Flex con tarifas y códigos postales.",
     "compras": "facturas de QuickBooks con saldo, estado y seguimiento (Invoices).",
@@ -81,6 +83,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "balance": "Balance",
     "dashboard": "Dashboard",
     "promos": "Promos",
+    "publicidad": "Publicidad",
     "preguntas": "Preguntas",
     "flex": "Flex",
     "catalogos": "Catálogos",

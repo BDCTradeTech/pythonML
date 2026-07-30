@@ -1996,3 +1996,186 @@ def ml_get_orders_incremental(access_token: str, seller_id: str, user_id: int) -
         log.warning(f"[ORDERS_CACHE] cacheadas {len(all_results)} órdenes")
 
     return {"results": get_orders_cache(user_id)}
+
+
+# ---------------------------------------------------------------------------
+# Publicidad (ML Ads / Product Ads API) -- Fase 2
+# Endpoints verificados en vivo contra advertiser 721771 (MLA) -- ver tmp_diag_ads*.py:
+# - GET /advertising/advertisers?product_id=PADS  (header "Api-Version: 1", OJO mayuscula/caso)
+# - GET /advertising/{site}/advertisers/{adv}/product_ads/campaigns/search  ("api-version: 2")
+# - GET /advertising/{site}/advertisers/{adv}/product_ads/ads/search        ("api-version: 2")
+# Estructura plana, sin ad_groups (viene ad_group_id en ads/search pero no se usa).
+# aggregation_type=DAILY con mas de un item_id en filters[item_id] devuelve 500
+# "error_calculating_summarized_metrics" (reproducible) -- por eso el nivel item NO se
+# consulta con aggregation_type=DAILY (ver ads_snapshot.py para el detalle del cacheo).
+# ---------------------------------------------------------------------------
+
+ADS_METRICS_FULL = (
+    "clicks,prints,ctr,cost,cpc,acos,organic_units_quantity,organic_units_amount,"
+    "organic_items_quantity,direct_items_quantity,indirect_items_quantity,"
+    "advertising_items_quantity,cvr,roas,sov,direct_units_quantity,indirect_units_quantity,"
+    "units_quantity,direct_amount,indirect_amount,total_amount"
+)
+
+
+def ml_ads_get_advertiser(access_token: str) -> Optional[Dict[str, Any]]:
+    """GET /advertising/advertisers?product_id=PADS. Devuelve el primer advertiser (una cuenta
+    ML normalmente tiene uno solo para Product Ads) o None si el usuario no tiene Ads habilitado
+    (404 'No permissions found for user_id') o hubo error."""
+    log = logging.getLogger(__name__)
+    try:
+        resp = get_ml_session().get(
+            "https://api.mercadolibre.com/advertising/advertisers",
+            headers={"Authorization": f"Bearer {access_token}", "Api-Version": "1"},
+            params={"product_id": "PADS"},
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            return None
+        if not resp.ok:
+            log.warning(f"[ADS] advertisers {resp.status_code}: {resp.text[:200]}")
+            return None
+        advertisers = resp.json().get("advertisers") or []
+        return advertisers[0] if advertisers else None
+    except Exception:
+        log.exception("[ADS] error obteniendo advertiser")
+        return None
+
+
+def ml_ads_get_campaigns(
+    access_token: str, site_id: str, advertiser_id: int, date_from: str, date_to: str,
+) -> List[Dict[str, Any]]:
+    """GET campaigns/search, aggregation_type=campaign (default): una fila por campaña con
+    atributos (name/status/strategy/budget/acos_target/roas_target) + métricas sumadas del
+    rango. Pagina hasta agotar el total."""
+    log = logging.getLogger(__name__)
+    headers = {"Authorization": f"Bearer {access_token}", "api-version": "2"}
+    url = f"https://api.mercadolibre.com/advertising/{site_id}/advertisers/{advertiser_id}/product_ads/campaigns/search"
+    results: List[Dict[str, Any]] = []
+    offset = 0
+    limit = 50
+    while True:
+        try:
+            resp = get_ml_session().get(
+                url, headers=headers, timeout=25,
+                params={"date_from": date_from, "date_to": date_to, "metrics": ADS_METRICS_FULL,
+                        "limit": limit, "offset": offset},
+            )
+            if not resp.ok:
+                log.warning(f"[ADS] campaigns/search {resp.status_code}: {resp.text[:200]}")
+                break
+            data = resp.json()
+            page = data.get("results") or []
+            results.extend(page)
+            total = (data.get("paging") or {}).get("total", 0)
+            offset += limit
+            if offset >= total or not page:
+                break
+        except Exception:
+            log.exception("[ADS] error en campaigns/search")
+            break
+    return results
+
+
+def ml_ads_get_campaign_daily(
+    access_token: str, site_id: str, advertiser_id: int, campaign_id: int, date_from: str, date_to: str,
+) -> List[Dict[str, Any]]:
+    """GET campaigns/search filtrado a UNA campaña + aggregation_type=DAILY: una fila por día
+    con las métricas de esa campaña puntual. Filtrar por campaign_id es necesario porque sin
+    filtro, DAILY suma TODAS las campañas del anunciante en una sola fila por día, perdiendo
+    la identidad de cada campaña (confirmado en vivo)."""
+    log = logging.getLogger(__name__)
+    headers = {"Authorization": f"Bearer {access_token}", "api-version": "2"}
+    url = f"https://api.mercadolibre.com/advertising/{site_id}/advertisers/{advertiser_id}/product_ads/campaigns/search"
+    try:
+        resp = get_ml_session().get(
+            url, headers=headers, timeout=25,
+            params={"date_from": date_from, "date_to": date_to, "metrics": ADS_METRICS_FULL,
+                    "aggregation_type": "DAILY", "filters[campaign_id]": campaign_id},
+        )
+        if not resp.ok:
+            log.warning(f"[ADS] campaign daily {campaign_id} {resp.status_code}: {resp.text[:200]}")
+            return []
+        return resp.json().get("results") or []
+    except Exception:
+        log.exception(f"[ADS] error en campaign daily campaign_id={campaign_id}")
+        return []
+
+
+def ml_ads_get_items(
+    access_token: str, site_id: str, advertiser_id: int, campaign_id: int, date_from: str, date_to: str,
+) -> List[Dict[str, Any]]:
+    """GET ads/search filtrado a una campaña, aggregation_type=item (default): una fila por
+    ítem con metadata (title/thumbnail/price/permalink/status) + métricas sumadas del rango.
+    Pagina hasta agotar el total (una campaña puede tener 100+ ítems). Reconciliación
+    verificada en vivo contra campaigns/search para la misma campaña+rango: cost/total_amount/
+    clicks/units_quantity coinciden exacto; prints puede diferir levemente (~1%) porque el
+    listado de ítems refleja la composición ACTUAL de la campaña, no la de cada día del rango
+    (un ítem que rotó fuera de la campaña durante la ventana no aparece aquí pero sí sumó
+    impresiones al total de campaña)."""
+    log = logging.getLogger(__name__)
+    headers = {"Authorization": f"Bearer {access_token}", "api-version": "2"}
+    url = f"https://api.mercadolibre.com/advertising/{site_id}/advertisers/{advertiser_id}/product_ads/ads/search"
+    results: List[Dict[str, Any]] = []
+    offset = 0
+    limit = 50
+    while True:
+        try:
+            resp = get_ml_session().get(
+                url, headers=headers, timeout=25,
+                params={"date_from": date_from, "date_to": date_to, "metrics": ADS_METRICS_FULL,
+                        "filters[campaign_id]": campaign_id, "limit": limit, "offset": offset},
+            )
+            if not resp.ok:
+                log.warning(f"[ADS] ads/search {resp.status_code}: {resp.text[:200]}")
+                break
+            data = resp.json()
+            page = data.get("results") or []
+            results.extend(page)
+            total = (data.get("paging") or {}).get("total", 0)
+            offset += limit
+            if offset >= total or not page:
+                break
+        except Exception:
+            log.exception(f"[ADS] error en ads/search campaign_id={campaign_id}")
+            break
+    return results
+
+
+def compute_ventas_periodo(orders_results: List[Dict[str, Any]], date_from, date_to) -> Dict[str, float]:
+    """Unidades y monto vendidos en [date_from, date_to] (objetos date, inclusive), calculado
+    con la MISMA lógica de tabs/estadisticas.py (_pintar_home_inline): sin filtro de status,
+    total_amount con fallback a paid_amount/payments, 1 unidad si hay monto pero no hay items.
+    Se usa para TACOS -- así "ventas totales" coincide con lo que muestra Estadísticas (no con
+    Balance, que usa la misma fuente en el código actual pero está documentado como referencia
+    histórica de una discrepancia ya resuelta -- ver ml_get_orders_incremental)."""
+    from datetime import datetime as _dt
+    unidades = 0
+    monto = 0.0
+    for o in orders_results:
+        if not isinstance(o, dict):
+            continue
+        dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
+        if not dt_str:
+            continue
+        try:
+            dt = _dt.strptime(dt_str[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+        if not (date_from <= dt <= date_to):
+            continue
+        total_amount = o.get("total_amount") or o.get("paid_amount")
+        if total_amount is None and o.get("payments"):
+            pay = o["payments"][0] if isinstance(o["payments"], list) else {}
+            total_amount = pay.get("total_amount") or pay.get("total_paid_amount") or pay.get("transaction_amount")
+        try:
+            total_amount = float(total_amount or 0)
+        except (TypeError, ValueError):
+            total_amount = 0.0
+        items = o.get("order_items") or o.get("items") or []
+        units = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
+        if units == 0 and total_amount > 0:
+            units = 1
+        unidades += units
+        monto += total_amount
+    return {"unidades": unidades, "monto": monto}

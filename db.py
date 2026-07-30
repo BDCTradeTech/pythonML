@@ -170,6 +170,120 @@ def log_cron_run(job: str, user_id: int, status: str, count: int = 0,
     conn.close()
 
 
+def init_ads_tables() -> None:
+    """Crea las tablas de Publicidad (ML Ads / Product Ads API) si no existen. Se llama tanto
+    desde init_db() (arranque de la app) como desde ads_snapshot.py (cron standalone)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_ads_advertisers (
+            user_id         INTEGER PRIMARY KEY,
+            advertiser_id   INTEGER NOT NULL,
+            site_id         TEXT NOT NULL,
+            advertiser_name TEXT,
+            account_name    TEXT,
+            synced_at       DATETIME NOT NULL
+        )
+        """
+    )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_ads_campaigns (
+            user_id         INTEGER NOT NULL,
+            campaign_id     INTEGER NOT NULL,
+            site_id         TEXT NOT NULL,
+            advertiser_id   INTEGER NOT NULL,
+            name            TEXT,
+            status          TEXT,
+            strategy        TEXT,
+            budget          REAL,
+            currency_id     TEXT,
+            acos_target     REAL,
+            roas_target     REAL,
+            date_created    TEXT,
+            last_updated_ml TEXT,
+            synced_at       DATETIME NOT NULL,
+            PRIMARY KEY (user_id, campaign_id)
+        )
+        """
+    )
+    # DIARIO por campaña -- se re-escriben (upsert) los ultimos 14 dias en cada corrida del
+    # cron para absorber revisiones de atribucion de ML (ventana de atribucion de Ads = 14 dias).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_ads_campaign_metrics_daily (
+            user_id                    INTEGER NOT NULL,
+            campaign_id                INTEGER NOT NULL,
+            date                       DATE NOT NULL,
+            clicks                     INTEGER,
+            prints                     INTEGER,
+            cost                       REAL,
+            cpc                        REAL,
+            ctr                        REAL,
+            direct_amount              REAL,
+            indirect_amount            REAL,
+            total_amount               REAL,
+            direct_units_quantity      INTEGER,
+            indirect_units_quantity    INTEGER,
+            units_quantity             INTEGER,
+            direct_items_quantity      INTEGER,
+            indirect_items_quantity    INTEGER,
+            advertising_items_quantity INTEGER,
+            organic_units_quantity     INTEGER,
+            organic_units_amount       REAL,
+            organic_items_quantity     INTEGER,
+            acos                       REAL,
+            cvr                        REAL,
+            roas                       REAL,
+            sov                        REAL,
+            synced_at                  DATETIME NOT NULL,
+            PRIMARY KEY (user_id, campaign_id, date)
+        )
+        """
+    )
+    # Snapshot por ITEM agregado por periodo (7d/30d/mes) -- de ads/search aggregation_type=item.
+    # aggregation_type=DAILY a nivel item con mas de un item_id devuelve 500 (probado en vivo,
+    # ver tmp_diag_ads2.py), por eso NO se cachea con granularidad diaria por item. Se guarda
+    # SOLO el ultimo snapshot por item+periodo (INSERT OR REPLACE, sin acumular historico) para
+    # que la tabla no crezca sin control.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_ads_item_metrics_snapshot (
+            user_id                 INTEGER NOT NULL,
+            campaign_id             INTEGER NOT NULL,
+            item_id                 TEXT NOT NULL,
+            periodo                 TEXT NOT NULL,
+            title                   TEXT,
+            thumbnail               TEXT,
+            permalink               TEXT,
+            price                   REAL,
+            status                  TEXT,
+            brand_value_name        TEXT,
+            clicks                  INTEGER,
+            prints                  INTEGER,
+            cost                    REAL,
+            cpc                     REAL,
+            total_amount            REAL,
+            direct_amount           REAL,
+            indirect_amount         REAL,
+            units_quantity          INTEGER,
+            direct_units_quantity   INTEGER,
+            indirect_units_quantity INTEGER,
+            acos                    REAL,
+            roas                    REAL,
+            synced_at               DATETIME NOT NULL,
+            PRIMARY KEY (user_id, campaign_id, item_id, periodo)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ads_item_snapshot_periodo ON ml_ads_item_metrics_snapshot(user_id, periodo)"
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_db() -> None:
     """Crea las tablas si no existen."""
     conn = get_connection()
@@ -957,10 +1071,14 @@ def init_db() -> None:
         cur.execute(
             "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'analisis_ml', 1)"
         )
+        cur.execute(
+            "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'publicidad', 1)"
+        )
 
     conn.commit()
     conn.close()
     init_cron_runs_db()
+    init_ads_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -2541,5 +2659,217 @@ def upsert_gastos_prompt(user_id: int, seccion: str, prompt: str) -> None:
             (user_id, seccion, prompt, now),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Publicidad (ML Ads)
+# ---------------------------------------------------------------------------
+
+def get_ads_advertiser(user_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT advertiser_id, site_id, advertiser_name, account_name, synced_at "
+            "FROM ml_ads_advertisers WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def upsert_ads_advertiser(user_id: int, advertiser_id: int, site_id: str,
+                           advertiser_name: Optional[str], account_name: Optional[str]) -> None:
+    conn = get_connection()
+    try:
+        now = datetime.now().isoformat(timespec="seconds")
+        conn.execute(
+            """
+            INSERT INTO ml_ads_advertisers (user_id, advertiser_id, site_id, advertiser_name, account_name, synced_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                advertiser_id=excluded.advertiser_id, site_id=excluded.site_id,
+                advertiser_name=excluded.advertiser_name, account_name=excluded.account_name,
+                synced_at=excluded.synced_at
+            """,
+            (user_id, advertiser_id, site_id, advertiser_name, account_name, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_ads_campaigns(user_id: int, site_id: str, advertiser_id: int, campaigns: List[Dict[str, Any]]) -> None:
+    """campaigns: resultados crudos de campaigns/search (aggregation_type=campaign, default) --
+    trae name/status/strategy/budget/acos_target/roas_target junto con las metricas del rango."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        for c in campaigns:
+            if not c.get("id"):
+                continue
+            conn.execute(
+                """
+                INSERT INTO ml_ads_campaigns
+                    (user_id, campaign_id, site_id, advertiser_id, name, status, strategy, budget,
+                     currency_id, acos_target, roas_target, date_created, last_updated_ml, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, campaign_id) DO UPDATE SET
+                    name=excluded.name, status=excluded.status, strategy=excluded.strategy,
+                    budget=excluded.budget, currency_id=excluded.currency_id,
+                    acos_target=excluded.acos_target, roas_target=excluded.roas_target,
+                    last_updated_ml=excluded.last_updated_ml, synced_at=excluded.synced_at
+                """,
+                (user_id, c.get("id"), site_id, advertiser_id, c.get("name"), c.get("status"),
+                 c.get("strategy"), c.get("budget"), c.get("currency_id"), c.get("acos_target"),
+                 c.get("roas_target"), c.get("date_created"), c.get("last_updated"), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ads_campaigns(user_id: int) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ml_ads_campaigns WHERE user_id = ? ORDER BY (status = 'active') DESC, name",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_ads_campaign_daily(user_id: int, campaign_id: int, rows: List[Dict[str, Any]]) -> None:
+    """rows: resultados crudos de campaigns/search filtrado a UNA campaña + aggregation_type=DAILY.
+    Upsert por (user_id, campaign_id, date) -- se re-escribe si ya existia, para reflejar
+    revisiones de atribucion de ML."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        for r in rows:
+            d = r.get("date")
+            if not d:
+                continue
+            conn.execute(
+                """
+                INSERT INTO ml_ads_campaign_metrics_daily
+                    (user_id, campaign_id, date, clicks, prints, cost, cpc, ctr, direct_amount,
+                     indirect_amount, total_amount, direct_units_quantity, indirect_units_quantity,
+                     units_quantity, direct_items_quantity, indirect_items_quantity,
+                     advertising_items_quantity, organic_units_quantity, organic_units_amount,
+                     organic_items_quantity, acos, cvr, roas, sov, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, campaign_id, date) DO UPDATE SET
+                    clicks=excluded.clicks, prints=excluded.prints, cost=excluded.cost,
+                    cpc=excluded.cpc, ctr=excluded.ctr, direct_amount=excluded.direct_amount,
+                    indirect_amount=excluded.indirect_amount, total_amount=excluded.total_amount,
+                    direct_units_quantity=excluded.direct_units_quantity,
+                    indirect_units_quantity=excluded.indirect_units_quantity,
+                    units_quantity=excluded.units_quantity,
+                    direct_items_quantity=excluded.direct_items_quantity,
+                    indirect_items_quantity=excluded.indirect_items_quantity,
+                    advertising_items_quantity=excluded.advertising_items_quantity,
+                    organic_units_quantity=excluded.organic_units_quantity,
+                    organic_units_amount=excluded.organic_units_amount,
+                    organic_items_quantity=excluded.organic_items_quantity,
+                    acos=excluded.acos, cvr=excluded.cvr, roas=excluded.roas, sov=excluded.sov,
+                    synced_at=excluded.synced_at
+                """,
+                (user_id, campaign_id, d, r.get("clicks"), r.get("prints"), r.get("cost"),
+                 r.get("cpc"), r.get("ctr"), r.get("direct_amount"), r.get("indirect_amount"),
+                 r.get("total_amount"), r.get("direct_units_quantity"), r.get("indirect_units_quantity"),
+                 r.get("units_quantity"), r.get("direct_items_quantity"), r.get("indirect_items_quantity"),
+                 r.get("advertising_items_quantity"), r.get("organic_units_quantity"),
+                 r.get("organic_units_amount"), r.get("organic_items_quantity"), r.get("acos"),
+                 r.get("cvr"), r.get("roas"), r.get("sov"), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ads_campaign_daily_max_date(user_id: int) -> Optional[str]:
+    """None si el usuario nunca tuvo una corrida (dispara backfill de 90 dias en el cron)."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(date) FROM ml_ads_campaign_metrics_daily WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        return row[0] if row and row[0] else None
+    finally:
+        conn.close()
+
+
+def get_ads_campaign_daily_range(user_id: int, date_from: str, date_to: str) -> List[Dict[str, Any]]:
+    """Filas diarias por campaña en [date_from, date_to] (YYYY-MM-DD, inclusive)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ml_ads_campaign_metrics_daily "
+            "WHERE user_id = ? AND date >= ? AND date <= ? ORDER BY date",
+            (user_id, date_from, date_to),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def upsert_ads_item_snapshot(user_id: int, campaign_id: int, periodo: str, items: List[Dict[str, Any]]) -> None:
+    """items: resultados crudos de ads/search (aggregation_type=item, default) para una
+    campaña+periodo. Se pisa (INSERT OR REPLACE) por (user_id, campaign_id, item_id, periodo) --
+    solo se guarda el ultimo snapshot, sin acumular historico."""
+    now = datetime.now().isoformat(timespec="seconds")
+    conn = get_connection()
+    try:
+        for it in items:
+            if not it.get("item_id"):
+                continue
+            m = it.get("metrics") or {}
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO ml_ads_item_metrics_snapshot
+                    (user_id, campaign_id, item_id, periodo, title, thumbnail, permalink, price,
+                     status, brand_value_name, clicks, prints, cost, cpc, total_amount,
+                     direct_amount, indirect_amount, units_quantity, direct_units_quantity,
+                     indirect_units_quantity, acos, roas, synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, campaign_id, it.get("item_id"), periodo, it.get("title"),
+                 it.get("thumbnail"), it.get("permalink"), it.get("price"), it.get("status"),
+                 it.get("brand_value_name"), m.get("clicks"), m.get("prints"), m.get("cost"),
+                 m.get("cpc"), m.get("total_amount"), m.get("direct_amount"), m.get("indirect_amount"),
+                 m.get("units_quantity"), m.get("direct_units_quantity"), m.get("indirect_units_quantity"),
+                 m.get("acos"), m.get("roas"), now),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ads_item_snapshot(user_id: int, periodo: str) -> List[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM ml_ads_item_metrics_snapshot WHERE user_id = ? AND periodo = ? "
+            "ORDER BY roas DESC",
+            (user_id, periodo),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_ads_sync_freshness(user_id: int) -> Optional[str]:
+    """Fecha/hora del ultimo sync de Ads -- la pagina lee de cache (no en vivo), por eso
+    muestra esto como 'Actualizado: ...' para que quede claro que no es al instante."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT MAX(synced_at) FROM ml_ads_campaigns WHERE user_id = ?", (user_id,),
+        ).fetchone()
+        return row[0] if row and row[0] else None
     finally:
         conn.close()
