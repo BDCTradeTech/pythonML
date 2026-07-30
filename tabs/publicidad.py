@@ -18,7 +18,7 @@ from ml_api import (
 )
 from db import (
     get_ads_advertiser, get_ads_campaigns, get_ads_campaign_daily_range,
-    get_ads_item_snapshot, get_ads_sync_freshness, get_last_cron_run_at,
+    get_ads_item_snapshot, get_ads_sync_freshness, get_last_cron_run_at, get_ads_items_stock,
 )
 from tabs.estadisticas import fmt_m, fmt_n
 
@@ -39,9 +39,23 @@ KPI_TOOLTIPS = {
 
 # Columnas comunes a la tabla de campañas, las filas de ítem expandidas y "Por producto" --
 # se comparten los mismos anchos para que quede todo alineado (punto 1 del refinamiento).
-COL_WIDTHS = {"nombre": "38%", "inversion": "14%", "ventas": "14%", "unidades": "12%",
-              "acos": "11%", "roas": "11%"}
+COL_WIDTHS = {"nombre": "34%", "inversion": "12%", "ventas": "12%", "unidades": "10%",
+              "stock": "10%", "acos": "11%", "roas": "11%"}
+N_COLS = 7  # para los colspan de filas "nota" (sin actividad / ocultos / cap de 50)
 ACOS_ALERTA_PCT = 20.0  # a partir de este ACOS, se pinta en ámbar (nivel "alto")
+
+# Estado del anuncio (item-level, ads/search) o de la campaña (campaigns/search) -- documentado
+# en https://developers.mercadolibre.com.ar/es_ar/pads-read. El puntito antes del nombre usa
+# esto; el tooltip lo explica (punto 2 del refinamiento). Campañas solo usan active/paused;
+# los ítems pueden traer además hold/idle/delegated/revoked.
+STATUS_META = {
+    "active":    ("#16a34a", "Activo"),
+    "paused":    ("#9ca3af", "Pausado"),
+    "hold":      ("#dc2626", "En espera: la publicación está pausada o sin stock a nivel Mercado Libre"),
+    "idle":      ("#9ca3af", "Disponible para publicidad, pero no está en ninguna campaña"),
+    "delegated": ("#9ca3af", "Delegado a otro anunciante"),
+    "revoked":   ("#9ca3af", "Devuelto por el anunciante al que estaba delegado"),
+}
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -74,17 +88,17 @@ def _agrupar_daily_por_campania(daily_rows: List[Dict[str, Any]]) -> Dict[int, D
     return out
 
 
-def _acos_pct(cost: float, ventas: float) -> Optional[float]:
-    if ventas <= 0:
-        return None
-    return cost / ventas * 100
-
-
-def _acos_label_color(acos: Optional[float]) -> tuple:
-    if acos is None:
-        return "s/ventas", "#9ca3af"
+def _acos_estado(cost: float, amt: float) -> tuple:
+    """(texto, color, es_alerta). es_alerta=True cuando hubo gasto sin ninguna venta atribuida
+    -- la fuga de plata en ads que el punto 3 del refinamiento pide remarcar en rojo (no
+    ocultar). Si además no hubo gasto (item inactivo revelado con "Mostrar"), no es alerta."""
+    if amt <= 0:
+        if cost > 0:
+            return "s/ventas", "#dc2626", True
+        return "s/ventas", "#9ca3af", False
+    acos = cost / amt * 100
     color = "#16a34a" if acos <= ACOS_ALERTA_PCT else "#f59e0b"
-    return f"{acos:.1f}%".replace(".", ","), color
+    return f"{acos:.1f}%".replace(".", ","), color, False
 
 
 def _split_actividad(items: List[Dict[str, Any]]) -> tuple:
@@ -147,16 +161,21 @@ def _render_header(nombre_label: str) -> None:
             _th("Inversión", "right", COL_WIDTHS["inversion"])
             _th("Ventas", "right", COL_WIDTHS["ventas"])
             _th("Unid.", "right", COL_WIDTHS["unidades"])
+            _th("Stock", "right", COL_WIDTHS["stock"])
             _th("ACOS", "right", COL_WIDTHS["acos"])
             _th("ROAS", "right", COL_WIDTHS["roas"])
 
 
 def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: float,
-                          units: float, *, sufijo: str = "", indent: bool = False,
-                          muted: bool = False, font_size: str = "12px", on_click=None) -> None:
-    """Fila con las columnas comunes Nombre | Inversión | Ventas | Unid. | ACOS | ROAS, usada
-    tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y con
-    el header (punto 1), y el ACOS por ítem sale calculado y coloreado por nivel (punto 3)."""
+                          units: float, *, sufijo: str = "", stock: Optional[int] = None,
+                          stock_aplica: bool = True, indent: bool = False, muted: bool = False,
+                          font_size: str = "12px", on_click=None) -> None:
+    """Fila con las columnas comunes Nombre | Inversión | Ventas | Unid. | Stock | ACOS | ROAS,
+    usada tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y
+    con el header (punto 1). El ACOS por ítem sale calculado y coloreado por nivel, y el gasto
+    sin ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3)."""
+    acos_txt, acos_color, es_alerta = _acos_estado(cost, amt)
+    dot_color, dot_tooltip = STATUS_META.get(status, ("#9ca3af", f"Estado: {status}" if status else "Sin dato"))
     tr = ui.element("tr").style(f"border-bottom:1px solid {'#f5f5f5' if muted else '#f3f4f6'}")
     if on_click:
         tr = tr.classes("hover:bg-gray-50 cursor-pointer").on("click", on_click)
@@ -167,8 +186,12 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
             with ui.element("div").style("display:flex;align-items:center;gap:6px;min-width:0"):
                 ui.element("span").style(
                     "display:inline-block;flex:none;width:6px;height:6px;border-radius:50%;"
-                    f"background:{'#16a34a' if status == 'active' else '#9ca3af'}"
-                )
+                    f"background:{dot_color}"
+                ).tooltip(dot_tooltip)
+                if es_alerta:
+                    ui.label("⚠").style(
+                        "flex:none;font-size:11px;color:#dc2626;line-height:1"
+                    ).tooltip("Gasto sin ninguna venta atribuida en el período")
                 with ui.element("div").style(
                     "min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"
                 ):
@@ -182,13 +205,21 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
             ui.label(fmt_m(amt)).style(f"font-size:{font_size};color:#16a34a")
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['unidades']}"):
             ui.label(fmt_n(units)).style(f"font-size:{font_size};color:{'#6b7280' if muted else '#374151'}")
-        acos_txt, acos_color = _acos_label_color(_acos_pct(cost, amt))
+        with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['stock']}"):
+            if stock is None:
+                tooltip = "Sin snapshot de stock para este ítem" if stock_aplica else "No aplica a nivel campaña"
+                ui.label("—").style(f"font-size:{font_size};color:#d1d5db").tooltip(tooltip)
+            else:
+                ui.label(fmt_n(stock)).style(
+                    f"font-size:{font_size};font-weight:{'700' if stock == 0 else '400'};"
+                    f"color:{'#dc2626' if stock == 0 else ('#6b7280' if muted else '#374151')}"
+                )
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['acos']}"):
             ui.label(acos_txt).style(f"font-size:{font_size};color:{acos_color};font-weight:600")
         roas = (amt / cost) if cost > 0 else 0.0
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{COL_WIDTHS['roas']}"):
             ui.label(f"{roas:.2f}x".replace(".", ",")).style(
-                f"font-size:{font_size};color:#1d4ed8;font-weight:600"
+                f"font-size:{font_size};color:{'#dc2626' if es_alerta else '#1d4ed8'};font-weight:600"
             )
 
 
@@ -220,6 +251,7 @@ def build_tab_publicidad(container) -> None:
         campaigns_dim = get_ads_campaigns(uid) if advertiser else []
         freshness = get_ads_sync_freshness(uid)
         last_sync_attempt = get_last_cron_run_at("ads", uid)
+        stock_por_item = get_ads_items_stock(uid)
 
         hoy = date.today()
         datos_periodo: Dict[str, Dict[str, Any]] = {}
@@ -246,10 +278,11 @@ def build_tab_publicidad(container) -> None:
         except Exception:
             logging.getLogger(__name__).exception("[PUBLICIDAD] error calculando ventas totales para TACOS")
 
-        _pintar(advertiser, campaigns_dim, datos_periodo, ventas_tienda_periodo, freshness, last_sync_attempt)
+        _pintar(advertiser, campaigns_dim, datos_periodo, ventas_tienda_periodo,
+                freshness, last_sync_attempt, stock_por_item)
 
     def _pintar(advertiser, campaigns_dim, datos_periodo, ventas_tienda_periodo,
-                freshness, last_sync_attempt) -> None:
+                freshness, last_sync_attempt, stock_por_item) -> None:
         estado: Dict[str, Any] = {
             "periodo": "30d", "vista": "campana", "campania_expandida": None,
             "mostrar_ocultos": set(),  # claves "camp:<cid>" / "producto" -- ver punto 4
@@ -363,7 +396,7 @@ def build_tab_publicidad(container) -> None:
                         return
                     mostrando = key in estado["mostrar_ocultos"]
                     with ui.element("tr"):
-                        with ui.element("td").props("colspan=6").style(
+                        with ui.element("td").props(f"colspan={N_COLS}").style(
                             "padding:6px 10px 6px 30px;background:#fafafa"
                         ):
                             with ui.element("div").style(
@@ -386,7 +419,7 @@ def build_tab_publicidad(container) -> None:
                     activos, n_ocultos = _split_actividad(items_camp)
                     if not activos and n_ocultos == 0:
                         with ui.element("tr"):
-                            with ui.element("td").props("colspan=6").style(
+                            with ui.element("td").props(f"colspan={N_COLS}").style(
                                 "padding:6px 10px 6px 30px;background:#fafafa"
                             ):
                                 ui.label("Sin ítems con actividad en este período.").style(
@@ -402,7 +435,8 @@ def build_tab_publicidad(container) -> None:
                         _render_fila_metrica(
                             titulo, it.get("status"), float(it.get("cost") or 0),
                             float(it.get("total_amount") or 0), float(it.get("units_quantity") or 0),
-                            sufijo=sufijos.get(it.get("item_id"), ""), indent=True, muted=True, font_size="11px",
+                            sufijo=sufijos.get(it.get("item_id"), ""), stock=stock_por_item.get(it.get("item_id")),
+                            indent=True, muted=True, font_size="11px",
                         )
                     if not mostrando_ocultos:
                         _render_nota_ocultos(n_ocultos, key)
@@ -426,7 +460,8 @@ def build_tab_publicidad(container) -> None:
                                     nombre = f"{'▾' if expandida else '▸'} {dim.get('name') or cid}"
                                     _render_fila_metrica(
                                         nombre, dim.get("status"), m["cost"], m["total_amount"],
-                                        m["units_quantity"], on_click=lambda c=cid: _toggle_expandir(c),
+                                        m["units_quantity"], stock_aplica=False,
+                                        on_click=lambda c=cid: _toggle_expandir(c),
                                     )
                                     if expandida:
                                         items_camp = [it for it in d["items"] if it.get("campaign_id") == cid]
@@ -455,7 +490,7 @@ def build_tab_publicidad(container) -> None:
                             with ui.element("tbody"):
                                 if not capped:
                                     with ui.element("tr"):
-                                        with ui.element("td").props("colspan=6").style("padding:12px"):
+                                        with ui.element("td").props(f"colspan={N_COLS}").style("padding:12px"):
                                             ui.label("Sin actividad de productos en este período.").style(
                                                 "color:#9ca3af;font-size:11px"
                                             )
@@ -465,12 +500,13 @@ def build_tab_publicidad(container) -> None:
                                         titulo, it.get("status"), float(it.get("cost") or 0),
                                         float(it.get("total_amount") or 0), float(it.get("units_quantity") or 0),
                                         sufijo=sufijos.get(it.get("item_id"), ""),
+                                        stock=stock_por_item.get(it.get("item_id")),
                                     )
                                 if not mostrando_ocultos:
                                     _render_nota_ocultos(n_ocultos, key)
                                 if len(base) > CAP:
                                     with ui.element("tr"):
-                                        with ui.element("td").props("colspan=6").style("padding:6px 10px"):
+                                        with ui.element("td").props(f"colspan={N_COLS}").style("padding:6px 10px"):
                                             ui.label(
                                                 f"Mostrando los primeros {CAP} de {len(base)} productos "
                                                 "(ordenados por ROAS)."

@@ -2875,6 +2875,32 @@ def get_ads_sync_freshness(user_id: int) -> Optional[str]:
         conn.close()
 
 
+def get_ads_items_stock(user_id: int) -> Dict[str, Optional[int]]:
+    """Ultimo available_qty conocido por item_id (snapshot mas reciente en ml_stock_snapshots,
+    cron stock_snapshot.py), para cruzar contra las metricas de Ads en tabs/publicidad.py --
+    distingue si un item con gasto y sin ventas es por falta de stock o porque la publicacion
+    no convierte. Nota: stock_snapshot.py solo escanea items con status=active en ML, por lo
+    que un item pausado/cerrado puede no tener ningun snapshot (el caller debe tratar ausencia
+    de item_id en el dict devuelto como "sin dato", no como stock 0)."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.item_id, s.available_qty
+            FROM ml_stock_snapshots s
+            INNER JOIN (
+                SELECT item_id, MAX(snapshot_date) AS max_date
+                FROM ml_stock_snapshots WHERE user_id = ? GROUP BY item_id
+            ) latest ON latest.item_id = s.item_id AND latest.max_date = s.snapshot_date
+            WHERE s.user_id = ?
+            """,
+            (user_id, user_id),
+        ).fetchall()
+        return {r["item_id"]: r["available_qty"] for r in rows}
+    finally:
+        conn.close()
+
+
 def get_last_cron_run_at(job: str, user_id: int) -> Optional[str]:
     """Fecha/hora del ultimo intento de corrida de un cron para un usuario (cualquier status,
     incluido 'skip'/'fail'). Sirve para distinguir "todavia no corrio nunca" de "corrio pero
