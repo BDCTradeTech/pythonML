@@ -49,16 +49,32 @@ log = logging.getLogger(__name__)
 
 BACKFILL_DAYS = 90
 ROLLBACK_DAYS = 14  # ventana de atribucion de ML Ads: se re-escriben estos ultimos dias siempre
-PERIODOS = ("7d", "30d", "mes")
+PERIODOS = ("ayer", "7d", "15d", "21d", "30d", "mes", "mes_ant")
 
 
 def _rango_periodo(periodo: str, hoy: date) -> tuple[date, date]:
+    """Debe coincidir EXACTO con tabs/publicidad.py:_rango_periodo -- la pagina lee estos
+    snapshots por nombre de periodo, si las ventanas no coinciden muestra datos de una ventana
+    distinta a la que dice el header. Todas terminan "ayer" (hoy tiene datos de ads parciales,
+    todavia acumulando) salvo "mes_ant" (mes calendario cerrado). "mes" el dia 1 del mes da
+    d_from > d_to -- rango vacio valido (ver sync_user, se saltea el fetch a la API)."""
+    ayer = hoy - timedelta(days=1)
+    if periodo == "ayer":
+        return ayer, ayer
     if periodo == "7d":
-        return hoy - timedelta(days=6), hoy
+        return ayer - timedelta(days=6), ayer
+    if periodo == "15d":
+        return ayer - timedelta(days=14), ayer
+    if periodo == "21d":
+        return ayer - timedelta(days=20), ayer
     if periodo == "30d":
-        return hoy - timedelta(days=29), hoy
+        return ayer - timedelta(days=29), ayer
     if periodo == "mes":
-        return hoy.replace(day=1), hoy
+        return hoy.replace(day=1), ayer
+    if periodo == "mes_ant":
+        primer_dia_mes_actual = hoy.replace(day=1)
+        ultimo_dia_mes_ant = primer_dia_mes_actual - timedelta(days=1)
+        return ultimo_dia_mes_ant.replace(day=1), ultimo_dia_mes_ant
     raise ValueError(periodo)
 
 
@@ -103,6 +119,8 @@ def sync_user(user_id: int) -> tuple[str, int, str | None]:
 
         for periodo in PERIODOS:
             d_from, d_to = _rango_periodo(periodo, hoy)
+            if d_from > d_to:
+                continue  # "mes" el dia 1 del mes: ventana vacia, no hay nada que pedirle a la API
             items = ml_ads_get_items(token, site_id, advertiser_id, campaign_id,
                                       d_from.isoformat(), d_to.isoformat())
             if items:

@@ -23,34 +23,25 @@ from db import (
 )
 from tabs.estadisticas import fmt_m, fmt_n
 
-PERIODOS = [("7d", "7 días"), ("30d", "30 días"), ("mes", "Mes actual")]
+PERIODOS = [
+    ("ayer", "Ayer"), ("7d", "7 días"), ("15d", "15 días"), ("21d", "21 días"),
+    ("30d", "30 días"), ("mes", "Mes actual"), ("mes_ant", "Mes anterior"),
+]
 
 KPI_TOOLTIPS = {
-    "inversion": "Lo que gastaste en publicidad (Product Ads) en el período.",
     "ventas": "Ventas atribuidas a publicidad: directas (compraron el producto anunciado) + "
               "indirectas (compraron otro producto tuyo después de hacer clic en el anuncio).",
-    "acos": "ACOS = Inversión / Ventas por ads × 100. Cuánto de cada venta por ads se fue en "
-            "publicidad. Más bajo es mejor.",
-    "roas": "ROAS = Ventas por ads / Inversión. Cuánto vendiste por cada $1 invertido en "
-            "publicidad. Más alto es mejor.",
-    "tacos": "TACOS = Inversión en ads / Ventas TOTALES de la tienda en el período (no solo "
-             "las de ads). Mide qué tan dependiente sos de la publicidad para vender.",
     "unidades": "Unidades vendidas atribuidas a publicidad (directas + indirectas) en el período.",
     "unidades_producto": "Unidades vendidas atribuidas a publicidad (directas + indirectas) en "
                           "el período -- se usa junto con el margen promedio del producto para "
                           "estimar la Ganancia de esas ventas (ver 'Ganancia est.').",
-    "pub_ganancia": "Cuánto de tu ganancia real se va en publicidad: Inversión ads ÷ Ganancia "
-                    "real del período (la ganancia ANTES de restar la publicidad). Ganancia "
-                    "real = lo que efectivamente ganás después de costos, comisiones e "
-                    "impuestos (no las ventas brutas). Si no hay ninguna venta con ganancia "
-                    "calculada en el período (falta costo cargado en Productos), no se puede "
-                    "calcular.",
-    "ganancia_estimada_ads": "Estimada. ML no expone qué ventas vinieron de publicidad, así "
-                              "que se aplica el margen promedio del producto a las unidades "
-                              "atribuidas a ads: (ganancia real total del producto ÷ unidades "
-                              "reales totales) × unidades atribuidas a publicidad. Si no hay "
-                              "ganancia real calculada para el producto (falta costo cargado "
-                              "en Productos), 's/dato' -- nunca un estimado inventado.",
+    "ganancia_estimada_ads": "Ganancia ESTIMADA PROMEDIO. Estimada con el margen promedio del "
+                              "producto -- ML no expone qué ventas exactas vinieron de "
+                              "publicidad, así que se aplica ese margen (ganancia real total "
+                              "del producto ÷ unidades reales totales) a las unidades "
+                              "atribuidas a ads. Si no hay ganancia real calculada para el "
+                              "producto (falta costo cargado en Productos), 's/dato' -- nunca "
+                              "un estimado inventado.",
     "ganancia_neta_estimada_ads": "Ganancia estimada de las ventas por ads menos la Inversión "
                                    "en ads del período.",
     "pct_en_ads": "Inversión en ads ÷ Ganancia estimada de esas ventas × 100 -- cuánto de esa "
@@ -96,11 +87,29 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 
 def _rango_periodo(periodo: str, hoy: date) -> tuple:
+    """Todas las ventanas terminan "ayer" (hoy es un día en curso, con datos parciales de ads
+    que todavía se están acumulando) salvo "mes_ant" que es un mes calendario cerrado. OJO:
+    "mes" el día 1 del mes da d_from > d_to (todavía no pasó ningún día del mes actual) --
+    es un rango vacío válido, no un error; los callers (SQL BETWEEN, fetch a la API de Ads en
+    ads_snapshot.py) lo tratan como "sin datos" en vez de romper."""
+    ayer = hoy - timedelta(days=1)
+    if periodo == "ayer":
+        return ayer, ayer
     if periodo == "7d":
-        return hoy - timedelta(days=6), hoy
+        return ayer - timedelta(days=6), ayer
+    if periodo == "15d":
+        return ayer - timedelta(days=14), ayer
+    if periodo == "21d":
+        return ayer - timedelta(days=20), ayer
     if periodo == "30d":
-        return hoy - timedelta(days=29), hoy
-    return hoy.replace(day=1), hoy  # "mes"
+        return ayer - timedelta(days=29), ayer
+    if periodo == "mes":
+        return hoy.replace(day=1), ayer
+    if periodo == "mes_ant":
+        primer_dia_mes_actual = hoy.replace(day=1)
+        ultimo_dia_mes_ant = primer_dia_mes_actual - timedelta(days=1)
+        return ultimo_dia_mes_ant.replace(day=1), ultimo_dia_mes_ant
+    raise ValueError(periodo)
 
 
 def _agrupar_daily_por_campania(daily_rows: List[Dict[str, Any]]) -> Dict[int, Dict[str, float]]:
@@ -198,22 +207,18 @@ def _dedupe_items_por_producto(items: List[Dict[str, Any]]) -> List[Dict[str, An
     return list(agrupado.values())
 
 
-def _info_icon(tooltip: str) -> None:
-    ui.element("i").classes("ti ti-info-circle").style(
-        "font-size:12px;color:#9ca3af;cursor:help;margin-left:3px"
-    ).tooltip(tooltip)
-
-
-def _kpi_tile(label: str, value: str, sub: str, color: str, tooltip: str) -> None:
+def _kpi_tile(label: str, value: str, descripcion: str, color: str, sub: str = "") -> None:
+    """Tile de KPI con la explicación como texto SIEMPRE visible (descripcion) en vez de un
+    ícono ⓘ con tooltip -- sub es la línea "vs. $X ..." opcional que ya traían TACOS y
+    Ads/Ganancia, se muestra debajo de la descripción cuando se pasa."""
     with ui.element("div").style(
         "flex:1;min-width:140px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"
     ):
-        with ui.element("div").style("display:flex;align-items:center"):
-            ui.label(label).style(
-                "font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500"
-            )
-            _info_icon(tooltip)
+        ui.label(label).style(
+            "font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500"
+        )
         ui.label(value).style(f"font-size:20px;font-weight:700;color:{color};line-height:1.3;margin-top:2px")
+        ui.label(descripcion).style("font-size:11px;color:#6b7280;line-height:1.3")
         if sub:
             ui.label(sub).style("font-size:11px;color:#6b7280")
 
@@ -465,8 +470,7 @@ def build_tab_publicidad(container) -> None:
                 ):
                     ui.label(
                         "Publicidad (Product Ads): cuánto invertís, cuánto vendés por publicidad "
-                        "y qué tan dependiente sos de ella (TACOS). Pasá el mouse sobre el ⓘ de "
-                        "cada indicador para ver cómo se calcula."
+                        "y qué tan dependiente sos de ella (TACOS)."
                     ).style("font-size:12px;color:#1e40af")
 
                 if not advertiser:
@@ -546,19 +550,25 @@ def build_tab_publicidad(container) -> None:
                     ganancia_total = d["ganancia"]["total"]
                     pub_gan_pct = (total_cost / ganancia_total * 100) if ganancia_total > 0 else None
                     with kpi_row:
-                        _kpi_tile("Inversión", fmt_m(total_cost), "", "#dc2626", KPI_TOOLTIPS["inversion"])
-                        _kpi_tile("Ventas x ads", fmt_m(total_amount), "", "#16a34a", KPI_TOOLTIPS["ventas"])
-                        _kpi_tile("ACOS", f"{acos:.1f}%".replace(".", ","), "", "#f59e0b", KPI_TOOLTIPS["acos"])
-                        _kpi_tile("ROAS", f"{roas:.2f}x".replace(".", ","), "", "#1d4ed8", KPI_TOOLTIPS["roas"])
+                        _kpi_tile("Inversión", fmt_m(total_cost),
+                                  "Lo que gastaste en publicidad", "#dc2626")
+                        _kpi_tile("Ventas x ads", fmt_m(total_amount),
+                                  "Ventas atribuidas a la publicidad", "#16a34a")
+                        _kpi_tile("ACOS", f"{acos:.1f}%".replace(".", ","),
+                                  "% de esas ventas que se fue en ads", "#f59e0b")
+                        _kpi_tile("ROAS", f"{roas:.2f}x".replace(".", ","),
+                                  "Cuánto vendiste por cada $1 de ads", "#1d4ed8")
                         _kpi_tile("TACOS", f"{tacos:.1f}%".replace(".", ","),
-                                  f"vs. {fmt_m(ventas_tienda)} facturado", "#7c3aed", KPI_TOOLTIPS["tacos"])
-                        _kpi_tile("Unidades", fmt_n(total_units), "", "#374151", KPI_TOOLTIPS["unidades"])
+                                  "Ads sobre tu venta total", "#7c3aed",
+                                  sub=f"vs. {fmt_m(ventas_tienda)} facturado")
+                        _kpi_tile("Unidades", fmt_n(total_units),
+                                  "Unidades vendidas por ads", "#374151")
                         _kpi_tile(
                             "Ads / Ganancia",
                             f"{pub_gan_pct:.1f}%".replace(".", ",") if pub_gan_pct is not None else "s/dato",
-                            f"vs. {fmt_m(ganancia_total)} ganancia real" if ganancia_total > 0
+                            "% de tu ganancia real que se va en ads", "#be185d",
+                            sub=f"vs. {fmt_m(ganancia_total)} ganancia real" if ganancia_total > 0
                                 else "Sin ganancia real calculada en el período",
-                            "#be185d", KPI_TOOLTIPS["pub_ganancia"],
                         )
 
                 def _toggle_ocultos(key: str) -> None:
