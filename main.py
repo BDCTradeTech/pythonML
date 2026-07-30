@@ -154,7 +154,39 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.07.30.04"
+VERSION = "3.26.07.30.05"
+
+# ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
+# Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
+# "classic" (tira vertical única, como antes). Cambiar acá y redeployar alcanza
+# para volver atrás sin re-codear.
+ML_MENU_STYLE = "grouped"
+# Mostrar iconos junto a cada ítem (solo aplica a ML_MENU_STYLE == "grouped").
+ML_MENU_ICONS = True
+
+# Grupos del mega-menú. Cada ítem: (etiqueta mostrada, tab interno, permiso, icono, tag opcional).
+# Reordenar/mover ítems entre grupos es solo editar esta lista.
+ML_MENU_GROUPS = [
+    ("PANEL", [
+        ("DASHBOARD", "Dashboard", "dashboard", "dashboard", None),
+        ("ESTADÍSTICAS", "Estadísticas", "estadisticas", "bar_chart", None),
+        ("VENTAS", "Ventas", "ventas", "point_of_sale", None),
+        ("CUOTAS", "Cuotas", "cuotas", "credit_card", None),
+        ("BALANCE", "Balance", "balance", "account_balance", None),
+    ]),
+    ("CATÁLOGO", [
+        ("PRODUCTOS", "Productos", "productos", "inventory_2", None),
+        ("STOCK", "Stock", "stock", "warehouse", None),
+        ("PROMOS", "Promos", "promos", "sell", None),
+        ("BÚSQUEDA", "Búsqueda", "busqueda", "search", None),
+    ]),
+    ("MERCADO & OPS", [
+        ("COMPETIDORES", "Competidores", "competidores", "groups", None),
+        ("PUBLICIDAD", "Publicidad", "publicidad", "campaign", "NUEVO"),
+        ("PREGUNTAS", "Preguntas", "preguntas", "help", None),
+        ("FLEX", "Flex", "flex", "local_shipping", None),
+    ]),
+]
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -567,14 +599,42 @@ def show_main_layout(container) -> None:
                 if any(perms.get(k, True) for _, _, k in ml_subs):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(ml_menu)):
                         with ui.button("MERCADOLIBRE").props("flat dense no-caps").classes(_nav_font):
-                            with ui.menu().props("auto-close content-class=text-lg") as ml_menu:
-                                for lbl_display, lbl_map, key in ml_subs:
-                                    if perms.get(key, True):
-                                        def _ml_click(l=lbl_map):
-                                            _lazy_load(l)
-                                            tab_panels.value = tab_map[l]
-                                            app.storage.user["last_tab"] = l
-                                        ui.menu_item(lbl_display, _ml_click)
+                            if ML_MENU_STYLE == "grouped":
+                                with ui.menu().props("auto-close content-class=text-base") as ml_menu:
+                                    with ui.element("div").classes(
+                                        "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-x-8 gap-y-1 "
+                                        "q-pa-md w-full max-w-3xl"
+                                    ).style("max-width: 95vw;"):
+                                        for group_title, group_items in ML_MENU_GROUPS:
+                                            visible_items = [it for it in group_items if perms.get(it[2], True)]
+                                            if not visible_items:
+                                                continue
+                                            with ui.column().classes("gap-0 min-w-0 q-mb-sm"):
+                                                ui.label(group_title).classes(
+                                                    "text-xs font-bold text-gray-500 uppercase tracking-wide"
+                                                )
+                                                ui.separator().classes("q-mb-xs")
+                                                for lbl_display, lbl_map, key, icon, tag in visible_items:
+                                                    def _ml_click(l=lbl_map):
+                                                        _lazy_load(l)
+                                                        tab_panels.value = tab_map[l]
+                                                        app.storage.user["last_tab"] = l
+                                                    with ui.menu_item(on_click=_ml_click).classes("q-py-xs q-px-sm"):
+                                                        with ui.row().classes("items-center gap-2 no-wrap"):
+                                                            if ML_MENU_ICONS:
+                                                                ui.icon(icon, size="20px", color="grey-7")
+                                                            ui.label(lbl_display).classes("text-sm")
+                                                            if tag:
+                                                                ui.badge(tag, color="orange").props("rounded dense").classes("text-[10px]")
+                            else:
+                                with ui.menu().props("auto-close content-class=text-lg") as ml_menu:
+                                    for lbl_display, lbl_map, key in ml_subs:
+                                        if perms.get(key, True):
+                                            def _ml_click(l=lbl_map):
+                                                _lazy_load(l)
+                                                tab_panels.value = tab_map[l]
+                                                app.storage.user["last_tab"] = l
+                                            ui.menu_item(lbl_display, _ml_click)
                 if perms.get("compras", True) or perms.get("stock_bdc", True) or perms.get("compras_lista", True) or perms.get("pedidos", True) or perms.get("historicos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
                         with ui.button("BDC").props("flat dense no-caps").classes(_nav_font):
