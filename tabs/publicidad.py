@@ -195,10 +195,10 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
     (+ Ganancia | Ganancia neta si mostrar_ganancia=True, solo usado por "Por producto"), usada
     tanto para filas de campaña como de ítem/producto -- así quedan alineadas entre sí y con el
     header (punto 1). El ACOS por ítem sale calculado y coloreado por nivel, y el gasto sin
-    ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3). El stock no se
-    puede sumar/promediar a nivel campaña (mezclaría productos distintos) -- filas de campaña
-    pasan stock_resumen=(con_stock, con_dato) y se muestra "X/Y con stock"; filas de ítem/
-    producto pasan stock (el número) como antes."""
+    ventas se remarca en rojo + ⚠ en vez de leerse como fila neutra (punto 3). Filas de campaña
+    pasan stock_resumen=(suma_stock, con_dato): suma el stock de los productos con dato
+    conocido de esa campaña (los sin snapshot se excluyen, nunca cuentan como 0); filas de
+    ítem/producto pasan stock (el número de ese producto) como antes."""
     acos_txt, acos_color, es_alerta = _acos_estado(cost, amt)
     dot_color, dot_tooltip = STATUS_META.get(status, ("#9ca3af", f"Estado: {status}" if status else "Sin dato"))
     tr = ui.element("tr").style(f"border-bottom:1px solid {'#f5f5f5' if muted else '#f3f4f6'}")
@@ -232,18 +232,19 @@ def _render_fila_metrica(nombre: str, status: Optional[str], cost: float, amt: f
             ui.label(fmt_n(units)).style(f"font-size:{font_size};color:{'#6b7280' if muted else '#374151'}")
         with ui.element("td").style(f"padding:6px 10px;text-align:right;width:{widths['stock']}"):
             if stock_resumen is not None:
-                con_stock, con_dato = stock_resumen
+                suma_stock, con_dato = stock_resumen
                 if con_dato == 0:
                     ui.label("s/dato").style(f"font-size:{font_size};color:#9ca3af").tooltip(
                         "Ningún producto de esta campaña tiene snapshot de stock"
                     )
                 else:
-                    ui.label(f"{con_stock}/{con_dato} con stock").style(
-                        f"font-size:{font_size};color:{'#dc2626' if con_stock == 0 else '#374151'}"
+                    ui.label(fmt_n(suma_stock)).style(
+                        f"font-size:{font_size};font-weight:{'700' if suma_stock == 0 else '400'};"
+                        f"color:{'#dc2626' if suma_stock == 0 else '#374151'}"
                     ).tooltip(
-                        f"{con_dato} producto(s) de esta campaña tienen dato de stock conocido; "
-                        f"de esos, {con_stock} tienen stock disponible (>0). El stock es un dato "
-                        "por producto -- no se suma ni promedia a nivel campaña."
+                        f"Suma de stock de {con_dato} producto(s) de esta campaña con dato de "
+                        "stock conocido. Los productos sin snapshot de stock no se incluyen "
+                        "(no se cuentan como 0)."
                     )
             elif stock is None:
                 ui.label("—").style(f"font-size:{font_size};color:#d1d5db").tooltip(
@@ -518,6 +519,18 @@ def build_tab_publicidad(container) -> None:
                             "color:#9ca3af;padding:16px"
                         )
                         return
+                    # Modo foco: con una campaña expandida, se ocultan las demás (fila + ítems)
+                    # para que quede a la vista solo la abierta. Un solo "acordeón" a la vez.
+                    cid_abierta = estado["campania_expandida"]
+                    if cid_abierta is not None and cid_abierta not in {cid for cid, _, _ in filas}:
+                        cid_abierta = None
+                        estado["campania_expandida"] = None
+                    if cid_abierta is not None:
+                        with ui.row().classes("items-center"):
+                            ui.link("← Volver a todas las campañas", "#").style(
+                                "color:#1d4ed8;font-size:12px;font-weight:500"
+                            ).on("click.prevent", lambda: _toggle_expandir(cid_abierta))
+                        filas = [f for f in filas if f[0] == cid_abierta]
                     with ui.element("div").style(
                         "background:#fff;border:1px solid #e0e2e7;border-radius:10px;overflow:hidden"
                     ):
@@ -529,11 +542,10 @@ def build_tab_publicidad(container) -> None:
                                     nombre = f"{'▾' if expandida else '▸'} {dim.get('name') or cid}"
                                     items_camp = [it for it in d["items"] if it.get("campaign_id") == cid]
                                     stocks_camp = [stock_por_item.get(it.get("item_id")) for it in items_camp]
-                                    con_dato = sum(1 for s in stocks_camp if s is not None)
-                                    con_stock = sum(1 for s in stocks_camp if (s or 0) > 0)
+                                    conocidos = [s for s in stocks_camp if s is not None]
                                     _render_fila_metrica(
                                         nombre, dim.get("status"), m["cost"], m["total_amount"],
-                                        m["units_quantity"], stock_resumen=(con_stock, con_dato),
+                                        m["units_quantity"], stock_resumen=(sum(conocidos), len(conocidos)),
                                         on_click=lambda c=cid: _toggle_expandir(c),
                                     )
                                     if expandida:
