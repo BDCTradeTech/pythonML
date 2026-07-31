@@ -383,6 +383,22 @@ def _card_header(title: str, color: str, info_tooltip: Optional[str] = None):
                 "font-size:14px;color:#9ca3af;cursor:help"
             ).tooltip(info_tooltip)
 
+def _set_dot_color(dot, color: str, size: int = 10) -> None:
+    dot.style(f"display:inline-block;width:{size}px;height:{size}px;border-radius:9999px;"
+              f"background:{color};flex-shrink:0")
+
+def _kpi_tile(label: str, value: str, color: str):
+    """Tile de la franja de KPIs del Dashboard: puntito de estado + label + valor grande.
+    Devuelve (dot, value_label) para los dos KPIs que se completan async (Nivel de
+    reputación, Tiempo de respuesta) y necesitan actualizarse cuando llega el dato."""
+    with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px 12px"):
+        with ui.row().classes("items-center gap-2 mb-1"):
+            dot = _dot(color, size=8)
+            ui.label(label).classes("text-xs font-semibold").style(
+                "color:#6b7280;text-transform:uppercase;letter-spacing:.03em")
+        value_lbl = ui.label(value).classes("text-2xl font-bold").style("color:#1a1a1a")
+    return dot, value_lbl
+
 def _alert_row(container, color: str, msg: str, on_nav=None):
     with container:
         with ui.row().classes("items-center gap-2 w-full px-3 py-2 rounded").style(
@@ -715,9 +731,13 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     # slot-stack-vacío de Productos (commits 319ea8b/c20fcde).
     cuotas_client   = None
     rt_client       = None
+    kpi_rep_dot     = None
+    kpi_rep_lbl     = None
+    kpi_rt_dot      = None
+    kpi_rt_lbl      = None
 
     with container:
-        with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
+        with ui.column().classes("w-full gap-4 p-4"):
 
             # ── BARRA DE RESUMEN ──────────────────────────────────────────
             expanded_ref = {"val": False}
@@ -757,9 +777,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         arrow_btn.props("icon=expand_more")
                 arrow_btn.on_click(_toggle_alerts)
 
-            # ── GRILLA PRINCIPAL: responsive (4 col desktop / 3 col tablet / 2 col mobile) ─
-            # Fila 1: Productos | Ventas — últimos 30 días | Cuotas | Tus tareas nocturnas
-            # Fila 2: Estadísticas ML | Publicaciones ML | ARCA — Resumen Fiscal
+            # ── LAYOUT "Opción C": franja de KPIs + tarjetas agrupadas por sección ────
+            # (ancho completo, responsive: 4 col desktop / 3 col tablet / 2 col mobile)
+            # KPIs: Ventas 30d · Ganando · Perdiendo · Nivel reputación · Tiempo resp. · Saldo IVA
+            # MercadoLibre: Cuotas | Publicaciones ML | Estadísticas ML | Tiempo de respuesta
+            # Ventas & Rentabilidad: Productos | Ventas — 30 días
+            # Fiscal & Sistema: ARCA — Resumen Fiscal | Tus tareas nocturnas
             cards_area = ui.column().classes("w-full")
 
             async def _detect_mobile() -> None:
@@ -773,14 +796,81 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 nonlocal prod_color, prod_header_row, _susp_dot, _susp_lbl
                 nonlocal cuotas_card, rep_card, ml_pubs_card, cuotas_client
                 nonlocal rt_card, rt_client
+                nonlocal kpi_rep_dot, kpi_rep_lbl, kpi_rt_dot, kpi_rt_lbl
                 w = width_ref["val"]
                 cols = 2 if w < 768 else 3 if w < 1100 else 4
                 gap  = "gap-2" if w < 768 else "gap-3" if w < 1100 else "gap-4"
+                kpi_cols = 2 if w < 640 else 3 if w < 1000 else 6
+
+                # Recalculados acá con la MISMA lógica/data que ya usan las tarjetas de abajo
+                # (ventas/prod/arca_data) para que la franja de KPIs coincida exacto con ellas —
+                # no es un cálculo nuevo ni distinto, solo se necesita más temprano.
+                ven_color = (_RED    if ventas["gan_neg"]     > 0
+                             else _YELLOW if ventas["sin_revisar"] > 0
+                             else _GREEN)
+                iva_d = arca_data["iva"]
+                tec_v = iva_d.get("saldo_tecnico", "")
+                lib_v = iva_d.get("saldo_libre_disponibilidad", "")
+
                 cards_area.clear()
                 with cards_area:
-                    with ui.grid(columns=cols).classes(f"w-full {gap}"):
 
-                        # --- Fila 1, Col 1: Productos ---
+                    # ── Franja de KPIs ────────────────────────────────────────────
+                    with ui.grid(columns=kpi_cols).classes(f"w-full {gap} mb-1"):
+                        _kpi_tile("Ventas 30d", _fmt_miles(ventas.get("total", 0)), ven_color)
+                        _kpi_tile("Ganando", _fmt_miles(prod["cat_ganando"]), _GREEN)
+                        _kpi_tile("Perdiendo", _fmt_miles(prod["cat_perdiendo"]),
+                                  _RED if prod["cat_perdiendo"] > 0 else _GREEN)
+                        kpi_rep_dot, kpi_rep_lbl = _kpi_tile("Nivel de reputación", "...", "#9ca3af")
+                        kpi_rt_dot,  kpi_rt_lbl  = _kpi_tile("Tiempo de respuesta", "...", "#9ca3af")
+                        _kpi_tile("Saldo IVA", f"${_to_float(tec_v):,.0f}" if tec_v else "Sin datos",
+                                  _color_iva(tec_v, lib_v))
+
+                    # ── Sección: MercadoLibre ─────────────────────────────────────
+                    ui.label("MERCADOLIBRE").classes("text-xs font-bold mt-2").style(
+                        "color:#6b7280;letter-spacing:.06em")
+                    with ui.grid(columns=min(4, cols)).classes(f"w-full {gap}"):
+
+                        # --- Cuotas (placeholder async) ---
+                        cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        cuotas_client = context.client
+                        with cuotas_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Cuotas").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
+
+                        # --- Publicaciones ML (placeholder async) ---
+                        ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        with ml_pubs_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando estado de publicaciones...").classes("text-xs text-gray-400")
+
+                        # --- Estadísticas ML (placeholder async) ---
+                        rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        with rep_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando reputación...").classes("text-xs text-gray-400")
+
+                        # --- Tiempo de respuesta (placeholder async) ---
+                        rt_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        rt_client = context.client
+                        with rt_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Tiempo de respuesta").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando...").classes("text-xs text-gray-400")
+
+                    # ── Sección: Ventas & Rentabilidad ────────────────────────────
+                    ui.label("VENTAS & RENTABILIDAD").classes("text-xs font-bold mt-2").style(
+                        "color:#6b7280;letter-spacing:.06em")
+                    with ui.grid(columns=min(2, cols)).classes(f"w-full {gap}"):
+
+                        # --- Productos ---
                         prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
                                       else _YELLOW if prod["sin_fob"]   > 0
                                       else _GREEN)
@@ -853,10 +943,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                          ("Marca",    lambda r: r.get("marca")  or "—"),
                                          ("Producto", lambda r: r.get("nombre") or "—")]))
 
-                        # --- Fila 1, Col 2: Ventas ---
-                        ven_color = (_RED    if ventas["gan_neg"]     > 0
-                                     else _YELLOW if ventas["sin_revisar"] > 0
-                                     else _GREEN)
+                        # --- Ventas ---
                         with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
                             _card_header("Ventas — últimos 30 días", ven_color)
                             with ui.column().classes("w-full gap-2"):
@@ -884,16 +971,65 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                          ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—")]))
                             ui.label(f"Desde el {desde_fmt}").classes("text-xs text-gray-400 mt-2")
 
-                        # --- Fila 1, Col 3: Cuotas (placeholder async) ---
-                        cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                        cuotas_client = context.client
-                        with cuotas_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
-                                ui.spinner(size="sm")
-                                ui.label("Cuotas").classes("font-bold text-base text-gray-800")
-                            ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
+                    # ── Sección: Fiscal & Sistema ──────────────────────────────────
+                    ui.label("FISCAL & SISTEMA").classes("text-xs font-bold mt-2").style(
+                        "color:#6b7280;letter-spacing:.06em")
+                    with ui.grid(columns=min(2, cols)).classes(f"w-full {gap}"):
 
-                        # --- Fila 1, Col 4: Tus tareas nocturnas (scoped por usuario) ---
+                        # --- ARCA ---
+                        arca_ov = _GREEN
+                        for ac, _ in arca_al:
+                            if ac == _RED:    arca_ov = _RED;    break
+                            if ac == _YELLOW: arca_ov = _YELLOW
+
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                            _card_header("ARCA — Resumen Fiscal", arca_ov)
+                            sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
+                            with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
+
+                                siper_v = sd.get("categoria_siper") or ""
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_siper(siper_v))
+                                        ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(siper_v or "Sin datos").classes("text-xs text-gray-800")
+
+                                tec_v = id_.get("saldo_tecnico", "")
+                                lib_v = id_.get("saldo_libre_disponibilidad", "")
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_iva(tec_v, lib_v))
+                                        ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-xs text-gray-800")
+                                    if lib_v:
+                                        ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
+
+                                deu_v   = dd.get("deuda_exigible", "")
+                                intim_v = dd.get("tiene_intimacion") == "true"
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(_color_deuda(deu_v, intim_v))
+                                        ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
+                                    ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-xs text-gray-800")
+                                    if intim_v:
+                                        ui.label("Intimación activa").classes("text-xs font-semibold").style("color:#374151")
+
+                                mc          = _color_multilateral(mr)
+                                total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
+                                with ui.column().classes("gap-1"):
+                                    with ui.row().classes("items-center gap-1 mb-1"):
+                                        _dot(mc)
+                                        ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
+                                    if mr:
+                                        ui.label(f"{len(mr)} provincia(s)").classes("text-xs text-gray-800")
+                                        if total_pagar > 0:
+                                            ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style("color:#374151")
+                                        else:
+                                            ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
+                                    else:
+                                        ui.label("Sin datos").classes("text-xs text-gray-400")
+
+                        # --- Tus tareas nocturnas (scoped por usuario) ---
                         dias_list = [(datetime.now().date() - timedelta(days=i)).isoformat() for i in range(6, -1, -1)]
                         last_by_job: Dict[str, Optional[Dict[str, Any]]] = {}
                         cron_ov = _GREEN
@@ -977,84 +1113,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                             _dot(leg_color, size=8)
                                             ui.label(leg_label).classes("text-[10px]").style("color:#6b7280")
 
-                        # --- Fila 2, Col 1: Estadísticas ML (placeholder async) ---
-                        rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                        with rep_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
-                                ui.spinner(size="sm")
-                                ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
-                            ui.label("Cargando reputación...").classes("text-xs text-gray-400")
-
-                        # --- Fila 2, Col 2: Publicaciones ML (placeholder async) ---
-                        ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                        with ml_pubs_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
-                                ui.spinner(size="sm")
-                                ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
-                            ui.label("Cargando estado de publicaciones...").classes("text-xs text-gray-400")
-
-                        # --- Fila 2, Col 3: ARCA ---
-                        arca_ov = _GREEN
-                        for ac, _ in arca_al:
-                            if ac == _RED:    arca_ov = _RED;    break
-                            if ac == _YELLOW: arca_ov = _YELLOW
-
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                            _card_header("ARCA — Resumen Fiscal", arca_ov)
-                            sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
-                            with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
-
-                                siper_v = sd.get("categoria_siper") or ""
-                                with ui.column().classes("gap-1"):
-                                    with ui.row().classes("items-center gap-1 mb-1"):
-                                        _dot(_color_siper(siper_v))
-                                        ui.label("SIPER").classes("text-xs font-semibold text-gray-600")
-                                    ui.label(siper_v or "Sin datos").classes("text-xs text-gray-800")
-
-                                tec_v = id_.get("saldo_tecnico", "")
-                                lib_v = id_.get("saldo_libre_disponibilidad", "")
-                                with ui.column().classes("gap-1"):
-                                    with ui.row().classes("items-center gap-1 mb-1"):
-                                        _dot(_color_iva(tec_v, lib_v))
-                                        ui.label("Saldo IVA").classes("text-xs font-semibold text-gray-600")
-                                    ui.label(f"Técnico: ${_to_float(tec_v):,.0f}" if tec_v else "Sin datos").classes("text-xs text-gray-800")
-                                    if lib_v:
-                                        ui.label(f"Libre disp: ${_to_float(lib_v):,.0f}").classes("text-xs text-gray-500")
-
-                                deu_v   = dd.get("deuda_exigible", "")
-                                intim_v = dd.get("tiene_intimacion") == "true"
-                                with ui.column().classes("gap-1"):
-                                    with ui.row().classes("items-center gap-1 mb-1"):
-                                        _dot(_color_deuda(deu_v, intim_v))
-                                        ui.label("Deuda / Planes").classes("text-xs font-semibold text-gray-600")
-                                    ui.label(f"${_to_float(deu_v):,.0f}" if deu_v else "Sin datos").classes("text-xs text-gray-800")
-                                    if intim_v:
-                                        ui.label("Intimación activa").classes("text-xs font-semibold").style("color:#374151")
-
-                                mc          = _color_multilateral(mr)
-                                total_pagar = sum(_to_float(r.get("a_pagar")) for r in mr)
-                                with ui.column().classes("gap-1"):
-                                    with ui.row().classes("items-center gap-1 mb-1"):
-                                        _dot(mc)
-                                        ui.label("Multilateral").classes("text-xs font-semibold text-gray-600")
-                                    if mr:
-                                        ui.label(f"{len(mr)} provincia(s)").classes("text-xs text-gray-800")
-                                        if total_pagar > 0:
-                                            ui.label(f"A pagar: ${total_pagar:,.0f}").classes("text-xs font-semibold").style("color:#374151")
-                                        else:
-                                            ui.label("Sin saldo a pagar").classes("text-xs text-gray-500")
-                                    else:
-                                        ui.label("Sin datos").classes("text-xs text-gray-400")
-
-                        # --- Fila 2, Col 4: Tiempo de respuesta (placeholder async) ---
-                        rt_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
-                        rt_client = context.client
-                        with rt_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
-                                ui.spinner(size="sm")
-                                ui.label("Tiempo de respuesta").classes("font-bold text-base text-gray-800")
-                            ui.label("Cargando...").classes("text-xs text-gray-400")
-
                 if not access_token:
                     rep_card.clear()
                     with rep_card:
@@ -1073,6 +1131,12 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     with rt_card:
                         _card_header("Tiempo de respuesta", "#6b7280")
                         ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                    kpi_rep_lbl.set_text("—")
+                    kpi_rep_lbl.style("color:#6b7280")
+                    _set_dot_color(kpi_rep_dot, "#6b7280", 8)
+                    kpi_rt_lbl.set_text("—")
+                    kpi_rt_lbl.style("color:#6b7280")
+                    _set_dot_color(kpi_rt_dot, "#6b7280", 8)
                     _susp_lbl.set_text("—")
                     prod_header_row.clear()
                     with prod_header_row:
@@ -1138,6 +1202,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     ]:
                         _rep_stat_row(label, _rep_rate(metrics.get(key) or {}), maxv)
 
+            kpi_rep_lbl.set_text(str(level_id).replace('_', ' ').title() if level_id != "—" else "—")
+            kpi_rep_lbl.style(f"color:{lc}")
+            _set_dot_color(kpi_rep_dot, lc, 8)
+
             rep_placeholder.delete()
             _bump_counters(
                 sum(1 for c, _ in ra if c == _RED),
@@ -1156,6 +1224,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             with rep_card:
                 _card_header("Estadísticas ML", "#6b7280")
                 ui.label("Datos no disponibles").classes("text-xs text-gray-400")
+            kpi_rep_lbl.set_text("—")
+            kpi_rep_lbl.style("color:#6b7280")
+            _set_dot_color(kpi_rep_dot, "#6b7280", 8)
             rep_placeholder.delete()
             if not db_alerts:
                 _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
@@ -1472,6 +1543,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     _card_header("Tiempo de respuesta", "#6b7280")
                     ui.label("14 días").classes("text-xs text-gray-400 -mt-2 mb-1")
                     ui.label("Sin preguntas en los últimos 14 días").classes("text-xs text-gray-400")
+                kpi_rt_lbl.set_text("Sin datos")
+                kpi_rt_lbl.style("color:#6b7280")
+                _set_dot_color(kpi_rt_dot, "#6b7280", 8)
                 return
 
             if status != "ok":
@@ -1479,6 +1553,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     _card_header("Tiempo de respuesta", "#6b7280")
                     ui.label("14 días").classes("text-xs text-gray-400 -mt-2 mb-1")
                     ui.label("Sin dato").classes("text-xs text-gray-400")
+                kpi_rt_lbl.set_text("—")
+                kpi_rt_lbl.style("color:#6b7280")
+                _set_dot_color(kpi_rt_dot, "#6b7280", 8)
                 return
 
             data      = result.get("data") or {}
@@ -1508,6 +1585,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             if pct is not None:
                                 ui.label(f"+{pct}%").classes("text-xs font-semibold").style(f"color:{_RED}")
             rt_card.tooltip(_response_time_tooltip(segs))
+            kpi_rt_lbl.set_text(_fmt_response_time(total_min) if total_min is not None else "—")
+            kpi_rt_lbl.style(f"color:{overall_color}")
+            _set_dot_color(kpi_rt_dot, overall_color, 8)
 
         try:
             # _get_profile_once: mismo perfil memoizado que usan _cargar_rep/_cargar_cuotas
