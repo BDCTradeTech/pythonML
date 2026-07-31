@@ -1859,6 +1859,32 @@ def ml_delete_question(access_token: str, question_id: int) -> bool:
         return False
 
 
+def ml_get_response_time(access_token: str, seller_id: str) -> Dict[str, Any]:
+    """GET /users/{seller_id}/questions/response_time — tiempo de respuesta a preguntas en
+    minutos, ventana fija de 14 días (actualiza 1 vez por día). Devuelve un dict con "status"
+    para distinguir "sin preguntas en el período" (404) de un fallo real de red/API, ya que
+    ambos casos no deben mostrarse igual en la UI:
+    {"status": "ok", "data": {...}} | {"status": "not_found"} | {"status": "error"}."""
+    log = logging.getLogger(__name__)
+    if not access_token or not seller_id:
+        return {"status": "error"}
+    try:
+        resp = get_ml_session().get(
+            f"https://api.mercadolibre.com/users/{seller_id}/questions/response_time",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            timeout=15,
+        )
+        if resp.status_code == 404:
+            return {"status": "not_found"}
+        if not resp.ok:
+            log.warning(f"[RESPONSE_TIME] {resp.status_code}: {resp.text[:200]}")
+            return {"status": "error"}
+        return {"status": "ok", "data": resp.json()}
+    except Exception:
+        log.exception(f"[RESPONSE_TIME] error consultando response_time seller_id={seller_id}")
+        return {"status": "error"}
+
+
 def ml_search_similar(
     query: str, limit: int = 20, access_token: Optional[str] = None, solo_propias: bool = False
 ) -> Dict[str, Any]:

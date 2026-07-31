@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from nicegui import app, background_tasks, context, run, ui
 
 from db import get_connection, get_cotizador_param, get_arca_datos, get_arca_multilateral, get_cache_age_minutes
-from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions, ml_delete_question
+from ml_api import get_ml_access_token, ml_get_user_profile, ml_get_my_items, _cuotas_desde_item, ml_get_unanswered_questions, ml_delete_question, ml_get_response_time
 from helpers.cache_swr import cached_or_refresh_bulk, FRESH_MIN
 
 _GREEN  = "#2E7D32"
@@ -428,6 +428,28 @@ def _cuotas_row(label: str, pct: float):
 def _fmt_miles(n) -> str:
     return f"{int(n):,}".replace(",", ".")
 
+def _fmt_response_time(minutes) -> str:
+    m = int(round(minutes or 0))
+    if m < 60:
+        return f"{m} min"
+    if m < 1440:
+        h, rem = divmod(m, 60)
+        return f"{h} h {rem} min" if rem else f"{h} h"
+    d, rem_min = divmod(m, 1440)
+    h = rem_min // 60
+    return f"{d} d {h} h" if h else f"{d} d"
+
+def _response_time_tooltip(segs: List[Tuple[str, Dict[str, Any]]]) -> str:
+    slow = [(label, seg) for label, seg in segs if (seg.get("response_time") or 0) > 60]
+    if not slow:
+        return "Respondés rápido en todas las franjas, buen trabajo."
+    label, seg = max(slow, key=lambda item: item[1].get("response_time") or 0)
+    txt = f"La franja más lenta es {label} ({_fmt_response_time(seg.get('response_time'))})."
+    pct = seg.get("sales_percent_increase")
+    if pct is not None:
+        txt += f" Si respondés en menos de 1 hora en esa franja, ML estima +{pct}% de ventas."
+    return txt
+
 def _stat_row(label: str, value: str, color: str):
     with ui.row().classes("items-center gap-2 w-full"):
         _dot(color)
@@ -686,11 +708,13 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
     cuotas_card     = None
     rep_card        = None
     ml_pubs_card    = None
+    rt_card         = None
     # cliente capturado sincrónicamente al crear cuotas_card, para poder re-entrar
     # de forma segura ("with cuotas_client:") desde el timer de polling de refresh
     # y desde _cargar_cuotas (background_tasks.create) — mismo patrón que el fix de
     # slot-stack-vacío de Productos (commits 319ea8b/c20fcde).
     cuotas_client   = None
+    rt_client       = None
 
     with container:
         with ui.column().classes("w-full gap-4 p-4").style("max-width:1200px"):
@@ -748,6 +772,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
             def _render_cards() -> None:
                 nonlocal prod_color, prod_header_row, _susp_dot, _susp_lbl
                 nonlocal cuotas_card, rep_card, ml_pubs_card, cuotas_client
+                nonlocal rt_card, rt_client
                 w = width_ref["val"]
                 cols = 2 if w < 768 else 3 if w < 1100 else 4
                 gap  = "gap-2" if w < 768 else "gap-3" if w < 1100 else "gap-4"
@@ -1021,6 +1046,15 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                     else:
                                         ui.label("Sin datos").classes("text-xs text-gray-400")
 
+                        # --- Fila 2, Col 4: Tiempo de respuesta (placeholder async) ---
+                        rt_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        rt_client = context.client
+                        with rt_card:
+                            with ui.row().classes("items-center gap-2 mb-2"):
+                                ui.spinner(size="sm")
+                                ui.label("Tiempo de respuesta").classes("font-bold text-base text-gray-800")
+                            ui.label("Cargando...").classes("text-xs text-gray-400")
+
                 if not access_token:
                     rep_card.clear()
                     with rep_card:
@@ -1035,6 +1069,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     with ml_pubs_card:
                         _card_header("Publicaciones ML", "#6b7280")
                         ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
+                    rt_card.clear()
+                    with rt_card:
+                        _card_header("Tiempo de respuesta", "#6b7280")
+                        ui.label("Sin token ML configurado").classes("text-sm text-gray-400")
                     _susp_lbl.set_text("—")
                     prod_header_row.clear()
                     with prod_header_row:
@@ -1043,8 +1081,9 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     if not db_alerts:
                         _alert_row(alerts_col, _GREEN, "Todo en orden — sin alertas activas")
                     return
-                background_tasks.create(_cargar_rep(),    name="dashboard_rep")
-                background_tasks.create(_cargar_cuotas(), name="dashboard_cuotas")
+                background_tasks.create(_cargar_rep(),           name="dashboard_rep")
+                background_tasks.create(_cargar_cuotas(),        name="dashboard_cuotas")
+                background_tasks.create(_cargar_response_time(), name="dashboard_response_time")
 
     # ── Async tasks ───────────────────────────────────────────────────────────
 
@@ -1422,4 +1461,66 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                 ui.label("Datos no disponibles").classes("text-xs text-gray-400")
             with cuotas_client:
                 ui.notify("No se pudieron cargar los datos de Cuotas/Publicaciones ML", color="negative")
+
+    async def _cargar_response_time() -> None:
+        def _render(result: Dict[str, Any]) -> None:
+            rt_card.clear()
+            status = result.get("status")
+
+            if status == "not_found":
+                with rt_card:
+                    _card_header("Tiempo de respuesta", "#6b7280")
+                    ui.label("14 días").classes("text-xs text-gray-400 -mt-2 mb-1")
+                    ui.label("Sin preguntas en los últimos 14 días").classes("text-xs text-gray-400")
+                return
+
+            if status != "ok":
+                with rt_card:
+                    _card_header("Tiempo de respuesta", "#6b7280")
+                    ui.label("14 días").classes("text-xs text-gray-400 -mt-2 mb-1")
+                    ui.label("Sin dato").classes("text-xs text-gray-400")
+                return
+
+            data      = result.get("data") or {}
+            total_min = (data.get("total") or {}).get("response_time")
+            segs = [
+                ("Laboral 9-18h", data.get("weekdays_working_hours") or {}),
+                ("Fin de semana",  data.get("weekend") or {}),
+                ("Noche 18-24h",   data.get("weekdays_extra_hours") or {}),
+            ]
+            overall_color = _GREEN if all((s.get("response_time") or 0) <= 60 for _, s in segs) else _RED
+
+            with rt_card:
+                _card_header("Tiempo de respuesta", overall_color)
+                ui.label("14 días").classes("text-xs text-gray-400 -mt-2 mb-1")
+                ui.label(_fmt_response_time(total_min) if total_min is not None else "—").classes(
+                    "text-2xl font-bold mb-1").style("color:#1a1a1a")
+                with ui.column().classes("w-full gap-2 mt-1"):
+                    for label, seg in segs:
+                        rt_min = seg.get("response_time")
+                        pct    = seg.get("sales_percent_increase")
+                        color  = _RED if (rt_min or 0) > 60 else _GREEN
+                        with ui.row().classes("items-center gap-2 w-full"):
+                            _dot(color)
+                            ui.label(label).classes("text-xs flex-1").style("color:#374151")
+                            ui.label(_fmt_response_time(rt_min) if rt_min is not None else "—").classes(
+                                "text-xs font-semibold").style("color:#1a1a1a")
+                            if pct is not None:
+                                ui.label(f"+{pct}%").classes("text-xs font-semibold").style(f"color:{_RED}")
+            rt_card.tooltip(_response_time_tooltip(segs))
+
+        try:
+            # _get_profile_once: mismo perfil memoizado que usan _cargar_rep/_cargar_cuotas
+            # para esta carga del dashboard (evita un tercer request a /users/me). [PERF]
+            profile   = await _get_profile_once()
+            seller_id = str((profile or {}).get("id") or "")
+            if not seller_id:
+                raise ValueError("sin seller_id ML")
+            result = await run.io_bound(ml_get_response_time, access_token, seller_id)
+            with rt_client:
+                _render(result)
+        except Exception:
+            logging.exception(f"[DASHBOARD] error cargando Tiempo de respuesta (uid={uid})")
+            with rt_client:
+                _render({"status": "error"})
 
