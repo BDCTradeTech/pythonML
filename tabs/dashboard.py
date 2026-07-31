@@ -865,10 +865,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                 ui.label("Tiempo de respuesta").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando...").classes("text-xs text-gray-400")
 
-                    # ── Sección: Ventas & Rentabilidad ────────────────────────────
-                    ui.label("VENTAS & RENTABILIDAD").classes("text-xs font-bold mt-2").style(
-                        "color:#6b7280;letter-spacing:.06em")
-                    with ui.grid(columns=min(2, cols)).classes(f"w-full {gap}"):
+                    with ui.grid(columns=min(4, cols)).classes(f"w-full {gap}"):
 
                         # --- Productos ---
                         prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
@@ -970,11 +967,6 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                          ("Pago",   lambda r: str(r.get("payment_id") or "—")),
                                          ("Fecha",  lambda r: (r.get("fetched_at") or "")[:10] or "—")]))
                             ui.label(f"Desde el {desde_fmt}").classes("text-xs text-gray-400 mt-2")
-
-                    # ── Sección: Fiscal & Sistema ──────────────────────────────────
-                    ui.label("FISCAL & SISTEMA").classes("text-xs font-bold mt-2").style(
-                        "color:#6b7280;letter-spacing:.06em")
-                    with ui.grid(columns=min(2, cols)).classes(f"w-full {gap}"):
 
                         # --- ARCA ---
                         arca_ov = _GREEN
