@@ -375,7 +375,7 @@ def _dot(color: str, size: int = 10, ring: bool = False):
     return ui.element("span").style(style)
 
 def _card_header(title: str, color: str, info_tooltip: Optional[str] = None):
-    with ui.row().classes("items-center gap-2 w-full mb-2"):
+    with ui.row().classes("items-center gap-2 w-full mb-1"):
         _dot(color)
         ui.label(title).classes("font-bold text-base text-gray-800")
         if info_tooltip:
@@ -391,8 +391,8 @@ def _kpi_tile(label: str, value: str, color: str):
     """Tile de la franja de KPIs del Dashboard: puntito de estado + label + valor grande.
     Devuelve (dot, value_label) para los dos KPIs que se completan async (Nivel de
     reputación, Tiempo de respuesta) y necesitan actualizarse cuando llega el dato."""
-    with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px 12px"):
-        with ui.row().classes("items-center gap-2 mb-1"):
+    with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:6px 10px"):
+        with ui.row().classes("items-center gap-2 mb-0.5"):
             dot = _dot(color, size=8)
             ui.label(label).classes("text-xs font-semibold").style(
                 "color:#6b7280;text-transform:uppercase;letter-spacing:.03em")
@@ -832,35 +832,35 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                     with ui.grid(columns=min(4, cols)).classes(f"w-full {gap}"):
 
                         # --- Cuotas (placeholder async) ---
-                        cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        cuotas_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px")
                         cuotas_client = context.client
                         with cuotas_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
+                            with ui.row().classes("items-center gap-2 mb-1"):
                                 ui.spinner(size="sm")
                                 ui.label("Cuotas").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando datos de cuotas...").classes("text-xs text-gray-400")
 
                         # --- Publicaciones ML (placeholder async) ---
-                        ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        ml_pubs_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px")
                         with ml_pubs_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
+                            with ui.row().classes("items-center gap-2 mb-1"):
                                 ui.spinner(size="sm")
                                 ui.label("Publicaciones ML").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando estado de publicaciones...").classes("text-xs text-gray-400")
 
                         # --- Estadísticas ML (placeholder async) ---
-                        rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        rep_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px")
                         with rep_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
+                            with ui.row().classes("items-center gap-2 mb-1"):
                                 ui.spinner(size="sm")
                                 ui.label("Estadísticas ML").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando reputación...").classes("text-xs text-gray-400")
 
                         # --- Tiempo de respuesta (placeholder async) ---
-                        rt_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px")
+                        rt_card = ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px")
                         rt_client = context.client
                         with rt_card:
-                            with ui.row().classes("items-center gap-2 mb-2"):
+                            with ui.row().classes("items-center gap-2 mb-1"):
                                 ui.spinner(size="sm")
                                 ui.label("Tiempo de respuesta").classes("font-bold text-base text-gray-800")
                             ui.label("Cargando...").classes("text-xs text-gray-400")
@@ -871,8 +871,8 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                         prod_color = (_RED    if prod["sin_costo"]  > 0 or prod["stock_susp"] > 0 or prod["gan_neg"] > 0
                                       else _YELLOW if prod["sin_fob"]   > 0
                                       else _GREEN)
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
-                            prod_header_row = ui.row().classes("items-center gap-2 w-full mb-2")
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px"):
+                            prod_header_row = ui.row().classes("items-center gap-2 w-full mb-1")
                             with prod_header_row:
                                 ui.spinner(size="sm")
                                 ui.label("Productos").classes("font-bold text-base text-gray-800")
@@ -941,7 +941,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                          ("Producto", lambda r: r.get("nombre") or "—")]))
 
                         # --- Ventas ---
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px"):
                             _card_header("Ventas — últimos 30 días", ven_color)
                             with ui.column().classes("w-full gap-2"):
                                 _vt = ventas.get("total", 0)
@@ -974,7 +974,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             if ac == _RED:    arca_ov = _RED;    break
                             if ac == _YELLOW: arca_ov = _YELLOW
 
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px"):
                             _card_header("ARCA — Resumen Fiscal", arca_ov)
                             sd, id_, dd, mr = arca_data["siper"], arca_data["iva"], arca_data["deuda"], arca_data["ml_rows"]
                             with ui.grid(columns=2).classes("w-full gap-3 mt-1"):
@@ -1034,7 +1034,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             elif last_row["status"] == "partial" and cron_ov == _GREEN:
                                 cron_ov = _YELLOW
 
-                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:10px"):
+                        with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:8px"):
                             _card_header("Tus tareas nocturnas — 7 días", cron_ov)
                             with ui.column().classes("w-full gap-2"):
                                 for job_key, job_label in _CRON_JOBS:
