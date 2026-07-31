@@ -14,6 +14,7 @@ from nicegui import app, background_tasks, run, ui
 
 from ml_api import (
     get_ml_access_token,
+    get_ml_session,
     ml_get_user_profile,
     ml_get_user_id,
     ml_get_orders_incremental,
@@ -23,6 +24,7 @@ from ml_api import (
     ml_get_unanswered_questions,
     ml_get_dispatch_schedule,
     ml_get_shipping_preferences,
+    _parse_ml_item_body,
 )
 from db import get_cotizador_param
 
@@ -75,12 +77,25 @@ def _cuotas_key(it: dict) -> tuple:
     return ("id", str(it.get("id") or ""))
 
 
+def _smart_truncate(text: str, limit: int = 60) -> str:
+    """Trunca sin cortar una palabra a la mitad: corta en el último espacio
+    dentro del límite (salvo que quede demasiado corto, ahí prioriza el límite)."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    sp = cut.rfind(" ")
+    if sp > limit * 0.6:
+        cut = cut[:sp]
+    return cut.rstrip() + "…"
+
+
 # ---------------------------------------------------------------------------
 # Renderer principal (sólo llamado desde build_tab_estadisticas)
 # ---------------------------------------------------------------------------
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None,
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None, access_token: Optional[str] = None,
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -596,29 +611,78 @@ def _pintar_home_inline(
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
                 # "Publicaciones": _cuotas_key sobre items_data, que ya trae seller_sku /
-                # catalog_product_id por publicación). Une únicamente publicaciones del
-                # mismo SKU; si un item_id vendido no aparece en items_data (ej. publicación
-                # pausada/cerrada, fuera del alcance de ml_get_my_items(include_paused=False))
-                # queda como fila propia bajo "sin SKU mapeado" — nunca se mezclan unidades
-                # de productos distintos. Es una repartición (partition) de top_productos: la
-                # suma de unidades agrupadas es exactamente igual a la suma sin agrupar.
+                # catalog_product_id por publicación).
+                #
+                # items_data solo trae publicaciones ACTIVAS (ml_get_my_items(..., False)),
+                # así que un producto con TODAS sus publicaciones pausadas (ej. sin stock)
+                # no aparece ahí y no se puede mapear a SKU con esa fuente. Para esos casos
+                # se hace un fallback puntual: un GET /items?ids=... (mismo endpoint que usa
+                # ml_get_my_items) SOLO para los item_id vendidos que quedaron sin mapear,
+                # sin importar su status. Si ese fallback también falla (item borrado, error
+                # de red, etc.) la publicación queda como fila propia bajo "sin SKU" — nunca
+                # se mezcla con otro producto.
+                #
+                # Es una repartición (partition) de top_productos: cada entrada original
+                # aporta sus unidades completas a un único grupo, así que
+                # suma(agrupado) == suma(top_productos) siempre, se resuelva o no el SKU.
                 _id_to_group_key: Dict[str, tuple] = {}
+                _id_to_is_catalog: Dict[str, bool] = {}
                 for _it_sku in (items_data or {}).get("results") or []:
                     if isinstance(_it_sku, dict) and _it_sku.get("id"):
-                        _id_to_group_key[str(_it_sku["id"])] = _cuotas_key(_it_sku)
+                        _iid_sku = str(_it_sku["id"])
+                        _id_to_group_key[_iid_sku] = _cuotas_key(_it_sku)
+                        _id_to_is_catalog[_iid_sku] = bool(_it_sku.get("catalog_listing"))
 
-                top_grouped: Dict[tuple, Dict[str, Any]] = {}
+                _unmapped_ids = [
+                    iid for iid in top_productos
+                    if iid and " " not in iid and iid not in _id_to_group_key
+                ][:60]  # tope defensivo: nunca más de 3 tandas de 20 ids en este fallback
+                if _unmapped_ids and access_token:
+                    try:
+                        for _b in range(0, len(_unmapped_ids), 20):
+                            _chunk = _unmapped_ids[_b:_b + 20]
+                            _resp = get_ml_session().get(
+                                "https://api.mercadolibre.com/items",
+                                params={"ids": ",".join(_chunk)},
+                                headers={"Authorization": f"Bearer {access_token}"},
+                                timeout=10,
+                            )
+                            if not _resp.ok:
+                                continue
+                            for _entry in _resp.json():
+                                if not isinstance(_entry, dict):
+                                    continue
+                                _body = _entry.get("body") if "body" in _entry else _entry
+                                if not isinstance(_body, dict) or not _body.get("id"):
+                                    continue
+                                _parsed = _parse_ml_item_body(_body)
+                                _iid_fb = str(_body["id"])
+                                _id_to_group_key[_iid_fb] = _cuotas_key(_parsed)
+                                _id_to_is_catalog[_iid_fb] = bool(_parsed.get("catalog_listing"))
+                    except Exception:
+                        logging.exception("[ESTADISTICAS] error en fallback de mapeo SKU para Top Ventas")
+
+                top_groups: Dict[tuple, List[tuple]] = {}
                 top_sin_sku = 0
                 for _iid, _info in top_productos.items():
                     _gk = _id_to_group_key.get(_iid)
                     if _gk is None:
                         _gk = ("sin_sku", _iid)
                         top_sin_sku += 1
-                    _g = top_grouped.setdefault(_gk, {"title": _info["title"], "units": 0, "_best": -1})
-                    if _info["units"] > _g["_best"]:
-                        _g["title"] = _info["title"]
-                        _g["_best"] = _info["units"]
-                    _g["units"] += _info["units"]
+                    top_groups.setdefault(_gk, []).append((_iid, _info))
+
+                top_grouped: Dict[tuple, Dict[str, Any]] = {}
+                for _gk, _members in top_groups.items():
+                    _units_total = sum(m[1]["units"] for m in _members)
+                    _propias = [m for m in _members if _id_to_is_catalog.get(m[0]) is False]
+                    _pool = _propias or _members
+                    _best_iid, _best_info = max(_pool, key=lambda m: m[1]["units"])
+                    _es_solo_catalogo = (not _propias) and all(
+                        _id_to_is_catalog.get(m[0]) is True for m in _members)
+                    top_grouped[_gk] = {
+                        "title": _best_info["title"], "units": _units_total,
+                        "solo_catalogo": _es_solo_catalogo,
+                    }
 
                 top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:14]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
@@ -631,12 +695,16 @@ def _pintar_home_inline(
                         else:
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                _full_tit = p["title"] or "—"
-                                tit = _full_tit if len(_full_tit) <= 70 else _full_tit[:70] + "…"
+                                tit = _smart_truncate(p["title"] or "—", 60)
                                 with ui.row().classes("w-full items-center gap-2 mb-1"):
                                     with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
                                         ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
                                     ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
+                                    if p.get("solo_catalogo"):
+                                        with ui.element("span").style(
+                                                "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
+                                                "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
+                                            ui.label("CATÁLOGO")
                                     with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
                                         ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
                                         ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
@@ -1005,6 +1073,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline, pending_labels=pending_labels)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline, pending_labels=pending_labels, access_token=access_token)
 
     cargar_y_pintar()
