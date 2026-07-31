@@ -594,11 +594,36 @@ def _pintar_home_inline(
                     facturacion_por_dia[key_ord] += float(ord_item.get("total_amount") or ord_item.get("paid_amount") or 0)
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
-                # Card Top Ventas
-                top_list = sorted(top_productos.values(), key=lambda x: x["units"], reverse=True)[:14]
+                # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
+                # "Publicaciones": _cuotas_key sobre items_data, que ya trae seller_sku /
+                # catalog_product_id por publicación). Une únicamente publicaciones del
+                # mismo SKU; si un item_id vendido no aparece en items_data (ej. publicación
+                # pausada/cerrada, fuera del alcance de ml_get_my_items(include_paused=False))
+                # queda como fila propia bajo "sin SKU mapeado" — nunca se mezclan unidades
+                # de productos distintos. Es una repartición (partition) de top_productos: la
+                # suma de unidades agrupadas es exactamente igual a la suma sin agrupar.
+                _id_to_group_key: Dict[str, tuple] = {}
+                for _it_sku in (items_data or {}).get("results") or []:
+                    if isinstance(_it_sku, dict) and _it_sku.get("id"):
+                        _id_to_group_key[str(_it_sku["id"])] = _cuotas_key(_it_sku)
+
+                top_grouped: Dict[tuple, Dict[str, Any]] = {}
+                top_sin_sku = 0
+                for _iid, _info in top_productos.items():
+                    _gk = _id_to_group_key.get(_iid)
+                    if _gk is None:
+                        _gk = ("sin_sku", _iid)
+                        top_sin_sku += 1
+                    _g = top_grouped.setdefault(_gk, {"title": _info["title"], "units": 0, "_best": -1})
+                    if _info["units"] > _g["_best"]:
+                        _g["title"] = _info["title"]
+                        _g["_best"] = _info["units"]
+                    _g["units"] += _info["units"]
+
+                top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:14]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
-                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                with ui.element("div").style(f"flex:1.3;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("padding:12px 14px"):
                         ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
                         if not top_list:
@@ -606,9 +631,8 @@ def _pintar_home_inline(
                         else:
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                tit = (p["title"] or "—")[:45]
-                                if len(p.get("title") or "") > 45:
-                                    tit += "…"
+                                _full_tit = p["title"] or "—"
+                                tit = _full_tit if len(_full_tit) <= 70 else _full_tit[:70] + "…"
                                 with ui.row().classes("w-full items-center gap-2 mb-1"):
                                     with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
                                         ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
@@ -616,6 +640,9 @@ def _pintar_home_inline(
                                     with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
                                         ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
                                         ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
+                            if top_sin_sku:
+                                ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
+                                    "font-size:9px;color:#9ca3af;margin-top:4px")
 
                 # Card Stock + Últimas ventas
                 items_list = (items_data or {}).get("results") or []
