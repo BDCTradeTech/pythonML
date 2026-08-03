@@ -1375,6 +1375,29 @@ def _mostrar_tabla_precios(
 
             all_comps.sort(key=lambda c: float(c.get("price") or 0))
 
+            # [FASE 2 - popup Ganando] "posición estimada": comparación por precio contra los
+            # competidores recién traídos en vivo (arriba), NO contra el status oficial de ML
+            # (price_to_win/catalog_status) -- ese lagea unos segundos/minutos tras un cambio de
+            # precio porque ML todavía no recalculó el ganador. Nuestro propio precio tampoco se
+            # relee de ML: es el que acabamos de guardar en `own_row["price"]` tras el PUT, así
+            # que está correcto al instante sin depender de que ML propague nada.
+            _precio_propio = own_row.get("price") if own_row else None
+            _comp_prices_only = [
+                float(c.get("price") or 0) for c in all_comps
+                if str(c.get("item_id", "")) not in _item_ids_set and c.get("price") is not None
+            ]
+            _min_comp_price = min(_comp_prices_only) if _comp_prices_only else None
+            if _min_comp_price is None:
+                _pos_estimada = ("—", "Sin competidores para comparar", "text-gray-400")
+            elif _precio_propio is None:
+                _pos_estimada = ("—", "Sin precio propio para comparar", "text-gray-400")
+            elif float(_precio_propio) < _min_comp_price - 0.01:
+                _pos_estimada = ("🟢", "Más barato que la competencia", "text-positive font-bold")
+            elif abs(float(_precio_propio) - _min_comp_price) <= 0.01:
+                _pos_estimada = ("🟡", "Empatando en precio con la competencia", "text-blue-600 font-bold")
+            else:
+                _pos_estimada = ("🔴", "Más caro que la competencia", "text-orange-600 font-bold")
+
             _PALETA = ["#e3f2fd", "#f0fdf4", "#faf5ff", "#fff7ed", "#fdf2f8"]
             _PALETA_TEXT = ["#1565c0", "#16a34a", "#6d28d9", "#c2410c", "#9d174d"]
             _cat_ids_p = list(dict.fromkeys(c.get("_cpid", "") for c in all_comps))
@@ -1406,23 +1429,29 @@ def _mostrar_tabla_precios(
             with content_area:
                 if own_row is not None:
                     with ui.row().classes("w-full items-center justify-between py-2 px-2 bg-gray-50 rounded mb-1"):
-                        _precio_mostrar = (ptw_live or {}).get("current_price")
-                        if _precio_mostrar is None:
-                            _precio_mostrar = own_row.get("price")
-                        ui.label(f"Tu precio: {fmt_moneda(_precio_mostrar)}").classes("text-sm font-semibold")
-                        if ptw_live and ptw_live.get("status"):
-                            _ico_p, _lbl_p, _cls_p = _STATUS_MAP_CATALOGO.get(
-                                ptw_live["status"], ("", ptw_live["status"], "text-gray-500")
-                            )
-                            ui.label(f"{_ico_p}  {_lbl_p}").classes(f"text-sm {_cls_p}")
-                        else:
-                            ui.label("Posición: sin datos (no se pudo consultar ahora)").classes(
-                                "text-sm text-gray-400"
-                            )
-                    if ptw_live and ptw_live.get("consistent") is False:
-                        ui.label(
-                            "⚠ La posición puede tardar unos segundos en actualizarse tras un cambio de precio."
-                        ).classes("text-xs text-amber-600 italic mb-1")
+                        ui.label(f"Tu precio: {fmt_moneda(_precio_propio)}").classes("text-sm font-semibold")
+                        _ico_e, _lbl_e, _cls_e = _pos_estimada
+                        ui.label(f"{_ico_e}  {_lbl_e}").classes(f"text-sm {_cls_e}")
+                    ui.label(
+                        "Posición estimada solo por precio, contra los competidores del catálogo consultados "
+                        "recién. No es el ganador oficial de ML: el buy box real también pesa reputación, "
+                        "envío y cuotas."
+                    ).classes("text-xs text-gray-500 italic mb-1")
+                    if ptw_live and ptw_live.get("status"):
+                        _ico_p, _lbl_p, _cls_p = _STATUS_MAP_CATALOGO.get(
+                            ptw_live["status"], ("", ptw_live["status"], "text-gray-500")
+                        )
+                        _nota_consist = (
+                            "" if ptw_live.get("consistent") is not False
+                            else "  ⚠ puede tardar en reflejar el cambio de precio"
+                        )
+                        ui.label(f"Según ML (oficial): {_ico_p} {_lbl_p}{_nota_consist}").classes(
+                            "text-xs text-gray-500 mb-2"
+                        )
+                    else:
+                        ui.label("Según ML (oficial): sin datos ahora mismo").classes(
+                            "text-xs text-gray-400 mb-2"
+                        )
                 if _sync_failed_cats:
                     ui.label(
                         "⚠ No se pudo actualizar en vivo la lista de competidores — mostrando el último dato guardado."
