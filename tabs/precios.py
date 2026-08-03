@@ -13,7 +13,7 @@ import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import requests
@@ -1204,6 +1204,13 @@ def _mostrar_tabla_precios(
     finally:
         _conn_rev_init.close()
 
+    _STATUS_MAP_CATALOGO = {
+        "winning":             ("✓", "Ganando",               "text-positive font-bold"),
+        "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
+        "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
+        "listed":              ("''", "Publicado sin ganar",   "text-gray-500"),
+    }
+
     def _open_catalogo_popup(sku: str) -> None:
         dlg = ui.dialog()
         with dlg:
@@ -1325,6 +1332,16 @@ def _mostrar_tabla_precios(
                         _my_qty[_iid] = _qty
             delivery_labels: Dict[str, Any] = {}
 
+            own_row = next(
+                (r for r in items_loaded
+                 if (str(r.get("seller_sku") or "").strip() or str(r.get("id") or "").strip()) == sku),
+                None,
+            )
+            own_item_id = str(own_row.get("id") or "") if own_row else ""
+            ptw_live: Optional[Dict[str, Any]] = None
+            if own_item_id and access_token:
+                ptw_live = await asyncio.to_thread(ml_get_item_price_to_win, access_token, own_item_id)
+
             _conn_hist = get_connection()
             try:
                 _hist_rows = _conn_hist.execute(
@@ -1336,12 +1353,21 @@ def _mostrar_tabla_precios(
                 _conn_hist.close()
             _ventas_hist: Dict[str, int] = {str(r[0]): r[1] for r in _hist_rows if r[1]}
 
+            # [FASE 2 - popup Ganando] antes de cada sync guardamos la hora; si al terminar
+            # las filas de ese catálogo en catalogo_competidores NO se tocaron después de ese
+            # instante, es que el fetch en vivo falló o no trajo nada -- se muestran igual (son
+            # el último dato bueno que tenemos) pero se avisa que no se pudieron actualizar,
+            # en vez de mostrarlas como si fueran frescas.
+            _sync_failed_cats: List[str] = []
             for cat in sku_cats:
                 cpid = cat["catalog_product_id"]
+                _t_sync_start = datetime.now(timezone.utc).isoformat()
                 fresh = await _sync_one_catalog(access_token, cpid)
                 if fresh:
                     upsert_catalogo_competidores(cpid, fresh)
                 cached = get_catalogo_competidores(cpid)
+                if cached and str(cached[0].get("updated_at") or "") < _t_sync_start:
+                    _sync_failed_cats.append(cpid)
                 for comp in cached:
                     entry = dict(comp)
                     entry["_cpid"] = cpid
@@ -1378,6 +1404,29 @@ def _mostrar_tabla_precios(
 
             content_area.clear()
             with content_area:
+                if own_row is not None:
+                    with ui.row().classes("w-full items-center justify-between py-2 px-2 bg-gray-50 rounded mb-1"):
+                        _precio_mostrar = (ptw_live or {}).get("current_price")
+                        if _precio_mostrar is None:
+                            _precio_mostrar = own_row.get("price")
+                        ui.label(f"Tu precio: {fmt_moneda(_precio_mostrar)}").classes("text-sm font-semibold")
+                        if ptw_live and ptw_live.get("status"):
+                            _ico_p, _lbl_p, _cls_p = _STATUS_MAP_CATALOGO.get(
+                                ptw_live["status"], ("", ptw_live["status"], "text-gray-500")
+                            )
+                            ui.label(f"{_ico_p}  {_lbl_p}").classes(f"text-sm {_cls_p}")
+                        else:
+                            ui.label("Posición: sin datos (no se pudo consultar ahora)").classes(
+                                "text-sm text-gray-400"
+                            )
+                    if ptw_live and ptw_live.get("consistent") is False:
+                        ui.label(
+                            "⚠ La posición puede tardar unos segundos en actualizarse tras un cambio de precio."
+                        ).classes("text-xs text-amber-600 italic mb-1")
+                if _sync_failed_cats:
+                    ui.label(
+                        "⚠ No se pudo actualizar en vivo la lista de competidores — mostrando el último dato guardado."
+                    ).classes("text-xs text-amber-600 italic mb-2")
                 if not all_comps:
                     ui.label("Sin competidores disponibles").classes(
                         "text-amber-600 text-sm italic py-2"
@@ -1831,12 +1880,7 @@ def _mostrar_tabla_precios(
             ui.notify(f"Error: {e}", color="negative")
 
     def _abrir_detalle_catalogo(row: Dict[str, Any]) -> None:
-        _STATUS_MAP = {
-            "winning":             ("✓", "Ganando",               "text-positive font-bold"),
-            "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
-            "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
-            "listed":              ("''", "Publicado sin ganar",   "text-gray-500"),
-        }
+        _STATUS_MAP = _STATUS_MAP_CATALOGO
         _REASON_ES = {
             "PRICE":           "Precio",
             "QUALITY":         "Calidad de publicación",

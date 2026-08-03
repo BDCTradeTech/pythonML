@@ -950,23 +950,28 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
 
 
 def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
-    """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason, competitors."""
+    """GET /items/{id}/price_to_win — devuelve dict con status, price_to_win, visit_share, reason,
+    competitors, current_price y consistent (indica si ML ya recalculó la posición con el precio
+    actual; ver doc "Competencia en catálogo")."""
     if not access_token or not str(item_id).strip():
         return None
     try:
         resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/price_to_win",
+            params={"version": "v2"},
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=10,
         )
         if resp.status_code == 200:
             d = resp.json()
             return {
-                "status":       d.get("status"),
-                "price_to_win": d.get("price_to_win"),
-                "visit_share":  d.get("visit_share"),
-                "reason":       d.get("reason"),
-                "competitors":  d.get("competitors_sharing_first_place"),
+                "status":        d.get("status"),
+                "price_to_win":  d.get("price_to_win"),
+                "visit_share":   d.get("visit_share"),
+                "reason":        d.get("reason"),
+                "competitors":   d.get("competitors_sharing_first_place"),
+                "current_price": d.get("current_price"),
+                "consistent":    d.get("consistent"),
             }
     except Exception:
         pass
