@@ -26,7 +26,7 @@ from ml_api import (
     ml_get_shipping_preferences,
     _parse_ml_item_body,
 )
-from db import get_cotizador_param
+from db import get_cotizador_param, get_marca_override_map
 
 
 # ---------------------------------------------------------------------------
@@ -1049,6 +1049,16 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 t0 = time.perf_counter()
                 items_data = await run.io_bound(ml_get_my_items, access_token, False)
                 logging.warning(f"[TIMING] ml_get_my_items: {time.perf_counter()-t0:.2f}s")
+                # Override de marca (marcas_override, ver tabs/precios.py): corrige marcas mal
+                # cargadas en ML que no se pueden editar ahí (ej. "PlayStation" -> "Sony"), para
+                # que el KPI de "marcas distintas" y el resto de esta pantalla sean consistentes
+                # con Productos.
+                _marca_override_map = get_marca_override_map(user["id"])
+                if _marca_override_map:
+                    for _it in (items_data or {}).get("results", []):
+                        _m = _it.get("marca")
+                        if _m and _m in _marca_override_map:
+                            _it["marca"] = _marca_override_map[_m]
             except Exception:
                 pass
 

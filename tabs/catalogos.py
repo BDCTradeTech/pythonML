@@ -16,6 +16,7 @@ from db import (
     get_app_config,
     get_catalogo_competidores,
     get_sku_catalogos,
+    get_marca_override_map,
     add_sku_catalogo,
     delete_sku_catalogo,
     upsert_catalogo_competidores,
@@ -143,7 +144,7 @@ _TIPO_BADGE: Dict[str, str] = {
 }
 
 
-def _get_cache_items(seller_id: str) -> List[Dict]:
+def _get_cache_items(seller_id: str, uid: Optional[int] = None) -> List[Dict]:
     if not seller_id:
         return []
     raw = get_app_config(f"cache_my_items_{seller_id}_active")
@@ -153,9 +154,20 @@ def _get_cache_items(seller_id: str) -> List[Dict]:
         return []
     try:
         data = json.loads(raw)
-        return data.get("results", []) if isinstance(data, dict) else []
+        items = data.get("results", []) if isinstance(data, dict) else []
     except Exception:
         return []
+    # Override de marca (marcas_override, ver tabs/precios.py): corrige marcas mal cargadas
+    # en ML que no se pueden editar ahí (ej. "PlayStation" -> "Sony"), para que Catálogos
+    # sea consistente con Productos.
+    if uid is not None:
+        _marca_override_map = get_marca_override_map(uid)
+        if _marca_override_map:
+            for _it in items:
+                _m = _it.get("marca")
+                if _m and _m in _marca_override_map:
+                    _it["marca"] = _marca_override_map[_m]
+    return items
 
 
 def _better_item(a: Dict, b: Dict) -> Dict:
@@ -377,7 +389,7 @@ def build_tab_catalogos(container) -> None:
                     # Auto-agregar catálogos desde cache_my_items_active
                     if not seller_id_ref[0]:
                         seller_id_ref[0] = await run.io_bound(ml_get_user_id, access_token) or ""
-                    cache_items = _get_cache_items(seller_id_ref[0])
+                    cache_items = _get_cache_items(seller_id_ref[0], uid)
                     existing_cats = get_sku_catalogos(uid)
                     existing_pairs: Set[tuple] = {
                         (c["sku"], c["catalog_product_id"]) for c in existing_cats
@@ -507,7 +519,7 @@ def build_tab_catalogos(container) -> None:
 
                 my_item_ids = {
                     str(it.get("id") or "")
-                    for it in _get_cache_items(seller_id_ref[0])
+                    for it in _get_cache_items(seller_id_ref[0], uid)
                 }
                 my_comps = [c for c in comps if str(c.get("item_id", "")) in my_item_ids]
                 our_price = float(my_comps[0].get("price") or 0) if my_comps else None
@@ -963,7 +975,7 @@ def build_tab_catalogos(container) -> None:
                     return
                 container.clear()
 
-                cache_items = _get_cache_items(seller_id_ref[0])
+                cache_items = _get_cache_items(seller_id_ref[0], uid)
                 sku_groups = _group_by_sku(cache_items)
                 item_ids_set = set(sku_groups.get(sku, {}).get("item_ids", []))
                 my_stock: Dict[str, int] = {}
@@ -1018,7 +1030,7 @@ def build_tab_catalogos(container) -> None:
         def _rebuild_table() -> None:
             table_area.clear()
 
-            cache_items = _get_cache_items(seller_id_ref[0])
+            cache_items = _get_cache_items(seller_id_ref[0], uid)
             sku_groups = _group_by_sku(cache_items)
             all_cats = get_sku_catalogos(uid)
 

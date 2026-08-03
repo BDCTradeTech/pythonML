@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_cache_age_minutes, get_connection, get_cotizador_param, get_financiacion_cuotas_ml, set_cached
+from db import get_cache_age_minutes, get_connection, get_cotizador_param, get_financiacion_cuotas_ml, get_marca_override_map, set_cached
 from helpers.cache_swr import FRESH_MIN, cached_or_refresh_bulk
 from ml_api import (
     MLTransientFetchError,
@@ -1070,6 +1070,16 @@ def build_tab_cuotas(container, force_refresh: bool = False) -> None:
                 return
             # Construir grupos para identificar el item representante por grupo
             items_raw = data.get("results", [])
+            # Override de marca (marcas_override, ver tabs/precios.py): corrige marcas mal
+            # cargadas en ML que no se pueden editar ahí (ej. "PlayStation" -> "Sony"). Se
+            # aplica antes de agrupar/mostrar para que esta pestaña sea consistente con
+            # Productos, que ya lo aplicaba.
+            _marca_override_map = get_marca_override_map(user["id"])
+            if _marca_override_map:
+                for _it in items_raw:
+                    _m = _it.get("marca")
+                    if _m and _m in _marca_override_map:
+                        _it["marca"] = _marca_override_map[_m]
             # cpid_to_skus (misma regla conservadora que tabs/precios.py): una publicación de
             # catálogo sin seller_sku se pega al SKU hermano solo si su catalog_product_id tiene
             # exactamente un SKU no vacío entre todas sus publicaciones. Debe calcularse igual acá
