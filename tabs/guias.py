@@ -598,6 +598,17 @@ def _to_float(v: Any) -> float | None:
         return None
 
 
+_MESES_GUIAS = [
+    "Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio",
+    "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre",
+]
+
+
+def _meses_completados_opciones() -> List[str]:
+    _hoy_ar = (datetime.utcnow() - timedelta(hours=3)).date()
+    return _MESES_GUIAS[: _hoy_ar.month - 1]
+
+
 def _normalizar_fecha(fecha_str: str) -> str:
     if not fecha_str:
         return ""
@@ -654,6 +665,15 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
                 _inicio = _hoy_ar.replace(day=1)
                 where_parts.append(f"{_fecha_expr} >= ?")
                 params.append(_inicio.isoformat())
+            elif fecha_f in _MESES_GUIAS:
+                _mes_idx = _MESES_GUIAS.index(fecha_f) + 1
+                _inicio = _hoy_ar.replace(month=_mes_idx, day=1)
+                if _mes_idx == 12:
+                    _fin = _inicio.replace(year=_inicio.year + 1, month=1)
+                else:
+                    _fin = _inicio.replace(month=_mes_idx + 1)
+                where_parts.append(f"{_fecha_expr} >= ? AND {_fecha_expr} < ?")
+                params.extend([_inicio.isoformat(), _fin.isoformat()])
             elif fecha_f == "Este año":
                 _inicio = _hoy_ar.replace(month=1, day=1)
                 where_parts.append(f"{_fecha_expr} >= ?")
@@ -2790,7 +2810,7 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
         with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
             ui.label("Fecha").style("font-size:11px;color:var(--color-text-secondary)")
             ui.select(
-                options=["Todas", "Hoy", "Esta semana", "Este mes", "Este año"],
+                options=["Todas", "Hoy", "Esta semana", "Este mes", *_meses_completados_opciones(), "Este año"],
                 value="Este mes",
                 on_change=lambda e: _filter_change("fecha", e.value),
             ).props("dense outlined").style(
