@@ -574,6 +574,14 @@ def _save_guia(user_id: int, data: Dict[str, Any]) -> int:
         data = {**data, "courier": "Sixtar"}
     elif "lhs" in raw_courier.lower():
         data = {**data, "courier": "LHS"}
+    if data.get("fecha"):
+        data = {
+            **data,
+            "fecha": _normalizar_fecha(
+                str(data["fecha"]),
+                contexto=f"user_id={user_id} hawb={data.get('hawb')} nro_factura={data.get('nro_factura')}",
+            ),
+        }
     productos_json = json.dumps(data.get("productos") or [], ensure_ascii=False)
     vals = [str(data.get(c)) if data.get(c) is not None else None for c in _SCALAR_COLS]
     col_str = "user_id, productos, " + ", ".join(_SCALAR_COLS)
@@ -609,25 +617,48 @@ def _meses_completados_opciones() -> List[str]:
     return _MESES_GUIAS[: _hoy_ar.month - 1]
 
 
-def _normalizar_fecha(fecha_str: str) -> str:
+def _normalizar_fecha(fecha_str: str, contexto: str = "") -> str:
+    """Normaliza a DD/MM/YYYY. Acepta ISO (YYYY-MM-DD), DD/MM/YYYY, D/M/YYYY sin
+    ceros, DD/MM/YY y texto libre parseable. Si no logra obtener una fecha
+    válida, loguea un warning (para no perder el registro en silencio) y
+    devuelve el valor crudo tal cual llegó."""
     if not fecha_str:
         return ""
     import re
     s = fecha_str.strip()
-    if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
-        y, m, d = s.split("-")
-        return f"{d}/{m}/{y}"
-    if re.match(r'^\d{2}/\d{2}/\d{2}$', s):
-        d, m, y = s.split("/")
-        return f"{d}/{m}/20{y}"
-    if re.match(r'^\d{2}/\d{2}/\d{4}$', s):
-        return s
-    try:
-        from dateutil import parser as dparser
-        dt = dparser.parse(s, dayfirst=True)
-        return dt.strftime("%d/%m/%Y")
-    except Exception:
-        return s
+    candidato: tuple[int, int, int] | None = None
+    m = re.match(r'^(\d{4})-(\d{1,2})-(\d{1,2})$', s)
+    if m:
+        y, mo, d = (int(x) for x in m.groups())
+        candidato = (y, mo, d)
+    else:
+        m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{4})$', s)
+        if m:
+            d, mo, y = (int(x) for x in m.groups())
+            candidato = (y, mo, d)
+        else:
+            m = re.match(r'^(\d{1,2})/(\d{1,2})/(\d{2})$', s)
+            if m:
+                d, mo, y2 = m.groups()
+                candidato = (2000 + int(y2), int(mo), int(d))
+    if candidato is None:
+        try:
+            from dateutil import parser as dparser
+            dt = dparser.parse(s, dayfirst=True)
+            candidato = (dt.year, dt.month, dt.day)
+        except Exception:
+            candidato = None
+    if candidato is not None:
+        try:
+            dt = datetime(*candidato)
+            return dt.strftime("%d/%m/%Y")
+        except ValueError:
+            pass
+    logger.warning(
+        "guias: fecha no parseable a DD/MM/YYYY (valor=%r, contexto=%s) - se guarda cruda, revisar manualmente",
+        s, contexto or "?",
+    )
+    return s
 
 
 def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any]]:
