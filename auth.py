@@ -17,33 +17,9 @@ from typing import Any, Dict, Optional
 import bcrypt
 
 from db import get_connection
+from tabs.constants import TAB_KEYS, TABS_BASE
 
 logger = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Constantes de tabs (espejadas de main.py para que create_user funcione
-# de forma autónoma; en fases futuras se importarán desde un módulo central)
-# ---------------------------------------------------------------------------
-TAB_KEYS = [
-    ("home", "Home"),
-    ("estadisticas", "Estadísticas"),
-    ("ventas", "Ventas"),
-    ("productos", "Productos"),
-    ("cuotas", "Cuotas"),
-    ("busqueda", "Busquedas"),
-    ("balance", "Balance"),
-    ("compras", "Invoices"),
-    ("stock", "Stock"),
-    ("compras_lista", "Compras"),
-    ("pedidos", "Pedidos"),
-    ("historicos", "Históricos"),
-    ("importacion", "Importacion"),
-    ("pesos", "Pesos"),
-    ("datos", "Datos"),
-    ("configuracion", "Configuración"),
-    ("admin", "Admin"),
-]
-TABS_BASE = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
 
 # Lock global para envío de emails (evita condiciones de carrera con socket)
 _email_lock = threading.Lock()

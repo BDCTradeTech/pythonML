@@ -154,7 +154,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.04.16"
+VERSION = "3.26.08.19.18"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -491,7 +491,20 @@ def show_main_layout(container) -> None:
         guias_clear_ref: List[Any] = [None]
         transferencias_cargado = [False]
 
+        # Páginas con gate real server-side (además de ocultar el botón de menú):
+        # el checkbox de Permisos deja de ser solo cosmético para estas.
+        _GATED_TAB_KEYS = {
+            "Competidores": "competidores",
+            "Publicidad": "publicidad",
+            "Transferencias": "transferencias",
+            "ARCA": "arca",
+            "Gastos": "gastos",
+        }
+
         def _lazy_load(val: str) -> None:
+            _gate_key = _GATED_TAB_KEYS.get(val)
+            if _gate_key and not user_can_access_tab(user["id"], _gate_key):
+                return
             if val == "Invoices" and not compras_cargado[0]:
                 compras_cargado[0] = True
                 build_tab_compras(compras_container)
@@ -935,7 +948,8 @@ def show_main_layout(container) -> None:
                 build_tab_pesos()
 
             with ui.tab_panel(tab_couriers):
-                build_tab_couriers()
+                if user_can_access_tab(user["id"], "couriers"):
+                    build_tab_couriers()
 
             with ui.tab_panel(tab_arca):
                 arca_container = ui.column().classes("w-full")

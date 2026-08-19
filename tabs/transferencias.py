@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, get_connection
+from db import get_app_config, get_connection, user_can_access_tab
 
 logger = logging.getLogger(__name__)
 
@@ -659,6 +659,9 @@ def build_tab_transferencias() -> None:
     user = app.storage.user.get("user")
     if not user:
         ui.label("Debes iniciar sesión").classes("text-red-500 p-4")
+        return
+    if not user_can_access_tab(user["id"], "transferencias"):
+        ui.label("No tenés permiso para acceder a esta página.").classes("text-red-500 p-4")
         return
 
     user_id = user["id"]

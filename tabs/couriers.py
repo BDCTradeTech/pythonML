@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from nicegui import app, ui
 
-from db import set_cotizador_tabla
+from db import set_cotizador_tabla, user_can_access_tab
 from importacion_calc import calc_courier_row, load_calc_context
 
 _COURIERS = [
@@ -38,6 +38,9 @@ def build_tab_couriers() -> None:
     user = app.storage.user.get("user")
     if not user:
         ui.label("Debes iniciar sesion").classes("text-red-500 p-4")
+        return
+    if not user_can_access_tab(user["id"], "couriers"):
+        ui.label("No tenés permiso para acceder a esta página.").classes("text-red-500 p-4")
         return
     uid = user["id"]
 

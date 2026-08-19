@@ -24,37 +24,13 @@ from typing import Any, Dict, List, Optional
 
 from cryptography.fernet import Fernet
 
+from tabs.constants import TAB_KEYS, EXTRA_PERMISSION_KEYS
+
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
 
 DB_PATH = Path(__file__).with_name("app.db")
-
-# Pestañas del sistema (tab_key interno -> label visible). Replicado de main.py
-# para que get_user_tab_permissions() funcione sin importar main.
-TAB_KEYS = [
-    ("home", "Home"),
-    ("estadisticas", "Estadísticas"),
-    ("ventas", "Ventas"),
-    ("productos", "Productos"),
-    ("cuotas", "Cuotas"),
-    ("catalogos", "Catálogos"),
-    ("busqueda", "Busquedas"),
-    ("balance", "Balance"),
-    ("dashboard", "Dashboard"),
-    ("compras", "Invoices"),
-    ("stock", "Stock"),
-    ("compras_lista", "Compras"),
-    ("pedidos", "Pedidos"),
-    ("historicos", "Históricos"),
-    ("importacion", "Importacion"),
-    ("pesos", "Pesos"),
-    ("gastos", "Gastos"),
-    ("analisis_ml", "Análisis ML"),
-    ("datos", "Datos"),
-    ("configuracion", "Configuración"),
-    ("admin", "Admin"),
-]
 
 BACKUP_VERSION = 2
 
@@ -1075,6 +1051,29 @@ def init_db() -> None:
             "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (1, 'publicidad', 1)"
         )
 
+    # Migración: unificación del registro de páginas (tabs/constants.py:TAB_REGISTRY).
+    # Antes, 4 listas de tab_keys desincronizadas (tabs/constants.py, auth.py, db.py,
+    # tabs/admin.py) hacían que páginas como Competidores, Publicidad, Transferencias,
+    # Couriers, ARCA, Gastos, Stock BDC y Guías no tuvieran defaults reales acá: quedaban
+    # ausentes del dict de get_user_tab_permissions() y cada caller aplicaba su propio
+    # fallback hardcodeado (casi siempre "abierto"). Ahora que TAB_KEYS unifica las 30
+    # páginas reales, esas keys entran por primera vez al loop de defaults de arriba
+    # (algunas con default cerrado vía _default_off). Para no bloquear a NADIE que hoy
+    # tiene acceso efectivo (abierto), sembramos explícitamente can_access=1 para todo
+    # usuario existente que no tenga fila para alguna de esas keys, preservando el
+    # comportamiento actual exacto. Usuarios NUEVOS (alta vía auth.create_user) sí
+    # arrancan cerrados salvo TABS_BASE, que es la política de producto.
+    cur.execute("SELECT id FROM users ORDER BY id")
+    for _urow in cur.fetchall():
+        _uid = _urow["id"]
+        for _tab_key, _ in TAB_KEYS:
+            if _tab_key == "admin":
+                continue  # gestionado aparte; nunca abrir admin por default acá
+            cur.execute(
+                "INSERT OR IGNORE INTO user_tab_permissions (user_id, tab_key, can_access) VALUES (?, ?, 1)",
+                (_uid, _tab_key),
+            )
+
     conn.commit()
     conn.close()
     init_cron_runs_db()
@@ -1533,7 +1532,7 @@ def get_user_tab_permissions(user_id: int) -> Dict[str, bool]:
         for r in rows:
             result[str(r["tab_key"])] = bool(r["can_access"])
         _default_off = {"admin", "guias", "analisis_ml"}
-        for tab_key, _ in TAB_KEYS:
+        for tab_key, _ in TAB_KEYS + EXTRA_PERMISSION_KEYS:
             if tab_key not in result:
                 result[tab_key] = False if tab_key in _default_off else True
         return result

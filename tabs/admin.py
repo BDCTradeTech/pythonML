@@ -31,7 +31,7 @@ from db import (
     delete_despachante,
 )
 from ml_api import get_ml_access_token
-from tabs.constants import TAB_KEYS, TABS_QB
+from tabs.constants import TAB_KEYS, TABS_QB, TAB_SECTIONS
 
 
 # ---------------------------------------------------------------------------
@@ -64,31 +64,9 @@ def build_tab_admin(container) -> None:
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
             # ─── Permisos (tabla transpuesta, colapsable) ───────────────
-            _SECTION_PAGES = [
-                ("Home",          [("home", "Home"), ("dashboard", "Dashboard")]),
-                ("MercadoLibre",  [
-                    ("estadisticas",  "Estadísticas"),
-                    ("ventas",        "Ventas"),
-                    ("productos",     "Productos"),
-                    ("cuotas",        "Cuotas"),
-                    ("promos",        "Promos"),
-                    ("preguntas",     "Preguntas"),
-                    ("flex",          "Flex"),
-                    ("busqueda",      "Búsqueda"),
-                ]),
-                ("BDC",           [("balance", "Balance"), ("compras", "Invoices")]),
-                ("Comex",         [
-                    ("stock",         "Stock"),
-                    ("compras_lista", "Compras"),
-                    ("pedidos",       "Pedidos"),
-                    ("historicos",    "Históricos"),
-                    ("importacion",   "Importación"),
-                    ("guias",         "Guías"),
-                ]),
-                ("Impuestos",     [("pesos", "Pesos"), ("arca", "ARCA"), ("gastos", "Gastos"), ("analisis_ml", "Análisis ML")]),
-                ("Config",        [("datos", "Datos"), ("configuracion", "Configuración")]),
-                ("Admin",         [("admin", "Admin"), ("actividad", "Actividad")]),
-            ]
+            # Derivado de tabs/constants.py:TAB_REGISTRY — única fuente de verdad.
+            # No agregar páginas acá a mano: se agregan en TAB_REGISTRY y aparecen solas.
+            _SECTION_PAGES = TAB_SECTIONS
 
             _all_perms = {u["id"]: get_user_tab_permissions(u["id"]) for u in users_list}
             _all_ml    = {u["id"]: bool(get_ml_access_token(u["id"])) for u in users_list}

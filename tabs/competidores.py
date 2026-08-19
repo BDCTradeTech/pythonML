@@ -7,7 +7,7 @@ import html, json, logging, re, requests
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional
 from nicegui import app, run, ui
-from db import get_connection
+from db import get_connection, user_can_access_tab
 
 _LVL_ICON = {
     "1_green":"🟢","2_green":"🟢","3_green":"🟡",
@@ -941,6 +941,9 @@ def build_tab_competidores() -> None:
     user = app.storage.user.get("user")
     if not user:
         ui.label("Debes iniciar sesion").classes("text-red-500 p-4")
+        return
+    if not user_can_access_tab(user["id"], "competidores"):
+        ui.label("No tenés permiso para acceder a esta página.").classes("text-red-500 p-4")
         return
     uid     = user["id"]
     mis_ids = _get_mis_seller_ids(uid)

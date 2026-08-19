@@ -15,6 +15,7 @@ from db import (
     save_arca_datos,
     get_arca_multilateral,
     save_arca_multilateral,
+    user_can_access_tab,
 )
 
 _GREEN  = "#3B6D11"
@@ -120,6 +121,10 @@ def build_tab_arca(container) -> None:
     """Pestaña ARCA: variables fiscales mensuales."""
     user = _require_login()
     if not user:
+        return
+    if not user_can_access_tab(user["id"], "arca"):
+        with container:
+            ui.label("No tenés permiso para acceder a esta página.").classes("text-negative")
         return
     with container:
         _build_arca(user["id"])

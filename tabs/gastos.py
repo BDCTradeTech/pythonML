@@ -3899,6 +3899,10 @@ def build_tab_gastos(container) -> None:
     user = _require_login()
     if not user:
         return
+    if not user_can_access_tab(user["id"], "gastos"):
+        with container:
+            ui.label("No tenés permiso para acceder a esta página.").classes("text-negative")
+        return
     with container:
         _build_gastos(user["id"])
 

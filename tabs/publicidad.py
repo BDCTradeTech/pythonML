@@ -19,7 +19,7 @@ from ml_api import (
 from db import (
     get_ads_advertiser, get_ads_campaigns, get_ads_campaign_daily_range,
     get_ads_item_snapshot, get_ads_sync_freshness, get_last_cron_run_at, get_ads_items_stock,
-    get_ganancia_real_por_item,
+    get_ganancia_real_por_item, user_can_access_tab,
 )
 from tabs.estadisticas import fmt_m, fmt_n
 
@@ -400,6 +400,10 @@ def build_tab_publicidad(container) -> None:
     — lee el cache que arma ads_snapshot.py (cron diario), no llama a la API de Ads en vivo."""
     user = _require_login()
     if not user:
+        return
+    if not user_can_access_tab(user["id"], "publicidad"):
+        with container:
+            ui.label("No tenés permiso para acceder a esta página.").classes("text-negative")
         return
     uid = user["id"]
     access_token = get_ml_access_token(uid)
