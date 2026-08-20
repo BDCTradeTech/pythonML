@@ -38,9 +38,9 @@ BACKUP_VERSION = 2
 # llama-3.3-70b-versatile fue deprecado por Groq el 16/08/26; reemplazo oficial: openai/gpt-oss-120b.
 GROQ_MODEL = "openai/gpt-oss-120b"
 
-# GLM (Z.ai, https://api.z.ai) — integración paso 1: solo guardado de key en Configuración.
-GLM_MODEL = "glm-4.5-flash"
-GLM_BASE_URL = "https://api.z.ai/api/paas/v4"
+# DeepSeek (https://api.deepseek.com) — integración paso 1: solo guardado de key en Configuración.
+DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 
 
 # ==========================
