@@ -15,7 +15,7 @@ import requests as _requests
 
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, set_app_config
+from db import get_app_config, set_app_config, GROQ_MODEL
 from ml_api import get_ml_access_token, get_ml_session, ml_get_user_id, ml_get_user_profile
 
 _DEFAULT_FRASES = [
@@ -115,7 +115,7 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 300,
         "temperature": 0.7,

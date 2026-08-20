@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, get_connection, user_can_access_tab
+from db import get_app_config, get_connection, user_can_access_tab, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ def _groq_parse_doc(api_key: str, texto: str) -> str:
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     full_prompt = PROMPT_TRANSFERENCIA + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": full_prompt}],
         "max_tokens": 2000,
         "temperature": 0.1,

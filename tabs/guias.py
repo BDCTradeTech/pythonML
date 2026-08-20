@@ -15,7 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests as _requests
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, get_connection, get_cotizador_param, get_setting, get_user_ml_razon_social
+from db import get_app_config, get_connection, get_cotizador_param, get_setting, get_user_ml_razon_social, GROQ_MODEL
 
 logger = logging.getLogger(__name__)
 
@@ -1049,7 +1049,7 @@ def _groq_parse_doc(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
-        "model": "llama-3.3-70b-versatile",
+        "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "max_tokens": 2000,
         "temperature": 0.2,

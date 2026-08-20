@@ -34,6 +34,10 @@ DB_PATH = Path(__file__).with_name("app.db")
 
 BACKUP_VERSION = 2
 
+# Modelo usado en las llamadas a Groq Cloud (api.groq.com, integración "Grok" en Preguntas/Guías/Transferencias).
+# llama-3.3-70b-versatile fue deprecado por Groq el 16/08/26; reemplazo oficial: openai/gpt-oss-120b.
+GROQ_MODEL = "openai/gpt-oss-120b"
+
 
 # ==========================
 # ENCRIPTACIÓN DE SECRETS

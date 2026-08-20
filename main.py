@@ -97,6 +97,7 @@ from db import (
     get_qb_tokens, get_user_qb_customer, set_user_qb_customer,
     get_setting, set_setting,
     get_app_config,
+    GROQ_MODEL,
     get_cotizador_param, set_cotizador_param, delete_cotizador_param,
     get_cotizador_tabla, set_cotizador_tabla,
     list_users_excluding, get_all_users,
@@ -154,7 +155,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.20.12"
+VERSION = "3.26.08.20.13"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -218,7 +219,7 @@ def _check_grok_status() -> str:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {key}"},
-            json={"model": "llama-3.3-70b-versatile", "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
+            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
             timeout=10,
         )
         if resp.status_code == 200:
