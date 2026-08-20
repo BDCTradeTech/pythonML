@@ -15,7 +15,7 @@ import requests as _requests
 
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, set_app_config, GROQ_MODEL
+from db import get_app_config, set_app_config, GROQ_MODEL, DEEPSEEK_MODEL, DEEPSEEK_BASE_URL
 from ml_api import get_ml_access_token, get_ml_session, ml_get_user_id, ml_get_user_profile
 
 _DEFAULT_FRASES = [
@@ -135,6 +135,20 @@ def _gemini_generate(api_key: str, prompt: str) -> str:
     return response.text
 
 
+def _deepseek_generate(api_key: str, prompt: str) -> str:
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.7,
+    }
+    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
 def _get_user_nickname(access_token: str, user_id: Any) -> str:
     try:
         resp = get_ml_session().get(
@@ -183,20 +197,23 @@ def _replace_closing_phrase(ta, frase: str) -> None:
     ta.set_value("\n".join(lines))
 
 
-def _build_frases_card(resp_groq_ref: list, resp_gemini_ref: list) -> None:
+def _build_frases_card(resp_groq_ref: list, resp_gemini_ref: list, resp_deepseek_ref: list) -> None:
     items: list = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
     state: dict = {"editing_idx": None, "adding": False}
 
-    def _apply_to_both(texto: str) -> None:
+    def _apply_to_all(texto: str) -> None:
         ta_g = resp_groq_ref[0]
         ta_m = resp_gemini_ref[0]
-        if ta_g is None and ta_m is None:
+        ta_d = resp_deepseek_ref[0]
+        if ta_g is None and ta_m is None and ta_d is None:
             ui.notify("Seleccioná una pregunta primero", type="warning")
             return
         if ta_g is not None:
             _replace_closing_phrase(ta_g, texto)
         if ta_m is not None:
             _replace_closing_phrase(ta_m, texto)
+        if ta_d is not None:
+            _replace_closing_phrase(ta_d, texto)
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;flex:1;"
@@ -243,7 +260,7 @@ def _build_frases_card(resp_groq_ref: list, resp_gemini_ref: list) -> None:
                         else:
                             ui.label(texto).style(
                                 "flex:1;font-size:11px;color:#1976d2;cursor:pointer;line-height:1.4"
-                            ).on("click", lambda t=texto: _apply_to_both(t))
+                            ).on("click", lambda t=texto: _apply_to_all(t))
 
                             def _edit(i=idx) -> None:
                                 state["editing_idx"] = i
@@ -351,6 +368,7 @@ def build_tab_preguntas(container) -> None:
         ml_nickname_holder: list = [""]
         resp_area_groq_ref: list = [None]
         resp_area_gemini_ref: list = [None]
+        resp_area_deepseek_ref: list = [None]
 
         main_area = ui.column().classes("w-full gap-0")
         with main_area:
@@ -399,6 +417,7 @@ def build_tab_preguntas(container) -> None:
             main_area.clear()
             resp_area_groq_ref[0] = None
             resp_area_gemini_ref[0] = None
+            resp_area_deepseek_ref[0] = None
 
             if not questions:
                 with main_area:
@@ -418,7 +437,7 @@ def build_tab_preguntas(container) -> None:
                             ).props("flat dense no-caps icon=refresh").style(
                                 "font-size:13px;color:#1565c0"
                             )
-                    _build_frases_card([None], [None])
+                    _build_frases_card([None], [None], [None])
                 return
 
             with main_area:
@@ -556,10 +575,13 @@ def build_tab_preguntas(container) -> None:
 
                     resp_groq_holder   = [None]
                     resp_gemini_holder = [None]
+                    resp_deepseek_holder = [None]
                     groq_spin_ref      = [None]
                     gemini_spin_ref    = [None]
+                    deepseek_spin_ref  = [None]
                     groq_err_ref       = [None]
                     gemini_err_ref     = [None]
+                    deepseek_err_ref   = [None]
 
                     # ── async helpers ───────────────────────────────────────────
 
@@ -598,6 +620,7 @@ def build_tab_preguntas(container) -> None:
                                 detail_panel.set_visibility(False)
                                 resp_area_groq_ref[0] = None
                                 resp_area_gemini_ref[0] = None
+                                resp_area_deepseek_ref[0] = None
                                 try:
                                     await client.run_javascript(
                                         "Quasar.Notify.create({message:'Respuesta enviada ✓',"
@@ -702,6 +725,7 @@ def build_tab_preguntas(container) -> None:
                     async def _load_ais() -> None:
                         groq_key   = get_app_config("groq_api_key")
                         gemini_key = get_app_config("gemini_api_key")
+                        deepseek_key = get_app_config("deepseek_api_key")
 
                         frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
                         frase_aleatoria = random.choice(frases) if frases else ""
@@ -749,7 +773,14 @@ def build_tab_preguntas(container) -> None:
                             )
                             gemini_err_ref[0].set_visibility(True)
 
-                        if not groq_key and not gemini_key:
+                        if not deepseek_key:
+                            deepseek_spin_ref[0].set_visibility(False)
+                            deepseek_err_ref[0].set_text(
+                                "Configurá tu API key de DeepSeek en Config → IA/Sugerencias"
+                            )
+                            deepseek_err_ref[0].set_visibility(True)
+
+                        if not groq_key and not gemini_key and not deepseek_key:
                             return
 
                         async def _run_groq() -> None:
@@ -776,14 +807,26 @@ def build_tab_preguntas(container) -> None:
                             finally:
                                 gemini_spin_ref[0].set_visibility(False)
 
-                        await asyncio.gather(_run_groq(), _run_gemini())
+                        async def _run_deepseek() -> None:
+                            if not deepseek_key:
+                                return
+                            try:
+                                texto = await run.io_bound(_deepseek_generate, deepseek_key, prompt)
+                                resp_deepseek_holder[0].set_value(_build_resp(texto))
+                            except Exception as exc:
+                                deepseek_err_ref[0].set_text(f"Error DeepSeek: {exc}")
+                                deepseek_err_ref[0].set_visibility(True)
+                            finally:
+                                deepseek_spin_ref[0].set_visibility(False)
+
+                        await asyncio.gather(_run_groq(), _run_gemini(), _run_deepseek())
 
                     # ── UI: layout responsive ───────────────────────────────────────
                     with detail_panel:
                         is_mobile = is_mobile_ref["val"]
 
                         if not is_mobile:
-                            # ── DESKTOP: 3 columnas ──────────────────────────────────
+                            # ── DESKTOP: 4 columnas ──────────────────────────────────
                             with ui.element("div").style(
                                 "display:flex;gap:12px;width:100%;align-items:flex-start"
                             ):
@@ -811,7 +854,7 @@ def build_tab_preguntas(container) -> None:
                                         ui.label(text).style(
                                             "font-size:12px;line-height:1.5;color:#374151"
                                         )
-                                    _build_frases_card(resp_groq_holder, resp_gemini_holder)
+                                    _build_frases_card(resp_groq_holder, resp_gemini_holder, resp_deepseek_holder)
                                     _c_elim = context.client
                                     ui.button(
                                         "Eliminar pregunta",
@@ -930,6 +973,61 @@ def build_tab_preguntas(container) -> None:
                                             on_click=_btn_enviar_gemini_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#1565c0;color:#fff;font-size:12px"
+                                        )
+
+                                # ── COL 4 — DEEPSEEK ─────────────────────────────────
+                                with ui.element("div").style("flex:1;min-width:0"):
+                                    with ui.element("div").style(
+                                        "border:0.5px solid var(--color-border-tertiary);"
+                                        "border-top:3px solid #6d28d9;"
+                                        "border-radius:var(--border-radius-md);padding:10px;"
+                                        "background:var(--color-background-secondary);"
+                                        "display:flex;flex-direction:column;gap:8px"
+                                    ):
+                                        with ui.element("div").style(
+                                            "display:flex;align-items:center;gap:4px"
+                                        ):
+                                            ui.html(
+                                                '<i class="ti ti-brain"'
+                                                ' style="font-size:13px;color:#6d28d9"></i>'
+                                            )
+                                            ui.label("Respuesta DeepSeek").style(
+                                                "font-size:10px;color:#6d28d9;"
+                                                "letter-spacing:0.05em;font-weight:600"
+                                            )
+                                        deepseek_spin = ui.element("div").style(
+                                            "display:flex;align-items:center;gap:6px"
+                                        )
+                                        deepseek_spin_ref[0] = deepseek_spin
+                                        with deepseek_spin:
+                                            ui.spinner(size="sm").style("color:#6d28d9")
+                                            ui.label("generando...").style(
+                                                "font-size:11px;color:#6d28d9"
+                                            )
+                                        deepseek_err = ui.label("").style(
+                                            "font-size:11px;color:#6d28d9"
+                                        )
+                                        deepseek_err.set_visibility(False)
+                                        deepseek_err_ref[0] = deepseek_err
+                                        resp_deepseek = (
+                                            ui.textarea(value="", placeholder="")
+                                            .classes("w-full")
+                                            .props("outlined rows=8")
+                                            .style("font-size:12px")
+                                        )
+                                        resp_deepseek_holder[0] = resp_deepseek
+                                        resp_area_deepseek_ref[0] = resp_deepseek
+                                        _c_deepseek = context.client
+                                        def _btn_enviar_deepseek_click():
+                                            background_tasks.create(
+                                                _enviar_respuesta(_c_deepseek, qid, resp_deepseek_holder[0]),
+                                                name="enviar_deepseek",
+                                            )
+                                        ui.button(
+                                            "Enviar esta respuesta",
+                                            on_click=_btn_enviar_deepseek_click,
+                                        ).props("unelevated dense no-caps").style(
+                                            "background:#6d28d9;color:#fff;font-size:12px"
                                         )
 
                         else:
@@ -1078,8 +1176,63 @@ def build_tab_preguntas(container) -> None:
                                         "background:#1565c0;color:#fff;font-size:12px"
                                     )
 
-                                # ── Sección 4 — FRASES DE CIERRE ────────────────────
-                                _build_frases_card(resp_groq_holder, resp_gemini_holder)
+                                # ── Sección 4 — DEEPSEEK ─────────────────────────────
+                                with ui.element("div").style(
+                                    "border:0.5px solid var(--color-border-tertiary);"
+                                    "border-top:3px solid #6d28d9;"
+                                    "border-radius:var(--border-radius-md);padding:10px;"
+                                    "background:var(--color-background-secondary);"
+                                    "width:100%;box-sizing:border-box;"
+                                    "display:flex;flex-direction:column;gap:8px"
+                                ):
+                                    with ui.element("div").style(
+                                        "display:flex;align-items:center;gap:4px"
+                                    ):
+                                        ui.html(
+                                            '<i class="ti ti-brain"'
+                                            ' style="font-size:13px;color:#6d28d9"></i>'
+                                        )
+                                        ui.label("Respuesta DeepSeek").style(
+                                            "font-size:10px;color:#6d28d9;"
+                                            "letter-spacing:0.05em;font-weight:600"
+                                        )
+                                    deepseek_spin = ui.element("div").style(
+                                        "display:flex;align-items:center;gap:6px"
+                                    )
+                                    deepseek_spin_ref[0] = deepseek_spin
+                                    with deepseek_spin:
+                                        ui.spinner(size="sm").style("color:#6d28d9")
+                                        ui.label("generando...").style(
+                                            "font-size:11px;color:#6d28d9"
+                                        )
+                                    deepseek_err = ui.label("").style(
+                                        "font-size:11px;color:#6d28d9"
+                                    )
+                                    deepseek_err.set_visibility(False)
+                                    deepseek_err_ref[0] = deepseek_err
+                                    resp_deepseek = (
+                                        ui.textarea(value="", placeholder="")
+                                        .classes("w-full")
+                                        .props("outlined rows=6")
+                                        .style("font-size:12px")
+                                    )
+                                    resp_deepseek_holder[0] = resp_deepseek
+                                    resp_area_deepseek_ref[0] = resp_deepseek
+                                    _c_deepseek = context.client
+                                    def _btn_enviar_deepseek_click():
+                                        background_tasks.create(
+                                            _enviar_respuesta(_c_deepseek, qid, resp_deepseek_holder[0]),
+                                            name="enviar_deepseek",
+                                        )
+                                    ui.button(
+                                        "Enviar esta respuesta",
+                                        on_click=_btn_enviar_deepseek_click,
+                                    ).props("unelevated dense no-caps").style(
+                                        "background:#6d28d9;color:#fff;font-size:12px"
+                                    )
+
+                                # ── Sección 5 — FRASES DE CIERRE ────────────────────
+                                _build_frases_card(resp_groq_holder, resp_gemini_holder, resp_deepseek_holder)
 
                     background_tasks.create(_load_ais(), name="load_ais")
 

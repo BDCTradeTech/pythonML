@@ -98,6 +98,7 @@ from db import (
     get_setting, set_setting,
     get_app_config,
     GROQ_MODEL,
+    DEEPSEEK_MODEL, DEEPSEEK_BASE_URL,
     get_cotizador_param, set_cotizador_param, delete_cotizador_param,
     get_cotizador_tabla, set_cotizador_tabla,
     list_users_excluding, get_all_users,
@@ -155,7 +156,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.20.15"
+VERSION = "3.26.08.20.16"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -198,6 +199,7 @@ ML_MENU_GROUPS = [
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
     "grok":   {"status": "red", "checked_at": 0.0},
     "gemini": {"status": "red", "checked_at": 0.0},
+    "deepseek": {"status": "red", "checked_at": 0.0},
 }
 _IA_CHECK_LOCK = threading.Lock()
 _IA_DOT_COLORS = {"green": "#22c55e", "amber": "#f59e0b", "red": "#ef4444"}
@@ -244,6 +246,26 @@ def _check_gemini_status() -> str:
         return "red"
 
 
+def _check_deepseek_status() -> str:
+    try:
+        key = get_app_config("deepseek_api_key")
+        if not key:
+            return "red"
+        resp = requests.post(
+            f"{DEEPSEEK_BASE_URL}/chat/completions",
+            headers={"Authorization": f"Bearer {key}"},
+            json={"model": DEEPSEEK_MODEL, "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return "green"
+        elif resp.status_code == 429:
+            return "amber"
+        return "red"
+    except Exception:
+        return "red"
+
+
 def _update_ia_cache() -> None:
     now = time.time()
     with _IA_CHECK_LOCK:
@@ -253,6 +275,9 @@ def _update_ia_cache() -> None:
         if now - _IA_CACHE["gemini"]["checked_at"] > 3600:
             _IA_CACHE["gemini"]["status"] = _check_gemini_status()
             _IA_CACHE["gemini"]["checked_at"] = time.time()
+        if now - _IA_CACHE["deepseek"]["checked_at"] > 3600:
+            _IA_CACHE["deepseek"]["status"] = _check_deepseek_status()
+            _IA_CACHE["deepseek"]["checked_at"] = time.time()
 
 
 # ==========================
@@ -809,6 +834,11 @@ def show_main_layout(container) -> None:
                                 _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['gemini']['status']]}"
                             )
                             ui.label("Gemini").style(_api_nm)
+                        with ui.row().classes("items-center gap-1"):
+                            _deepseek_dot = ui.element("span").style(
+                                _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['deepseek']['status']]}"
+                            )
+                            ui.label("DeepSeek").style(_api_nm)
                 # — Server —
                 with ui.element("div").style(_mini_card):
                     ui.label("Server").style(_grp_lbl)
@@ -851,6 +881,7 @@ def show_main_layout(container) -> None:
                     await run.io_bound(_update_ia_cache)
                     _grok_dot.style(f"{_dot_s};background:{_IA_DOT_COLORS[_IA_CACHE['grok']['status']]}")
                     _gemini_dot.style(f"{_dot_s};background:{_IA_DOT_COLORS[_IA_CACHE['gemini']['status']]}")
+                    _deepseek_dot.style(f"{_dot_s};background:{_IA_DOT_COLORS[_IA_CACHE['deepseek']['status']]}")
 
                 ui.timer(30, _refresh_server)
                 ui.timer(3600, _refresh_ia)
