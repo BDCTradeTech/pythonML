@@ -156,7 +156,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.20.16"
+VERSION = "3.26.08.20.17"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -189,7 +189,7 @@ ML_MENU_GROUPS = [
     ]),
     ("MERCADO & OPS", [
         ("COMPETIDORES", "Competidores", "competidores", "groups", None),
-        ("PUBLICIDAD", "Publicidad", "publicidad", "campaign", "NUEVO"),
+        ("PUBLICIDAD", "Publicidad", "publicidad", "campaign", None),
         ("PREGUNTAS", "Preguntas", "preguntas", "help", None),
         ("FLEX", "Flex", "flex", "local_shipping", None),
     ]),
