@@ -388,7 +388,7 @@ def _show_item_detail_dialog(
 
     def _guardar(dlg):
         item_id  = str(row.get("id", ""))
-        sku_grd  = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        sku_real = str(row.get("seller_sku") or "").strip()
         if not item_id:
             ui.notify("ID de publicación no válido.", color="negative"); return
         nuevo_precio   = _parse_moneda(getattr(inp_refs.get("precio"), "value", "") or "")
@@ -410,7 +410,18 @@ def _show_item_detail_dialog(
         async def _actualizar():
             try:
                 await run.io_bound(ml_update_item_price, access_token, item_id, nuevo_precio)
-                if sku_grd:
+                if not sku_real:
+                    logging.warning(
+                        "[PRECIOS] Publicacion sin SELLER_SKU en ML -- no se guarda costo/fob en "
+                        "productos (evita fila fantasma con item_id como sku). item_id=%s titulo=%r",
+                        item_id, row.get("title"),
+                    )
+                    ui.notify(
+                        "Esta publicación no tiene SELLER_SKU cargado en ML: el precio se actualizó, "
+                        "pero costo/FOB/IVA no se guardaron. Cargá el SKU en la publicación antes de editar costos.",
+                        color="warning", multi_line=True,
+                    )
+                else:
                     def _save_db():
                         now_str = datetime.now().isoformat()
                         conn = get_connection()
@@ -422,20 +433,20 @@ def _show_item_detail_dialog(
                                        costo_usd=excluded.costo_usd, fob_usd=excluded.fob_usd, tipo_iva=excluded.tipo_iva,
                                        costo_updated_at=excluded.costo_updated_at, updated_at=excluded.updated_at,
                                        price_updated_at=excluded.price_updated_at""",
-                                (sku_grd, uid, nuevo_costo, nuevo_fob, nuevo_tipo_iva, now_str, now_str, now_str, now_str),
+                                (sku_real, uid, nuevo_costo, nuevo_fob, nuevo_tipo_iva, now_str, now_str, now_str, now_str),
                             )
                             if revisiones_hoy is not None:
                                 conn.execute(
                                     """INSERT INTO revisiones_diarias (sku, user_id, fecha, precio_cambiado) VALUES (?, ?, ?, 1)
                                        ON CONFLICT(sku, user_id, fecha) DO UPDATE SET precio_cambiado=1""",
-                                    (sku_grd, uid, datetime.now().strftime("%Y-%m-%d")),
+                                    (sku_real, uid, datetime.now().strftime("%Y-%m-%d")),
                                 )
                             conn.commit()
                         finally:
                             conn.close()
                     await run.io_bound(_save_db)
                     if revisiones_hoy is not None:
-                        revisiones_hoy[sku_grd] = True
+                        revisiones_hoy[sku_real] = True
                 found_item = None
                 for it in items_loaded:
                     if str(it.get("id")) == item_id:
@@ -1716,7 +1727,8 @@ def _mostrar_tabla_precios(
         dialog.open()
 
     def abrir_editar_fob_costo(row: Dict[str, Any]) -> None:
-        _sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        _sku_real = str(row.get("seller_sku") or "").strip()
+        _sku = _sku_real or str(row.get("id") or "").strip()
         _fob_cur = row.get("fob_usd")
         _costo_cur = row.get("costo_usd")
         if _fob_cur is None or _costo_cur is None:
@@ -1759,21 +1771,33 @@ def _mostrar_tabla_precios(
                     if nuevo_costo is not None and nuevo_costo < 0:
                         ui.notify("El Costo no puede ser negativo.", color="negative"); return
                     now_str = datetime.now().isoformat()
-                    try:
-                        conn = get_connection()
-                        conn.execute(
-                            """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?)
-                               ON CONFLICT(sku, user_id) DO UPDATE SET
-                                   fob_usd=COALESCE(excluded.fob_usd, fob_usd),
-                                   costo_usd=COALESCE(excluded.costo_usd, costo_usd),
-                                   updated_at=excluded.updated_at""",
-                            (_sku, user["id"], nuevo_fob, nuevo_costo, row.get("tipo_iva") or 0.105, now_str, now_str),
+                    if not _sku_real:
+                        logging.warning(
+                            "[PRECIOS] Publicacion sin SELLER_SKU en ML -- no se guarda FOB/Costo en "
+                            "productos (evita fila fantasma con item_id como sku). item_id=%s titulo=%r",
+                            row.get("id"), row.get("title"),
                         )
-                        conn.commit()
-                        conn.close()
-                    except Exception as e:
-                        ui.notify(f"Error: {e}", color="negative"); return
+                        ui.notify(
+                            "Esta publicación no tiene SELLER_SKU cargado en ML: no se guardó FOB/Costo. "
+                            "Cargá el SKU en la publicación antes de editar costos.",
+                            color="warning", multi_line=True,
+                        )
+                    else:
+                        try:
+                            conn = get_connection()
+                            conn.execute(
+                                """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
+                                   VALUES (?, ?, ?, ?, ?, ?, ?)
+                                   ON CONFLICT(sku, user_id) DO UPDATE SET
+                                       fob_usd=COALESCE(excluded.fob_usd, fob_usd),
+                                       costo_usd=COALESCE(excluded.costo_usd, costo_usd),
+                                       updated_at=excluded.updated_at""",
+                                (_sku_real, user["id"], nuevo_fob, nuevo_costo, row.get("tipo_iva") or 0.105, now_str, now_str),
+                            )
+                            conn.commit()
+                            conn.close()
+                        except Exception as e:
+                            ui.notify(f"Error: {e}", color="negative"); return
                     if nuevo_fob is not None:
                         row["fob_usd"] = nuevo_fob
                     if nuevo_costo is not None:
@@ -1787,7 +1811,8 @@ def _mostrar_tabla_precios(
         dialog.open()
 
     def abrir_editar_iva(row: Dict[str, Any]) -> None:
-        _sku = str(row.get("seller_sku") or "").strip() or str(row.get("id") or "").strip()
+        _sku_real = str(row.get("seller_sku") or "").strip()
+        _sku = _sku_real or str(row.get("id") or "").strip()
         _iva_cur = row.get("tipo_iva") or 0.105
         _iva_str = "0.21" if abs(_iva_cur - 0.21) < 0.001 else "0.105"
         dialog = ui.dialog()
@@ -1801,20 +1826,32 @@ def _mostrar_tabla_precios(
                 def guardar() -> None:
                     nuevo_iva = float(sel_iva.value or "0.105")
                     now_str = datetime.now().isoformat()
-                    try:
-                        conn = get_connection()
-                        conn.execute(
-                            """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
-                               VALUES (?, ?, NULL, NULL, ?, ?, ?)
-                               ON CONFLICT(sku, user_id) DO UPDATE SET
-                                   tipo_iva=excluded.tipo_iva,
-                                   updated_at=excluded.updated_at""",
-                            (_sku, user["id"], nuevo_iva, now_str, now_str),
+                    if not _sku_real:
+                        logging.warning(
+                            "[PRECIOS] Publicacion sin SELLER_SKU en ML -- no se guarda IVA en "
+                            "productos (evita fila fantasma con item_id como sku). item_id=%s titulo=%r",
+                            row.get("id"), row.get("title"),
                         )
-                        conn.commit()
-                        conn.close()
-                    except Exception as e:
-                        ui.notify(f"Error: {e}", color="negative"); return
+                        ui.notify(
+                            "Esta publicación no tiene SELLER_SKU cargado en ML: no se guardó el IVA. "
+                            "Cargá el SKU en la publicación antes de editar costos.",
+                            color="warning", multi_line=True,
+                        )
+                    else:
+                        try:
+                            conn = get_connection()
+                            conn.execute(
+                                """INSERT INTO productos (sku, user_id, fob_usd, costo_usd, tipo_iva, created_at, updated_at)
+                                   VALUES (?, ?, NULL, NULL, ?, ?, ?)
+                                   ON CONFLICT(sku, user_id) DO UPDATE SET
+                                       tipo_iva=excluded.tipo_iva,
+                                       updated_at=excluded.updated_at""",
+                                (_sku_real, user["id"], nuevo_iva, now_str, now_str),
+                            )
+                            conn.commit()
+                            conn.close()
+                        except Exception as e:
+                            ui.notify(f"Error: {e}", color="negative"); return
                     row["tipo_iva"] = nuevo_iva
                     _pc_r    = float(row.get("price") or row.get("precio") or 0)
                     _costo_r = float(row.get("costo_usd") or 0)
