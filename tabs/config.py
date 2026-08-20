@@ -133,6 +133,10 @@ def build_tab_config() -> None:
                     "SELECT value, updated_at FROM app_config WHERE key = ?",
                     ("gemini_api_key",),
                 ).fetchone()
+                _glmkey_row = _gc.execute(
+                    "SELECT value, updated_at FROM app_config WHERE key = ?",
+                    ("glm_api_key",),
+                ).fetchone()
                 _gc.close()
             except Exception:
                 pass
@@ -225,6 +229,51 @@ def build_tab_config() -> None:
                             _gua = str(_gemkey_row["updated_at"] or "")[:10]
                             if _gua:
                                 ui.label(f"Actualizada: {_gua}").classes("text-xs text-gray-600")
+                        else:
+                            ui.label("Sin vincular").classes("text-warning text-sm")
+
+                    ui.separator().classes("my-2")
+
+                    def _desvincular_glm() -> None:
+                        _conn = get_connection()
+                        try:
+                            _conn.execute("DELETE FROM app_config WHERE key = 'glm_api_key'")
+                            _conn.commit()
+                        finally:
+                            _conn.close()
+                        ui.notify("API Key desvinculada", color="positive")
+                        ui.navigate.reload()
+
+                    with ui.expansion("GLM", icon="hub").classes("w-full").props("expand-icon-toggle dense"):
+                        glm_inp = (
+                            ui.input(placeholder="...")
+                            .props("dense outlined hide-bottom-space type=password")
+                            .classes("w-full mt-1")
+                        )
+
+                        def _vincular_glm() -> None:
+                            val = str(glm_inp.value or "").strip()
+                            if not val:
+                                ui.notify("Ingresá una API Key válida", type="warning")
+                                return
+                            set_app_config("glm_api_key", val)
+                            glm_inp.value = ""
+                            ui.notify("API Key guardada", type="positive")
+                            ui.navigate.reload()
+
+                        with ui.row().classes("gap-2 mt-2"):
+                            ui.button("Vincular", on_click=_vincular_glm, color="primary").props("dense no-caps")
+                            if _glmkey_row and _glmkey_row["value"]:
+                                ui.button("Desvincular", on_click=_desvincular_glm, color="secondary").props("dense no-caps")
+                        ui.separator().classes("my-2")
+                        ui.label("Estado").classes("text-xs font-semibold mb-1")
+                        if _glmkey_row and _glmkey_row["value"]:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle", color="positive", size="sm")
+                                ui.label("Vinculada").classes("text-positive text-sm")
+                            _glua = str(_glmkey_row["updated_at"] or "")[:10]
+                            if _glua:
+                                ui.label(f"Actualizada: {_glua}").classes("text-xs text-gray-600")
                         else:
                             ui.label("Sin vincular").classes("text-warning text-sm")
 
