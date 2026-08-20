@@ -618,18 +618,30 @@ def _mostrar_tabla_precios(
         if _cpid and _sku_i:
             _cpid_to_skus.setdefault(_cpid, set()).add(_sku_i.lower())
 
+    def _pick_marca_fallback(grupo: List[Dict[str, Any]]) -> Optional[str]:
+        """Entre las publicaciones de un mismo SKU, primera marca no vacía -- catálogo
+        primero (ML la valida contra Brand Central) -- normalizada con marcas_override.
+        Se usa solo cuando productos.marca está en blanco (ver _mostrar_tabla_precios)."""
+        for x in sorted(grupo, key=lambda g: 0 if g.get("catalog_listing") else 1):
+            m = x.get("marca")
+            if m and m != "—":
+                return _marca_override_map.get(m, m)
+        return None
+
     groups_sku: Dict[tuple, List[Dict[str, Any]]] = {}
     for i in items:
         groups_sku.setdefault(_cuotas_key(i, _cpid_to_skus), []).append(i)
 
     items_dedup: List[Dict[str, Any]] = []
     _grp_ids_map: Dict[str, List[str]] = {}
+    _marca_fallback_by_repid: Dict[str, Optional[str]] = {}
     for grupo in groups_sku.values():
         if len(grupo) == 1:
             items_dedup.append(grupo[0])
             _iid0 = str(grupo[0].get("id") or "")
             if _iid0:
                 _grp_ids_map[_iid0] = [_iid0]
+                _marca_fallback_by_repid[_iid0] = _pick_marca_fallback(grupo)
             continue
         total_sold = sum(int(x.get("sold_quantity") or 0) for x in grupo)
         principal = max(
@@ -649,6 +661,7 @@ def _mostrar_tabla_precios(
         _rep_id = str(principal.get("id") or "")
         if _rep_id:
             _grp_ids_map[_rep_id] = [str(x.get("id") or "") for x in grupo if x.get("id")]
+            _marca_fallback_by_repid[_rep_id] = _pick_marca_fallback(grupo)
 
     logging.warning(
         f"[PERF-PRODUCTOS] fase='python_dedup_agrupamiento' user_id={_perf_uid} "
@@ -685,7 +698,7 @@ def _mostrar_tabla_precios(
             _cur_prod = _conn_prod.cursor()
             _ph = ",".join("?" * len(_skus_dedup))
             _cur_prod.execute(
-                f"SELECT sku, costo_usd, fob_usd, tipo_iva, price_updated_at FROM productos WHERE user_id = ? AND sku IN ({_ph})",
+                f"SELECT sku, costo_usd, fob_usd, tipo_iva, price_updated_at, marca FROM productos WHERE user_id = ? AND sku IN ({_ph})",
                 [_uid] + _skus_dedup,
             )
             for _r in _cur_prod.fetchall():
@@ -694,6 +707,7 @@ def _mostrar_tabla_precios(
                     "fob_usd":          _r["fob_usd"],
                     "tipo_iva":         _r["tipo_iva"],
                     "price_updated_at": _r["price_updated_at"],
+                    "marca":            _r["marca"],
                 }
         finally:
             _conn_prod.close()
@@ -818,6 +832,8 @@ def _mostrar_tabla_precios(
                 _dias_sin_modif = (_hoy_dt - datetime.strptime(raw_fecha, "%Y-%m-%d").date()).days
             except Exception:
                 pass
+        _marca_prod = (_prod_row.get("marca") or "").strip() if _prod_row else ""
+        _marca_disp = _marca_prod or _marca_fallback_by_repid.get(str(i.get("id") or "")) or ""
         items_loaded.append({
             **i,
             "price_fmt": fmt_moneda(precio),
@@ -827,7 +843,7 @@ def _mostrar_tabla_precios(
             "subtotal": subtotal,
             "subtotal_fmt": fmt_moneda(subtotal),
             "tipo": tipo,
-            "marca": i.get("marca") or "''",
+            "marca": _marca_disp or "''",
             "color": i.get("color") or "''",
             "title": str(i.get("title") or ""),
             "ult_modif_fmt": ult_modif_fmt,
