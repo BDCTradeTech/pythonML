@@ -1404,8 +1404,11 @@ def ml_get_item(access_token: Optional[str], item_id: str) -> Optional[Dict[str,
 
 def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> List[Optional[Dict[str, Any]]]:
     """Obtiene varios ítem en una sola petición. API: GET /items?ids=ID1,ID2,ID3
-    Documentación ML: la respuesta es un array en el mismo orden que los ids;
-    cada elemento es { "code": 200, "body": { id, title, price, available_quantity, seller_id, permalink } }.
+    ADVERTENCIA (verificado en vivo 2026-08-24, 5/5 llamadas idénticas): la respuesta NO viene
+    en el mismo orden que los ids pedidos, pese a lo que dice la documentación de ML -- el orden
+    es distinto en cada llamada. Cada elemento es { "code": 200, "body": { id, title, price,
+    available_quantity, seller_id, permalink } }. Cualquier caller DEBE indexar por el "id" que
+    trae cada body, nunca por posición/índice de la lista de ids pedida.
     Prueba sin token primero (listados públicos), luego con token."""
     if not item_ids:
         return []
@@ -1446,7 +1449,10 @@ def ml_get_items_multiget(access_token: Optional[str], item_ids: List[str]) -> L
 def ml_get_items_multiget_with_attributes(
     access_token: Optional[str], item_ids: List[str], attributes: str = "id,catalog_listing,catalog_product_id,attributes"
 ) -> List[Optional[Dict[str, Any]]]:
-    """Obtiene ítems pidiendo atributos específicos (para catalog_listing). Máx 20 ids."""
+    """Obtiene ítems pidiendo atributos específicos (para catalog_listing). Máx 20 ids.
+    ADVERTENCIA: mismo endpoint que ml_get_items_multiget -- la respuesta NO viene en el mismo
+    orden que los ids pedidos (verificado en vivo 2026-08-24). Indexar siempre por el "id" de
+    cada body devuelto, nunca por posición."""
     if not item_ids:
         return []
     ids_clean = [str(i).strip() for i in item_ids if str(i).strip()][:20]
