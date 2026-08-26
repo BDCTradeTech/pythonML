@@ -257,7 +257,7 @@ def _show_item_detail_dialog(
                 await asyncio.sleep(0.1)
                 with _cl_rev:
                     if on_saved:
-                        on_saved()
+                        await on_saved()
 
             background_tasks.create(_refrescar_highlights())
     inp_refs: Dict[str, Any] = {}
@@ -485,9 +485,9 @@ def _show_item_detail_dialog(
                         if on_row_saved:
                             on_row_saved(sku_real, found_item)
                         elif on_saved:
-                            on_saved()
+                            await on_saved()
                     elif on_saved:
-                        on_saved()
+                        await on_saved()
                     ui.notify("Precio actualizado correctamente.", color="positive")
             except Exception as e:
                 logging.exception("[PRECIOS] Error al guardar precio/costo. item_id=%s", item_id)
