@@ -483,13 +483,14 @@ def _show_item_detail_dialog(
                 with cl:
                     if found_item is not None:
                         if on_row_saved:
-                            on_row_saved(sku_grd, found_item)
+                            on_row_saved(sku_real, found_item)
                         elif on_saved:
                             on_saved()
                     elif on_saved:
                         on_saved()
                     ui.notify("Precio actualizado correctamente.", color="positive")
             except Exception as e:
+                logging.exception("[PRECIOS] Error al guardar precio/costo. item_id=%s", item_id)
                 with cl:
                     ui.notify(f"Error al actualizar: {e}", color="negative")
 
