@@ -395,16 +395,25 @@ def build_tab_config() -> None:
                         inp_tn_store = ui.input("Store ID", value=tn_creds["store_id"] if tn_creds else "").classes("w-full").props("dense")
                         inp_tn_token = ui.input("Access Token", value=tn_creds["access_token"] if tn_creds else "").classes("w-full").props("type=password dense")
 
-                        ui.label("URL de redirect para el panel de partner:").classes("text-xs text-gray-600 mt-2")
-                        _tn_redirect = os.getenv("TIENDANUBE_REDIRECT_URI", "https://www.bdctechtrade.com/tiendanube/callback")
-                        with ui.row().classes("items-center gap-1"):
-                            ui.input(value=_tn_redirect).props("readonly dense outlined").classes("flex-1 text-xs")
+                        ui.label("URL para autorizar la app:").classes("text-xs text-gray-600 mt-2")
+                        tn_auth_url_container = ui.column().classes("w-full")
 
-                            async def _copiar_redirect_tn():
-                                await ui.run_javascript(f"navigator.clipboard.writeText('{_tn_redirect}')")
-                                ui.notify("Copiado", color="positive")
+                        def _render_auth_url_tn(cid: str) -> None:
+                            tn_auth_url_container.clear()
+                            if not cid:
+                                return
+                            auth_url = f"https://www.tiendanube.com/apps/{cid}/authorize"
+                            with tn_auth_url_container:
+                                with ui.row().classes("items-center gap-1"):
+                                    ui.input(value=auth_url).props("readonly dense outlined").classes("flex-1 text-xs")
 
-                            ui.button(icon="content_copy", on_click=_copiar_redirect_tn).props("dense flat")
+                                    async def _copiar_auth_url_tn(url=auth_url):
+                                        await ui.run_javascript(f"navigator.clipboard.writeText('{url}')")
+                                        ui.notify("Copiado", color="positive")
+
+                                    ui.button(icon="content_copy", on_click=_copiar_auth_url_tn).props("dense flat")
+
+                        _render_auth_url_tn(tn_creds["client_id"] if tn_creds else "")
 
                     def guardar_tn() -> None:
                         cid = (inp_tn_cid.value or "").strip()
@@ -419,6 +428,23 @@ def build_tab_config() -> None:
 
                     tn_test_label = ui.label("").classes("text-xs")
 
+                    _tn_state = {"header_style": (tn_creds or {}).get("auth_header_style")}
+
+                    def _render_estado_tn(ok: bool, tested_at_str: str, header_style) -> None:
+                        tn_estado_container.clear()
+                        with tn_estado_container:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.icon("check_circle" if ok else "error", color="positive" if ok else "negative", size="sm")
+                                ui.label("Conexión OK" if ok else "Conexión falló").classes(f"text-{'positive' if ok else 'negative'} text-sm")
+                            ui.label(f"Último test: {tested_at_str}").classes("text-xs text-gray-600")
+                            if header_style:
+                                ui.label(f"Header confirmado: {header_style}").classes("text-xs text-gray-600")
+
+                    def _render_sin_probar_tn() -> None:
+                        tn_estado_container.clear()
+                        with tn_estado_container:
+                            ui.label("Sin probar todavía").classes("text-warning text-sm")
+
                     def probar_conexion_tn() -> None:
                         store = (inp_tn_store.value or "").strip()
                         token = (inp_tn_token.value or "").strip()
@@ -427,6 +453,9 @@ def build_tab_config() -> None:
                             return
                         ok, msg, style = tiendanube_test_connection(store, token)
                         set_tiendanube_test_result(user["id"], ok, style)
+                        if ok and style:
+                            _tn_state["header_style"] = style
+                        _render_estado_tn(ok, datetime.utcnow().isoformat()[:19].replace("T", " "), _tn_state["header_style"])
                         detalle = f"{msg} (header: {style})" if ok else msg
                         tn_test_label.set_text(detalle)
                         tn_test_label.classes(replace="text-xs text-positive" if ok else "text-xs text-negative")
@@ -438,17 +467,11 @@ def build_tab_config() -> None:
 
                     ui.separator().classes("my-2")
                     ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    tn_estado_container = ui.column().classes("gap-1")
                     if tn_creds and tn_creds.get("last_test_at"):
-                        _tn_icon = "check_circle" if tn_creds["last_test_ok"] else "error"
-                        _tn_color = "positive" if tn_creds["last_test_ok"] else "negative"
-                        with ui.row().classes("items-center gap-2"):
-                            ui.icon(_tn_icon, color=_tn_color, size="sm")
-                            ui.label("Conexión OK" if tn_creds["last_test_ok"] else "Conexión falló").classes(f"text-{_tn_color} text-sm")
-                        ui.label(f"Último test: {tn_creds['last_test_at'][:19].replace('T', ' ')}").classes("text-xs text-gray-600")
-                        if tn_creds.get("auth_header_style"):
-                            ui.label(f"Header confirmado: {tn_creds['auth_header_style']}").classes("text-xs text-gray-600")
+                        _render_estado_tn(tn_creds["last_test_ok"], tn_creds["last_test_at"][:19].replace("T", " "), tn_creds.get("auth_header_style"))
                     else:
-                        ui.label("Sin probar todavía").classes("text-warning text-sm")
+                        _render_sin_probar_tn()
 
             # 3. Estadísticas, Contraseña, Base de datos — apiladas, mismo ancho que ML y QB
             with ui.column().classes("w-[420px] flex-shrink-0 gap-3"):
