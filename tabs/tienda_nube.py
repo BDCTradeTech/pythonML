@@ -26,6 +26,23 @@ _PLATAFORMA_LABELS = {
 }
 
 
+def _fmt_precio_ars(val: Any) -> str:
+    """Formato argentino de presentación: $ + punto como separador de miles.
+    Sin decimales si son cero (el sort numérico usa el valor crudo, no esto)."""
+    if val is None:
+        return "—"
+    try:
+        n = float(str(val).replace(",", "."))
+    except (TypeError, ValueError):
+        return "—"
+    entero = int(n)
+    dec = round(abs(n - entero) * 100)
+    parte_entera = f"{entero:,}".replace(",", ".")
+    if dec == 0:
+        return f"${parte_entera}"
+    return f"${parte_entera},{dec:02d}"
+
+
 def _require_login() -> Optional[Dict[str, Any]]:
     user = app.storage.user.get("user")
     if not user:
@@ -90,6 +107,9 @@ def _cruzar(ml_items: List[dict], tn_rows: List[dict]) -> tuple:
             "duplicado_tn": duplicado_tn,
             "ml_publicaciones": len(ml_m),
             "tn_variantes": len(tn_m),
+            # ML agrupa el stock por user_product: todas las publicaciones del SKU
+            # comparten el mismo available_quantity, por eso alcanza con el primero.
+            "ml_stock": ml_m[0].get("available_quantity") if ml_m else None,
             "ml_nombre": ml_m[0].get("title", "") if ml_m else "",
             "ml_precio": ml_m[0].get("price") if ml_m else None,
             "ml_status": ml_m[0].get("status", "") if ml_m else "",
@@ -153,19 +173,19 @@ def build_tab_vinculacion(container) -> None:
 
         columns = [
             {"name": "sku", "label": "SKU", "field": "sku", "align": "left"},
-            {"name": "plataforma", "label": "Plataforma", "field": "plataforma", "align": "left"},
+            {"name": "plataforma", "label": "Plataforma", "field": "plataforma", "align": "center"},
             {"name": "duplicado", "label": "Duplicado", "field": "duplicado", "align": "center"},
-            {"name": "ml_publicaciones", "label": "ML — # pub.", "field": "ml_publicaciones", "align": "right"},
-            {"name": "ml_status", "label": "ML — Estado pub.", "field": "ml_status", "align": "left"},
+            {"name": "ml_stock", "label": "ML — Stock", "field": "ml_stock", "align": "right"},
+            {"name": "ml_status", "label": "ML — Estado", "field": "ml_status", "align": "center"},
             {"name": "ml_nombre", "label": "ML — Nombre", "field": "ml_nombre", "align": "left"},
             {"name": "ml_precio", "label": "ML — Precio", "field": "ml_precio", "align": "right"},
-            {"name": "tn_nombre", "label": "TN — Nombre", "field": "tn_nombre", "align": "left"},
+            {"name": "tn_nombre", "label": "TN — Nombre", "field": "tn_nombre", "align": "center"},
             {"name": "tn_precio", "label": "TN — Precio", "field": "tn_precio", "align": "right"},
             {"name": "tn_stock", "label": "TN — Stock", "field": "tn_stock", "align": "right"},
         ]
         _col_w_vinc = {
             "sku": "110px", "plataforma": "130px", "duplicado": "100px",
-            "ml_publicaciones": "70px", "ml_status": "110px", "ml_nombre": "260px",
+            "ml_stock": "70px", "ml_status": "110px", "ml_nombre": "260px",
             "ml_precio": "90px", "tn_nombre": "260px", "tn_precio": "90px", "tn_stock": "70px",
         }
 
@@ -182,7 +202,7 @@ def build_tab_vinculacion(container) -> None:
                 return _PLATAFORMA_LABELS.get(row.get("plataforma"), "")
             if col_name == "duplicado":
                 return 1 if (row.get("duplicado_ml") or row.get("duplicado_tn")) else 0
-            if col_name in ("ml_publicaciones", "tn_variantes"):
+            if col_name in ("ml_stock", "ml_publicaciones", "tn_variantes"):
                 return int(row.get(col_name) or 0)
             if col_name in ("ml_precio", "tn_precio", "tn_stock"):
                 v = row.get(col_name)
@@ -259,11 +279,12 @@ def build_tab_vinculacion(container) -> None:
                     **f,
                     "plataforma": _PLATAFORMA_LABELS[f["plataforma"]],
                     "duplicado": ("⚠ " + "+".join(dup_partes)) if dup_partes else "—",
-                    # valores crudos: TN precio viene como string ("25.00") de la API,
-                    # ML precio es numérico -- se muestran tal cual, sin normalizar
-                    "tn_precio": f["tn_precio"] if f["tn_precio"] is not None else "—",
+                    # el sort ya corrió sobre el valor crudo (visibles, arriba) -- esto
+                    # solo formatea la presentación, no altera el dato ni el orden
+                    "tn_precio": _fmt_precio_ars(f["tn_precio"]),
                     "tn_stock": f["tn_stock"] if f["tn_stock"] is not None else "—",
-                    "ml_precio": f["ml_precio"] if f["ml_precio"] is not None else "—",
+                    "ml_precio": _fmt_precio_ars(f["ml_precio"]),
+                    "ml_stock": f["ml_stock"] if f["ml_stock"] is not None else "—",
                 })
 
             header_div_vinc.clear()
@@ -279,10 +300,15 @@ def build_tab_vinculacion(container) -> None:
                     with ui.element("thead"):
                         with ui.element("tr").classes("bg-primary text-white font-semibold"):
                             for col in columns:
-                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                with ui.element("th").classes("px-2 py-1 border text-center").style("line-height:1.1"):
                                     ui.button(
                                         col["label"], on_click=lambda c=col["name"]: _on_sort_click_vinc(c)
-                                    ).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+                                    ).props("flat dense no-caps").classes(
+                                        "text-white hover:bg-white/20 cursor-pointer font-semibold"
+                                    ).style(
+                                        "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                                        "max-width:100%;min-height:0;padding:2px 6px;line-height:1.1"
+                                    )
 
             with table_container:
                 with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
