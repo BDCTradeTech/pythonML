@@ -338,6 +338,45 @@ def init_db() -> None:
         """
     )
 
+    # Cache local de productos+variantes de Tiendanube (para no pegarle a la API en cada
+    # render de Vinculación). PK en variant_id, no en sku: el SKU duplicado es un estado
+    # a detectar, no algo que la tabla deba deduplicar.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiendanube_productos (
+            user_id INTEGER NOT NULL,
+            variant_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            sku TEXT,
+            nombre TEXT,
+            precio TEXT,
+            stock INTEGER,
+            updated_at TEXT,
+            PRIMARY KEY (user_id, variant_id),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tn_productos_sku ON tiendanube_productos(user_id, sku)"
+    )
+
+    # Estado de la última sincronización con Tiendanube -- visible en la pantalla de
+    # Vinculación, no solo en el log (una sync que falla a mitad de camino no debe
+    # quedar invisible).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiendanube_sync_status (
+            user_id INTEGER PRIMARY KEY,
+            last_sync_at TEXT,
+            ok INTEGER,
+            error TEXT,
+            items_leidos INTEGER,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     # Tokens OAuth de QuickBooks (access_token, refresh_token, expires_at, realm_id)
     cur.execute(
         """
@@ -1212,6 +1251,71 @@ def set_tiendanube_test_result(user_id: int, ok: bool, auth_header_style: Option
                 "UPDATE tiendanube_credentials SET last_test_ok=0, last_test_at=? WHERE user_id=?",
                 (_dt.utcnow().isoformat(), user_id),
             )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_tiendanube_productos(user_id: int) -> List[Dict[str, Any]]:
+    """Cache local de productos+variantes de Tiendanube para el usuario."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT variant_id, product_id, sku, nombre, precio, stock, updated_at "
+            "FROM tiendanube_productos WHERE user_id = ?",
+            (user_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def replace_tiendanube_productos(user_id: int, rows: List[Dict[str, Any]]) -> None:
+    """Reemplaza todo el cache local de Tiendanube para el usuario (resync completo,
+    no incremental) -- borra y reinserta en una sola transacción."""
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat()
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM tiendanube_productos WHERE user_id = ?", (user_id,))
+        conn.executemany(
+            "INSERT INTO tiendanube_productos "
+            "(user_id, variant_id, product_id, sku, nombre, precio, stock, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (user_id, r["variant_id"], r["product_id"], r.get("sku"), r.get("nombre"),
+                 r.get("precio"), r.get("stock"), now)
+                for r in rows
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_tiendanube_sync_status(user_id: int) -> Optional[Dict[str, Any]]:
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT last_sync_at, ok, error, items_leidos FROM tiendanube_sync_status WHERE user_id = ?",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def set_tiendanube_sync_status(user_id: int, ok: bool, error: Optional[str], items_leidos: int) -> None:
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tiendanube_sync_status (user_id, last_sync_at, ok, error, items_leidos) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET last_sync_at=excluded.last_sync_at, "
+            "ok=excluded.ok, error=excluded.error, items_leidos=excluded.items_leidos",
+            (user_id, _dt.utcnow().isoformat(), 1 if ok else 0, error, items_leidos),
+        )
         conn.commit()
     finally:
         conn.close()

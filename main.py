@@ -115,6 +115,7 @@ from db import (
     export_user_db_data, import_user_db_data,
     COTIZADOR_DEFAULTS,
     _enable_tabs_for_user,
+    get_tiendanube_credentials,
 )
 
 # --- Fase 3: tabs extraídos a módulos separados ---
@@ -151,12 +152,13 @@ from tabs.activity import build_tab_actividad
 from tabs.cron_log import build_tab_log
 from tabs.guias import build_tab_guias
 from tabs.transferencias import build_tab_transferencias
+from tabs.tienda_nube import build_tab_vinculacion
 from helpers.activity_logger import log_event
 
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.27.05"
+VERSION = "3.26.08.27.06"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -452,6 +454,7 @@ def show_main_layout(container) -> None:
                 tab_preguntas  = ui.tab("Preguntas")
                 tab_flex       = ui.tab("Flex")
                 tab_config = ui.tab("Configuración")
+                tab_vinculacion = ui.tab("Vinculación")
                 tab_admin = ui.tab("Admin")
                 tab_actividad = ui.tab("Actividad")
                 tab_log = ui.tab("Log")
@@ -485,11 +488,12 @@ def show_main_layout(container) -> None:
             "Preguntas":  tab_preguntas,
             "Flex":       tab_flex,
             "Configuración": tab_config,
+            "Vinculación": tab_vinculacion,
             "Admin": tab_admin,
             "Actividad": tab_actividad,
             "Log": tab_log,
         }
-        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "Couriers": "couriers", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Admin": "admin", "Actividad": "actividad", "Log": "log"}
+        label_to_key = {"Home": "home", "Estadísticas": "estadisticas", "Ventas": "ventas", "Productos": "productos", "Cuotas": "cuotas", "Promos": "promos", "Stock": "stock", "Competidores": "competidores", "Preguntas": "preguntas", "Flex": "flex", "Invoices": "compras", "Stock BDC": "stock_bdc", "Compras": "compras_lista", "Pedidos": "pedidos", "Históricos": "historicos", "Búsqueda": "busqueda", "Importacion": "importacion", "Guias": "guias", "Transferencias": "transferencias", "Datos": "datos", "Pesos": "pesos", "Couriers": "couriers", "ARCA": "arca", "Gastos": "gastos", "Balance": "balance", "Dashboard": "dashboard", "Configuración": "configuracion", "Vinculación": "tn_vinculacion", "Admin": "admin", "Actividad": "actividad", "Log": "log"}
 
         # Lazy-load state
         precios_cargado = [False]
@@ -516,6 +520,7 @@ def show_main_layout(container) -> None:
         guias_cargado = [False]
         guias_clear_ref: List[Any] = [None]
         transferencias_cargado = [False]
+        vinculacion_cargado = [False]
 
         # Páginas con gate real server-side (además de ocultar el botón de menú):
         # el checkbox de Permisos deja de ser solo cosmético para estas.
@@ -604,6 +609,9 @@ def show_main_layout(container) -> None:
                 transferencias_cargado[0] = True
                 with transferencias_container:
                     build_tab_transferencias()
+            elif val == "Vinculación" and not vinculacion_cargado[0]:
+                vinculacion_cargado[0] = True
+                build_tab_vinculacion(vinculacion_container)
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -790,6 +798,19 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_config
                                         app.storage.user["last_tab"] = "Configuración"
                                     _nav_item("CONFIGURACIÓN", "settings", _config_click)
+                # Solo aparece si el usuario tiene credenciales de Tienda Nube cargadas
+                # (no tiene sentido mostrarle el menú a una cuenta sin tienda, ej. EXXA,
+                # DsMaxTech) -- se muestra solo cuando vincula una, sin que nadie tenga
+                # que acordarse de habilitarlo a mano en Admin > Permisos.
+                if perms.get("tn_vinculacion", True) and get_tiendanube_credentials(user["id"]):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(tienda_nube_menu)):
+                        with ui.button("TIENDA NUBE").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as tienda_nube_menu:
+                                def _vinculacion_click():
+                                    _lazy_load("Vinculación")
+                                    tab_panels.value = tab_vinculacion
+                                    app.storage.user["last_tab"] = "Vinculación"
+                                _nav_item("VINCULACIÓN", "sync_alt", _vinculacion_click)
                 if perms.get("admin", False):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(admin_menu)):
                         with ui.button("ADMIN").props("flat dense no-caps").classes(_nav_font):
@@ -918,6 +939,7 @@ def show_main_layout(container) -> None:
             "Gastos":        ("Impuestos", "Gastos"),
             "Datos":         ("Config", "Datos"),
             "Configuración": ("Config", "Configuración"),
+            "Vinculación":   ("Tienda Nube", "Vinculación"),
             "Admin":         ("Config", "Admin"),
             "Actividad":     ("Config", "Actividad"),
         }
@@ -1018,6 +1040,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_config):
                 build_tab_config()
+
+            with ui.tab_panel(tab_vinculacion):
+                vinculacion_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_admin):
                 admin_container = ui.column().classes("w-full")
