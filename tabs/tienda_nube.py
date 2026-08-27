@@ -4,9 +4,12 @@ productos de Tienda Nube por seller_sku. SOLO LECTURA: no escribe nada en ML ni 
 """
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
+
+import requests as _requests
 
 from nicegui import app, background_tasks, context, run, ui
 
@@ -19,6 +22,8 @@ from db import (
     upsert_tiendanube_producto,
     get_tn_categoria_mapeada,
     set_tn_categoria_mapeo,
+    get_app_config,
+    GROQ_MODEL,
 )
 from ml_api import get_ml_access_token, ml_get_my_items, ml_get_item, ml_get_item_description
 from tiendanube_api import (
@@ -108,6 +113,127 @@ def _texto_a_html(texto: str) -> str:
         return ""
     parrafos = [p.strip() for p in texto.split("\n\n") if p.strip()] or [texto]
     return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in parrafos)
+
+
+def _clean_json(raw: str) -> str:
+    """Saca el envoltorio de backticks que a veces agregan los modelos (mismo
+    patrón que ya usa tabs/guias.py para respuestas de Groq/Gemini)."""
+    raw = (raw or "").strip()
+    if raw.startswith("```"):
+        lineas = raw.split("\n")
+        raw = "\n".join(lineas[1:])
+        if raw.endswith("```"):
+            raw = raw[:-3]
+    return raw.strip()
+
+
+def _recortar_prolijo(texto: str, limite: int) -> str:
+    """Recorta al límite de caracteres SIN cortar una palabra a la mitad. Si ya
+    entra, lo devuelve tal cual."""
+    texto = (texto or "").strip()
+    if len(texto) <= limite:
+        return texto
+    recorte = texto[:limite]
+    if " " in recorte:
+        recorte = recorte.rsplit(" ", 1)[0]
+    return recorte.rstrip(" ,.-")
+
+
+def _generar_seo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str, extra: str = "") -> str:
+    desc_recortada = (descripcion or "").strip()[:500]
+    return (
+        "Sos un experto en SEO para e-commerce argentino. Escribí en español rioplatense.\n"
+        "Basándote en este producto, generá SOLAMENTE un JSON válido con dos campos:\n"
+        '- "seo_title": título SEO de HASTA 70 caracteres, con marca y modelo, orientado a búsqueda.\n'
+        '- "seo_description": descripción SEO de HASTA 160 caracteres, orientada a búsqueda.\n'
+        "Es OBLIGATORIO respetar esos límites de caracteres exactamente. Nunca cortes una palabra "
+        "a la mitad -- si no entra, acortá la frase entera para que quede prolija.\n\n"
+        f"Nombre del producto: {nombre}\n"
+        f"Marca: {marca or 'sin marca'}\n"
+        f"Categoría: {categoria_nombre or 'sin categoría'}\n"
+        f"Descripción: {desc_recortada}\n"
+        f"{extra}\n"
+        'Respondé SOLO con el JSON, sin backticks ni texto adicional, con este formato exacto: '
+        '{"seo_title": "...", "seo_description": "..."}'
+    )
+
+
+def _groq_generate(api_key: str, prompt: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.5,
+    }
+    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _gemini_generate(api_key: str, prompt: str) -> str:
+    from google import genai
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    return response.text
+
+
+def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> Optional[Dict[str, str]]:
+    """Se corre vía run.io_bound. Reusa el mismo helper de IA que ya existe en la
+    app (Groq/Gemini, keys de Configuración) -- ninguna integración nueva. Si el
+    primer intento se pasa de los límites, reintenta UNA vez con un prompt que se
+    lo aclara; si sigue pasado, recorta prolijo como respaldo garantizado (nunca a
+    la mitad de una palabra)."""
+    groq_key = get_app_config("groq_api_key")
+    gemini_key = get_app_config("gemini_api_key")
+    if not groq_key and not gemini_key:
+        return None
+
+    def _pedir(prompt: str) -> Optional[Dict[str, str]]:
+        # Groq puede responder 200 con contenido VACÍO (confirmado en vivo
+        # 2026-08-27 -- no tira excepción, simplemente no genera nada) -- por eso
+        # se prueba cada proveedor configurado en orden y se sigue al próximo si
+        # el anterior no dio un resultado usable, en vez de rendirse en el primero.
+        for api_key, generador in ((groq_key, _groq_generate), (gemini_key, _gemini_generate)):
+            if not api_key:
+                continue
+            try:
+                raw = generador(api_key, prompt)
+            except Exception:
+                continue
+            if not raw:
+                continue
+            try:
+                data = json.loads(_clean_json(raw))
+            except Exception:
+                continue
+            if not isinstance(data, dict):
+                continue
+            seo_title = str(data.get("seo_title") or "").strip()
+            seo_description = str(data.get("seo_description") or "").strip()
+            if seo_title and seo_description:
+                return {"seo_title": seo_title, "seo_description": seo_description}
+        return None
+
+    prompt = _generar_seo_prompt(nombre, marca, categoria_nombre, descripcion)
+    resultado = _pedir(prompt)
+    if resultado is None:
+        return None
+
+    if len(resultado["seo_title"]) > 70 or len(resultado["seo_description"]) > 160:
+        extra = (
+            f"Tu intento anterior se pasó del límite -- seo_title tenía "
+            f"{len(resultado['seo_title'])} caracteres (máximo 70), seo_description tenía "
+            f"{len(resultado['seo_description'])} (máximo 160). Generá de nuevo, más corto."
+        )
+        reintento = _pedir(_generar_seo_prompt(nombre, marca, categoria_nombre, descripcion, extra))
+        if reintento is not None:
+            resultado = reintento
+
+    resultado["seo_title"] = _recortar_prolijo(resultado["seo_title"], 70)
+    resultado["seo_description"] = _recortar_prolijo(resultado["seo_description"], 160)
+    return resultado
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -432,17 +558,68 @@ def build_tab_vinculacion(container) -> None:
                                 if propia:
                                     ui.button(
                                         "Usar este", on_click=lambda: nombre_input.set_value(propia.get("title", ""))
-                                    ).props("flat dense no-caps size=sm")
+                                    ).props("unelevated no-caps").classes("w-full mt-1")
                             with ui.column().classes("flex-1 border rounded p-2"):
                                 ui.label("Catálogo").classes("text-xs text-gray-500")
                                 ui.label(catalogo.get("title") if catalogo else "— no hay publicación de catálogo —").classes("text-sm")
                                 if catalogo:
                                     ui.button(
                                         "Usar este", on_click=lambda: nombre_input.set_value(catalogo.get("title", ""))
-                                    ).props("flat dense no-caps size=sm")
+                                    ).props("unelevated no-caps").classes("w-full mt-1")
 
                         ui.label("Descripción").classes("text-sm font-semibold mt-2")
                         descripcion_input = ui.textarea(value=descripcion).props("outlined dense").classes("w-full").style("min-height:120px")
+
+                        with ui.row().classes("w-full items-center justify-between mt-2"):
+                            ui.label("SEO").classes("text-sm font-semibold")
+                            seo_generar_btn = ui.button("Generar con IA", icon="auto_awesome").props("outline dense no-caps size=sm")
+
+                        ui.label("Título SEO").classes("text-xs text-gray-500")
+                        seo_title_input = ui.input(value="").props("outlined dense").classes("w-full")
+                        seo_title_counter = ui.label("0 / 70").classes("text-xs text-gray-500")
+
+                        def _actualizar_seo_title_counter() -> None:
+                            n = len(seo_title_input.value or "")
+                            seo_title_counter.set_text(f"{n} / 70")
+                            seo_title_counter.classes(replace="text-xs " + ("text-negative" if n > 70 else "text-gray-500"))
+                        seo_title_input.on_value_change(lambda *_: _actualizar_seo_title_counter())
+                        _actualizar_seo_title_counter()
+
+                        ui.label("Descripción SEO").classes("text-xs text-gray-500 mt-1")
+                        seo_description_input = ui.textarea(value="").props("outlined dense").classes("w-full")
+                        seo_description_counter = ui.label("0 / 160").classes("text-xs text-gray-500")
+
+                        def _actualizar_seo_desc_counter() -> None:
+                            n = len(seo_description_input.value or "")
+                            seo_description_counter.set_text(f"{n} / 160")
+                            seo_description_counter.classes(replace="text-xs " + ("text-negative" if n > 160 else "text-gray-500"))
+                        seo_description_input.on_value_change(lambda *_: _actualizar_seo_desc_counter())
+                        _actualizar_seo_desc_counter()
+
+                        async def _generar_seo() -> None:
+                            seo_generar_btn.props("loading")
+                            try:
+                                nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
+                                marca_val = fuente.get("marca")
+                                if marca_val == "—":
+                                    marca_val = None
+                                resultado = await run.io_bound(
+                                    _generar_seo_sync, nombre_base, marca_val,
+                                    cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
+                                )
+                                if resultado is None:
+                                    ui.notify(
+                                        "No se pudo generar -- revisá que haya una key de Groq o Gemini "
+                                        "cargada en Configuración.", color="negative",
+                                    )
+                                    return
+                                seo_title_input.set_value(resultado["seo_title"])
+                                seo_description_input.set_value(resultado["seo_description"])
+                                _actualizar_seo_title_counter()
+                                _actualizar_seo_desc_counter()
+                            finally:
+                                seo_generar_btn.props(remove="loading")
+                        seo_generar_btn.on_click(_generar_seo)
 
                         ui.label("Categoría (Tiendanube)").classes("text-sm font-semibold mt-2")
                         categoria_sel = ui.select(cat_options, value=categoria_sugerida).props("outlined dense").classes("w-full")
@@ -453,6 +630,13 @@ def build_tab_vinculacion(container) -> None:
                             with ui.column().classes("flex-1"):
                                 ui.label("Precio (mínimo del grupo -- contado)").classes("text-sm font-semibold")
                                 precio_input = ui.number(value=precio_min, format="%.2f").props("outlined dense").classes("w-full")
+                                precio_fmt_lbl = ui.label("").classes("text-xs text-gray-500")
+
+                                def _actualizar_precio_fmt() -> None:
+                                    v = precio_input.value
+                                    precio_fmt_lbl.set_text(_fmt_precio_ars(v) if v is not None else "")
+                                precio_input.on_value_change(lambda *_: _actualizar_precio_fmt())
+                                _actualizar_precio_fmt()
                             with ui.column().classes("flex-1"):
                                 ui.label("Stock (pool de ML)").classes("text-sm font-semibold")
                                 stock_input = ui.number(value=stock_pool, format="%.0f").props("outlined dense").classes("w-full")
@@ -460,7 +644,9 @@ def build_tab_vinculacion(container) -> None:
                         with ui.row().classes("w-full gap-3 items-start"):
                             with ui.column().classes("flex-1"):
                                 ui.label("Peso (gramos) -- obligatorio").classes("text-sm font-semibold")
-                                peso_input = ui.number(value=peso_g, format="%.1f").props("outlined dense").classes("w-full")
+                                peso_input = ui.number(
+                                    value=round(peso_g) if peso_g is not None else None, format="%.0f"
+                                ).props("outlined dense").classes("w-full")
                                 peso_kg_lbl = ui.label("").classes("text-xs text-gray-500")
                                 if peso_g is None:
                                     ui.label(
@@ -477,24 +663,64 @@ def build_tab_vinculacion(container) -> None:
                                     )
                                 peso_input.on_value_change(lambda *_: _actualizar_peso_kg())
                                 _actualizar_peso_kg()
-                            # Largo/ancho/alto: ML no trae esta info hoy (0/140 verificado)
-                            # -- el payload ya deja los 3 campos listos (ver _submit),
-                            # agregar los inputs cuando haya dato real es trivial.
 
-                        ui.label("Imágenes (se envían en máxima resolución -- sufijo -F)").classes("text-sm font-semibold mt-2")
-                        imagenes_checks: List[tuple] = []
-                        with ui.row().classes("w-full flex-wrap gap-2"):
-                            if not pictures:
-                                ui.label("Esta publicación no tiene fotos.").classes("text-xs text-gray-400")
-                            for p in pictures:
-                                url_chica = p.get("secure_url") or p.get("url") or ""
-                                if not url_chica:
-                                    continue
-                                url_max = _url_maxima_resolucion(url_chica)
-                                with ui.column().classes("items-center gap-1"):
-                                    ui.image(url_max).classes("rounded border").style("width:80px;height:80px;object-fit:cover")
-                                    chk = ui.checkbox("Incluir", value=True)
-                                    imagenes_checks.append((url_max, chk))
+                        with ui.row().classes("w-full gap-3 items-start"):
+                            with ui.column().classes("flex-1"):
+                                ui.label("Ancho (cm)").classes("text-sm font-semibold")
+                                ancho_input = ui.number(value=None, format="%.1f").props("outlined dense").classes("w-full")
+                            with ui.column().classes("flex-1"):
+                                ui.label("Alto (cm)").classes("text-sm font-semibold")
+                                alto_input = ui.number(value=None, format="%.1f").props("outlined dense").classes("w-full")
+                            with ui.column().classes("flex-1"):
+                                ui.label("Profundidad (cm)").classes("text-sm font-semibold")
+                                profundidad_input = ui.number(value=None, format="%.1f").props("outlined dense").classes("w-full")
+                        ui.label(
+                            "Opcional -- ML no trae estos datos hoy para ningún SKU (0/140 verificado). "
+                            "Unidad centímetros: confirmado en la ayuda oficial de Tiendanube "
+                            "(la documentación de la API no la aclara)."
+                        ).classes("text-xs text-gray-500")
+
+                        ui.label(
+                            "Imágenes (se envían en máxima resolución -- sufijo -F). "
+                            "La primera es la portada del producto en la tienda -- usá las flechas para reordenar."
+                        ).classes("text-sm font-semibold mt-2")
+                        imagenes_state: List[Dict[str, Any]] = [
+                            {"url": _url_maxima_resolucion(p.get("secure_url") or p.get("url") or ""), "incluir": True}
+                            for p in pictures if (p.get("secure_url") or p.get("url"))
+                        ]
+                        imagenes_container = ui.column().classes("w-full")
+
+                        def _mover_imagen(idx: int, delta: int) -> None:
+                            nuevo = idx + delta
+                            if 0 <= nuevo < len(imagenes_state):
+                                imagenes_state[idx], imagenes_state[nuevo] = imagenes_state[nuevo], imagenes_state[idx]
+                                _render_imagenes()
+
+                        def _render_imagenes() -> None:
+                            imagenes_container.clear()
+                            with imagenes_container:
+                                if not imagenes_state:
+                                    ui.label("Esta publicación no tiene fotos.").classes("text-xs text-gray-400")
+                                    return
+                                with ui.row().classes("w-full flex-wrap gap-2"):
+                                    for idx, item in enumerate(imagenes_state):
+                                        with ui.column().classes("items-center gap-1 border rounded p-1"):
+                                            ui.image(item["url"]).classes("rounded").style("width:80px;height:80px;object-fit:cover")
+                                            ui.label(f"#{idx + 1}" + (" — portada" if idx == 0 else "")).classes("text-xs text-gray-500")
+                                            with ui.row().classes("gap-0 items-center"):
+                                                up_btn = ui.button(icon="arrow_upward").props("flat dense size=sm")
+                                                up_btn.on_click(lambda i=idx: _mover_imagen(i, -1))
+                                                if idx == 0:
+                                                    up_btn.set_enabled(False)
+                                                down_btn = ui.button(icon="arrow_downward").props("flat dense size=sm")
+                                                down_btn.on_click(lambda i=idx: _mover_imagen(i, 1))
+                                                if idx == len(imagenes_state) - 1:
+                                                    down_btn.set_enabled(False)
+                                            chk = ui.checkbox("Incluir", value=item["incluir"])
+                                            chk.on_value_change(
+                                                lambda e, i=idx: imagenes_state[i].update(incluir=getattr(e, "value", True))
+                                            )
+                        _render_imagenes()
 
                         ui.label(f"SKU: {sku}").classes("text-xs text-gray-500 font-mono mt-2")
 
@@ -519,6 +745,10 @@ def build_tab_vinculacion(container) -> None:
                             faltantes.append("Precio")
                         if peso_val is None or float(peso_val) <= 0:
                             faltantes.append("Peso (obligatorio -- Tiendanube lo necesita para cotizar envíos)")
+                        if len(seo_title_input.value or "") > 70:
+                            faltantes.append("Título SEO se pasa de 70 caracteres")
+                        if len(seo_description_input.value or "") > 160:
+                            faltantes.append("Descripción SEO se pasa de 160 caracteres")
                         if faltantes:
                             with error_area:
                                 ui.label("Faltan campos: " + ", ".join(faltantes)).classes("text-sm text-negative")
@@ -548,7 +778,12 @@ def build_tab_vinculacion(container) -> None:
                                     ui.button("Vincular al existente", on_click=_vincular_existente).props("unelevated no-caps dense")
                                 return
 
-                            imagenes_payload = [{"src": url} for url, chk in imagenes_checks if chk.value]
+                            # position explícito -- Tiendanube documenta "position" como el campo
+                            # que determina el orden de las imágenes, no el orden del array por sí solo.
+                            imagenes_payload = [
+                                {"src": item["url"], "position": i + 1}
+                                for i, item in enumerate(imagenes_state) if item["incluir"]
+                            ]
                             payload = {
                                 "name": {"es": nombre_val},
                                 "description": {"es": _texto_a_html(descripcion_input.value or "")},
@@ -561,11 +796,15 @@ def build_tab_vinculacion(container) -> None:
                                     "stock_management": True,
                                     "weight": _kg_desde_gramos(float(peso_val)),
                                     "sku": sku,
-                                    "width": None,
-                                    "height": None,
-                                    "depth": None,
+                                    "width": f"{float(ancho_input.value):.2f}" if ancho_input.value is not None else None,
+                                    "height": f"{float(alto_input.value):.2f}" if alto_input.value is not None else None,
+                                    "depth": f"{float(profundidad_input.value):.2f}" if profundidad_input.value is not None else None,
                                 }],
                             }
+                            if (seo_title_input.value or "").strip():
+                                payload["seo_title"] = seo_title_input.value.strip()
+                            if (seo_description_input.value or "").strip():
+                                payload["seo_description"] = seo_description_input.value.strip()
                             creado, error = await run.io_bound(
                                 tiendanube_create_product, tn_creds["store_id"], tn_creds["access_token"],
                                 tn_creds["auth_header_style"], payload,
