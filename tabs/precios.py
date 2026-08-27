@@ -1245,11 +1245,13 @@ def _mostrar_tabla_precios(
     finally:
         _conn_rev_init.close()
 
+    # Mismos textos que _CAT_HTML (columna "catalog_pos" de la tabla, mas abajo en este
+    # archivo) para que la tabla y este popup no digan cosas distintas para el mismo estado.
     _STATUS_MAP_CATALOGO = {
-        "winning":             ("✓", "Ganando",               "text-positive font-bold"),
-        "sharing_first_place": ("=", "Compartiendo 1° lugar", "text-blue-600 font-bold"),
-        "competing":           ("↓", "Compitiendo",           "text-orange-500 font-bold"),
-        "listed":              ("''", "Publicado sin ganar",   "text-gray-500"),
+        "winning":             ("✓", "1° Catálogo", "text-positive font-bold"),
+        "sharing_first_place": ("=", "Comparte 1°", "text-blue-600 font-bold"),
+        "competing":           ("↓", "Perdiendo",   "text-orange-500 font-bold"),
+        "listed":              ("''", "Listado",    "text-gray-500"),
     }
 
     def _open_catalogo_popup(sku: str) -> None:
@@ -3059,8 +3061,8 @@ def _mostrar_tabla_precios(
                 elif col["name"] == "catalog_pos":
                     cs = row.get("catalog_status")
                     _CAT_HTML = {
-                        "winning":             '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#27500a"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 ML</span>',
-                        "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>#1 Cat.</span>',
+                        "winning":             '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#27500a"><i class="ti ti-arrow-up" style="font-size:13px"></i>1° Catálogo</span>',
+                        "sharing_first_place": '<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#0c447c"><i class="ti ti-arrow-up" style="font-size:13px"></i>Comparte 1°</span>',
                         "competing":           f'<span style="display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:500;color:#791f1f"><i class="ti ti-arrow-down" style="font-size:13px"></i>{"Per. #" + str(row.get("catalog_position")) if row.get("catalog_position") else "Perdiendo"}</span>',
                         "listed":              '<span style="font-size:12px;color:#888780">Listado</span>',
                     }
