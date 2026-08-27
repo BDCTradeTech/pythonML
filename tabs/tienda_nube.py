@@ -24,6 +24,8 @@ from db import (
     set_tn_categoria_mapeo,
     get_app_config,
     GROQ_MODEL,
+    DEEPSEEK_MODEL,
+    DEEPSEEK_BASE_URL,
 )
 from ml_api import get_ml_access_token, ml_get_my_items, ml_get_item, ml_get_item_description
 from tiendanube_api import (
@@ -57,6 +59,32 @@ def _fmt_precio_ars(val: Any) -> str:
     return f"${parte_entera},{dec:02d}"
 
 
+def _parse_precio_input(texto: Optional[str]) -> Optional[float]:
+    """Entiende "214800", "214.800", "$214.800" y "214800.00" -- siempre da el
+    mismo número entero de pesos (sin decimales nunca). El punto es ambiguo
+    (separador de miles vs. decimal): se distingue por la cantidad de dígitos
+    después del ÚLTIMO punto -- 3 dígitos es agrupación de miles (convención
+    argentina), 2 dígitos es la parte decimal (se descarta, sin decimales)."""
+    if texto is None:
+        return None
+    limpio = texto.strip().replace("$", "").replace(" ", "")
+    if not limpio:
+        return None
+    partes = limpio.split(".")
+    if len(partes) == 1:
+        cuerpo = partes[0]
+    else:
+        ultima = partes[-1]
+        if len(ultima) == 2 and ultima.isdigit():
+            cuerpo = "".join(partes[:-1])  # parte decimal: se descarta (sin decimales)
+        else:
+            cuerpo = "".join(partes)  # separador de miles en todos los puntos
+    try:
+        return float(round(float(cuerpo)))
+    except (ValueError, TypeError):
+        return None
+
+
 def _formatear_ultima_sync(iso_str: str) -> str:
     """last_sync_at se guarda en UTC (datetime.utcnow().isoformat(), ver
     db.set_tiendanube_sync_status). Relativo si fue hoy, fecha y hora completa si
@@ -74,6 +102,18 @@ def _formatear_ultima_sync(iso_str: str) -> str:
         horas = int(minutos // 60)
         return f"hace {horas} hora{'s' if horas != 1 else ''}"
     return dt.strftime("%d/%m/%Y %H:%M")
+
+
+def _atributo_valor(attrs: List[dict], *ids: str) -> Optional[str]:
+    """Devuelve el value_name del primer atributo cuyo id (case-insensitive)
+    coincide con alguno de los pedidos, en el orden dado -- por ejemplo, para MPN:
+    ALPHANUMERIC_MODEL primero, MODEL como respaldo si no está."""
+    por_id = {(a.get("id") or "").upper(): a.get("value_name") for a in (attrs or [])}
+    for id_ in ids:
+        val = por_id.get(id_.upper())
+        if val:
+            return str(val).strip()
+    return None
 
 
 def _peso_gramos_desde_atributos(attrs: List[dict]) -> Optional[float]:
@@ -198,16 +238,80 @@ def _gemini_generate(api_key: str, prompt: str) -> str:
     return response.text
 
 
-def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> Optional[Dict[str, str]]:
+def _deepseek_generate(api_key: str, prompt: str) -> str:
+    """Mismo helper que ya usa tabs/preguntas.py -- ninguna integración nueva."""
+    url = f"{DEEPSEEK_BASE_URL}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 300,
+        "temperature": 0.7,
+    }
+    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _generar_tags_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> str:
+    desc_recortada = (descripcion or "").strip()[:500]
+    return (
+        "Sos un experto en SEO para e-commerce argentino. Escribí en español rioplatense.\n"
+        "Basándote en este producto, generá ENTRE 8 Y 12 palabras clave / tags de SEO "
+        "orientadas a búsqueda -- ni menos de 8 ni más de 12.\n"
+        "Respondé SOLO con las palabras clave separadas por comas, sin numerar, sin explicación, "
+        "sin backticks, sin comillas -- por ejemplo: auriculares bluetooth, manos libres, deportivo\n\n"
+        f"Nombre del producto: {nombre}\n"
+        f"Marca: {marca or 'sin marca'}\n"
+        f"Categoría: {categoria_nombre or 'sin categoría'}\n"
+        f"Descripción: {desc_recortada}\n"
+    )
+
+
+def _generar_tags_una_vez(generador, api_key: str, nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
+    """A diferencia de _generar_seo_sync (que prueba varios proveedores en cadena),
+    acá cada botón dispara UN proveedor puntual -- el usuario elige cuál. Se corre
+    vía run.io_bound.
+
+    Devuelve (tags, vacio). vacio=True marca específicamente el caso "la IA respondió
+    200 pero sin texto" (confirmado en vivo con Groq y con DeepSeek, 2026-08-27) --
+    para poder avisarlo en pantalla en vez de dejar el campo en blanco sin explicación,
+    que se ve igual que un botón roto.
+
+    Sin límite de longitud documentado por Tiendanube para el campo tags, pero se le
+    pide a la IA entre 8 y 12 palabras clave y se recorta a 12 como respaldo -- sin
+    tope, un modelo puede devolver cincuenta y llenar la ficha de ruido."""
+    if not api_key:
+        return None, False
+    prompt = _generar_tags_prompt(nombre, marca, categoria_nombre, descripcion)
+    try:
+        raw = generador(api_key, prompt)
+    except Exception:
+        return None, False
+    if not raw or not raw.strip():
+        return None, True
+    limpio = _clean_json(raw).strip().strip('"').strip("'")
+    limpio = " ".join(limpio.split())
+    if not limpio:
+        return None, True
+    tags = [t.strip() for t in limpio.split(",") if t.strip()]
+    return ", ".join(tags[:12]), False
+
+
+def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
     """Se corre vía run.io_bound. Reusa el mismo helper de IA que ya existe en la
     app (Groq/Gemini, keys de Configuración) -- ninguna integración nueva. Si el
     primer intento se pasa de los límites, reintenta UNA vez con un prompt que se
     lo aclara; si sigue pasado, recorta prolijo como respaldo garantizado (nunca a
-    la mitad de una palabra)."""
+    la mitad de una palabra).
+
+    Devuelve (resultado, motivo) -- motivo en "ok" / "sin_keys" / "vacio". Distinguir
+    "sin_keys" de "vacio" importa para el mensaje en pantalla: un campo que queda en
+    blanco sin explicación se ve igual que un botón roto."""
     groq_key = get_app_config("groq_api_key")
     gemini_key = get_app_config("gemini_api_key")
     if not groq_key and not gemini_key:
-        return None
+        return None, "sin_keys"
 
     def _pedir(prompt: str) -> Optional[Dict[str, str]]:
         # Groq puede responder 200 con contenido VACÍO (confirmado en vivo
@@ -238,7 +342,7 @@ def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, 
     prompt = _generar_seo_prompt(nombre, marca, categoria_nombre, descripcion)
     resultado = _pedir(prompt)
     if resultado is None:
-        return None
+        return None, "vacio"
 
     if len(resultado["seo_title"]) > 70 or len(resultado["seo_description"]) > 160:
         extra = (
@@ -252,7 +356,7 @@ def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, 
 
     resultado["seo_title"] = _recortar_prolijo(resultado["seo_title"], 70)
     resultado["seo_description"] = _recortar_prolijo(resultado["seo_description"], 160)
-    return resultado
+    return resultado, "ok"
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -358,6 +462,9 @@ def build_tab_vinculacion(container) -> None:
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             filtro_opciones = {"todos": "Todos", **_PLATAFORMA_LABELS, "duplicados": "Con SKU duplicado (ML o TN)"}
             filtro_sel = ui.select(filtro_opciones, value="todos", label="Estado").props("dense outlined").classes("w-64")
+            busqueda_input = ui.input(placeholder="Buscar por SKU o nombre...").props(
+                "dense outlined clearable debounce=300"
+            ).classes("w-64")
             incluir_pausadas_chk = ui.checkbox("Incluir pausadas (ML)", value=False)
             ui.space()
             actualizar_btn = ui.button("Actualizar").props("unelevated dense no-caps icon=refresh").classes("text-xs")
@@ -472,6 +579,15 @@ def build_tab_vinculacion(container) -> None:
             else:
                 visibles = [f for f in filas if f["plataforma"] == filtro]
 
+            busqueda = (busqueda_input.value or "").strip().lower()
+            if busqueda:
+                visibles = [
+                    f for f in visibles
+                    if busqueda in (f["sku"] or "").lower()
+                    or busqueda in (f["ml_nombre"] or "").lower()
+                    or busqueda in (f["tn_nombre"] or "").lower()
+                ]
+
             visibles = sorted(
                 visibles,
                 key=lambda r: _sort_key_vinc(r, sort_col_ref.get("val", "sku")),
@@ -557,6 +673,15 @@ def build_tab_vinculacion(container) -> None:
 
                     attrs = (full or {}).get("attributes") or []
                     peso_g = _peso_gramos_desde_atributos(attrs)
+                    gtin_precarga = _atributo_valor(attrs, "GTIN")
+                    # Preferencia: MPN nativo de ML primero (es literalmente el mismo dato);
+                    # si no está, ALPHANUMERIC_MODEL (código real del fabricante, ej.
+                    # "A710BL"); si tampoco, MODEL (a veces es el nombre comercial, ej.
+                    # "Watch SE (GPS) 3th Gen" -- eso NO es un MPN, por eso queda editable).
+                    mpn_precarga = _atributo_valor(attrs, "MPN", "ALPHANUMERIC_MODEL", "MODEL")
+                    marca_precarga = fuente.get("marca")
+                    if marca_precarga == "—":
+                        marca_precarga = None
                     pictures = (full or {}).get("pictures") or []
                     categoria_sugerida = get_tn_categoria_mapeada(uid, str(category_id)) if category_id else None
                     if categoria_sugerida not in cat_options:
@@ -595,6 +720,23 @@ def build_tab_vinculacion(container) -> None:
                         ui.label("Descripción").classes("text-sm font-semibold mt-2")
                         descripcion_input = ui.textarea(value=descripcion).props("outlined dense").classes("w-full").style("min-height:120px")
 
+                        ui.label("Identificación").classes("text-sm font-semibold mt-2")
+                        with ui.row().classes("w-full gap-3 items-start"):
+                            with ui.column().classes("flex-1"):
+                                ui.label("Marca").classes("text-xs text-gray-500")
+                                marca_input = ui.input(value=marca_precarga or "").props("outlined dense").classes("w-full")
+                            with ui.column().classes("flex-1"):
+                                ui.label("Código de barras (GTIN)").classes("text-xs text-gray-500")
+                                barcode_input = ui.input(value=gtin_precarga or "").props("outlined dense").classes("w-full")
+                            with ui.column().classes("flex-1"):
+                                ui.label("MPN (modelo del fabricante)").classes("text-xs text-gray-500")
+                                mpn_input = ui.input(value=mpn_precarga or "").props("outlined dense").classes("w-full")
+                        ui.label(
+                            "MPN: si lo precargado es un nombre comercial y no un código de parte, "
+                            "es más seguro dejarlo vacío que mandarlo -- un identificador inconsistente "
+                            "puede hacer que Google rechace el producto."
+                        ).classes("text-xs text-gray-500")
+
                         with ui.row().classes("w-full items-center justify-between mt-2"):
                             ui.label("SEO").classes("text-sm font-semibold")
                             seo_generar_btn = ui.button("Generar con IA", icon="auto_awesome").props("outline dense no-caps size=sm")
@@ -621,22 +763,68 @@ def build_tab_vinculacion(container) -> None:
                         seo_description_input.on_value_change(lambda *_: _actualizar_seo_desc_counter())
                         _actualizar_seo_desc_counter()
 
+                        ui.label("Tags / palabras clave SEO").classes("text-xs text-gray-500 mt-1")
+                        tags_input = ui.input(value="").props("outlined dense").classes("w-full")
+                        with ui.row().classes("gap-2 mt-1"):
+                            tags_gemini_btn = ui.button("Gemini", icon="auto_awesome").props("outline dense no-caps size=sm")
+                            tags_groq_btn = ui.button("Groq", icon="auto_awesome").props("outline dense no-caps size=sm")
+                            tags_deepseek_btn = ui.button("DeepSeek", icon="auto_awesome").props("outline dense no-caps size=sm")
+                        ui.label(
+                            "Sin límite documentado de longitud en la API de Tiendanube -- se manda tal cual."
+                        ).classes("text-xs text-gray-500")
+
+                        def _tags_generador(nombre_config: str, api_key_config: str, generador, boton) -> Any:
+                            async def _run() -> None:
+                                api_key = get_app_config(api_key_config)
+                                if not api_key:
+                                    ui.notify(
+                                        f"Configurá tu API key de {nombre_config} en Configuración.", color="negative",
+                                    )
+                                    return
+                                boton.props("loading")
+                                try:
+                                    nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
+                                    marca_val = (marca_input.value or "").strip() or None
+                                    resultado, vacio = await run.io_bound(
+                                        _generar_tags_una_vez, generador, api_key, nombre_base, marca_val,
+                                        cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
+                                    )
+                                    if resultado is None:
+                                        if vacio:
+                                            ui.notify(
+                                                "La IA no devolvió texto -- probá de nuevo o con otro proveedor.",
+                                                color="negative",
+                                            )
+                                        else:
+                                            ui.notify(f"Error al generar con {nombre_config}.", color="negative")
+                                        return
+                                    tags_input.set_value(resultado)
+                                finally:
+                                    boton.props(remove="loading")
+                            return _run
+                        tags_gemini_btn.on_click(_tags_generador("Gemini", "gemini_api_key", _gemini_generate, tags_gemini_btn))
+                        tags_groq_btn.on_click(_tags_generador("Groq", "groq_api_key", _groq_generate, tags_groq_btn))
+                        tags_deepseek_btn.on_click(_tags_generador("DeepSeek", "deepseek_api_key", _deepseek_generate, tags_deepseek_btn))
+
                         async def _generar_seo() -> None:
                             seo_generar_btn.props("loading")
                             try:
                                 nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
-                                marca_val = fuente.get("marca")
-                                if marca_val == "—":
-                                    marca_val = None
-                                resultado = await run.io_bound(
+                                marca_val = (marca_input.value or "").strip() or None
+                                resultado, motivo = await run.io_bound(
                                     _generar_seo_sync, nombre_base, marca_val,
                                     cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
                                 )
                                 if resultado is None:
-                                    ui.notify(
-                                        "No se pudo generar -- revisá que haya una key de Groq o Gemini "
-                                        "cargada en Configuración.", color="negative",
-                                    )
+                                    if motivo == "sin_keys":
+                                        ui.notify(
+                                            "Configurá una key de Groq o Gemini en Configuración.", color="negative",
+                                        )
+                                    else:
+                                        ui.notify(
+                                            "La IA no devolvió texto -- probá de nuevo o con otro proveedor.",
+                                            color="negative",
+                                        )
                                     return
                                 seo_title_input.set_value(resultado["seo_title"])
                                 seo_description_input.set_value(resultado["seo_description"])
@@ -654,14 +842,20 @@ def build_tab_vinculacion(container) -> None:
                         with ui.row().classes("w-full gap-2"):
                             with ui.column().classes("flex-1"):
                                 ui.label("Precio (mínimo del grupo -- contado)").classes("text-sm font-semibold")
-                                precio_input = ui.number(value=precio_min, format="%.2f").props("outlined dense").classes("w-full")
-                                precio_fmt_lbl = ui.label("").classes("text-xs text-gray-500")
+                                precio_val_inicial = _parse_precio_input(str(precio_min)) if precio_min is not None else None
+                                precio_input = ui.input(
+                                    value=_fmt_precio_ars(precio_val_inicial) if precio_val_inicial is not None else ""
+                                ).props("outlined dense").classes("w-full")
 
-                                def _actualizar_precio_fmt() -> None:
-                                    v = precio_input.value
-                                    precio_fmt_lbl.set_text(_fmt_precio_ars(v) if v is not None else "")
-                                precio_input.on_value_change(lambda *_: _actualizar_precio_fmt())
-                                _actualizar_precio_fmt()
+                                def _precio_a_edicion() -> None:
+                                    v = _parse_precio_input(precio_input.value)
+                                    precio_input.set_value(str(int(v)) if v is not None else "")
+
+                                def _precio_a_formato() -> None:
+                                    v = _parse_precio_input(precio_input.value)
+                                    precio_input.set_value(_fmt_precio_ars(v) if v is not None else "")
+                                precio_input.on("focus", lambda: _precio_a_edicion())
+                                precio_input.on("blur", lambda: _precio_a_formato())
                             with ui.column().classes("flex-1"):
                                 ui.label("Stock (pool de ML)").classes("text-sm font-semibold")
                                 stock_input = ui.number(value=stock_pool, format="%.0f").props("outlined dense").classes("w-full")
@@ -757,7 +951,7 @@ def build_tab_vinculacion(container) -> None:
                         error_area.clear()
                         nombre_val = (nombre_input.value or "").strip()
                         categoria_val = categoria_sel.value
-                        precio_val = precio_input.value
+                        precio_val = _parse_precio_input(precio_input.value)
                         stock_val = stock_input.value
                         peso_val = peso_input.value
 
@@ -824,8 +1018,14 @@ def build_tab_vinculacion(container) -> None:
                                     "width": f"{float(ancho_input.value):.2f}" if ancho_input.value is not None else None,
                                     "height": f"{float(alto_input.value):.2f}" if alto_input.value is not None else None,
                                     "depth": f"{float(profundidad_input.value):.2f}" if profundidad_input.value is not None else None,
+                                    "barcode": (barcode_input.value or "").strip() or None,
+                                    "mpn": (mpn_input.value or "").strip() or None,
                                 }],
                             }
+                            if (marca_input.value or "").strip():
+                                payload["brand"] = marca_input.value.strip()
+                            if (tags_input.value or "").strip():
+                                payload["tags"] = tags_input.value.strip()
                             if (seo_title_input.value or "").strip():
                                 payload["seo_title"] = seo_title_input.value.strip()
                             if (seo_description_input.value or "").strip():
@@ -949,6 +1149,7 @@ def build_tab_vinculacion(container) -> None:
 
         actualizar_btn.on_click(_actualizar)
         filtro_sel.on_value_change(lambda: _render_tabla())
+        busqueda_input.on_value_change(lambda: _render_tabla())
         incluir_pausadas_chk.on_value_change(lambda: _render_tabla())
 
         _render_status()
