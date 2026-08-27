@@ -411,8 +411,8 @@ def build_tab_config() -> None:
                         csec = (inp_tn_csec.value or "").strip()
                         store = (inp_tn_store.value or "").strip()
                         token = (inp_tn_token.value or "").strip()
-                        if not store:
-                            ui.notify("Ingresá Store ID", color="warning")
+                        if not any([cid, csec, store, token]):
+                            ui.notify("Ingresá al menos un campo", color="warning")
                             return
                         set_tiendanube_credentials(user["id"], cid, csec, store, token)
                         ui.notify("Credenciales guardadas", color="positive")

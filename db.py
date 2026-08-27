@@ -1174,8 +1174,9 @@ def get_tiendanube_credentials(user_id: int) -> Optional[Dict[str, Any]]:
 
 def set_tiendanube_credentials(user_id: int, client_id: str, client_secret: str,
                                 store_id: str, access_token: str = "") -> None:
-    """Guarda las credenciales de Tiendanube del usuario. Si access_token viene vacío,
-    preserva el que ya estaba guardado (evita pisarlo al editar solo client_id/secret)."""
+    """Guarda las credenciales de Tiendanube del usuario. Cualquier campo vacío preserva
+    el valor ya guardado -- guardar un campo vacío nunca borra una credencial (para eso
+    hace falta un "Desvincular" explícito, todavía no implementado)."""
     conn = get_connection()
     try:
         enc_secret = _encrypt_secret(client_secret.strip()) if client_secret else ""
@@ -1183,10 +1184,11 @@ def set_tiendanube_credentials(user_id: int, client_id: str, client_secret: str,
         conn.execute(
             "INSERT INTO tiendanube_credentials (user_id, client_id, client_secret, store_id, access_token) "
             "VALUES (?, ?, ?, ?, ?) "
-            "ON CONFLICT(user_id) DO UPDATE SET client_id=excluded.client_id, "
-            "client_secret=excluded.client_secret, store_id=excluded.store_id, "
-            "access_token=CASE WHEN excluded.access_token != '' THEN excluded.access_token "
-            "ELSE tiendanube_credentials.access_token END",
+            "ON CONFLICT(user_id) DO UPDATE SET "
+            "client_id=CASE WHEN excluded.client_id != '' THEN excluded.client_id ELSE tiendanube_credentials.client_id END, "
+            "client_secret=CASE WHEN excluded.client_secret != '' THEN excluded.client_secret ELSE tiendanube_credentials.client_secret END, "
+            "store_id=CASE WHEN excluded.store_id != '' THEN excluded.store_id ELSE tiendanube_credentials.store_id END, "
+            "access_token=CASE WHEN excluded.access_token != '' THEN excluded.access_token ELSE tiendanube_credentials.access_token END",
             (user_id, client_id.strip(), enc_secret, store_id.strip(), enc_token),
         )
         conn.commit()
