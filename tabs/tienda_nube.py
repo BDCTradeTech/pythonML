@@ -198,14 +198,18 @@ def _recortar_prolijo(texto: str, limite: int) -> str:
     return recorte.rstrip(" ,.-")
 
 
-def _generar_seo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str, extra: str = "") -> str:
+def _generar_seo_completo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str, extra: str = "") -> str:
+    """Un solo prompt para título SEO + descripción SEO + tags -- antes eran dos
+    llamadas separadas al proveedor de IA (una para título/descripción, otra para
+    tags); ahora cada botón hace UNA sola llamada y trae los tres campos juntos."""
     desc_recortada = (descripcion or "").strip()[:500]
     return (
         "Sos un experto en SEO para e-commerce argentino. Escribí en español rioplatense.\n"
-        "Basándote en este producto, generá SOLAMENTE un JSON válido con dos campos:\n"
+        "Basándote en este producto, generá SOLAMENTE un JSON válido con tres campos:\n"
         '- "seo_title": título SEO de HASTA 70 caracteres, con marca y modelo, orientado a búsqueda.\n'
         '- "seo_description": descripción SEO de HASTA 160 caracteres, orientada a búsqueda.\n'
-        "Es OBLIGATORIO respetar esos límites de caracteres exactamente. Nunca cortes una palabra "
+        '- "tags": ENTRE 8 Y 12 palabras clave de SEO, como array de strings -- ni menos de 8 ni más de 12.\n'
+        "Es OBLIGATORIO respetar esos límites exactamente. Nunca cortes una palabra "
         "a la mitad -- si no entra, acortá la frase entera para que quede prolija.\n\n"
         f"Nombre del producto: {nombre}\n"
         f"Marca: {marca or 'sin marca'}\n"
@@ -213,7 +217,7 @@ def _generar_seo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str
         f"Descripción: {desc_recortada}\n"
         f"{extra}\n"
         'Respondé SOLO con el JSON, sin backticks ni texto adicional, con este formato exacto: '
-        '{"seo_title": "...", "seo_description": "..."}'
+        '{"seo_title": "...", "seo_description": "...", "tags": ["...", "..."]}'
     )
 
 
@@ -253,110 +257,79 @@ def _deepseek_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def _generar_tags_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> str:
-    desc_recortada = (descripcion or "").strip()[:500]
-    return (
-        "Sos un experto en SEO para e-commerce argentino. Escribí en español rioplatense.\n"
-        "Basándote en este producto, generá ENTRE 8 Y 12 palabras clave / tags de SEO "
-        "orientadas a búsqueda -- ni menos de 8 ni más de 12.\n"
-        "Respondé SOLO con las palabras clave separadas por comas, sin numerar, sin explicación, "
-        "sin backticks, sin comillas -- por ejemplo: auriculares bluetooth, manos libres, deportivo\n\n"
-        f"Nombre del producto: {nombre}\n"
-        f"Marca: {marca or 'sin marca'}\n"
-        f"Categoría: {categoria_nombre or 'sin categoría'}\n"
-        f"Descripción: {desc_recortada}\n"
-    )
+def _generar_seo_completo_una_vez(generador, api_key: str, nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
+    """Cada botón (Gemini/Groq/DeepSeek) dispara UN proveedor puntual con UNA sola
+    llamada que trae título SEO, descripción SEO y tags juntos -- el usuario elige
+    qué proveedor probar. Se corre vía run.io_bound.
 
+    Devuelve (resultado, vacio). Si la respuesta no viene parseable, viene vacía, o le
+    falta algún campo, resultado es None -- en ESE caso nunca se completa ningún campo
+    con basura, se avisa en pantalla. vacio=True distingue "la IA no devolvió nada
+    usable" (confirmado en vivo con Groq y con DeepSeek, 2026-08-27) de una excepción
+    de red/API (vacio=False), para el mensaje en pantalla.
 
-def _generar_tags_una_vez(generador, api_key: str, nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
-    """A diferencia de _generar_seo_sync (que prueba varios proveedores en cadena),
-    acá cada botón dispara UN proveedor puntual -- el usuario elige cuál. Se corre
-    vía run.io_bound.
-
-    Devuelve (tags, vacio). vacio=True marca específicamente el caso "la IA respondió
-    200 pero sin texto" (confirmado en vivo con Groq y con DeepSeek, 2026-08-27) --
-    para poder avisarlo en pantalla en vez de dejar el campo en blanco sin explicación,
-    que se ve igual que un botón roto.
-
-    Sin límite de longitud documentado por Tiendanube para el campo tags, pero se le
-    pide a la IA entre 8 y 12 palabras clave y se recorta a 12 como respaldo -- sin
-    tope, un modelo puede devolver cincuenta y llenar la ficha de ruido."""
+    Si algún campo se pasa de largo (70 / 160 / 8-12 tags), reintenta UNA vez con el
+    mismo proveedor aclarando el límite; si sigue mal, recorta prolijo como respaldo
+    garantizado (nunca a la mitad de una palabra, tags se recortan a 12)."""
     if not api_key:
         return None, False
-    prompt = _generar_tags_prompt(nombre, marca, categoria_nombre, descripcion)
-    try:
+
+    def _pedir(prompt: str) -> Optional[Dict[str, Any]]:
+        # NO atrapa la excepción de generador() -- eso se distingue afuera (vacio=False)
+        # de una respuesta sin datos usables (vacio=True): son mensajes distintos en pantalla.
         raw = generador(api_key, prompt)
+        if not raw or not raw.strip():
+            return None
+        try:
+            data = json.loads(_clean_json(raw))
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        seo_title = str(data.get("seo_title") or "").strip()
+        seo_description = str(data.get("seo_description") or "").strip()
+        tags_raw = data.get("tags")
+        if isinstance(tags_raw, list):
+            tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+        elif isinstance(tags_raw, str):
+            tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        else:
+            tags = []
+        if not (seo_title and seo_description and tags):
+            return None
+        return {"seo_title": seo_title, "seo_description": seo_description, "tags": tags}
+
+    prompt = _generar_seo_completo_prompt(nombre, marca, categoria_nombre, descripcion)
+    try:
+        resultado = _pedir(prompt)
     except Exception:
         return None, False
-    if not raw or not raw.strip():
-        return None, True
-    limpio = _clean_json(raw).strip().strip('"').strip("'")
-    limpio = " ".join(limpio.split())
-    if not limpio:
-        return None, True
-    tags = [t.strip() for t in limpio.split(",") if t.strip()]
-    return ", ".join(tags[:12]), False
-
-
-def _generar_seo_sync(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
-    """Se corre vía run.io_bound. Reusa el mismo helper de IA que ya existe en la
-    app (Groq/Gemini, keys de Configuración) -- ninguna integración nueva. Si el
-    primer intento se pasa de los límites, reintenta UNA vez con un prompt que se
-    lo aclara; si sigue pasado, recorta prolijo como respaldo garantizado (nunca a
-    la mitad de una palabra).
-
-    Devuelve (resultado, motivo) -- motivo en "ok" / "sin_keys" / "vacio". Distinguir
-    "sin_keys" de "vacio" importa para el mensaje en pantalla: un campo que queda en
-    blanco sin explicación se ve igual que un botón roto."""
-    groq_key = get_app_config("groq_api_key")
-    gemini_key = get_app_config("gemini_api_key")
-    if not groq_key and not gemini_key:
-        return None, "sin_keys"
-
-    def _pedir(prompt: str) -> Optional[Dict[str, str]]:
-        # Groq puede responder 200 con contenido VACÍO (confirmado en vivo
-        # 2026-08-27 -- no tira excepción, simplemente no genera nada) -- por eso
-        # se prueba cada proveedor configurado en orden y se sigue al próximo si
-        # el anterior no dio un resultado usable, en vez de rendirse en el primero.
-        for api_key, generador in ((groq_key, _groq_generate), (gemini_key, _gemini_generate)):
-            if not api_key:
-                continue
-            try:
-                raw = generador(api_key, prompt)
-            except Exception:
-                continue
-            if not raw:
-                continue
-            try:
-                data = json.loads(_clean_json(raw))
-            except Exception:
-                continue
-            if not isinstance(data, dict):
-                continue
-            seo_title = str(data.get("seo_title") or "").strip()
-            seo_description = str(data.get("seo_description") or "").strip()
-            if seo_title and seo_description:
-                return {"seo_title": seo_title, "seo_description": seo_description}
-        return None
-
-    prompt = _generar_seo_prompt(nombre, marca, categoria_nombre, descripcion)
-    resultado = _pedir(prompt)
     if resultado is None:
-        return None, "vacio"
+        return None, True
 
-    if len(resultado["seo_title"]) > 70 or len(resultado["seo_description"]) > 160:
+    fuera_de_limite = (
+        len(resultado["seo_title"]) > 70
+        or len(resultado["seo_description"]) > 160
+        or not (8 <= len(resultado["tags"]) <= 12)
+    )
+    if fuera_de_limite:
         extra = (
-            f"Tu intento anterior se pasó del límite -- seo_title tenía "
-            f"{len(resultado['seo_title'])} caracteres (máximo 70), seo_description tenía "
-            f"{len(resultado['seo_description'])} (máximo 160). Generá de nuevo, más corto."
+            f"Tu intento anterior no cumplió los límites -- seo_title: "
+            f"{len(resultado['seo_title'])}/70 caracteres, seo_description: "
+            f"{len(resultado['seo_description'])}/160 caracteres, tags: {len(resultado['tags'])} "
+            f"(deben ser entre 8 y 12). Generá de nuevo respetando los límites."
         )
-        reintento = _pedir(_generar_seo_prompt(nombre, marca, categoria_nombre, descripcion, extra))
+        try:
+            reintento = _pedir(_generar_seo_completo_prompt(nombre, marca, categoria_nombre, descripcion, extra))
+        except Exception:
+            reintento = None
         if reintento is not None:
             resultado = reintento
 
     resultado["seo_title"] = _recortar_prolijo(resultado["seo_title"], 70)
     resultado["seo_description"] = _recortar_prolijo(resultado["seo_description"], 160)
-    return resultado, "ok"
+    resultado["tags"] = resultado["tags"][:12]
+    return resultado, False
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -739,7 +712,13 @@ def build_tab_vinculacion(container) -> None:
 
                         with ui.row().classes("w-full items-center justify-between mt-2"):
                             ui.label("SEO").classes("text-sm font-semibold")
-                            seo_generar_btn = ui.button("Generar con IA", icon="auto_awesome").props("outline dense no-caps size=sm")
+                            with ui.row().classes("gap-2"):
+                                seo_gemini_btn = ui.button("Gemini", icon="auto_awesome").props("outline dense no-caps size=sm")
+                                seo_groq_btn = ui.button("Groq", icon="auto_awesome").props("outline dense no-caps size=sm")
+                                seo_deepseek_btn = ui.button("DeepSeek", icon="auto_awesome").props("outline dense no-caps size=sm")
+                        ui.label(
+                            "Un solo botón completa título, descripción y tags juntos."
+                        ).classes("text-xs text-gray-500")
 
                         ui.label("Título SEO").classes("text-xs text-gray-500")
                         seo_title_input = ui.input(value="").props("outlined dense").classes("w-full")
@@ -765,15 +744,8 @@ def build_tab_vinculacion(container) -> None:
 
                         ui.label("Tags / palabras clave SEO").classes("text-xs text-gray-500 mt-1")
                         tags_input = ui.input(value="").props("outlined dense").classes("w-full")
-                        with ui.row().classes("gap-2 mt-1"):
-                            tags_gemini_btn = ui.button("Gemini", icon="auto_awesome").props("outline dense no-caps size=sm")
-                            tags_groq_btn = ui.button("Groq", icon="auto_awesome").props("outline dense no-caps size=sm")
-                            tags_deepseek_btn = ui.button("DeepSeek", icon="auto_awesome").props("outline dense no-caps size=sm")
-                        ui.label(
-                            "Sin límite documentado de longitud en la API de Tiendanube -- se manda tal cual."
-                        ).classes("text-xs text-gray-500")
 
-                        def _tags_generador(nombre_config: str, api_key_config: str, generador, boton) -> Any:
+                        def _seo_completo_generador(nombre_config: str, api_key_config: str, generador, boton) -> Any:
                             async def _run() -> None:
                                 api_key = get_app_config(api_key_config)
                                 if not api_key:
@@ -786,53 +758,29 @@ def build_tab_vinculacion(container) -> None:
                                     nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
                                     marca_val = (marca_input.value or "").strip() or None
                                     resultado, vacio = await run.io_bound(
-                                        _generar_tags_una_vez, generador, api_key, nombre_base, marca_val,
+                                        _generar_seo_completo_una_vez, generador, api_key, nombre_base, marca_val,
                                         cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
                                     )
                                     if resultado is None:
                                         if vacio:
                                             ui.notify(
-                                                "La IA no devolvió texto -- probá de nuevo o con otro proveedor.",
-                                                color="negative",
+                                                "La IA no devolvió un resultado usable -- probá de nuevo o con otro "
+                                                "proveedor.", color="negative",
                                             )
                                         else:
                                             ui.notify(f"Error al generar con {nombre_config}.", color="negative")
                                         return
-                                    tags_input.set_value(resultado)
+                                    seo_title_input.set_value(resultado["seo_title"])
+                                    seo_description_input.set_value(resultado["seo_description"])
+                                    tags_input.set_value(", ".join(resultado["tags"]))
+                                    _actualizar_seo_title_counter()
+                                    _actualizar_seo_desc_counter()
                                 finally:
                                     boton.props(remove="loading")
                             return _run
-                        tags_gemini_btn.on_click(_tags_generador("Gemini", "gemini_api_key", _gemini_generate, tags_gemini_btn))
-                        tags_groq_btn.on_click(_tags_generador("Groq", "groq_api_key", _groq_generate, tags_groq_btn))
-                        tags_deepseek_btn.on_click(_tags_generador("DeepSeek", "deepseek_api_key", _deepseek_generate, tags_deepseek_btn))
-
-                        async def _generar_seo() -> None:
-                            seo_generar_btn.props("loading")
-                            try:
-                                nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
-                                marca_val = (marca_input.value or "").strip() or None
-                                resultado, motivo = await run.io_bound(
-                                    _generar_seo_sync, nombre_base, marca_val,
-                                    cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
-                                )
-                                if resultado is None:
-                                    if motivo == "sin_keys":
-                                        ui.notify(
-                                            "Configurá una key de Groq o Gemini en Configuración.", color="negative",
-                                        )
-                                    else:
-                                        ui.notify(
-                                            "La IA no devolvió texto -- probá de nuevo o con otro proveedor.",
-                                            color="negative",
-                                        )
-                                    return
-                                seo_title_input.set_value(resultado["seo_title"])
-                                seo_description_input.set_value(resultado["seo_description"])
-                                _actualizar_seo_title_counter()
-                                _actualizar_seo_desc_counter()
-                            finally:
-                                seo_generar_btn.props(remove="loading")
-                        seo_generar_btn.on_click(_generar_seo)
+                        seo_gemini_btn.on_click(_seo_completo_generador("Gemini", "gemini_api_key", _gemini_generate, seo_gemini_btn))
+                        seo_groq_btn.on_click(_seo_completo_generador("Groq", "groq_api_key", _groq_generate, seo_groq_btn))
+                        seo_deepseek_btn.on_click(_seo_completo_generador("DeepSeek", "deepseek_api_key", _deepseek_generate, seo_deepseek_btn))
 
                         ui.label("Categoría (Tiendanube)").classes("text-sm font-semibold mt-2")
                         categoria_sel = ui.select(cat_options, value=categoria_sugerida).props("outlined dense").classes("w-full")
