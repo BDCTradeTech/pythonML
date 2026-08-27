@@ -666,7 +666,17 @@ def _mostrar_tabla_precios(
         )
         fusionado = dict(principal)
         fusionado["sold_quantity"] = total_sold
-        catalog_item = next((x for x in grupo if x.get("catalog_listing") is True), None)
+        # Determinístico: la publicación de catálogo con MENOR precio (desempate por id) es
+        # la única con chance real de ganar cuando el grupo son variantes de cuotas (contado/
+        # 3/6/9/12) sobre el mismo SKU -- las de precio mayor van a competing siempre. Elegir
+        # "la primera que devuelva ML" (next(...) sobre el orden de /items/search, no
+        # garantizado estable) hacía que catalog_status cambiara de render a render sin que
+        # cambiara nada en el mercado.
+        _catalog_items_grupo = [x for x in grupo if x.get("catalog_listing") is True]
+        catalog_item = (
+            min(_catalog_items_grupo, key=lambda x: (float(x.get("price") or 0), str(x.get("id") or "")))
+            if _catalog_items_grupo else None
+        )
         fusionado["catalog_item_id"] = catalog_item["id"] if catalog_item else None
         fusionado["catalog_product_id"] = catalog_item.get("catalog_product_id") if catalog_item else principal.get("catalog_product_id")
         items_dedup.append(fusionado)
@@ -1025,10 +1035,13 @@ def _mostrar_tabla_precios(
                     if _our_price > 0:
                         r["catalog_position"] = sum(1 for _c in _sorted_r if float(_c.get("price") or 0) < _our_price) + 1
 
+        # catalog_status en None significa "no se pudo consultar a ML esta vuelta" (falla de
+        # red/403/timeout en price_to_win -- ver ml_get_item_price_to_win), no "no compite".
+        # No lo persistimos para no pisar en silencio el último valor bueno conocido.
         _cs_rows = [
             (r.get("catalog_status"), r.get("seller_sku"))
             for r in items_subset
-            if r.get("seller_sku")
+            if r.get("seller_sku") and r.get("catalog_status") is not None
         ]
         if _cs_rows:
             _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

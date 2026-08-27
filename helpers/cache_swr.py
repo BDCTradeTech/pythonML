@@ -81,9 +81,13 @@ def cached_or_refresh_bulk(key_prefix: str, ids: List[str], fetch_fn):
     if miss_ids:
         frescos_bloqueante = fetch_fn(miss_ids) or {}
         for iid, val in frescos_bloqueante.items():
+            if val is None:
+                # fetch_fn falló para este id (ver logueo del lado del caller) -- no hay
+                # valor fresco ni stale para servir. No lo metemos en out: mejor "sin dato
+                # este render" que pisar en silencio un dato bueno con None aguas abajo.
+                continue
             out[iid] = val
-            if val is not None:
-                set_cached(f"{key_prefix}_{iid}", val)
+            set_cached(f"{key_prefix}_{iid}", val)
 
     return out
 

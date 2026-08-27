@@ -973,8 +973,11 @@ def ml_get_item_price_to_win(access_token: str, item_id: str) -> Optional[Dict[s
                 "current_price": d.get("current_price"),
                 "consistent":    d.get("consistent"),
             }
+        logging.warning(
+            f"[ML_API] ml_get_item_price_to_win item_id={item_id} HTTP {resp.status_code} -- {resp.text[:200]}"
+        )
     except Exception:
-        pass
+        logging.exception(f"[ML_API] ml_get_item_price_to_win_error item_id={item_id}")
     return None
 
 
