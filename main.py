@@ -158,7 +158,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.27.06"
+VERSION = "3.26.08.27.07"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -698,6 +698,19 @@ def show_main_layout(container) -> None:
                                                 tab_panels.value = tab_map[l]
                                                 app.storage.user["last_tab"] = l
                                             ui.menu_item(lbl_display, _ml_click)
+                # Solo aparece si el usuario tiene credenciales de Tienda Nube cargadas
+                # (no tiene sentido mostrarle el menú a una cuenta sin tienda, ej. EXXA,
+                # DsMaxTech) -- se muestra solo cuando vincula una, sin que nadie tenga
+                # que acordarse de habilitarlo a mano en Admin > Permisos.
+                if perms.get("tn_vinculacion", True) and get_tiendanube_credentials(user["id"]):
+                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(tienda_nube_menu)):
+                        with ui.button("TIENDANUBE").props("flat dense no-caps").classes(_nav_font):
+                            with ui.menu().props("auto-close content-class=text-lg") as tienda_nube_menu:
+                                def _vinculacion_click():
+                                    _lazy_load("Vinculación")
+                                    tab_panels.value = tab_vinculacion
+                                    app.storage.user["last_tab"] = "Vinculación"
+                                _nav_item("VINCULACIÓN", "sync_alt", _vinculacion_click)
                 if perms.get("compras", True) or perms.get("stock_bdc", True) or perms.get("compras_lista", True) or perms.get("pedidos", True) or perms.get("historicos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
                         with ui.button("BDC").props("flat dense no-caps").classes(_nav_font):
@@ -798,19 +811,6 @@ def show_main_layout(container) -> None:
                                         tab_panels.value = tab_config
                                         app.storage.user["last_tab"] = "Configuración"
                                     _nav_item("CONFIGURACIÓN", "settings", _config_click)
-                # Solo aparece si el usuario tiene credenciales de Tienda Nube cargadas
-                # (no tiene sentido mostrarle el menú a una cuenta sin tienda, ej. EXXA,
-                # DsMaxTech) -- se muestra solo cuando vincula una, sin que nadie tenga
-                # que acordarse de habilitarlo a mano en Admin > Permisos.
-                if perms.get("tn_vinculacion", True) and get_tiendanube_credentials(user["id"]):
-                    with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(tienda_nube_menu)):
-                        with ui.button("TIENDA NUBE").props("flat dense no-caps").classes(_nav_font):
-                            with ui.menu().props("auto-close content-class=text-lg") as tienda_nube_menu:
-                                def _vinculacion_click():
-                                    _lazy_load("Vinculación")
-                                    tab_panels.value = tab_vinculacion
-                                    app.storage.user["last_tab"] = "Vinculación"
-                                _nav_item("VINCULACIÓN", "sync_alt", _vinculacion_click)
                 if perms.get("admin", False):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(admin_menu)):
                         with ui.button("ADMIN").props("flat dense no-caps").classes(_nav_font):
@@ -939,7 +939,7 @@ def show_main_layout(container) -> None:
             "Gastos":        ("Impuestos", "Gastos"),
             "Datos":         ("Config", "Datos"),
             "Configuración": ("Config", "Configuración"),
-            "Vinculación":   ("Tienda Nube", "Vinculación"),
+            "Vinculación":   ("TiendaNube", "Vinculación"),
             "Admin":         ("Config", "Admin"),
             "Actividad":     ("Config", "Actividad"),
         }

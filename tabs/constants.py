@@ -46,7 +46,7 @@ TAB_REGISTRY: List[Tuple[str, str, str]] = [
     ("Impuestos", "gastos", "Gastos"),
     ("Config", "datos", "Datos"),
     ("Config", "configuracion", "Configuración"),
-    ("Tienda Nube", "tn_vinculacion", "Vinculación"),
+    ("TiendaNube", "tn_vinculacion", "Vinculación"),
     ("Admin", "admin", "Admin"),
     ("Admin", "actividad", "Actividad"),
 ]
