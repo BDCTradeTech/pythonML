@@ -3176,9 +3176,6 @@ def _mostrar_tabla_precios(
             filtrados = [x for x in filtrados if str(x.get("status") or "").lower() == "active"]
         elif estado_val == "suspendidas":
             filtrados = [x for x in filtrados if str(x.get("status") or "").lower() != "active"]
-        awei_val = getattr(filtro_awei, "value", "no_incluye")
-        if awei_val == "no_incluye":
-            filtrados = [x for x in filtrados if "awei" not in (x.get("marca") or "").lower()]
         sku_txt = (getattr(filtro_sku, "value", "") or "").strip().lower()
         if sku_txt:
             filtrados = [x for x in filtrados if sku_txt in (x.get("seller_sku") or "").lower() or sku_txt in (x.get("title") or "").lower()]
@@ -3388,11 +3385,6 @@ def _mostrar_tabla_precios(
                 value="todos",
                 label="Ganando",
             ).classes("w-36").props("outlined dense")
-            filtro_awei = ui.select(
-                {"incluye": "Incluye", "no_incluye": "No incluye"},
-                value="no_incluye",
-                label="Awei",
-            ).classes("w-40").props("outlined dense")
             filtro_sku = ui.input(placeholder="SKU o Nombre...").props("outlined dense clearable").classes("w-56")
             filtro_revision = ui.select(
                 {"todos": "Todos", "pendientes": "Sin revisar", "revisados": "Revisados", "precio_ok": "Precio cambiado"},
@@ -3435,7 +3427,6 @@ def _mostrar_tabla_precios(
 
     filtro_stock.on_value_change(on_filtro_stock_change)
     filtro_estado.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
-    filtro_awei.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
     filtro_ganando.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
     filtro_sku.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
     filtro_revision.on_value_change(lambda *a: background_tasks.create(filtrar_y_pintar()))
