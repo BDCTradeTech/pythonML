@@ -153,6 +153,103 @@ def _get_with_backoff(url_or_path: str, store_id: str, access_token: str, auth_h
     return resp
 
 
+def _post_with_backoff(
+    path: str, store_id: str, access_token: str, auth_header_style: str,
+    json_body: dict, max_retries: int = 3,
+) -> requests.Response:
+    """POST con el mismo rate limiting y backoff ante 429 que _get_with_backoff --
+    comparte la misma instancia de _rate_limiter, asi que un GET y un POST seguidos
+    (ej. chequeo de idempotencia + creacion) respetan el mismo cupo de la tienda."""
+    url = f"{API_BASE}/{store_id}/{path.lstrip('/')}"
+    resp = None
+    for intento in range(max_retries + 1):
+        _rate_limiter.acquire()
+        resp = requests.post(
+            url, json=json_body,
+            headers=_headers_for_style(access_token, auth_header_style, _user_agent()),
+            timeout=20,
+        )
+        _rate_limiter.sync_from_headers(resp.headers)
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        reset_ms = resp.headers.get("x-rate-limit-reset")
+        if retry_after:
+            espera = float(retry_after)
+        elif reset_ms:
+            espera = float(reset_ms) / 1000.0
+        else:
+            espera = 1.0
+        logging.warning(
+            f"[TIENDANUBE] 429 (rate limit) en POST {path}, intento {intento + 1}/{max_retries + 1}, "
+            f"esperando {espera:.2f}s antes de reintentar"
+        )
+        time.sleep(espera)
+    return resp
+
+
+def tiendanube_create_product(
+    store_id: str, access_token: str, auth_header_style: str, payload: dict,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """POST /products. Devuelve (producto_creado, error) -- nunca ambos a la vez.
+    Si el HTTP no es 200/201, error trae el codigo y el cuerpo crudo de la respuesta
+    tal cual lo mando Tiendanube (nada de "no se pudo crear" generico)."""
+    try:
+        resp = _post_with_backoff("products", store_id, access_token, auth_header_style, payload)
+    except Exception as ex:
+        return None, f"Excepción de red al crear el producto: {ex}"
+    if resp is None:
+        return None, "Sin respuesta del servidor (excepción no capturada)"
+    if resp.status_code not in (200, 201):
+        return None, f"HTTP {resp.status_code}: {resp.text[:800]}"
+    try:
+        data = resp.json()
+    except Exception as ex:
+        return None, f"Tiendanube respondió {resp.status_code} pero el cuerpo no es JSON válido ({ex}): {resp.text[:300]}"
+    if not isinstance(data, dict):
+        return None, f"Respuesta inesperada de Tiendanube (no es un objeto): {resp.text[:300]}"
+    return data, None
+
+
+def tiendanube_find_by_sku(
+    store_id: str, access_token: str, auth_header_style: str, sku: str,
+) -> Optional[Dict[str, Any]]:
+    """Busca un producto ya existente en Tiendanube por SKU EXACTO de variante, para
+    el chequeo de idempotencia antes de crear.
+
+    GET /products no tiene un filtro exclusivo de SKU (confirmado contra la doc
+    oficial 2026-08-27) -- el parámetro "q" busca en nombre/tags/SKU de forma
+    parcial/difusa, asi que se usa solo como prefiltro y la igualdad exacta de SKU
+    se verifica del lado del cliente, variante por variante. Devuelve
+    {"product_id", "variant_id", "sku"} o None si no hay coincidencia exacta."""
+    sku_norm = (sku or "").strip().lower()
+    if not sku_norm:
+        return None
+    from urllib.parse import quote
+    path = f"products?q={quote(sku)}&per_page=200"
+    try:
+        resp = _get_with_backoff(path, store_id, access_token, auth_header_style)
+    except Exception:
+        return None
+    if resp is None or resp.status_code != 200:
+        return None
+    try:
+        productos = resp.json()
+    except Exception:
+        return None
+    if not isinstance(productos, list):
+        return None
+    for prod in productos:
+        for var in (prod.get("variants") or []):
+            if (var.get("sku") or "").strip().lower() == sku_norm:
+                return {
+                    "product_id": str(prod.get("id")),
+                    "variant_id": str(var.get("id")),
+                    "sku": var.get("sku"),
+                }
+    return None
+
+
 def tiendanube_list_products_with_variants(
     store_id: str, access_token: str, auth_header_style: str,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:

@@ -377,6 +377,23 @@ def init_db() -> None:
         """
     )
 
+    # Mapeo aprendido: categoria de ML -> categoria de Tiendanube elegida por el
+    # usuario al crear un producto. La proxima vez que aparezca esa categoria de ML
+    # viene preseleccionada (no hay API de ML que diga "a que categoria de TN
+    # corresponde esto" -- se aprende de lo que el usuario elige).
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tn_categoria_mapeo (
+            user_id INTEGER NOT NULL,
+            ml_category_id TEXT NOT NULL,
+            tn_category_id TEXT NOT NULL,
+            updated_at TEXT,
+            PRIMARY KEY (user_id, ml_category_id),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     # Tokens OAuth de QuickBooks (access_token, refresh_token, expires_at, realm_id)
     cur.execute(
         """
@@ -1315,6 +1332,67 @@ def set_tiendanube_sync_status(user_id: int, ok: bool, error: Optional[str], ite
             "ON CONFLICT(user_id) DO UPDATE SET last_sync_at=excluded.last_sync_at, "
             "ok=excluded.ok, error=excluded.error, items_leidos=excluded.items_leidos",
             (user_id, _dt.utcnow().isoformat(), 1 if ok else 0, error, items_leidos),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_tiendanube_producto(
+    user_id: int, variant_id: str, product_id: str, sku: Optional[str],
+    nombre: Optional[str], precio: Any, stock: Any,
+) -> None:
+    """Inserta/actualiza UNA fila del cache local de Tiendanube sin tocar el resto
+    (a diferencia de replace_tiendanube_productos, que borra y reinserta todo --
+    eso es para un resync completo, esto es para reflejar altas puntuales sin
+    esperar la proxima sincronizacion)."""
+    from datetime import datetime as _dt
+    now = _dt.utcnow().isoformat()
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tiendanube_productos "
+            "(user_id, variant_id, product_id, sku, nombre, precio, stock, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id, variant_id) DO UPDATE SET "
+            "product_id=excluded.product_id, sku=excluded.sku, nombre=excluded.nombre, "
+            "precio=excluded.precio, stock=excluded.stock, updated_at=excluded.updated_at",
+            (user_id, variant_id, product_id, sku, nombre, precio, stock, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_tn_categoria_mapeada(user_id: int, ml_category_id: str) -> Optional[str]:
+    """Categoria de Tiendanube aprendida para esta categoria de ML, o None si
+    todavia no se eligio ninguna."""
+    if not ml_category_id:
+        return None
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT tn_category_id FROM tn_categoria_mapeo WHERE user_id = ? AND ml_category_id = ?",
+            (user_id, ml_category_id),
+        ).fetchone()
+        return row["tn_category_id"] if row else None
+    finally:
+        conn.close()
+
+
+def set_tn_categoria_mapeo(user_id: int, ml_category_id: str, tn_category_id: str) -> None:
+    """Aprende (o corrige) que categoria de TN corresponde a esta categoria de ML."""
+    from datetime import datetime as _dt
+    if not ml_category_id or not tn_category_id:
+        return
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tn_categoria_mapeo (user_id, ml_category_id, tn_category_id, updated_at) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(user_id, ml_category_id) DO UPDATE SET "
+            "tn_category_id=excluded.tn_category_id, updated_at=excluded.updated_at",
+            (user_id, ml_category_id, tn_category_id, _dt.utcnow().isoformat()),
         )
         conn.commit()
     finally:

@@ -1354,25 +1354,30 @@ def _extraer_color_desde_texto(texto: str) -> str:
 
 
 def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
-    """Obtiene el texto de la descripción del ítem. Devuelve '' si falla."""
+    """Obtiene el texto de la descripción del ítem. Devuelve '' si falla.
+
+    Endpoint SINGULAR /description -- confirmado en vivo 2026-08-27: el endpoint
+    PLURAL /descriptions (el que usaba esta función antes) devuelve 410 Gone, ML lo
+    deprecó. El singular responde 200 con {"text": "...", "plain_text": "..."}."""
     if not access_token or not str(item_id).strip():
         return ""
     try:
         resp = get_ml_session().get(
-            f"https://api.mercadolibre.com/items/{item_id}/descriptions",
+            f"https://api.mercadolibre.com/items/{item_id}/description",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
             timeout=8,
         )
         if not resp.ok:
             return ""
         data = resp.json()
-        if not isinstance(data, list) or not data:
-            return ""
-        for d in data:
-            if isinstance(d, dict):
-                txt = d.get("plain_text") or d.get("text") or ""
-                if txt:
-                    return str(txt)
+        if isinstance(data, dict):
+            return str(data.get("plain_text") or data.get("text") or "")
+        if isinstance(data, list):
+            for d in data:
+                if isinstance(d, dict):
+                    txt = d.get("plain_text") or d.get("text") or ""
+                    if txt:
+                        return str(txt)
         return ""
     except Exception:
         return ""
