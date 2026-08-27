@@ -24,8 +24,12 @@ from db import (
     export_user_db_data,
     import_user_db_data,
     set_app_config,
+    get_tiendanube_credentials,
+    set_tiendanube_credentials,
+    set_tiendanube_test_result,
 )
 from qb_api import fetch_qb_customer_detail
+from tiendanube_api import tiendanube_test_connection
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -378,6 +382,73 @@ def build_tab_config() -> None:
                         ui.label(cust_nombre).classes("text-sm text-gray-800")
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
+
+            # 2b. Tienda Nube — token cargado a mano, sin flujo OAuth en la app
+            with ui.column().classes("w-[400px] flex-shrink-0"):
+                with ui.card().classes(_card_class):
+                    ui.label("Tienda Nube").classes("text-base font-semibold mb-2")
+                    tn_creds = get_tiendanube_credentials(user["id"])
+
+                    with ui.expansion("Credenciales", icon="storefront").classes("w-full").props("expand-icon-toggle dense"):
+                        inp_tn_cid = ui.input("Client ID", value=tn_creds["client_id"] if tn_creds else "").classes("w-full").props("dense")
+                        inp_tn_csec = ui.input("Client Secret", value=tn_creds["client_secret"] if tn_creds else "").classes("w-full").props("type=password dense")
+                        inp_tn_store = ui.input("Store ID", value=tn_creds["store_id"] if tn_creds else "").classes("w-full").props("dense")
+                        inp_tn_token = ui.input("Access Token", value=tn_creds["access_token"] if tn_creds else "").classes("w-full").props("type=password dense")
+
+                        ui.label("URL de redirect para el panel de partner:").classes("text-xs text-gray-600 mt-2")
+                        _tn_redirect = os.getenv("TIENDANUBE_REDIRECT_URI", "https://www.bdctechtrade.com/tiendanube/callback")
+                        with ui.row().classes("items-center gap-1"):
+                            ui.input(value=_tn_redirect).props("readonly dense outlined").classes("flex-1 text-xs")
+
+                            async def _copiar_redirect_tn():
+                                await ui.run_javascript(f"navigator.clipboard.writeText('{_tn_redirect}')")
+                                ui.notify("Copiado", color="positive")
+
+                            ui.button(icon="content_copy", on_click=_copiar_redirect_tn).props("dense flat")
+
+                    def guardar_tn() -> None:
+                        cid = (inp_tn_cid.value or "").strip()
+                        csec = (inp_tn_csec.value or "").strip()
+                        store = (inp_tn_store.value or "").strip()
+                        token = (inp_tn_token.value or "").strip()
+                        if not store:
+                            ui.notify("Ingresá Store ID", color="warning")
+                            return
+                        set_tiendanube_credentials(user["id"], cid, csec, store, token)
+                        ui.notify("Credenciales guardadas", color="positive")
+
+                    tn_test_label = ui.label("").classes("text-xs")
+
+                    def probar_conexion_tn() -> None:
+                        store = (inp_tn_store.value or "").strip()
+                        token = (inp_tn_token.value or "").strip()
+                        if not store or not token:
+                            ui.notify("Completá Store ID y Access Token", color="warning")
+                            return
+                        ok, msg, style = tiendanube_test_connection(store, token)
+                        set_tiendanube_test_result(user["id"], ok, style)
+                        detalle = f"{msg} (header: {style})" if ok else msg
+                        tn_test_label.set_text(detalle)
+                        tn_test_label.classes(replace="text-xs text-positive" if ok else "text-xs text-negative")
+                        ui.notify("Conexión OK" if ok else "Falló la conexión", color="positive" if ok else "negative")
+
+                    with ui.row().classes("gap-2 mt-2"):
+                        ui.button("Guardar credenciales", on_click=guardar_tn, color="primary").props("dense no-caps")
+                        ui.button("Probar conexión", on_click=probar_conexion_tn, color="secondary").props("dense no-caps")
+
+                    ui.separator().classes("my-2")
+                    ui.label("Estado").classes("text-xs font-semibold mb-1")
+                    if tn_creds and tn_creds.get("last_test_at"):
+                        _tn_icon = "check_circle" if tn_creds["last_test_ok"] else "error"
+                        _tn_color = "positive" if tn_creds["last_test_ok"] else "negative"
+                        with ui.row().classes("items-center gap-2"):
+                            ui.icon(_tn_icon, color=_tn_color, size="sm")
+                            ui.label("Conexión OK" if tn_creds["last_test_ok"] else "Conexión falló").classes(f"text-{_tn_color} text-sm")
+                        ui.label(f"Último test: {tn_creds['last_test_at'][:19].replace('T', ' ')}").classes("text-xs text-gray-600")
+                        if tn_creds.get("auth_header_style"):
+                            ui.label(f"Header confirmado: {tn_creds['auth_header_style']}").classes("text-xs text-gray-600")
+                    else:
+                        ui.label("Sin probar todavía").classes("text-warning text-sm")
 
             # 3. Estadísticas, Contraseña, Base de datos — apiladas, mismo ancho que ML y QB
             with ui.column().classes("w-[420px] flex-shrink-0 gap-3"):

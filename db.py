@@ -321,6 +321,23 @@ def init_db() -> None:
         """
     )
 
+    # Credenciales de Tiendanube por usuario — token cargado a mano (sin flujo OAuth en la app)
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tiendanube_credentials (
+            user_id INTEGER PRIMARY KEY,
+            client_id TEXT,
+            client_secret TEXT,
+            store_id TEXT,
+            access_token TEXT,
+            auth_header_style TEXT,
+            last_test_ok INTEGER,
+            last_test_at TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+
     # Tokens OAuth de QuickBooks (access_token, refresh_token, expires_at, realm_id)
     cur.execute(
         """
@@ -1124,6 +1141,75 @@ def set_ml_app_credentials(user_id: int, client_id: str, client_secret: str, red
             "INSERT INTO ml_app_credentials (user_id, client_id, client_secret, redirect_uri) VALUES (?, ?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET client_id=?, client_secret=?, redirect_uri=?",
             (user_id, client_id.strip(), enc, redirect_uri or "", client_id.strip(), enc, redirect_uri or ""),
         )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_tiendanube_credentials(user_id: int) -> Optional[Dict[str, Any]]:
+    """Obtiene las credenciales de Tiendanube del usuario (client_id, client_secret, store_id, access_token)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT client_id, client_secret, store_id, access_token, auth_header_style, "
+            "last_test_ok, last_test_at FROM tiendanube_credentials WHERE user_id = ?",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "client_id": row["client_id"] or "",
+            "client_secret": _decrypt_secret(row["client_secret"]) if row["client_secret"] else "",
+            "store_id": row["store_id"] or "",
+            "access_token": _decrypt_secret(row["access_token"]) if row["access_token"] else "",
+            "auth_header_style": row["auth_header_style"],
+            "last_test_ok": bool(row["last_test_ok"]),
+            "last_test_at": row["last_test_at"],
+        }
+    finally:
+        conn.close()
+
+
+def set_tiendanube_credentials(user_id: int, client_id: str, client_secret: str,
+                                store_id: str, access_token: str = "") -> None:
+    """Guarda las credenciales de Tiendanube del usuario. Si access_token viene vacío,
+    preserva el que ya estaba guardado (evita pisarlo al editar solo client_id/secret)."""
+    conn = get_connection()
+    try:
+        enc_secret = _encrypt_secret(client_secret.strip()) if client_secret else ""
+        enc_token = _encrypt_secret(access_token.strip()) if access_token else ""
+        conn.execute(
+            "INSERT INTO tiendanube_credentials (user_id, client_id, client_secret, store_id, access_token) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(user_id) DO UPDATE SET client_id=excluded.client_id, "
+            "client_secret=excluded.client_secret, store_id=excluded.store_id, "
+            "access_token=CASE WHEN excluded.access_token != '' THEN excluded.access_token "
+            "ELSE tiendanube_credentials.access_token END",
+            (user_id, client_id.strip(), enc_secret, store_id.strip(), enc_token),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_tiendanube_test_result(user_id: int, ok: bool, auth_header_style: Optional[str] = None) -> None:
+    """Registra el resultado de 'Probar conexión'. Un test fallido no pisa el
+    auth_header_style ya confirmado en un test anterior exitoso."""
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        if ok and auth_header_style:
+            conn.execute(
+                "UPDATE tiendanube_credentials SET last_test_ok=1, last_test_at=?, auth_header_style=? WHERE user_id=?",
+                (_dt.utcnow().isoformat(), auth_header_style, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE tiendanube_credentials SET last_test_ok=0, last_test_at=? WHERE user_id=?",
+                (_dt.utcnow().isoformat(), user_id),
+            )
         conn.commit()
     finally:
         conn.close()
