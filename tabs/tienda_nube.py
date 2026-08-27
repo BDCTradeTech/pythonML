@@ -198,63 +198,109 @@ def _recortar_prolijo(texto: str, limite: int) -> str:
     return recorte.rstrip(" ,.-")
 
 
-def _generar_seo_completo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str, extra: str = "") -> str:
+def _generar_seo_completo_prompt(nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> str:
     """Un solo prompt para título SEO + descripción SEO + tags -- antes eran dos
     llamadas separadas al proveedor de IA (una para título/descripción, otra para
-    tags); ahora cada botón hace UNA sola llamada y trae los tres campos juntos."""
+    tags); ahora cada botón hace UNA sola llamada y trae los tres campos juntos.
+
+    A PROPÓSITO no pide conteo exacto de caracteres: confirmado en vivo 2026-08-27
+    (respuesta cruda con reasoning/reasoning_content lleno de "Amazon(6) espacio=7
+    Echo(4)=11..." y content vacío, finish_reason="length") que gpt-oss-120b y
+    deepseek-v4-flash se ponen a contar letra por letra en su razonamiento interno
+    cuando se les exige un límite exacto, y se quedan sin tokens de salida antes de
+    escribir la respuesta. El modelo ahora escribe con brevedad aproximada; el
+    largo exacto lo valida y recorta _recortar_prolijo/_generar_seo_completo_una_vez
+    -- esa es la división correcta del trabajo."""
     desc_recortada = (descripcion or "").strip()[:500]
     return (
         "Sos un experto en SEO para e-commerce argentino. Escribí en español rioplatense.\n"
         "Basándote en este producto, generá SOLAMENTE un JSON válido con tres campos:\n"
-        '- "seo_title": título SEO de HASTA 70 caracteres, con marca y modelo, orientado a búsqueda.\n'
-        '- "seo_description": descripción SEO de HASTA 160 caracteres, orientada a búsqueda.\n'
-        '- "tags": ENTRE 8 Y 12 palabras clave de SEO, como array de strings -- ni menos de 8 ni más de 12.\n'
-        "Es OBLIGATORIO respetar esos límites exactamente. Nunca cortes una palabra "
-        "a la mitad -- si no entra, acortá la frase entera para que quede prolija.\n\n"
+        '- "seo_title": un título corto, de alrededor de 60 caracteres, con marca y modelo, orientado a búsqueda.\n'
+        '- "seo_description": una descripción breve, de dos oraciones cortas, orientada a búsqueda.\n'
+        '- "tags": una lista de palabras clave de SEO, unas 10 (entre 8 y 12), como array de strings.\n'
+        "No hace falta que cuentes caracteres -- sé breve y directo, nosotros ajustamos el largo después.\n\n"
         f"Nombre del producto: {nombre}\n"
         f"Marca: {marca or 'sin marca'}\n"
         f"Categoría: {categoria_nombre or 'sin categoría'}\n"
         f"Descripción: {desc_recortada}\n"
-        f"{extra}\n"
         'Respondé SOLO con el JSON, sin backticks ni texto adicional, con este formato exacto: '
         '{"seo_title": "...", "seo_description": "...", "tags": ["...", "..."]}'
     )
 
 
-def _groq_generate(api_key: str, prompt: str) -> str:
+class _RespuestaSinEspacio(Exception):
+    """El modelo agotó los tokens de salida antes de escribir el content -- confirmado
+    en vivo 2026-08-27 con gpt-oss-120b (Groq) y deepseek-v4-flash (DeepSeek): gastan
+    todo max_tokens en el campo interno de razonamiento y devuelven content vacío con
+    finish_reason="length". Se distingue de una respuesta vacía sin motivo aparente
+    para poder avisarlo en pantalla con precisión."""
+
+
+class _LimiteDeVelocidad(Exception):
+    """HTTP 429 -- confirmado en vivo 2026-08-27 (Groq, al probar 5 pedidos seguidos
+    sin pausa). Un rate limit confundido con un fallo del modelo hace que el usuario
+    cambie de proveedor cuando en realidad solo hacía falta esperar -- se distingue
+    para avisarlo con precisión en pantalla."""
+
+
+def _groq_generate(api_key: str, prompt: str, max_tokens: int = 300) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300,
+        "max_tokens": max_tokens,
         "temperature": 0.5,
     }
     resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    if resp.status_code == 429:
+        raise _LimiteDeVelocidad()
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    choice = resp.json()["choices"][0]
+    content = choice["message"]["content"]
+    if not content and choice.get("finish_reason") == "length":
+        raise _RespuestaSinEspacio()
+    return content
 
 
-def _gemini_generate(api_key: str, prompt: str) -> str:
+def _gemini_generate(api_key: str, prompt: str, max_tokens: int = 300) -> str:
+    # max_tokens no se usa -- Gemini no mostró el modo de falla "sin espacio" (5/5 en
+    # la verificación en vivo); se deja el parámetro solo para que las tres funciones
+    # compartan la misma firma y _generar_seo_completo_una_vez pueda llamarlas igual.
     from google import genai
+    from google.genai import errors as _genai_errors
     client = genai.Client(api_key=api_key)
-    response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    try:
+        response = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+    except _genai_errors.APIError as e:
+        if getattr(e, "code", None) == 429:
+            raise _LimiteDeVelocidad() from e
+        raise
     return response.text
 
 
-def _deepseek_generate(api_key: str, prompt: str) -> str:
-    """Mismo helper que ya usa tabs/preguntas.py -- ninguna integración nueva."""
+def _deepseek_generate(api_key: str, prompt: str, max_tokens: int = 300) -> str:
+    """Mismo helper que ya usa tabs/preguntas.py -- ninguna integración nueva.
+    max_tokens con default 300 preserva el comportamiento de tabs/preguntas.py
+    (que tiene su propia copia de esta función, no la importa de acá) -- esta
+    firma es local a tienda_nube.py."""
     url = f"{DEEPSEEK_BASE_URL}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300,
+        "max_tokens": max_tokens,
         "temperature": 0.7,
     }
     resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    if resp.status_code == 429:
+        raise _LimiteDeVelocidad()
     resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"]
+    choice = resp.json()["choices"][0]
+    content = choice["message"]["content"]
+    if not content and choice.get("finish_reason") == "length":
+        raise _RespuestaSinEspacio()
+    return content
 
 
 def _generar_seo_completo_una_vez(generador, api_key: str, nombre: str, marca: Optional[str], categoria_nombre: str, descripcion: str) -> tuple:
@@ -262,74 +308,58 @@ def _generar_seo_completo_una_vez(generador, api_key: str, nombre: str, marca: O
     llamada que trae título SEO, descripción SEO y tags juntos -- el usuario elige
     qué proveedor probar. Se corre vía run.io_bound.
 
-    Devuelve (resultado, vacio). Si la respuesta no viene parseable, viene vacía, o le
-    falta algún campo, resultado es None -- en ESE caso nunca se completa ningún campo
-    con basura, se avisa en pantalla. vacio=True distingue "la IA no devolvió nada
-    usable" (confirmado en vivo con Groq y con DeepSeek, 2026-08-27) de una excepción
-    de red/API (vacio=False), para el mensaje en pantalla.
+    Devuelve (resultado, motivo). motivo es None si salió bien. Si resultado es None,
+    NUNCA se completa ningún campo con basura -- se avisa en pantalla, y motivo indica
+    el porqué:
+    - "sin_espacio": el modelo agotó los tokens de salida antes de escribir (ver
+      _RespuestaSinEspacio) -- confirmado en vivo con Groq y DeepSeek, 2026-08-27.
+    - "rate_limit": HTTP 429 (ver _LimiteDeVelocidad) -- confirmado en vivo con Groq.
+    - "vacio": no hay datos usables por otro motivo (vacío, no parseable, incompleto).
+    - "error": excepción de red/API.
 
-    Si algún campo se pasa de largo (70 / 160 / 8-12 tags), reintenta UNA vez con el
-    mismo proveedor aclarando el límite; si sigue mal, recorta prolijo como respaldo
-    garantizado (nunca a la mitad de una palabra, tags se recortan a 12)."""
+    NO reintenta si algún campo se pasa de largo (70 / 160 / 8-12 tags) -- confirmado
+    que con estos modelos un segundo intento insistiendo en el límite exacto empeora
+    las cosas (más razonamiento sobre el conteo, mismo problema). Si se pasa, recorta
+    prolijo directo (nunca a mitad de palabra, tags a 12) sin volver a llamar a la IA."""
     if not api_key:
-        return None, False
-
-    def _pedir(prompt: str) -> Optional[Dict[str, Any]]:
-        # NO atrapa la excepción de generador() -- eso se distingue afuera (vacio=False)
-        # de una respuesta sin datos usables (vacio=True): son mensajes distintos en pantalla.
-        raw = generador(api_key, prompt)
-        if not raw or not raw.strip():
-            return None
-        try:
-            data = json.loads(_clean_json(raw))
-        except Exception:
-            return None
-        if not isinstance(data, dict):
-            return None
-        seo_title = str(data.get("seo_title") or "").strip()
-        seo_description = str(data.get("seo_description") or "").strip()
-        tags_raw = data.get("tags")
-        if isinstance(tags_raw, list):
-            tags = [str(t).strip() for t in tags_raw if str(t).strip()]
-        elif isinstance(tags_raw, str):
-            tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
-        else:
-            tags = []
-        if not (seo_title and seo_description and tags):
-            return None
-        return {"seo_title": seo_title, "seo_description": seo_description, "tags": tags}
+        return None, "error"
 
     prompt = _generar_seo_completo_prompt(nombre, marca, categoria_nombre, descripcion)
     try:
-        resultado = _pedir(prompt)
+        raw = generador(api_key, prompt, max_tokens=2000)
+    except _RespuestaSinEspacio:
+        return None, "sin_espacio"
+    except _LimiteDeVelocidad:
+        return None, "rate_limit"
     except Exception:
-        return None, False
-    if resultado is None:
-        return None, True
+        return None, "error"
 
-    fuera_de_limite = (
-        len(resultado["seo_title"]) > 70
-        or len(resultado["seo_description"]) > 160
-        or not (8 <= len(resultado["tags"]) <= 12)
-    )
-    if fuera_de_limite:
-        extra = (
-            f"Tu intento anterior no cumplió los límites -- seo_title: "
-            f"{len(resultado['seo_title'])}/70 caracteres, seo_description: "
-            f"{len(resultado['seo_description'])}/160 caracteres, tags: {len(resultado['tags'])} "
-            f"(deben ser entre 8 y 12). Generá de nuevo respetando los límites."
-        )
-        try:
-            reintento = _pedir(_generar_seo_completo_prompt(nombre, marca, categoria_nombre, descripcion, extra))
-        except Exception:
-            reintento = None
-        if reintento is not None:
-            resultado = reintento
+    if not raw or not raw.strip():
+        return None, "vacio"
+    try:
+        data = json.loads(_clean_json(raw))
+    except Exception:
+        return None, "vacio"
+    if not isinstance(data, dict):
+        return None, "vacio"
 
-    resultado["seo_title"] = _recortar_prolijo(resultado["seo_title"], 70)
-    resultado["seo_description"] = _recortar_prolijo(resultado["seo_description"], 160)
-    resultado["tags"] = resultado["tags"][:12]
-    return resultado, False
+    seo_title = str(data.get("seo_title") or "").strip()
+    seo_description = str(data.get("seo_description") or "").strip()
+    tags_raw = data.get("tags")
+    if isinstance(tags_raw, list):
+        tags = [str(t).strip() for t in tags_raw if str(t).strip()]
+    elif isinstance(tags_raw, str):
+        tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+    else:
+        tags = []
+    if not (seo_title and seo_description and tags):
+        return None, "vacio"
+
+    return {
+        "seo_title": _recortar_prolijo(seo_title, 70),
+        "seo_description": _recortar_prolijo(seo_description, 160),
+        "tags": tags[:12],
+    }, None
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -757,12 +787,22 @@ def build_tab_vinculacion(container) -> None:
                                 try:
                                     nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
                                     marca_val = (marca_input.value or "").strip() or None
-                                    resultado, vacio = await run.io_bound(
+                                    resultado, motivo = await run.io_bound(
                                         _generar_seo_completo_una_vez, generador, api_key, nombre_base, marca_val,
                                         cat_options.get(categoria_sel.value, ""), descripcion_input.value or "",
                                     )
                                     if resultado is None:
-                                        if vacio:
+                                        if motivo == "sin_espacio":
+                                            ui.notify(
+                                                "El modelo se quedó sin espacio para responder -- probá de nuevo "
+                                                "o con otro proveedor.", color="negative",
+                                            )
+                                        elif motivo == "rate_limit":
+                                            ui.notify(
+                                                "Demasiados pedidos -- esperá unos segundos y probá de nuevo.",
+                                                color="negative",
+                                            )
+                                        elif motivo == "vacio":
                                             ui.notify(
                                                 "La IA no devolvió un resultado usable -- probá de nuevo o con otro "
                                                 "proveedor.", color="negative",
