@@ -57,6 +57,25 @@ def _fmt_precio_ars(val: Any) -> str:
     return f"${parte_entera},{dec:02d}"
 
 
+def _formatear_ultima_sync(iso_str: str) -> str:
+    """last_sync_at se guarda en UTC (datetime.utcnow().isoformat(), ver
+    db.set_tiendanube_sync_status). Relativo si fue hoy, fecha y hora completa si
+    fue otro día -- así se distingue "hace 3 minutos" de "hace una semana"."""
+    from datetime import datetime as _dt
+    dt = _dt.fromisoformat(iso_str)
+    ahora = _dt.utcnow()
+    segundos = (ahora - dt).total_seconds()
+    if segundos < 60:
+        return "hace instantes"
+    minutos = int(segundos // 60)
+    if minutos < 60:
+        return f"hace {minutos} minuto{'s' if minutos != 1 else ''}"
+    if dt.date() == ahora.date():
+        horas = int(minutos // 60)
+        return f"hace {horas} hora{'s' if horas != 1 else ''}"
+    return dt.strftime("%d/%m/%Y %H:%M")
+
+
 def _peso_gramos_desde_atributos(attrs: List[dict]) -> Optional[float]:
     """Busca el atributo WEIGHT de ML (name='Peso') y devuelve el valor en GRAMOS.
     ML lo da como texto con unidad libre (ej. '456 g', '8.7 g') -- nunca se asume
@@ -342,6 +361,7 @@ def build_tab_vinculacion(container) -> None:
             incluir_pausadas_chk = ui.checkbox("Incluir pausadas (ML)", value=False)
             ui.space()
             actualizar_btn = ui.button("Actualizar").props("unelevated dense no-caps icon=refresh").classes("text-xs")
+            ultima_sync_lbl = ui.label("").classes("text-xs text-gray-600")
 
         contadores_container = ui.row().classes("w-full gap-2 flex-wrap")
         header_div_vinc = ui.element("div").style("width:100%;overflow:hidden")
@@ -418,19 +438,24 @@ def build_tab_vinculacion(container) -> None:
         def _render_status() -> None:
             status_container.clear()
             st = get_tiendanube_sync_status(uid)
-            with status_container:
-                if not st or not st.get("last_sync_at"):
-                    ui.label("Nunca se sincronizó Tienda Nube en esta pantalla — apretá Actualizar.").classes("text-warning text-sm")
-                elif st.get("ok"):
-                    ui.label(
-                        f"Última sincronización OK: {st['last_sync_at'][:19].replace('T', ' ')} "
-                        f"({st.get('items_leidos', 0)} variantes leídas de Tienda Nube)"
-                    ).classes("text-xs text-gray-600")
-                else:
+            if not st or not st.get("last_sync_at"):
+                ultima_sync_lbl.set_text("Nunca se sincronizó — apretá Actualizar")
+                ultima_sync_lbl.classes(replace="text-xs text-warning")
+                return
+            relativo = _formatear_ultima_sync(st["last_sync_at"])
+            if st.get("ok"):
+                ultima_sync_lbl.set_text(
+                    f"Última sincronización: {relativo} ({st.get('items_leidos', 0)} variantes)"
+                )
+                ultima_sync_lbl.classes(replace="text-xs text-gray-600")
+            else:
+                ultima_sync_lbl.set_text(f"Última sincronización: {relativo} — FALLÓ")
+                ultima_sync_lbl.classes(replace="text-xs text-negative")
+                with status_container:
                     with ui.row().classes("w-full items-center gap-2 p-2 rounded").style("background:#fef2f2;border:1px solid #fecaca"):
                         ui.icon("error", color="negative", size="sm")
                         ui.label(
-                            f"Sincronización incompleta/fallida ({st['last_sync_at'][:19].replace('T', ' ')}): {st.get('error') or 'sin detalle'}"
+                            f"Sincronización incompleta/fallida: {st.get('error') or 'sin detalle'}"
                         ).classes("text-sm text-negative")
 
         def _render_tabla() -> None:
