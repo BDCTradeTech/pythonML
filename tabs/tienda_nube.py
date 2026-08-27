@@ -7,7 +7,7 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 
-from nicegui import app, run, ui
+from nicegui import app, background_tasks, context, run, ui
 
 from db import (
     get_tiendanube_credentials,
@@ -131,7 +131,74 @@ def build_tab_vinculacion(container) -> None:
             actualizar_btn = ui.button("Actualizar").props("unelevated dense no-caps icon=refresh").classes("text-xs")
 
         contadores_container = ui.row().classes("w-full gap-2 flex-wrap")
-        tabla_container = ui.column().classes("w-full")
+        header_div_vinc = ui.element("div").style("width:100%;overflow:hidden")
+        table_container = ui.element("div").style("width:100%;height:calc(100vh - 454px);overflow-y:scroll;overflow-x:auto")
+        _hid_v = header_div_vinc.id
+        _cid_v = table_container.id
+        _sync_vinc_client = context.client
+
+        async def _setup_sync_vinc() -> None:
+            with _sync_vinc_client:
+                await ui.run_javascript(
+                    f"(function(){{"
+                    f"var body=document.getElementById('c{_cid_v}');"
+                    f"var hdr=document.getElementById('c{_hid_v}');"
+                    f"if(!body||!hdr)return;"
+                    f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                    f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                    f"_sg();new ResizeObserver(_sg).observe(body);"
+                    f"}})();"
+                )
+        background_tasks.create(_setup_sync_vinc())
+
+        columns = [
+            {"name": "sku", "label": "SKU", "field": "sku", "align": "left"},
+            {"name": "plataforma", "label": "Plataforma", "field": "plataforma", "align": "left"},
+            {"name": "duplicado", "label": "Duplicado", "field": "duplicado", "align": "center"},
+            {"name": "ml_publicaciones", "label": "ML — # pub.", "field": "ml_publicaciones", "align": "right"},
+            {"name": "ml_status", "label": "ML — Estado pub.", "field": "ml_status", "align": "left"},
+            {"name": "ml_nombre", "label": "ML — Nombre", "field": "ml_nombre", "align": "left"},
+            {"name": "ml_precio", "label": "ML — Precio", "field": "ml_precio", "align": "right"},
+            {"name": "tn_nombre", "label": "TN — Nombre", "field": "tn_nombre", "align": "left"},
+            {"name": "tn_precio", "label": "TN — Precio", "field": "tn_precio", "align": "right"},
+            {"name": "tn_stock", "label": "TN — Stock", "field": "tn_stock", "align": "right"},
+        ]
+        _col_w_vinc = {
+            "sku": "110px", "plataforma": "130px", "duplicado": "100px",
+            "ml_publicaciones": "70px", "ml_status": "110px", "ml_nombre": "260px",
+            "ml_precio": "90px", "tn_nombre": "260px", "tn_precio": "90px", "tn_stock": "70px",
+        }
+
+        def _build_colgroup_vinc() -> None:
+            with ui.element("colgroup"):
+                for col in columns:
+                    ui.element("col").style(f"width:{_col_w_vinc.get(col['name'], '90px')}")
+
+        sort_col_ref: Dict[str, Any] = {"val": "sku"}
+        sort_asc_ref: Dict[str, bool] = {"val": True}
+
+        def _sort_key_vinc(row: dict, col_name: str) -> Any:
+            if col_name == "plataforma":
+                return _PLATAFORMA_LABELS.get(row.get("plataforma"), "")
+            if col_name == "duplicado":
+                return 1 if (row.get("duplicado_ml") or row.get("duplicado_tn")) else 0
+            if col_name in ("ml_publicaciones", "tn_variantes"):
+                return int(row.get(col_name) or 0)
+            if col_name in ("ml_precio", "tn_precio", "tn_stock"):
+                v = row.get(col_name)
+                try:
+                    return float(str(v).replace(",", ".")) if v is not None else -1.0
+                except (ValueError, TypeError):
+                    return -1.0
+            return str(row.get(col_name) or "").lower()
+
+        def _on_sort_click_vinc(col_name: str) -> None:
+            if sort_col_ref.get("val") == col_name:
+                sort_asc_ref["val"] = not sort_asc_ref.get("val", True)
+            else:
+                sort_col_ref["val"] = col_name
+                sort_asc_ref["val"] = True
+            _render_tabla()
 
         def _render_status() -> None:
             status_container.clear()
@@ -164,6 +231,12 @@ def build_tab_vinculacion(container) -> None:
             else:
                 visibles = [f for f in filas if f["plataforma"] == filtro]
 
+            visibles = sorted(
+                visibles,
+                key=lambda r: _sort_key_vinc(r, sort_col_ref.get("val", "sku")),
+                reverse=not sort_asc_ref.get("val", True),
+            )
+
             contadores_container.clear()
             with contadores_container:
                 for key, label in _PLATAFORMA_LABELS.items():
@@ -175,41 +248,66 @@ def build_tab_vinculacion(container) -> None:
                     ui.badge(f"ML sin SKU cargado (excluidos del cruce): {sin_sku_ml}", color="warning").props("outline")
                 ui.badge(f"Productos en Tienda Nube (variantes): {len(tn_rows)}", color="secondary").props("outline")
 
-            tabla_container.clear()
-            with tabla_container:
-                columns = [
-                    {"name": "sku", "label": "SKU", "field": "sku", "align": "left", "sortable": True},
-                    {"name": "plataforma", "label": "Plataforma", "field": "plataforma", "align": "left", "sortable": True},
-                    {"name": "duplicado", "label": "Duplicado", "field": "duplicado", "align": "left"},
-                    {"name": "ml_publicaciones", "label": "ML — # pub.", "field": "ml_publicaciones", "align": "right"},
-                    {"name": "ml_status", "label": "ML — Estado pub.", "field": "ml_status", "align": "left"},
-                    {"name": "ml_nombre", "label": "ML — Nombre", "field": "ml_nombre", "align": "left"},
-                    {"name": "ml_precio", "label": "ML — Precio", "field": "ml_precio", "align": "right"},
-                    {"name": "tn_nombre", "label": "TN — Nombre", "field": "tn_nombre", "align": "left"},
-                    {"name": "tn_precio", "label": "TN — Precio", "field": "tn_precio", "align": "right"},
-                    {"name": "tn_stock", "label": "TN — Stock", "field": "tn_stock", "align": "right"},
-                ]
-                rows = []
-                for f in visibles:
-                    dup_partes = []
-                    if f["duplicado_ml"]:
-                        dup_partes.append("ML")
-                    if f["duplicado_tn"]:
-                        dup_partes.append("TN")
-                    rows.append({
-                        **f,
-                        "plataforma": _PLATAFORMA_LABELS[f["plataforma"]],
-                        "duplicado": ("⚠ " + "+".join(dup_partes)) if dup_partes else "—",
-                        # valores crudos: TN precio viene como string ("25.00") de la API,
-                        # ML precio es numérico -- se muestran tal cual, sin normalizar
-                        "tn_precio": f["tn_precio"] if f["tn_precio"] is not None else "—",
-                        "tn_stock": f["tn_stock"] if f["tn_stock"] is not None else "—",
-                        "ml_precio": f["ml_precio"] if f["ml_precio"] is not None else "—",
-                    })
-                if rows:
-                    ui.table(columns=columns, rows=rows, row_key="sku").classes("w-full")
-                else:
+            rows = []
+            for f in visibles:
+                dup_partes = []
+                if f["duplicado_ml"]:
+                    dup_partes.append("ML")
+                if f["duplicado_tn"]:
+                    dup_partes.append("TN")
+                rows.append({
+                    **f,
+                    "plataforma": _PLATAFORMA_LABELS[f["plataforma"]],
+                    "duplicado": ("⚠ " + "+".join(dup_partes)) if dup_partes else "—",
+                    # valores crudos: TN precio viene como string ("25.00") de la API,
+                    # ML precio es numérico -- se muestran tal cual, sin normalizar
+                    "tn_precio": f["tn_precio"] if f["tn_precio"] is not None else "—",
+                    "tn_stock": f["tn_stock"] if f["tn_stock"] is not None else "—",
+                    "ml_precio": f["ml_precio"] if f["ml_precio"] is not None else "—",
+                })
+
+            header_div_vinc.clear()
+            table_container.clear()
+            if not rows:
+                with table_container:
                     ui.label("Sin resultados para este filtro.").classes("text-sm text-gray-400")
+                return
+
+            with header_div_vinc:
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup_vinc()
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                            for col in columns:
+                                with ui.element("th").classes("px-2 py-2 border text-center"):
+                                    ui.button(
+                                        col["label"], on_click=lambda c=col["name"]: _on_sort_click_vinc(c)
+                                    ).props("flat dense no-caps").classes("text-white hover:bg-white/20 cursor-pointer font-semibold")
+
+            with table_container:
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup_vinc()
+                    with ui.element("tbody"):
+                        for row in rows:
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                for col in columns:
+                                    val = row.get(col["field"])
+                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0"):
+                                        ui.label(str(val) if val is not None else "—")
+
+                _recalc_padding_vinc_client = context.client
+
+                async def _recalc_padding_vinc() -> None:
+                    with _recalc_padding_vinc_client:
+                        await ui.run_javascript(
+                            f"(function(){{"
+                            f"var body=document.getElementById('c{_cid_v}');"
+                            f"var hdr=document.getElementById('c{_hid_v}');"
+                            f"if(body&&hdr){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                            f"}})();"
+                        )
+                background_tasks.create(_recalc_padding_vinc())
 
         async def _actualizar() -> None:
             actualizar_btn.props("loading")
