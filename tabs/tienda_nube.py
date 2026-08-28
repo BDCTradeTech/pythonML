@@ -1,12 +1,16 @@
 """
 tabs/tienda_nube.py — Vinculación: cruce de publicaciones de MercadoLibre contra
-productos de Tienda Nube por seller_sku. SOLO LECTURA: no escribe nada en ML ni en TN.
+productos de Tienda Nube por seller_sku. Y Diferencias: corrección de precio/stock
+en TN contra el objetivo, con MercadoLibre como única fuente de verdad -- nunca se
+escribe de TN hacia ML. Todo lo demás (Vinculación, categorías) sigue solo lectura
+hacia TN salvo por la escritura puntual ya hecha de categorías.
 """
 from __future__ import annotations
 
 import json
 import re
 from collections import defaultdict
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional
 
 import requests as _requests
@@ -27,6 +31,8 @@ from db import (
     COTIZADOR_DEFAULTS,
     get_producto_tn_descuento,
     set_producto_tn_descuento,
+    log_tn_escritura,
+    get_ultima_escritura_stock,
     GROQ_MODEL,
     DEEPSEEK_MODEL,
     DEEPSEEK_BASE_URL,
@@ -37,6 +43,7 @@ from tiendanube_api import (
     tiendanube_get,
     tiendanube_create_product,
     tiendanube_find_by_sku,
+    tiendanube_update_variant,
 )
 
 _PLATAFORMA_LABELS = {
@@ -107,6 +114,122 @@ def calcular_precio_tn(sku: str, ml_items: List[dict], user_id: int) -> Optional
 
     regla = get_cotizador_param("tn_regla_redondeo", user_id) or COTIZADOR_DEFAULTS["tn_regla_redondeo"]
     return _redondear_tn(base * (1 - descuento_pct / 100), regla)
+
+
+def escribir_tn_verificado(
+    uid: int, tn_creds: Dict[str, Any], sku: str, tn_product_id: str, tn_variant_id: str,
+    campo: str, valor_anterior: Any, valor_nuevo: Any, origen: str,
+) -> tuple:
+    """ÚNICA función de escritura hacia Tiendanube (precio o stock) -- todo lo demás
+    en Diferencias pasa por acá, nunca arma su propio PUT.
+
+    1. Guard de sucursales: si la variante tiene más de una location en
+       inventory_levels, aborta sin escribir "stock" a ciegas (ver Fase 0 punto D).
+    2. Escribe con tiendanube_update_variant (PUT a nivel variante -- confirmado en
+       Fase 0 que ese endpoint SÍ devuelve cuerpo fresco, a diferencia del PUT de
+       categorías a nivel producto).
+    3. Verifica con un GET independiente -- nunca con el cuerpo del PUT. Es la
+       misma regla que ya nos salvó con categorías: un 200 no es prueba de nada.
+    4. Registra en tn_escrituras el resultado REAL (nunca el esperado): 'ok' solo
+       si el GET confirma, 'error' en cualquier otro caso, siempre con detalle.
+
+    Devuelve (ok: bool, mensaje: str)."""
+    store_id, token, style = tn_creds["store_id"], tn_creds["access_token"], tn_creds["auth_header_style"]
+
+    def _log(resultado: str, detalle: Optional[str]) -> None:
+        log_tn_escritura(uid, sku, tn_product_id, tn_variant_id, campo, valor_anterior, valor_nuevo, origen, resultado, detalle)
+
+    if campo not in ("precio", "stock"):
+        msg = f"campo desconocido: {campo!r}"
+        _log("error", msg)
+        return False, msg
+
+    # 1. Guard de sucursales -- SOLO aplica a stock (precio no depende de location)
+    if campo == "stock":
+        r_pre = tiendanube_get(store_id, token, style, f"products/{tn_product_id}")
+        if not r_pre.ok:
+            msg = f"No se pudo leer el producto antes de escribir: HTTP {r_pre.status_code}"
+            _log("error", msg)
+            return False, msg
+        variante_pre = next(
+            (v for v in (r_pre.json().get("variants") or []) if str(v.get("id")) == str(tn_variant_id)), None
+        )
+        if variante_pre is None:
+            msg = "La variante no aparece en el producto -- no se escribe"
+            _log("error", msg)
+            return False, msg
+        n_locations = len(variante_pre.get("inventory_levels") or [])
+        if n_locations > 1:
+            msg = f"Abortado: la variante tiene {n_locations} locations -- 'stock' simple no alcanza, hace falta inventory_levels"
+            _log("error", msg)
+            return False, msg
+
+    # 2. Escritura -- SOLO el campo pedido
+    if campo == "precio":
+        try:
+            payload = {"price": f"{Decimal(str(valor_nuevo)):.2f}"}
+        except InvalidOperation:
+            msg = f"precio nuevo inválido: {valor_nuevo!r}"
+            _log("error", msg)
+            return False, msg
+    else:
+        try:
+            payload = {"stock": int(valor_nuevo)}
+        except (TypeError, ValueError):
+            msg = f"stock nuevo inválido: {valor_nuevo!r}"
+            _log("error", msg)
+            return False, msg
+
+    data, error = tiendanube_update_variant(store_id, token, style, tn_product_id, tn_variant_id, payload)
+    if error:
+        _log("error", error)
+        return False, error
+
+    # 3. Verificación SIEMPRE con GET independiente, nunca con `data` (el body del PUT)
+    r_verif = tiendanube_get(store_id, token, style, f"products/{tn_product_id}")
+    if not r_verif.ok:
+        msg = f"Escritura enviada pero no se pudo verificar: HTTP {r_verif.status_code}"
+        _log("error", msg)
+        return False, msg
+    variante_verif = next(
+        (v for v in (r_verif.json().get("variants") or []) if str(v.get("id")) == str(tn_variant_id)), None
+    )
+    if variante_verif is None:
+        msg = "Escritura enviada pero la variante no apareció en la verificación"
+        _log("error", msg)
+        return False, msg
+
+    if campo == "precio":
+        try:
+            ok = Decimal(str(variante_verif.get("price"))) == Decimal(str(valor_nuevo))
+        except InvalidOperation:
+            ok = False
+        valor_confirmado = variante_verif.get("price")
+    else:
+        try:
+            ok = int(variante_verif.get("stock")) == int(valor_nuevo)
+        except (TypeError, ValueError):
+            ok = False
+        valor_confirmado = variante_verif.get("stock")
+
+    if not ok:
+        msg = f"GET independiente NO confirma: esperaba {valor_nuevo!r}, quedó {valor_confirmado!r}"
+        _log("error", msg)
+        return False, msg
+
+    # Refleja el valor confirmado en el cache local (tiendanube_productos) para
+    # que Diferencias no vuelva a mostrar el valor viejo hasta el próximo
+    # "Actualizar" -- upsert puntual, no dispara un resync completo.
+    d_verif = r_verif.json()
+    nombre_field = d_verif.get("name")
+    nombre_verif = nombre_field.get("es") if isinstance(nombre_field, dict) else (nombre_field or "")
+    upsert_tiendanube_producto(
+        uid, tn_variant_id, tn_product_id, variante_verif.get("sku"), nombre_verif,
+        variante_verif.get("price"), variante_verif.get("stock"),
+    )
+
+    _log("ok", None)
+    return True, "OK"
 
 
 def _parse_precio_input(texto: Optional[str]) -> Optional[float]:
@@ -1398,52 +1521,100 @@ def _construir_filas_diferencias(ml_items: List[dict], tn_rows: List[dict], uid:
         ml_contado = precio_contado_ml(ml_m)
         objetivo = calcular_precio_tn(sku, ml_items, uid)
         tn_precio_raw = tn_m[0].get("precio")
+        promo_raw = tn_m[0].get("promotional_price")
         ml_stock = ml_m[0].get("available_quantity")
         tn_stock = tn_m[0].get("stock")
 
-        # Comparación en ENTEROS: el objetivo sale de un cálculo con decimales y TN
-        # devuelve el precio como string -- comparar floats marcaría todo como
-        # distinto por error de coma flotante.
+        # promotional_price viene null cuando NO hay promo (confirmado en vivo
+        # 2026-08-28 -- nunca "0"/"0.00"/"" para "sin promo"), pero se chequean
+        # esos valores igual por si TN cambia el contrato sin avisar.
+        tiene_promo = promo_raw not in (None, "", "0.00", 0)
+
+        # Comparación SIEMPRE con Decimal, nunca float ni string -- el objetivo
+        # sale de un cálculo con decimales y TN devuelve el precio como string.
         precio_diff: Optional[int] = None
         precio_diff_pct: Optional[float] = None
-        precio_alineado = False
-        if objetivo is not None and tn_precio_raw not in (None, ""):
+        precio_estado = "SIN_DATOS"
+        promo_alerta = False
+        if tiene_promo:
+            # Mercado Libre es la fuente de verdad, pero promotional_price lo
+            # maneja Diego a mano desde el panel de TN -- un campo, un dueño.
+            # Nunca se compara/corrige automáticamente contra el objetivo.
+            precio_estado = "PROMO_ACTIVA"
+            if objetivo is not None:
+                try:
+                    promo_alerta = Decimal(str(promo_raw)) > Decimal(str(round(objetivo)))
+                except (InvalidOperation, TypeError):
+                    pass
+        elif objetivo is not None and tn_precio_raw not in (None, ""):
             try:
-                tn_int = round(float(str(tn_precio_raw).replace(",", ".")))
-                obj_int = round(objetivo)
-                precio_diff = tn_int - obj_int
-                precio_diff_pct = (precio_diff / obj_int * 100) if obj_int else 0.0
-                precio_alineado = precio_diff == 0
-            except (ValueError, TypeError):
+                tn_dec = Decimal(str(tn_precio_raw))
+                obj_dec = Decimal(str(round(objetivo)))
+                diff_dec = tn_dec - obj_dec
+                precio_diff = int(diff_dec)
+                precio_diff_pct = float(diff_dec / obj_dec * 100) if obj_dec != 0 else 0.0
+                precio_estado = "ALINEADO" if diff_dec == 0 else "DIFERENTE"
+            except (InvalidOperation, TypeError):
                 pass
+        precio_corregible = (
+            precio_estado == "DIFERENTE" and precio_diff_pct is not None and abs(precio_diff_pct) <= 30
+        )
 
-        # Stock: ML es la fuente de verdad, cualquier diferencia es real.
+        # Stock: ML es la fuente de verdad, cualquier diferencia es real. Los
+        # estados TN=0/ML>0 se separan por si ESE 0 lo escribimos nosotros
+        # (tn_escrituras lo dice) o lo puso una venta real en TN.
         stock_diff: Optional[int] = None
-        stock_alineado = False
+        stock_estado = "SIN_DATOS"
         if ml_stock is not None and tn_stock is not None:
             try:
-                stock_diff = int(tn_stock) - int(ml_stock)
-                stock_alineado = stock_diff == 0
+                ml_i, tn_i = int(ml_stock), int(tn_stock)
+                stock_diff = tn_i - ml_i
+                if stock_diff == 0:
+                    stock_estado = "OK"
+                elif ml_i == 0 and tn_i > 0:
+                    stock_estado = "AGOTADO_ML"
+                elif tn_i == 0 and ml_i > 0:
+                    ultima = get_ultima_escritura_stock(uid, sku)
+                    stock_estado = "REPONER" if (ultima and ultima.get("valor_nuevo") == "0") else "REVISAR_VENTA_TN"
+                else:
+                    stock_estado = "REVISAR"
             except (ValueError, TypeError):
                 pass
 
         filas.append({
             "sku": sku,
             "nombre": ml_m[0].get("title", ""),
+            "tn_product_id": tn_m[0].get("product_id"),
+            "tn_variant_id": tn_m[0].get("variant_id"),
             "ml_contado": ml_contado,
             "tn_objetivo": objetivo,
             "tn_precio": tn_precio_raw,
+            "tn_promotional_price": promo_raw if tiene_promo else None,
             "precio_diff": precio_diff,
             "precio_diff_pct": precio_diff_pct,
-            "precio_alineado": precio_alineado,
+            "precio_estado": precio_estado,
+            "precio_alineado": precio_estado == "ALINEADO",
+            "precio_corregible": precio_corregible,
+            "promo_alerta": promo_alerta,
             "ml_stock": ml_stock,
             "tn_stock": tn_stock,
             "stock_diff": stock_diff,
-            "stock_alineado": stock_alineado,
+            "stock_estado": stock_estado,
+            "stock_alineado": stock_estado == "OK",
             "descuento_override": get_producto_tn_descuento(sku, uid),
             "descuento_global": descuento_global,
         })
     return filas
+
+
+def _fmt_pesos_dif(v: Any) -> str:
+    return _fmt_precio_ars(v) if v not in (None, "") else "—"
+
+
+def _fmt_delta_pesos_dif(v: float) -> str:
+    """Para variaciones (puede ser negativo -- una baja de precio): _fmt_precio_ars
+    ya antepone el signo "-" a los negativos, acá solo se agrega "+" a los positivos."""
+    return ("+" if v >= 0 else "") + _fmt_precio_ars(v)
 
 
 def build_tab_diferencias(container) -> None:
@@ -1464,10 +1635,21 @@ def build_tab_diferencias(container) -> None:
             ui.label("⚠️ No tenés Tienda Nube vinculada (o falta 'Probar conexión' en Configuración).").classes("text-warning")
         return
 
+    # Estado compartido entre el render de la tabla y los handlers de acciones
+    # (lote y fila viven fuera de _render_tabla_dif, necesitan ver las filas
+    # completas -- no solo las visibles tras filtro/búsqueda -- y si la
+    # escritura está habilitada este render).
+    seleccionados_ref: Dict[str, Any] = {"ids": set()}
+    filas_ref: Dict[str, Any] = {"data": [], "escritura_habilitada": False}
+
     with container:
         ui.label("Tienda Nube — Diferencias").classes("text-xl font-bold")
+        ui.label(
+            "MercadoLibre es la fuente de verdad. Nunca se escribe de Tienda Nube hacia MercadoLibre."
+        ).classes("text-xs text-gray-500")
 
         status_container = ui.column().classes("w-full")
+        guardrail_container = ui.column().classes("w-full")
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             filtro_opciones_dif = {
@@ -1484,6 +1666,15 @@ def build_tab_diferencias(container) -> None:
             ui.space()
             actualizar_btn_dif = ui.button("Actualizar").props("unelevated dense no-caps icon=refresh").classes("text-xs")
             ultima_sync_lbl_dif = ui.label("").classes("text-xs text-gray-600")
+
+        with ui.row().classes("w-full items-center gap-2 flex-wrap"):
+            lote_precio_btn = ui.button("Corregir precios seleccionados").props(
+                "dense no-caps outlined color=primary icon=price_change disabled"
+            ).classes("text-xs")
+            lote_cero_btn = ui.button("Poner en 0 los AGOTADO_ML seleccionados").props(
+                "dense no-caps outlined color=negative icon=production_quantity_limits disabled"
+            ).classes("text-xs")
+            lote_sel_lbl = ui.label("0 seleccionados").classes("text-xs text-gray-500")
 
         contadores_container_dif = ui.row().classes("w-full gap-2 flex-wrap")
         header_div_dif = ui.element("div").style("width:100%;overflow:hidden")
@@ -1507,6 +1698,7 @@ def build_tab_diferencias(container) -> None:
         background_tasks.create(_setup_sync_dif())
 
         columns_dif = [
+            {"name": "sel", "label": "", "field": "sel", "align": "center", "sortable": False},
             {"name": "sku", "label": "SKU", "field": "sku", "align": "left"},
             {"name": "nombre", "label": "Nombre", "field": "nombre", "align": "left"},
             {"name": "ml_contado", "label": "ML — Contado", "field": "ml_contado", "align": "right"},
@@ -1517,11 +1709,12 @@ def build_tab_diferencias(container) -> None:
             {"name": "tn_stock", "label": "TN — Stock", "field": "tn_stock", "align": "right"},
             {"name": "stock_estado", "label": "Stock — Estado", "field": "stock_estado", "align": "center", "sortable": False},
             {"name": "descuento", "label": "Desc. %", "field": "descuento", "align": "center", "sortable": False},
+            {"name": "acciones", "label": "Acciones", "field": "acciones", "align": "center", "sortable": False},
         ]
         _col_w_dif = {
-            "sku": "110px", "nombre": "230px", "ml_contado": "100px", "tn_objetivo": "100px",
-            "tn_precio": "100px", "precio_estado": "150px", "ml_stock": "70px", "tn_stock": "70px",
-            "stock_estado": "100px", "descuento": "100px",
+            "sel": "32px", "sku": "110px", "nombre": "220px", "ml_contado": "100px", "tn_objetivo": "100px",
+            "tn_precio": "100px", "precio_estado": "170px", "ml_stock": "70px", "tn_stock": "70px",
+            "stock_estado": "150px", "descuento": "90px", "acciones": "150px",
         }
 
         def _build_colgroup_dif() -> None:
@@ -1570,15 +1763,49 @@ def build_tab_diferencias(container) -> None:
                         ui.icon("error", color="negative", size="sm")
                         ui.label(f"Sincronización incompleta/fallida: {st.get('error') or 'sin detalle'}").classes("text-sm text-negative")
 
+        def _actualizar_lote_btns() -> None:
+            n = len(seleccionados_ref["ids"])
+            lote_sel_lbl.set_text(f"{n} seleccionados")
+            habilitado = filas_ref["escritura_habilitada"] and n > 0
+            for btn in (lote_precio_btn, lote_cero_btn):
+                if habilitado:
+                    btn.props(remove="disabled")
+                else:
+                    btn.props("disabled")
+
         def _render_tabla_dif() -> None:
             ml_data = ml_get_my_items(access_token, include_paused=True)
             ml_items_actuales = ml_data.get("results", [])
             tn_rows = get_tiendanube_productos(uid)
             filas = _construir_filas_diferencias(ml_items_actuales, tn_rows, uid)
+            filas_ref["data"] = filas
+
+            # Guardrail: una lectura de ML que vuelve vacía, o donde casi todos los
+            # SKUs vinculados aparecen sin stock, es una lectura FALLIDA, no la
+            # realidad -- no se escribe nada mientras esto no se resuelva.
+            n_total = len(filas)
+            n_sin_ml_stock = sum(1 for r in filas if r["ml_stock"] in (0, None))
+            lectura_sospechosa = len(ml_items_actuales) == 0 or (n_total >= 5 and n_sin_ml_stock / n_total >= 0.9)
+            filas_ref["escritura_habilitada"] = not lectura_sospechosa
+
+            guardrail_container.clear()
+            with guardrail_container:
+                if lectura_sospechosa:
+                    with ui.row().classes("w-full items-center gap-2 p-2 rounded").style("background:#fef2f2;border:1px solid #fecaca"):
+                        ui.icon("warning", color="negative", size="sm")
+                        ui.label(
+                            f"Lectura de MercadoLibre sospechosa ({len(ml_items_actuales)} publicaciones traídas, "
+                            f"{n_sin_ml_stock}/{n_total} SKUs vinculados sin stock ML) -- no se escribe nada hasta "
+                            f"que esto se confirme como real. Probá 'Actualizar' de nuevo."
+                        ).classes("text-sm text-negative")
+            seleccionados_ref["ids"] = {s for s in seleccionados_ref["ids"] if s in {r["sku"] for r in filas}}
+            _actualizar_lote_btns()
 
             n_alineados = sum(1 for r in filas if r["precio_alineado"] and r["stock_alineado"])
             n_dif_precio = sum(1 for r in filas if not r["precio_alineado"])
             n_dif_stock = sum(1 for r in filas if not r["stock_alineado"])
+            n_promo = sum(1 for r in filas if r["precio_estado"] == "PROMO_ACTIVA")
+            n_promo_alerta = sum(1 for r in filas if r["promo_alerta"])
 
             contadores_container_dif.clear()
             with contadores_container_dif:
@@ -1586,6 +1813,10 @@ def build_tab_diferencias(container) -> None:
                 ui.badge(f"Con diferencia de precio: {n_dif_precio}", color="negative" if n_dif_precio else "positive").props("outline")
                 ui.badge(f"Con diferencia de stock: {n_dif_stock}", color="negative" if n_dif_stock else "positive").props("outline")
                 ui.badge(f"Total en ambas plataformas: {len(filas)}", color="secondary").props("outline")
+                if n_promo:
+                    ui.badge(f"Con promo activa (no se toca): {n_promo}", color="info").props("outline")
+                if n_promo_alerta:
+                    ui.badge(f"⚠ Promo por encima del objetivo: {n_promo_alerta}", color="negative")
 
             filtro = filtro_sel_dif.value
             if filtro == "alineados":
@@ -1626,7 +1857,19 @@ def build_tab_diferencias(container) -> None:
                         with ui.element("tr").classes("bg-primary text-white font-semibold"):
                             for col in columns_dif:
                                 with ui.element("th").classes("px-2 py-1 border text-center").style("line-height:1.1"):
-                                    if col.get("sortable", True):
+                                    if col["name"] == "sel":
+                                        skus_visibles = {r["sku"] for r in visibles}
+                                        todos_marcados = bool(skus_visibles) and skus_visibles.issubset(seleccionados_ref["ids"])
+                                        chk_all = ui.checkbox(value=todos_marcados).props("dense color=white").classes("scale-90")
+                                        def _on_toggle_all(e: Any, _visibles=visibles) -> None:
+                                            if e.value:
+                                                seleccionados_ref["ids"].update(r["sku"] for r in _visibles)
+                                            else:
+                                                seleccionados_ref["ids"].difference_update(r["sku"] for r in _visibles)
+                                            _actualizar_lote_btns()
+                                            _render_tabla_dif()
+                                        chk_all.on_value_change(_on_toggle_all)
+                                    elif col.get("sortable", True):
                                         ui.button(
                                             col["label"], on_click=lambda c=col["name"]: _on_sort_click_dif(c)
                                         ).props("flat dense no-caps").classes(
@@ -1647,23 +1890,44 @@ def build_tab_diferencias(container) -> None:
                                 for col in columns_dif:
                                     align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
                                     with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0"):
-                                        if col["name"] == "precio_estado":
-                                            if row["precio_diff"] is None:
+                                        if col["name"] == "sel":
+                                            chk_row = ui.checkbox(value=row["sku"] in seleccionados_ref["ids"]).props("dense").classes("scale-90")
+                                            def _on_toggle_row(e: Any, _sku: str = row["sku"]) -> None:
+                                                if e.value:
+                                                    seleccionados_ref["ids"].add(_sku)
+                                                else:
+                                                    seleccionados_ref["ids"].discard(_sku)
+                                                _actualizar_lote_btns()
+                                            chk_row.on_value_change(_on_toggle_row)
+                                        elif col["name"] == "precio_estado":
+                                            if row["precio_estado"] == "PROMO_ACTIVA":
+                                                ui.label("Promo activa").classes("text-xs text-info font-medium")
+                                                if row["promo_alerta"]:
+                                                    ui.label("⚠ promo > objetivo").classes("text-xs text-negative font-bold")
+                                            elif row["precio_estado"] == "SIN_DATOS":
                                                 ui.label("Sin datos").classes("text-xs text-gray-400")
-                                            elif row["precio_alineado"]:
+                                            elif row["precio_estado"] == "ALINEADO":
                                                 ui.label("Alineado").classes("text-xs text-positive font-medium")
                                             else:
                                                 signo = "+" if row["precio_diff"] > 0 else ""
                                                 monto = f"{row['precio_diff']:,}".replace(",", ".")
                                                 ui.label(f"{signo}{monto} ({signo}{row['precio_diff_pct']:.1f}%)").classes("text-xs text-negative font-medium")
+                                                if not row["precio_corregible"]:
+                                                    ui.label("(>30%, revisar a mano)").classes("text-xs text-warning")
                                         elif col["name"] == "stock_estado":
-                                            if row["stock_diff"] is None:
-                                                ui.label("Sin datos").classes("text-xs text-gray-400")
-                                            elif row["stock_alineado"]:
-                                                ui.label("Alineado").classes("text-xs text-positive font-medium")
-                                            else:
+                                            _ESTADO_LBL = {
+                                                "OK": ("Alineado", "text-positive"),
+                                                "AGOTADO_ML": ("AGOTADO EN ML", "text-negative font-bold"),
+                                                "REPONER": ("Reponer (0 propio)", "text-warning"),
+                                                "REVISAR_VENTA_TN": ("Revisar: venta TN?", "text-negative font-bold"),
+                                                "REVISAR": ("Revisar", "text-negative"),
+                                                "SIN_DATOS": ("Sin datos", "text-gray-400"),
+                                            }
+                                            lbl, cls = _ESTADO_LBL.get(row["stock_estado"], ("—", "text-gray-400"))
+                                            ui.label(lbl).classes(f"text-xs font-medium {cls}")
+                                            if row["stock_diff"] is not None and row["stock_estado"] != "OK":
                                                 signo = "+" if row["stock_diff"] > 0 else ""
-                                                ui.label(f"{signo}{row['stock_diff']} u.").classes("text-xs text-negative font-medium")
+                                                ui.label(f"TN {row['tn_stock']} / ML {row['ml_stock']} ({signo}{row['stock_diff']})").classes("text-[10px] text-gray-400")
                                         elif col["name"] == "descuento":
                                             val_str = "" if row["descuento_override"] is None else f"{row['descuento_override']:g}"
                                             inp = ui.input(
@@ -1697,6 +1961,33 @@ def build_tab_diferencias(container) -> None:
                                             ui.label(_fmt_precio_ars(v) if v is not None else "—")
                                         elif col["name"] == "tn_precio":
                                             ui.label(_fmt_precio_ars(row.get("tn_precio")) if row.get("tn_precio") not in (None, "") else "—")
+                                            if row.get("tn_promotional_price") is not None:
+                                                ui.label(f"promo: {_fmt_precio_ars(row['tn_promotional_price'])}").classes("text-[10px] text-info")
+                                        elif col["name"] == "acciones":
+                                            if not filas_ref["escritura_habilitada"]:
+                                                ui.label("—").classes("text-xs text-gray-400")
+                                            elif row["stock_estado"] in ("REVISAR", "REVISAR_VENTA_TN"):
+                                                with ui.row().classes("items-center gap-1 justify-center flex-nowrap"):
+                                                    manual_inp = ui.input(placeholder="stock").props(
+                                                        'dense outlined hide-bottom-space input-style="text-align:right;font-size:11px;padding:0 4px"'
+                                                    ).style("width:56px")
+                                                    ui.button(icon="save").props("dense flat size=sm color=primary").on_click(
+                                                        lambda r=row, i=manual_inp: _accion_stock_manual(r, i)
+                                                    )
+                                            else:
+                                                with ui.row().classes("items-center gap-1 justify-center flex-nowrap"):
+                                                    if row["precio_corregible"]:
+                                                        ui.button(icon="price_change").props("dense flat size=sm color=primary").tooltip(
+                                                            f"Corregir precio: {_fmt_pesos_dif(row['tn_precio'])} → {_fmt_pesos_dif(row['tn_objetivo'])}"
+                                                        ).on_click(lambda r=row: _accion_corregir_precio_fila(r))
+                                                    if row["stock_estado"] == "AGOTADO_ML":
+                                                        ui.button(icon="production_quantity_limits").props("dense flat size=sm color=negative").tooltip(
+                                                            f"Poner en 0: TN {row['tn_stock']} → 0"
+                                                        ).on_click(lambda r=row: _accion_poner_cero_fila(r))
+                                                    if row["stock_estado"] == "REPONER":
+                                                        ui.button(icon="restore").props("dense flat size=sm color=positive").tooltip(
+                                                            f"Reponer a ML: TN 0 → {row['ml_stock']}"
+                                                        ).on_click(lambda r=row: _accion_reponer_fila(r))
                                         else:
                                             v = row.get(col["name"])
                                             ui.label(str(v) if v is not None else "—")
@@ -1711,6 +2002,184 @@ def build_tab_diferencias(container) -> None:
                         f"}})();"
                     )
             background_tasks.create(_recalc_padding_dif())
+
+        def _dialogo_confirmar_dif(
+            titulo: str, resumen: List[str], filas_preview: List[tuple], confirm_label: str, on_confirm,
+        ) -> None:
+            """Ninguna acción escribe sin mostrar antes exactamente qué va a escribir.
+            resumen: líneas agregadas arriba de todo (conteo, variación promedio/máxima,
+            impacto total) -- en un lote grande, la lista fila por fila no comunica
+            escala, un renglón con el total sí. filas_preview: lista de
+            (sku, 'TN $214.800 -> $193.900'), desplegable, colapsada por default."""
+            with ui.dialog() as dlg, ui.card().classes("min-w-[460px] max-w-[640px]"):
+                ui.label(titulo).classes("text-lg font-bold")
+                if resumen:
+                    with ui.column().classes("gap-1 w-full py-2 px-3 rounded mt-1").style(
+                        "background:#f8fafc;border:1px solid #e5e7eb"
+                    ):
+                        for linea in resumen:
+                            ui.label(linea).classes("text-sm font-medium text-gray-800")
+
+                detalle_col = ui.column().classes("gap-1 max-h-[280px] overflow-y-auto w-full mt-2")
+                detalle_col.set_visibility(False)
+                detalle_visible = [False]
+                with ui.row().classes("items-center gap-1 cursor-pointer mt-2") as toggle_row:
+                    chev = ui.icon("chevron_right").classes("text-gray-500")
+                    ui.label(f"Ver detalle ({len(filas_preview)} filas)").classes("text-xs text-gray-500")
+
+                def _toggle_detalle() -> None:
+                    detalle_visible[0] = not detalle_visible[0]
+                    detalle_col.set_visibility(detalle_visible[0])
+                    chev.props(f"name={'expand_more' if detalle_visible[0] else 'chevron_right'}")
+                toggle_row.on("click", lambda: _toggle_detalle())
+
+                with detalle_col:
+                    for sku, desc in filas_preview:
+                        with ui.row().classes("items-center gap-2 w-full"):
+                            ui.label(sku).classes("text-xs font-mono text-gray-600 w-40 shrink-0")
+                            ui.label(desc).classes("text-xs")
+                with ui.row().classes("w-full justify-end gap-2 mt-3"):
+                    ui.button("Cancelar", on_click=dlg.close).props("flat")
+                    confirmar_btn = ui.button(confirm_label).props("unelevated color=primary")
+                    async def _confirmado() -> None:
+                        confirmar_btn.props("loading")
+                        try:
+                            await on_confirm()
+                        finally:
+                            dlg.close()
+                    confirmar_btn.on_click(_confirmado)
+            dlg.open()
+
+        def _accion_corregir_precio_fila(row: dict) -> None:
+            desc = f"TN {_fmt_pesos_dif(row['tn_precio'])} → {_fmt_pesos_dif(row['tn_objetivo'])}"
+            async def _hacer() -> None:
+                ok, msg = await run.io_bound(
+                    escribir_tn_verificado, uid, tn_creds, row["sku"], row["tn_product_id"], row["tn_variant_id"],
+                    "precio", row["tn_precio"], round(row["tn_objetivo"]), "manual",
+                )
+                ui.notify(f"{row['sku']}: {'precio corregido' if ok else 'ERROR — ' + msg}", type="positive" if ok else "negative")
+                _render_tabla_dif()
+            _dialogo_confirmar_dif("Corregir precio", [], [(row["sku"], desc)], "Aplicar", _hacer)
+
+        def _accion_poner_cero_fila(row: dict) -> None:
+            desc = f"TN {row['tn_stock']} → 0"
+            async def _hacer() -> None:
+                ok, msg = await run.io_bound(
+                    escribir_tn_verificado, uid, tn_creds, row["sku"], row["tn_product_id"], row["tn_variant_id"],
+                    "stock", row["tn_stock"], 0, "manual",
+                )
+                ui.notify(f"{row['sku']}: {'puesto en 0' if ok else 'ERROR — ' + msg}", type="positive" if ok else "negative")
+                _render_tabla_dif()
+            _dialogo_confirmar_dif("Poner stock en 0 (agotado en ML)", [], [(row["sku"], desc)], "Aplicar", _hacer)
+
+        def _accion_reponer_fila(row: dict) -> None:
+            desc = f"TN 0 → {row['ml_stock']}"
+            async def _hacer() -> None:
+                ok, msg = await run.io_bound(
+                    escribir_tn_verificado, uid, tn_creds, row["sku"], row["tn_product_id"], row["tn_variant_id"],
+                    "stock", 0, row["ml_stock"], "manual",
+                )
+                ui.notify(f"{row['sku']}: {'repuesto' if ok else 'ERROR — ' + msg}", type="positive" if ok else "negative")
+                _render_tabla_dif()
+            _dialogo_confirmar_dif("Reponer a stock de ML", [], [(row["sku"], desc)], "Aplicar", _hacer)
+
+        def _accion_stock_manual(row: dict, inp: Any) -> None:
+            raw = str(inp.value or "").strip()
+            try:
+                nuevo = int(raw)
+                if nuevo < 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                ui.notify(f"{row['sku']}: stock inválido (entero, ≥ 0)", type="negative")
+                return
+            desc = f"TN {row['tn_stock']} → {nuevo} (carga manual, criterio de Diego)"
+            async def _hacer() -> None:
+                ok, msg = await run.io_bound(
+                    escribir_tn_verificado, uid, tn_creds, row["sku"], row["tn_product_id"], row["tn_variant_id"],
+                    "stock", row["tn_stock"], nuevo, "manual",
+                )
+                ui.notify(f"{row['sku']}: {'guardado' if ok else 'ERROR — ' + msg}", type="positive" if ok else "negative")
+                _render_tabla_dif()
+            _dialogo_confirmar_dif("Cargar stock manual", [], [(row["sku"], desc)], "Aplicar", _hacer)
+
+        def _accion_lote_precios() -> None:
+            filas = filas_ref["data"]
+            marcadas = [r for r in filas if r["sku"] in seleccionados_ref["ids"]]
+            corregibles = [r for r in marcadas if r["precio_corregible"]]
+            excluidas = [r for r in marcadas if not r["precio_corregible"]]
+            if not corregibles:
+                ui.notify("Ninguna fila seleccionada es corregible (promo activa, >30%, sin datos o ya alineada)", type="warning")
+                return
+            n = len(corregibles)
+            # cambio = lo que se le suma al precio actual para llegar al objetivo
+            # (negativo = baja). Usa precio_diff/precio_diff_pct ya calculados en
+            # _construir_filas_diferencias (Decimal, no float) -- no reimplementa la resta.
+            cambios = [(-r["precio_diff"], -r["precio_diff_pct"]) for r in corregibles]
+            promedio_pct = sum(c[1] for c in cambios) / n
+            idx_max = max(range(n), key=lambda i: abs(cambios[i][1]))
+            impacto_total = sum(c[0] for c in cambios)
+            resumen = [
+                f"{n} productos se van a modificar",
+                f"Variación promedio: {promedio_pct:+.1f}%",
+                f"Variación máxima: {corregibles[idx_max]['sku']} {cambios[idx_max][1]:+.1f}% ({_fmt_delta_pesos_dif(cambios[idx_max][0])})",
+                f"Impacto total sobre el precio de lista del catálogo: {_fmt_delta_pesos_dif(impacto_total)}",
+            ]
+            preview = [(r["sku"], f"TN {_fmt_pesos_dif(r['tn_precio'])} → {_fmt_pesos_dif(r['tn_objetivo'])}") for r in corregibles]
+            if excluidas:
+                preview.append(("(excluidas)", f"{len(excluidas)} de las seleccionadas NO se tocan -- ver motivo en la columna Precio — Estado"))
+            async def _hacer() -> None:
+                ok_n = err_n = 0
+                for r in corregibles:
+                    ok, msg = await run.io_bound(
+                        escribir_tn_verificado, uid, tn_creds, r["sku"], r["tn_product_id"], r["tn_variant_id"],
+                        "precio", r["tn_precio"], round(r["tn_objetivo"]), "lote",
+                    )
+                    if ok:
+                        ok_n += 1
+                    else:
+                        err_n += 1
+                ui.notify(f"Lote precios: {ok_n} OK, {err_n} error", type="positive" if err_n == 0 else "warning")
+                seleccionados_ref["ids"].clear()
+                _render_tabla_dif()
+            _dialogo_confirmar_dif("Corregir precios", resumen, preview, f"Aplicar a {n} productos", _hacer)
+
+        def _accion_lote_cero() -> None:
+            filas = filas_ref["data"]
+            marcadas = [r for r in filas if r["sku"] in seleccionados_ref["ids"]]
+            agotados = [r for r in marcadas if r["stock_estado"] == "AGOTADO_ML"]
+            excluidas = [r for r in marcadas if r["stock_estado"] != "AGOTADO_ML"]
+            if not agotados:
+                ui.notify("Ninguna fila seleccionada está en AGOTADO_ML", type="warning")
+                return
+            n = len(agotados)
+            unidades_totales = sum(int(r["tn_stock"] or 0) for r in agotados)
+            resumen = [
+                f"{n} productos se van a poner en 0",
+                f"Unidades de stock que dejan de verse en TN: {unidades_totales}",
+            ]
+            preview = [(r["sku"], f"TN {r['tn_stock']} → 0") for r in agotados]
+            if excluidas:
+                preview.append(("(excluidas)", f"{len(excluidas)} de las seleccionadas no están en AGOTADO_ML, no se tocan"))
+            async def _hacer() -> None:
+                ok_n = err_n = 0
+                for r in agotados:
+                    ok, msg = await run.io_bound(
+                        escribir_tn_verificado, uid, tn_creds, r["sku"], r["tn_product_id"], r["tn_variant_id"],
+                        "stock", r["tn_stock"], 0, "lote",
+                    )
+                    if ok:
+                        ok_n += 1
+                    else:
+                        err_n += 1
+                ui.notify(f"Lote stock=0: {ok_n} OK, {err_n} error", type="positive" if err_n == 0 else "warning")
+                seleccionados_ref["ids"].clear()
+                _render_tabla_dif()
+            _dialogo_confirmar_dif(
+                "Poner en 0 (agotados en ML)", resumen, preview, f"Aplicar a {n} productos", _hacer,
+            )
+
+        lote_precio_btn.on_click(_accion_lote_precios)
+        lote_cero_btn.on_click(_accion_lote_cero)
 
         async def _actualizar_dif() -> None:
             actualizar_btn_dif.props("loading")

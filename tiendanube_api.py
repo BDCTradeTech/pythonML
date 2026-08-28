@@ -211,6 +211,71 @@ def tiendanube_create_product(
     return data, None
 
 
+def _put_with_backoff(
+    path: str, store_id: str, access_token: str, auth_header_style: str,
+    json_body: dict, max_retries: int = 3,
+) -> requests.Response:
+    """PUT con el mismo rate limiting y backoff ante 429 que _get_with_backoff/_post_with_backoff
+    -- comparten la misma instancia de _rate_limiter."""
+    url = f"{API_BASE}/{store_id}/{path.lstrip('/')}"
+    resp = None
+    for intento in range(max_retries + 1):
+        _rate_limiter.acquire()
+        resp = requests.put(
+            url, json=json_body,
+            headers=_headers_for_style(access_token, auth_header_style, _user_agent()),
+            timeout=20,
+        )
+        _rate_limiter.sync_from_headers(resp.headers)
+        if resp.status_code != 429:
+            return resp
+        retry_after = resp.headers.get("Retry-After")
+        reset_ms = resp.headers.get("x-rate-limit-reset")
+        if retry_after:
+            espera = float(retry_after)
+        elif reset_ms:
+            espera = float(reset_ms) / 1000.0
+        else:
+            espera = 1.0
+        logging.warning(
+            f"[TIENDANUBE] 429 (rate limit) en PUT {path}, intento {intento + 1}/{max_retries + 1}, "
+            f"esperando {espera:.2f}s antes de reintentar"
+        )
+        time.sleep(espera)
+    return resp
+
+
+def tiendanube_update_variant(
+    store_id: str, access_token: str, auth_header_style: str,
+    product_id: str, variant_id: str, payload: dict,
+) -> Tuple[Optional[dict], Optional[str]]:
+    """PUT /products/{product_id}/variants/{variant_id}. payload debe traer SOLO
+    los campos a cambiar (ej. {"price": "25000.00"} o {"stock": 0}) -- confirmado
+    en vivo 2026-08-28 que es actualización parcial, no reemplaza el resto de la
+    variante. Devuelve (variante_actualizada, error) -- nunca ambos a la vez.
+
+    ADVERTENCIA: a diferencia de este endpoint (variant-level, confirmado con
+    cuerpo fresco en el test en vivo), PUT /products/{id} (product-level, usado
+    para categorías) devuelve 200 con cuerpo DESACTUALIZADO. Por eso el llamador
+    (tabs/tienda_nube.py::escribir_tn_verificado) NUNCA confía en este body para
+    confirmar éxito -- siempre hace un GET independiente después."""
+    try:
+        resp = _put_with_backoff(f"products/{product_id}/variants/{variant_id}", store_id, access_token, auth_header_style, payload)
+    except Exception as ex:
+        return None, f"Excepción de red al actualizar la variante: {ex}"
+    if resp is None:
+        return None, "Sin respuesta del servidor (excepción no capturada)"
+    if resp.status_code not in (200, 201):
+        return None, f"HTTP {resp.status_code}: {resp.text[:800]}"
+    try:
+        data = resp.json()
+    except Exception as ex:
+        return None, f"Tiendanube respondió {resp.status_code} pero el cuerpo no es JSON válido ({ex}): {resp.text[:300]}"
+    if not isinstance(data, dict):
+        return None, f"Respuesta inesperada de Tiendanube (no es un objeto): {resp.text[:300]}"
+    return data, None
+
+
 def tiendanube_find_by_sku(
     store_id: str, access_token: str, auth_header_style: str, sku: str,
 ) -> Optional[Dict[str, Any]]:
@@ -292,6 +357,9 @@ def tiendanube_list_products_with_variants(
                         "sku": (variante.get("sku") or "").strip(),
                         "nombre": nombre,
                         "precio": variante.get("price"),  # crudo, string -- no convertir
+                        # crudo tal cual la API: null si no hay promo activa (confirmado
+                        # en vivo 2026-08-28 -- nunca "0" ni "" para "sin promo")
+                        "promotional_price": variante.get("promotional_price"),
                         "stock": variante.get("stock"),  # puede ser None si stock_management=False
                     })
             next_link = resp.links.get("next", {}).get("url") if hasattr(resp, "links") else None

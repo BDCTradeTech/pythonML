@@ -360,6 +360,37 @@ def init_db() -> None:
     cur.execute(
         "CREATE INDEX IF NOT EXISTS idx_tn_productos_sku ON tiendanube_productos(user_id, sku)"
     )
+    # Migración: promotional_price (para no confundir "sin promo" -- viene null de
+    # la API -- con "price desactualizado"; ver tabs/tienda_nube.py PROMO_ACTIVA)
+    cur.execute("PRAGMA table_info(tiendanube_productos)")
+    if "promotional_price" not in [r[1] for r in cur.fetchall()]:
+        cur.execute("ALTER TABLE tiendanube_productos ADD COLUMN promotional_price TEXT")
+
+    # Escrituras hacia Tiendanube (precio/stock desde la página Diferencias). APPEND-ONLY:
+    # nunca UPDATE ni DELETE. No es auditoría decorativa -- get_ultima_escritura_stock()
+    # la usa para distinguir un stock=0 que escribimos nosotros de una venta real en TN.
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tn_escrituras (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts             TEXT NOT NULL,
+            user_id        INTEGER NOT NULL,
+            sku            TEXT NOT NULL,
+            tn_product_id  TEXT NOT NULL,
+            tn_variant_id  TEXT NOT NULL,
+            campo          TEXT NOT NULL,
+            valor_anterior TEXT,
+            valor_nuevo    TEXT,
+            origen         TEXT NOT NULL,
+            resultado      TEXT NOT NULL,
+            detalle        TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    cur.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tn_escrituras_sku ON tn_escrituras(user_id, sku, campo, id)"
+    )
 
     # Estado de la última sincronización con Tiendanube -- visible en la pantalla de
     # Vinculación, no solo en el log (una sync que falla a mitad de camino no debe
@@ -1317,7 +1348,7 @@ def get_tiendanube_productos(user_id: int) -> List[Dict[str, Any]]:
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT variant_id, product_id, sku, nombre, precio, stock, updated_at "
+            "SELECT variant_id, product_id, sku, nombre, precio, promotional_price, stock, updated_at "
             "FROM tiendanube_productos WHERE user_id = ?",
             (user_id,),
         ).fetchall()
@@ -1336,15 +1367,63 @@ def replace_tiendanube_productos(user_id: int, rows: List[Dict[str, Any]]) -> No
         conn.execute("DELETE FROM tiendanube_productos WHERE user_id = ?", (user_id,))
         conn.executemany(
             "INSERT INTO tiendanube_productos "
-            "(user_id, variant_id, product_id, sku, nombre, precio, stock, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "(user_id, variant_id, product_id, sku, nombre, precio, promotional_price, stock, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
                 (user_id, r["variant_id"], r["product_id"], r.get("sku"), r.get("nombre"),
-                 r.get("precio"), r.get("stock"), now)
+                 r.get("precio"), r.get("promotional_price"), r.get("stock"), now)
                 for r in rows
             ],
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# tn_escrituras -- log APPEND-ONLY de escrituras hacia Tiendanube
+# ---------------------------------------------------------------------------
+
+
+def log_tn_escritura(
+    user_id: int, sku: str, tn_product_id: str, tn_variant_id: str,
+    campo: str, valor_anterior: Any, valor_nuevo: Any, origen: str,
+    resultado: str, detalle: Optional[str] = None,
+) -> None:
+    """Registra una escritura hacia Tiendanube. Se llama SIEMPRE (ok o error) desde
+    la única función de escritura (tabs/tienda_nube.py::escribir_tn_verificado) --
+    nunca UPDATE ni DELETE sobre esta tabla."""
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO tn_escrituras "
+            "(ts, user_id, sku, tn_product_id, tn_variant_id, campo, valor_anterior, valor_nuevo, origen, resultado, detalle) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _dt.utcnow().isoformat(), user_id, sku, tn_product_id, tn_variant_id, campo,
+                None if valor_anterior is None else str(valor_anterior),
+                None if valor_nuevo is None else str(valor_nuevo),
+                origen, resultado, detalle,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_ultima_escritura_stock(user_id: int, sku: str) -> Optional[Dict[str, Any]]:
+    """Última escritura EXITOSA de stock para el SKU. Se usa para distinguir un
+    TN=0 que escribimos nosotros (REPONER, es seguro reponer) de una venta real en
+    TN que nunca tocamos (REVISAR_VENTA_TN, hace falta criterio humano)."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM tn_escrituras WHERE user_id = ? AND sku = ? AND campo = 'stock' "
+            "AND resultado = 'ok' ORDER BY id DESC LIMIT 1",
+            (user_id, sku),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         conn.close()
 
