@@ -416,7 +416,7 @@ def _rebuild_tabla(
                                     '<span style="display:inline-flex;align-items:center;gap:3px;'
                                     'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
                                     'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
-                                    '<i class="ti ti-bolt"></i> Grok</span>'
+                                    '<i class="ti ti-bolt"></i> Groq</span>'
                                 )
                             elif _ia == "Gemini":
                                 ui.html(
@@ -705,7 +705,7 @@ def build_tab_transferencias() -> None:
             return
         if not usar_gemini and not groq_key:
             client.run_javascript(
-                "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config → IA/Sugerencias',"
+                "Quasar.Notify.create({message:'Configurá tu API key de Groq en Config → IA/Sugerencias',"
                 "color:'warning',position:'bottom'})"
             )
             return
@@ -817,7 +817,7 @@ def build_tab_transferencias() -> None:
                 "border-top:0.5px solid var(--color-border-tertiary);"
                 "padding:6px 10px;display:flex;align-items:center;gap:6px"
             ):
-                ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                ui.button("Groq", icon="bolt", on_click=_click_grok).props("flat dense").style(
                     "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;"
                     "display:flex;align-items:center;gap:4px"

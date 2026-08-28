@@ -849,7 +849,7 @@ def show_main_layout(container) -> None:
                             _grok_dot = ui.element("span").style(
                                 _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['grok']['status']]}"
                             )
-                            ui.label("Grok").style(_api_nm)
+                            ui.label("Groq").style(_api_nm)
                         with ui.row().classes("items-center gap-1"):
                             _gemini_dot = ui.element("span").style(
                                 _dot_s + f";background:{_IA_DOT_COLORS[_IA_CACHE['gemini']['status']]}"

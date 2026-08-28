@@ -762,7 +762,7 @@ def build_tab_preguntas(container) -> None:
                         if not groq_key:
                             groq_spin_ref[0].set_visibility(False)
                             groq_err_ref[0].set_text(
-                                "Configurá tu API key de Grok en Config → IA/Sugerencias"
+                                "Configurá tu API key de Groq en Config → IA/Sugerencias"
                             )
                             groq_err_ref[0].set_visibility(True)
 
@@ -790,7 +790,7 @@ def build_tab_preguntas(container) -> None:
                                 texto = await run.io_bound(_groq_generate, groq_key, prompt)
                                 resp_groq_holder[0].set_value(_build_resp(texto))
                             except Exception as exc:
-                                groq_err_ref[0].set_text(f"Error Grok: {exc}")
+                                groq_err_ref[0].set_text(f"Error Groq: {exc}")
                                 groq_err_ref[0].set_visibility(True)
                             finally:
                                 groq_spin_ref[0].set_visibility(False)
@@ -865,7 +865,7 @@ def build_tab_preguntas(container) -> None:
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
                                     )
 
-                                # ── COL 2 — GROK ─────────────────────────────────────
+                                # ── COL 2 — GROQ ─────────────────────────────────────
                                 with ui.element("div").style("flex:1;min-width:0"):
                                     with ui.element("div").style(
                                         "border:0.5px solid var(--color-border-tertiary);"
@@ -881,7 +881,7 @@ def build_tab_preguntas(container) -> None:
                                                 '<i class="ti ti-robot"'
                                                 ' style="font-size:13px;color:#e65100"></i>'
                                             )
-                                            ui.label("Respuesta Grok").style(
+                                            ui.label("Respuesta Groq").style(
                                                 "font-size:10px;color:#e65100;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
@@ -1066,7 +1066,7 @@ def build_tab_preguntas(container) -> None:
                                         "background:#ef5350;color:#fff;font-size:11px;margin-top:6px"
                                     )
 
-                                # ── Sección 2 — GROK ─────────────────────────────────
+                                # ── Sección 2 — GROQ ─────────────────────────────────
                                 with ui.element("div").style(
                                     "border:0.5px solid var(--color-border-tertiary);"
                                     "border-top:3px solid #f57c00;"
@@ -1082,7 +1082,7 @@ def build_tab_preguntas(container) -> None:
                                             '<i class="ti ti-robot"'
                                             ' style="font-size:13px;color:#e65100"></i>'
                                         )
-                                        ui.label("Respuesta Grok").style(
+                                        ui.label("Respuesta Groq").style(
                                             "font-size:10px;color:#e65100;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )

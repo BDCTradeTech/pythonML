@@ -1387,7 +1387,7 @@ def _rebuild_tabla(
                                 '<span style="display:inline-flex;align-items:center;gap:3px;max-width:65px;'
                                 'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
                                 'border-radius:4px;padding:1px 5px;font-size:9px;font-weight:500;white-space:nowrap">'
-                                '<i class="ti ti-bolt"></i> Grok</span>'
+                                '<i class="ti ti-bolt"></i> Groq</span>'
                             )
                         elif _ia_val == "Gemini":
                             ui.html(
@@ -2258,13 +2258,13 @@ def _build_courier_panel(
             return
         if not usar_gemini and not groq_key:
             client.run_javascript(
-                "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
+                "Quasar.Notify.create({message:'Configurá tu API key de Groq en Config \\u2192 IA/Sugerencias',"
                 "color:'warning',position:'bottom'})"
             )
             return
         if not usar_gemini and es_imagen:
             client.run_javascript(
-                "Quasar.Notify.create({message:'Grok solo procesa PDFs con texto. Usá Gemini para imágenes.',"
+                "Quasar.Notify.create({message:'Groq solo procesa PDFs con texto. Usá Gemini para imágenes.',"
                 "color:'info',position:'bottom'})"
             )
             return
@@ -2289,7 +2289,7 @@ def _build_courier_panel(
                 full_prompt = prompt_str + "\n\nCONTENIDO DEL DOCUMENTO:\n" + texto_pdf
                 logger.warning("[DBG] Llamando _groq_parse_doc courier=%s", courier_key)
                 raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
-                logger.warning("[DBG] raw Grok (500): %s", raw[:500] if raw else "None")
+                logger.warning("[DBG] raw Groq (500): %s", raw[:500] if raw else "None")
             raw = _clean_json(raw)
             logger.warning("[DBG] JSON limpio (500): %s", raw[:500] if raw else "None")
             try:
@@ -2411,7 +2411,7 @@ def _build_courier_panel(
                     options=[0, 100, 150, 200, 250, 300],
                     value=pa_default,
                 ).props("dense outlined").style("width:72px;height:34px;font-size:11px")
-                ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                ui.button("Groq", icon="bolt", on_click=_click_grok).props("flat dense").style(
                     "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )
@@ -2518,7 +2518,7 @@ def _build_lhs_panel(
             return
         if not usar_gemini and not groq_key:
             client.run_javascript(
-                "Quasar.Notify.create({message:'Configurá tu API key de Grok en Config \\u2192 IA/Sugerencias',"
+                "Quasar.Notify.create({message:'Configurá tu API key de Groq en Config \\u2192 IA/Sugerencias',"
                 "color:'warning',position:'bottom'})"
             )
             return
@@ -2728,7 +2728,7 @@ def _build_lhs_panel(
                     options=[0, 100, 150, 200, 250, 300],
                     value=200,
                 ).props("dense outlined").style("width:72px;height:34px;font-size:11px")
-                ui.button("Grok", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                ui.button("Groq", icon="bolt", on_click=_click_grok).props("flat dense").style(
                     "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
                     "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
                 )

@@ -124,7 +124,7 @@ def build_tab_config() -> None:
                     else:
                         ui.label("Sin vincular").classes("text-warning text-sm")
 
-            # 1b. IA / Sugerencias (Grok + Gemini)
+            # 1b. IA / Sugerencias (Groq + Gemini)
             _gkey_row = None
             _gemkey_row = None
             try:
@@ -158,7 +158,7 @@ def build_tab_config() -> None:
                         ui.notify("API Key desvinculada", color="positive")
                         ui.navigate.reload()
 
-                    with ui.expansion("Grok", icon="bolt").classes("w-full").props("expand-icon-toggle dense"):
+                    with ui.expansion("Groq", icon="bolt").classes("w-full").props("expand-icon-toggle dense"):
                         groq_inp = (
                             ui.input(placeholder="gsk_...")
                             .props("dense outlined hide-bottom-space type=password")
