@@ -2084,12 +2084,14 @@ def build_tab_diferencias(container) -> None:
             _dialogo_confirmar_dif("Reponer a stock de ML", [], [(row["sku"], desc)], "Aplicar", _hacer)
 
         def _accion_stock_manual(row: dict, inp: Any) -> None:
+            print(f"[DEBUG stock_manual] {row['sku']}: inp.value repr={inp.value!r} type={type(inp.value)}")
             raw = str(inp.value or "").strip()
             try:
                 nuevo = int(raw)
                 if nuevo < 0:
                     raise ValueError
             except (ValueError, TypeError):
+                print(f"[DEBUG stock_manual] {row['sku']}: raw repr={raw!r} type={type(raw)} -- RECHAZADO")
                 ui.notify(f"{row['sku']}: stock inválido (entero, ≥ 0)", type="negative")
                 return
             desc = f"TN {row['tn_stock']} → {nuevo} (carga manual, criterio de Diego)"
