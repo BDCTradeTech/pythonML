@@ -1382,7 +1382,7 @@ def _rebuild_tabla(
                     with ui.element("div").style(
                         f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                     ):
-                        if _ia_val == "Grok":
+                        if _ia_val == "Groq":
                             ui.html(
                                 '<span style="display:inline-flex;align-items:center;gap:3px;max-width:65px;'
                                 'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
@@ -2297,7 +2297,7 @@ def _build_courier_panel(
                 logger.warning("[DBG] parsed keys: %s", list(parsed.keys()))
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = courier_key
-                parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
+                parsed["ia_usada"] = "Gemini" if usar_gemini else "Groq"
                 parsed_ref[0] = parsed
                 logger.warning("[DBG] pa=%s tc1=%s tc3=%s courier=%s", parsed.get("pa"), parsed.get("tipo_cambio_1"), parsed.get("tipo_cambio_3"), parsed.get("courier"))
                 nro_fac = (parsed.get("nro_factura") or "").strip()
@@ -2591,7 +2591,7 @@ def _build_lhs_panel(
 
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = "LHS"
-                parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
+                parsed["ia_usada"] = "Gemini" if usar_gemini else "Groq"
                 parsed["revisar_iva"] = "" if iva_ok else (
                     f"IVA Aduanero no coincide con Total Real tras {intento} intento(s) "
                     f"(diferencia {diff_pct * 100:.1f}%). Verificar manualmente."

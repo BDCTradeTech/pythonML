@@ -411,7 +411,7 @@ def _rebuild_tabla(
                             f"display:flex;justify-content:center;align-items:center;"
                             f"padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
                         ):
-                            if _ia == "Grok":
+                            if _ia == "Groq":
                                 ui.html(
                                     '<span style="display:inline-flex;align-items:center;gap:3px;'
                                     'background:#E6F1FB;border:0.5px solid #85B7EB;color:#0C447C;'
@@ -729,7 +729,7 @@ def build_tab_transferencias() -> None:
 
             raw = _clean_json(raw)
             parsed = json.loads(raw)
-            parsed["ia_usada"] = "Gemini" if usar_gemini else "Grok"
+            parsed["ia_usada"] = "Gemini" if usar_gemini else "Groq"
             nro_op = (parsed.get("operacion") or "").strip()
             if nro_op and _exists_operacion(user_id, nro_op):
                 _msg_dup = json.dumps(f"La operación {nro_op} ya fue ingresada.")
