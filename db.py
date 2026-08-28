@@ -1204,13 +1204,17 @@ def init_db() -> None:
 
 
 def get_producto_tn_descuento(sku: str, user_id: int) -> Optional[float]:
-    """Descuento ML->TN cargado a mano para este SKU, o None si usa el global."""
+    """Descuento ML->TN cargado a mano para este SKU, o None si usa el global.
+    Comparación case-insensitive: productos.sku guarda el case original (ej.
+    "Echo-Dot-5-Blanco") pero los llamadores de Diferencias pasan el sku
+    normalizado a minúsculas -- un WHERE sku=? exacto no matcheaba nunca."""
+    sku_norm = (sku or "").strip()
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT tn_descuento_pct FROM productos WHERE sku = ? AND user_id = ?",
-            (sku, user_id),
+            "SELECT tn_descuento_pct FROM productos WHERE lower(sku) = lower(?) AND user_id = ?",
+            (sku_norm, user_id),
         )
         row = cur.fetchone()
         return float(row["tn_descuento_pct"]) if row and row["tn_descuento_pct"] is not None else None
@@ -1218,15 +1222,20 @@ def get_producto_tn_descuento(sku: str, user_id: int) -> Optional[float]:
         conn.close()
 
 
-def set_producto_tn_descuento(sku: str, user_id: int, valor: Optional[float]) -> None:
-    """Guarda (o borra, con valor=None) el override de descuento ML->TN para el SKU."""
+def set_producto_tn_descuento(sku: str, user_id: int, valor: Optional[float]) -> bool:
+    """Guarda (o borra, con valor=None) el override de descuento ML->TN para el SKU.
+    Case-insensitive, ver get_producto_tn_descuento. Devuelve False si no hay
+    fila en productos para ese SKU (no se guardó nada -- el llamador debe avisar,
+    no asumir éxito)."""
+    sku_norm = (sku or "").strip()
     conn = get_connection()
     try:
-        conn.execute(
-            "UPDATE productos SET tn_descuento_pct = ?, updated_at = ? WHERE sku = ? AND user_id = ?",
-            (valor, datetime.now().isoformat(timespec="seconds"), sku, user_id),
+        cur = conn.execute(
+            "UPDATE productos SET tn_descuento_pct = ?, updated_at = ? WHERE lower(sku) = lower(?) AND user_id = ?",
+            (valor, datetime.now().isoformat(timespec="seconds"), sku_norm, user_id),
         )
         conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 

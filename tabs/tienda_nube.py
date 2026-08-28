@@ -1942,17 +1942,20 @@ def build_tab_diferencias(container) -> None:
                                             def _on_blur_descuento(_e: Any = None, _sku: str = row["sku"], _inp: Any = inp) -> None:
                                                 raw = str(_inp.value or "").strip()
                                                 if raw == "":
-                                                    set_producto_tn_descuento(_sku, uid, None)
+                                                    ok = set_producto_tn_descuento(_sku, uid, None)
                                                 else:
                                                     try:
                                                         n = float(raw.replace(",", "."))
                                                     except (ValueError, TypeError):
-                                                        ui.notify(f"{_sku}: valor inválido", type="negative")
+                                                        ui.notify(f"{_sku}: descuento inválido -- recibí {raw!r}, debe ser un número (ej. 12 o 12.5)", type="negative")
                                                         return
                                                     if n < 0 or n > 50:
-                                                        ui.notify(f"{_sku}: debe estar entre 0 y 50", type="negative")
+                                                        ui.notify(f"{_sku}: descuento fuera de rango -- recibí {n:g}, debe estar entre 0 y 50", type="negative")
                                                         return
-                                                    set_producto_tn_descuento(_sku, uid, n)
+                                                    ok = set_producto_tn_descuento(_sku, uid, n)
+                                                if not ok:
+                                                    ui.notify(f"{_sku}: NO se guardó -- no existe fila de producto para este SKU en la base", type="negative")
+                                                    return
                                                 _render_tabla_dif()
 
                                             inp.on("blur", _on_blur_descuento)
@@ -2090,7 +2093,7 @@ def build_tab_diferencias(container) -> None:
                 if nuevo < 0:
                     raise ValueError
             except (ValueError, TypeError):
-                ui.notify(f"{row['sku']}: stock inválido (entero, ≥ 0)", type="negative")
+                ui.notify(f"{row['sku']}: stock inválido -- recibí {raw!r}, debe ser un entero ≥ 0", type="negative")
                 return
             desc = f"TN {row['tn_stock']} → {nuevo} (carga manual, criterio de Diego)"
             async def _hacer() -> None:
