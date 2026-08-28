@@ -26,6 +26,7 @@ from db import (
     get_cotizador_param,
     COTIZADOR_DEFAULTS,
     get_producto_tn_descuento,
+    set_producto_tn_descuento,
     GROQ_MODEL,
     DEEPSEEK_MODEL,
     DEEPSEEK_BASE_URL,
@@ -614,7 +615,7 @@ def build_tab_vinculacion(container) -> None:
 
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
             filtro_opciones = {"todos": "Todos", **_PLATAFORMA_LABELS, "duplicados": "Con SKU duplicado (ML o TN)"}
-            filtro_sel = ui.select(filtro_opciones, value="todos", label="Estado").props("dense outlined").classes("w-64")
+            filtro_sel = ui.select(filtro_opciones, value="solo_ml", label="Estado").props("dense outlined").classes("w-64")
             busqueda_input = ui.input(placeholder="Buscar por SKU o nombre...").props(
                 "dense outlined clearable debounce=300"
             ).classes("w-64")
@@ -1364,3 +1365,375 @@ def build_tab_vinculacion(container) -> None:
 
         _render_status()
         _render_tabla()
+
+
+# =============================================================================
+# Diferencias -- SOLO LECTURA: SKUs en ambas plataformas, precio objetivo TN vs
+# actual y stock ML vs TN. La sincronización (crear/actualizar en TN) es de
+# Vinculación, no de acá.
+# =============================================================================
+
+
+def _construir_filas_diferencias(ml_items: List[dict], tn_rows: List[dict], uid: int) -> List[Dict[str, Any]]:
+    """Universo: SOLO SKUs presentes en ML y en TN a la vez -- los de una sola
+    plataforma son ruido acá, eso lo resuelve Vinculación."""
+    ml_by_sku: Dict[str, List[dict]] = defaultdict(list)
+    tn_by_sku: Dict[str, List[dict]] = defaultdict(list)
+    for it in ml_items:
+        sku = (it.get("seller_sku") or "").strip().lower()
+        if sku:
+            ml_by_sku[sku].append(it)
+    for r in tn_rows:
+        sku = (r.get("sku") or "").strip().lower()
+        if sku:
+            tn_by_sku[sku].append(r)
+
+    descuento_global = float(get_cotizador_param("tn_descuento_pct", uid) or COTIZADOR_DEFAULTS["tn_descuento_pct"])
+
+    filas = []
+    for sku in sorted(set(ml_by_sku) & set(tn_by_sku)):
+        ml_m = ml_by_sku[sku]
+        tn_m = tn_by_sku[sku]
+
+        ml_contado = precio_contado_ml(ml_m)
+        objetivo = calcular_precio_tn(sku, ml_items, uid)
+        tn_precio_raw = tn_m[0].get("precio")
+        ml_stock = ml_m[0].get("available_quantity")
+        tn_stock = tn_m[0].get("stock")
+
+        # Comparación en ENTEROS: el objetivo sale de un cálculo con decimales y TN
+        # devuelve el precio como string -- comparar floats marcaría todo como
+        # distinto por error de coma flotante.
+        precio_diff: Optional[int] = None
+        precio_diff_pct: Optional[float] = None
+        precio_alineado = False
+        if objetivo is not None and tn_precio_raw not in (None, ""):
+            try:
+                tn_int = round(float(str(tn_precio_raw).replace(",", ".")))
+                obj_int = round(objetivo)
+                precio_diff = tn_int - obj_int
+                precio_diff_pct = (precio_diff / obj_int * 100) if obj_int else 0.0
+                precio_alineado = precio_diff == 0
+            except (ValueError, TypeError):
+                pass
+
+        # Stock: ML es la fuente de verdad, cualquier diferencia es real.
+        stock_diff: Optional[int] = None
+        stock_alineado = False
+        if ml_stock is not None and tn_stock is not None:
+            try:
+                stock_diff = int(tn_stock) - int(ml_stock)
+                stock_alineado = stock_diff == 0
+            except (ValueError, TypeError):
+                pass
+
+        filas.append({
+            "sku": sku,
+            "nombre": ml_m[0].get("title", ""),
+            "ml_contado": ml_contado,
+            "tn_objetivo": objetivo,
+            "tn_precio": tn_precio_raw,
+            "precio_diff": precio_diff,
+            "precio_diff_pct": precio_diff_pct,
+            "precio_alineado": precio_alineado,
+            "ml_stock": ml_stock,
+            "tn_stock": tn_stock,
+            "stock_diff": stock_diff,
+            "stock_alineado": stock_alineado,
+            "descuento_override": get_producto_tn_descuento(sku, uid),
+            "descuento_global": descuento_global,
+        })
+    return filas
+
+
+def build_tab_diferencias(container) -> None:
+    container.clear()
+    user = _require_login()
+    if not user:
+        return
+    uid = user["id"]
+
+    access_token = get_ml_access_token(uid)
+    tn_creds = get_tiendanube_credentials(uid)
+    if not access_token:
+        with container:
+            ui.label("⚠️ No tenés MercadoLibre vinculado. Andá a Configuración.").classes("text-warning")
+        return
+    if not tn_creds or not tn_creds.get("store_id") or not tn_creds.get("access_token") or not tn_creds.get("auth_header_style"):
+        with container:
+            ui.label("⚠️ No tenés Tienda Nube vinculada (o falta 'Probar conexión' en Configuración).").classes("text-warning")
+        return
+
+    with container:
+        ui.label("Tienda Nube — Diferencias").classes("text-xl font-bold")
+
+        status_container = ui.column().classes("w-full")
+
+        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            filtro_opciones_dif = {
+                "con_diferencias": "Solo con diferencias",
+                "alineados": "Alineados",
+                "dif_precio": "Con diferencia de precio",
+                "dif_stock": "Con diferencia de stock",
+                "todos": "Todos",
+            }
+            filtro_sel_dif = ui.select(filtro_opciones_dif, value="con_diferencias", label="Estado").props("dense outlined").classes("w-64")
+            busqueda_input_dif = ui.input(placeholder="Buscar por SKU o nombre...").props(
+                "dense outlined clearable debounce=300"
+            ).classes("w-64")
+            ui.space()
+            actualizar_btn_dif = ui.button("Actualizar").props("unelevated dense no-caps icon=refresh").classes("text-xs")
+            ultima_sync_lbl_dif = ui.label("").classes("text-xs text-gray-600")
+
+        contadores_container_dif = ui.row().classes("w-full gap-2 flex-wrap")
+        header_div_dif = ui.element("div").style("width:100%;overflow:hidden")
+        table_container_dif = ui.element("div").style("width:100%;height:calc(100vh - 454px);overflow-y:scroll;overflow-x:auto")
+        _hid_d = header_div_dif.id
+        _cid_d = table_container_dif.id
+        _sync_dif_client = context.client
+
+        async def _setup_sync_dif() -> None:
+            with _sync_dif_client:
+                await ui.run_javascript(
+                    f"(function(){{"
+                    f"var body=document.getElementById('c{_cid_d}');"
+                    f"var hdr=document.getElementById('c{_hid_d}');"
+                    f"if(!body||!hdr)return;"
+                    f"body.addEventListener('scroll',function(){{hdr.scrollLeft=body.scrollLeft;}});"
+                    f"function _sg(){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                    f"_sg();new ResizeObserver(_sg).observe(body);"
+                    f"}})();"
+                )
+        background_tasks.create(_setup_sync_dif())
+
+        columns_dif = [
+            {"name": "sku", "label": "SKU", "field": "sku", "align": "left"},
+            {"name": "nombre", "label": "Nombre", "field": "nombre", "align": "left"},
+            {"name": "ml_contado", "label": "ML — Contado", "field": "ml_contado", "align": "right"},
+            {"name": "tn_objetivo", "label": "TN — Objetivo", "field": "tn_objetivo", "align": "right"},
+            {"name": "tn_precio", "label": "TN — Actual", "field": "tn_precio", "align": "right"},
+            {"name": "precio_estado", "label": "Precio — Estado", "field": "precio_estado", "align": "center", "sortable": False},
+            {"name": "ml_stock", "label": "ML — Stock", "field": "ml_stock", "align": "right"},
+            {"name": "tn_stock", "label": "TN — Stock", "field": "tn_stock", "align": "right"},
+            {"name": "stock_estado", "label": "Stock — Estado", "field": "stock_estado", "align": "center", "sortable": False},
+            {"name": "descuento", "label": "Desc. %", "field": "descuento", "align": "center", "sortable": False},
+        ]
+        _col_w_dif = {
+            "sku": "110px", "nombre": "230px", "ml_contado": "100px", "tn_objetivo": "100px",
+            "tn_precio": "100px", "precio_estado": "150px", "ml_stock": "70px", "tn_stock": "70px",
+            "stock_estado": "100px", "descuento": "100px",
+        }
+
+        def _build_colgroup_dif() -> None:
+            with ui.element("colgroup"):
+                for col in columns_dif:
+                    ui.element("col").style(f"width:{_col_w_dif.get(col['name'], '90px')}")
+
+        sort_col_ref_dif: Dict[str, Any] = {"val": "sku"}
+        sort_asc_ref_dif: Dict[str, bool] = {"val": True}
+
+        def _sort_key_dif(row: dict, col_name: str) -> Any:
+            if col_name in ("ml_contado", "tn_objetivo", "ml_stock", "tn_stock"):
+                v = row.get(col_name)
+                return float(v) if v is not None else -1.0
+            if col_name == "tn_precio":
+                try:
+                    return float(str(row.get("tn_precio")).replace(",", "."))
+                except (ValueError, TypeError):
+                    return -1.0
+            return str(row.get(col_name) or "").lower()
+
+        def _on_sort_click_dif(col_name: str) -> None:
+            if sort_col_ref_dif.get("val") == col_name:
+                sort_asc_ref_dif["val"] = not sort_asc_ref_dif["val"]
+            else:
+                sort_col_ref_dif["val"] = col_name
+                sort_asc_ref_dif["val"] = True
+            _render_tabla_dif()
+
+        def _render_status_dif() -> None:
+            status_container.clear()
+            st = get_tiendanube_sync_status(uid)
+            with status_container:
+                if not st or not st.get("last_sync_at"):
+                    ultima_sync_lbl_dif.set_text("Nunca se sincronizó — apretá Actualizar")
+                    ultima_sync_lbl_dif.classes(replace="text-xs text-warning")
+                    return
+                relativo = _formatear_ultima_sync(st["last_sync_at"])
+                if st.get("ok"):
+                    ultima_sync_lbl_dif.set_text(f"Última sincronización: {relativo}")
+                    ultima_sync_lbl_dif.classes(replace="text-xs text-gray-600")
+                else:
+                    ultima_sync_lbl_dif.set_text(f"Última sincronización: {relativo} — FALLÓ")
+                    ultima_sync_lbl_dif.classes(replace="text-xs text-negative")
+                    with ui.row().classes("w-full items-center gap-2 p-2 rounded").style("background:#fef2f2;border:1px solid #fecaca"):
+                        ui.icon("error", color="negative", size="sm")
+                        ui.label(f"Sincronización incompleta/fallida: {st.get('error') or 'sin detalle'}").classes("text-sm text-negative")
+
+        def _render_tabla_dif() -> None:
+            ml_data = ml_get_my_items(access_token, include_paused=True)
+            ml_items_actuales = ml_data.get("results", [])
+            tn_rows = get_tiendanube_productos(uid)
+            filas = _construir_filas_diferencias(ml_items_actuales, tn_rows, uid)
+
+            n_alineados = sum(1 for r in filas if r["precio_alineado"] and r["stock_alineado"])
+            n_dif_precio = sum(1 for r in filas if not r["precio_alineado"])
+            n_dif_stock = sum(1 for r in filas if not r["stock_alineado"])
+
+            contadores_container_dif.clear()
+            with contadores_container_dif:
+                ui.badge(f"Alineados: {n_alineados}", color="positive").props("outline")
+                ui.badge(f"Con diferencia de precio: {n_dif_precio}", color="negative" if n_dif_precio else "positive").props("outline")
+                ui.badge(f"Con diferencia de stock: {n_dif_stock}", color="negative" if n_dif_stock else "positive").props("outline")
+                ui.badge(f"Total en ambas plataformas: {len(filas)}", color="secondary").props("outline")
+
+            filtro = filtro_sel_dif.value
+            if filtro == "alineados":
+                visibles = [r for r in filas if r["precio_alineado"] and r["stock_alineado"]]
+            elif filtro == "dif_precio":
+                visibles = [r for r in filas if not r["precio_alineado"]]
+            elif filtro == "dif_stock":
+                visibles = [r for r in filas if not r["stock_alineado"]]
+            elif filtro == "todos":
+                visibles = filas
+            else:  # "con_diferencias" (default)
+                visibles = [r for r in filas if not r["precio_alineado"] or not r["stock_alineado"]]
+
+            busqueda = (busqueda_input_dif.value or "").strip().lower()
+            if busqueda:
+                visibles = [
+                    r for r in visibles
+                    if busqueda in r["sku"] or busqueda in (r["nombre"] or "").lower()
+                ]
+
+            visibles = sorted(
+                visibles,
+                key=lambda r: _sort_key_dif(r, sort_col_ref_dif.get("val", "sku")),
+                reverse=not sort_asc_ref_dif.get("val", True),
+            )
+
+            header_div_dif.clear()
+            table_container_dif.clear()
+            if not visibles:
+                with table_container_dif:
+                    ui.label("Sin resultados para este filtro.").classes("text-sm text-gray-400")
+                return
+
+            with header_div_dif:
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup_dif()
+                    with ui.element("thead"):
+                        with ui.element("tr").classes("bg-primary text-white font-semibold"):
+                            for col in columns_dif:
+                                with ui.element("th").classes("px-2 py-1 border text-center").style("line-height:1.1"):
+                                    if col.get("sortable", True):
+                                        ui.button(
+                                            col["label"], on_click=lambda c=col["name"]: _on_sort_click_dif(c)
+                                        ).props("flat dense no-caps").classes(
+                                            "text-white hover:bg-white/20 cursor-pointer font-semibold"
+                                        ).style(
+                                            "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+                                            "max-width:100%;min-height:0;padding:2px 6px;line-height:1.1"
+                                        )
+                                    else:
+                                        ui.label(col["label"]).classes("font-semibold").style("line-height:1.1")
+
+            with table_container_dif:
+                with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0"):
+                    _build_colgroup_dif()
+                    with ui.element("tbody"):
+                        for row in visibles:
+                            with ui.element("tr").classes("border-t border-gray-200 hover:bg-gray-50"):
+                                for col in columns_dif:
+                                    align = "text-right" if col["align"] == "right" else "text-center" if col["align"] == "center" else "text-left"
+                                    with ui.element("td").classes(f"px-2 py-1 border-b border-gray-100 {align} text-xs").style("white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0"):
+                                        if col["name"] == "precio_estado":
+                                            if row["precio_diff"] is None:
+                                                ui.label("Sin datos").classes("text-xs text-gray-400")
+                                            elif row["precio_alineado"]:
+                                                ui.label("Alineado").classes("text-xs text-positive font-medium")
+                                            else:
+                                                signo = "+" if row["precio_diff"] > 0 else ""
+                                                monto = f"{row['precio_diff']:,}".replace(",", ".")
+                                                ui.label(f"{signo}{monto} ({signo}{row['precio_diff_pct']:.1f}%)").classes("text-xs text-negative font-medium")
+                                        elif col["name"] == "stock_estado":
+                                            if row["stock_diff"] is None:
+                                                ui.label("Sin datos").classes("text-xs text-gray-400")
+                                            elif row["stock_alineado"]:
+                                                ui.label("Alineado").classes("text-xs text-positive font-medium")
+                                            else:
+                                                signo = "+" if row["stock_diff"] > 0 else ""
+                                                ui.label(f"{signo}{row['stock_diff']} u.").classes("text-xs text-negative font-medium")
+                                        elif col["name"] == "descuento":
+                                            val_str = "" if row["descuento_override"] is None else f"{row['descuento_override']:g}"
+                                            inp = ui.input(
+                                                value=val_str,
+                                                placeholder=f"{row['descuento_global']:g} (global)",
+                                            ).props(
+                                                'dense outlined hide-bottom-space input-style="text-align:right;font-size:11px;padding:0 4px"'
+                                            ).style("width:100%")
+                                            if row["descuento_override"] is not None:
+                                                inp.classes("text-blue-700 font-semibold")
+
+                                            def _on_blur_descuento(_e: Any = None, _sku: str = row["sku"], _inp: Any = inp) -> None:
+                                                raw = str(_inp.value or "").strip()
+                                                if raw == "":
+                                                    set_producto_tn_descuento(_sku, uid, None)
+                                                else:
+                                                    try:
+                                                        n = float(raw.replace(",", "."))
+                                                    except (ValueError, TypeError):
+                                                        ui.notify(f"{_sku}: valor inválido", type="negative")
+                                                        return
+                                                    if n < 0 or n > 50:
+                                                        ui.notify(f"{_sku}: debe estar entre 0 y 50", type="negative")
+                                                        return
+                                                    set_producto_tn_descuento(_sku, uid, n)
+                                                _render_tabla_dif()
+
+                                            inp.on("blur", _on_blur_descuento)
+                                        elif col["name"] in ("ml_contado", "tn_objetivo"):
+                                            v = row.get(col["name"])
+                                            ui.label(_fmt_precio_ars(v) if v is not None else "—")
+                                        elif col["name"] == "tn_precio":
+                                            ui.label(_fmt_precio_ars(row.get("tn_precio")) if row.get("tn_precio") not in (None, "") else "—")
+                                        else:
+                                            v = row.get(col["name"])
+                                            ui.label(str(v) if v is not None else "—")
+
+            async def _recalc_padding_dif() -> None:
+                with _sync_dif_client:
+                    await ui.run_javascript(
+                        f"(function(){{"
+                        f"var body=document.getElementById('c{_cid_d}');"
+                        f"var hdr=document.getElementById('c{_hid_d}');"
+                        f"if(body&&hdr){{hdr.style.paddingRight=(body.offsetWidth-body.clientWidth)+'px';}}"
+                        f"}})();"
+                    )
+            background_tasks.create(_recalc_padding_dif())
+
+        async def _actualizar_dif() -> None:
+            actualizar_btn_dif.props("loading")
+            ui.notify("Leyendo Tienda Nube...", color="info")
+            try:
+                filas_tn, error = await run.io_bound(
+                    tiendanube_list_products_with_variants,
+                    tn_creds["store_id"], tn_creds["access_token"], tn_creds["auth_header_style"],
+                )
+                replace_tiendanube_productos(uid, filas_tn)
+                set_tiendanube_sync_status(uid, ok=(error is None), error=error, items_leidos=len(filas_tn))
+                if error:
+                    ui.notify("Sincronización incompleta -- ver detalle en pantalla", color="negative")
+                else:
+                    ui.notify(f"OK: {len(filas_tn)} variantes leídas de Tienda Nube", color="positive")
+            finally:
+                actualizar_btn_dif.props(remove="loading")
+            _render_status_dif()
+            _render_tabla_dif()
+
+        actualizar_btn_dif.on_click(_actualizar_dif)
+        filtro_sel_dif.on_value_change(lambda: _render_tabla_dif())
+        busqueda_input_dif.on_value_change(lambda: _render_tabla_dif())
+
+        _render_status_dif()
+        _render_tabla_dif()

@@ -47,6 +47,7 @@ TAB_REGISTRY: List[Tuple[str, str, str]] = [
     ("Config", "datos", "Datos"),
     ("Config", "configuracion", "Configuración"),
     ("TiendaNube", "tn_vinculacion", "Vinculación"),
+    ("TiendaNube", "tn_diferencias", "Diferencias"),
     ("Admin", "admin", "Admin"),
     ("Admin", "actividad", "Actividad"),
 ]
@@ -105,6 +106,7 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "configuracion": "vincular MercadoLibre, QuickBooks y configurar email.",
     "admin": "gestión de usuarios y permisos (solo administradores).",
     "tn_vinculacion": "cruce de publicaciones de MercadoLibre contra productos de Tienda Nube por SKU.",
+    "tn_diferencias": "SKUs en ambas plataformas: precio objetivo vs. actual y stock ML vs. TN, solo lectura.",
 }
 
 LABEL_BY_TAB: Dict[str, str] = {
@@ -135,4 +137,5 @@ LABEL_BY_TAB: Dict[str, str] = {
     "configuracion": "Configuración",
     "admin": "Admin",
     "tn_vinculacion": "Vinculación",
+    "tn_diferencias": "Diferencias",
 }

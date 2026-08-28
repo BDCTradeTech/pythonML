@@ -153,12 +153,13 @@ from tabs.cron_log import build_tab_log
 from tabs.guias import build_tab_guias
 from tabs.transferencias import build_tab_transferencias
 from tabs.tienda_nube import build_tab_vinculacion
+from tabs.tienda_nube import build_tab_diferencias
 from helpers.activity_logger import log_event
 
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.08.28.03"
+VERSION = "3.26.08.28.04"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -455,6 +456,7 @@ def show_main_layout(container) -> None:
                 tab_flex       = ui.tab("Flex")
                 tab_config = ui.tab("Configuración")
                 tab_vinculacion = ui.tab("Vinculación")
+                tab_diferencias = ui.tab("Diferencias")
                 tab_admin = ui.tab("Admin")
                 tab_actividad = ui.tab("Actividad")
                 tab_log = ui.tab("Log")
@@ -489,6 +491,7 @@ def show_main_layout(container) -> None:
             "Flex":       tab_flex,
             "Configuración": tab_config,
             "Vinculación": tab_vinculacion,
+            "Diferencias": tab_diferencias,
             "Admin": tab_admin,
             "Actividad": tab_actividad,
             "Log": tab_log,
@@ -521,6 +524,7 @@ def show_main_layout(container) -> None:
         guias_clear_ref: List[Any] = [None]
         transferencias_cargado = [False]
         vinculacion_cargado = [False]
+        diferencias_cargado = [False]
 
         # Páginas con gate real server-side (además de ocultar el botón de menú):
         # el checkbox de Permisos deja de ser solo cosmético para estas.
@@ -612,6 +616,9 @@ def show_main_layout(container) -> None:
             elif val == "Vinculación" and not vinculacion_cargado[0]:
                 vinculacion_cargado[0] = True
                 build_tab_vinculacion(vinculacion_container)
+            elif val == "Diferencias" and not diferencias_cargado[0]:
+                diferencias_cargado[0] = True
+                build_tab_diferencias(diferencias_container)
 
         # Siempre arrancar en Home
         tab_inicial = "Home"
@@ -702,15 +709,22 @@ def show_main_layout(container) -> None:
                 # (no tiene sentido mostrarle el menú a una cuenta sin tienda, ej. EXXA,
                 # DsMaxTech) -- se muestra solo cuando vincula una, sin que nadie tenga
                 # que acordarse de habilitarlo a mano en Admin > Permisos.
-                if perms.get("tn_vinculacion", True) and get_tiendanube_credentials(user["id"]):
+                if (perms.get("tn_vinculacion", True) or perms.get("tn_diferencias", True)) and get_tiendanube_credentials(user["id"]):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(tienda_nube_menu)):
                         with ui.button("TIENDANUBE").props("flat dense no-caps").classes(_nav_font):
                             with ui.menu().props("auto-close content-class=text-lg") as tienda_nube_menu:
-                                def _vinculacion_click():
-                                    _lazy_load("Vinculación")
-                                    tab_panels.value = tab_vinculacion
-                                    app.storage.user["last_tab"] = "Vinculación"
-                                _nav_item("VINCULACIÓN", "sync_alt", _vinculacion_click)
+                                if perms.get("tn_vinculacion", True):
+                                    def _vinculacion_click():
+                                        _lazy_load("Vinculación")
+                                        tab_panels.value = tab_vinculacion
+                                        app.storage.user["last_tab"] = "Vinculación"
+                                    _nav_item("VINCULACIÓN", "sync_alt", _vinculacion_click)
+                                if perms.get("tn_diferencias", True):
+                                    def _diferencias_click():
+                                        _lazy_load("Diferencias")
+                                        tab_panels.value = tab_diferencias
+                                        app.storage.user["last_tab"] = "Diferencias"
+                                    _nav_item("DIFERENCIAS", "price_check", _diferencias_click)
                 if perms.get("compras", True) or perms.get("stock_bdc", True) or perms.get("compras_lista", True) or perms.get("pedidos", True) or perms.get("historicos", True):
                     with ui.element("div").classes("relative inline-block").on("mouseenter", lambda: _open_and_close_others(compras_menu)):
                         with ui.button("BDC").props("flat dense no-caps").classes(_nav_font):
@@ -940,6 +954,7 @@ def show_main_layout(container) -> None:
             "Datos":         ("Config", "Datos"),
             "Configuración": ("Config", "Configuración"),
             "Vinculación":   ("TiendaNube", "Vinculación"),
+            "Diferencias":   ("TiendaNube", "Diferencias"),
             "Admin":         ("Config", "Admin"),
             "Actividad":     ("Config", "Actividad"),
         }
@@ -1043,6 +1058,9 @@ def show_main_layout(container) -> None:
 
             with ui.tab_panel(tab_vinculacion):
                 vinculacion_container = ui.column().classes("w-full")
+
+            with ui.tab_panel(tab_diferencias):
+                diferencias_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_admin):
                 admin_container = ui.column().classes("w-full")
