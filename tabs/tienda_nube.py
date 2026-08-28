@@ -116,6 +116,28 @@ def _atributo_valor(attrs: List[dict], *ids: str) -> Optional[str]:
     return None
 
 
+def _atributos_a_texto(attrs: List[dict]) -> str:
+    """Todos los atributos del ítem, tal cual los devuelve ML (name humano +
+    value_name, o value_struct si no hay value_name -- ej. medidas numéricas con
+    unidad). Sin filtrar ni interpretar: es la única fuente de datos técnicos
+    reales que se le pasa a la IA para generar la descripción -- ver
+    _generar_descripcion_html_prompt."""
+    lineas = []
+    for a in attrs or []:
+        nombre = str(a.get("name") or a.get("id") or "").strip()
+        valor = a.get("value_name")
+        if not valor:
+            struct = a.get("value_struct") or {}
+            numero = struct.get("number")
+            if numero is not None:
+                unidad = struct.get("unit")
+                valor = f"{numero} {unidad}".strip() if unidad else str(numero)
+        valor = str(valor).strip() if valor else ""
+        if nombre and valor:
+            lineas.append(f"- {nombre}: {valor}")
+    return "\n".join(lineas)
+
+
 def _peso_gramos_desde_atributos(attrs: List[dict]) -> Optional[float]:
     """Busca el atributo WEIGHT de ML (name='Peso') y devuelve el valor en GRAMOS.
     ML lo da como texto con unidad libre (ej. '456 g', '8.7 g') -- nunca se asume
@@ -166,10 +188,16 @@ def _url_maxima_resolucion(url: str) -> str:
 def _texto_a_html(texto: str) -> str:
     """Envoltorio HTML mínimo para la descripción -- Tiendanube espera HTML por
     idioma (doc oficial: {"es": "<p>...</p>"}), la descripción de ML viene en texto
-    plano. Solo se envuelven párrafos/saltos de línea, sin agregar más formato."""
+    plano. Solo se envuelven párrafos/saltos de línea, sin agregar más formato.
+
+    Si el texto YA es HTML (generado con IA vía _generar_descripcion_html_una_vez,
+    o pegado a mano) se deja tal cual -- envolverlo de nuevo anidaría <p> dentro
+    de <p> y convertiría los saltos de línea internos del HTML en <br> sueltos."""
     texto = (texto or "").strip()
     if not texto:
         return ""
+    if re.match(r"^<\w+[^>]*>", texto):
+        return texto
     parrafos = [p.strip() for p in texto.split("\n\n") if p.strip()] or [texto]
     return "".join(f"<p>{p.replace(chr(10), '<br>')}</p>" for p in parrafos)
 
@@ -360,6 +388,79 @@ def _generar_seo_completo_una_vez(generador, api_key: str, nombre: str, marca: O
         "seo_description": _recortar_prolijo(seo_description, 160),
         "tags": tags[:12],
     }, None
+
+
+def _generar_descripcion_html_prompt(
+    nombre: str, marca: Optional[str], modelo: Optional[str], atributos_texto: str, descripcion_ml: str,
+) -> str:
+    """Prompt para la descripción completa del producto (no confundir con el SEO
+    de _generar_seo_completo_prompt, que es un resumen de 2 oraciones para buscadores).
+    Esta va directo al campo HTML de Tiendanube.
+
+    La regla de no inventar specs es la parte crítica: los atributos de ML son la
+    ÚNICA fuente de verdad técnica que tenemos (conectividad, batería, potencia,
+    medidas). Una especificación inventada queda publicada como afirmación del
+    vendedor -- riesgo real de reclamo, no un detalle de estilo."""
+    desc_ml_recortada = (descripcion_ml or "").strip()[:1500]
+    return (
+        "Sos un redactor de e-commerce argentino. Escribí en español rioplatense.\n"
+        "Generá la descripción de este producto para publicarla en la tienda online, en HTML simple, "
+        "con dos bloques:\n"
+        "1. Un párrafo <p> comercial breve, orientado a la venta.\n"
+        "2. Una lista <ul> con <li> de especificaciones técnicas, sacadas de los atributos.\n\n"
+        "⚠️ REGLA NO NEGOCIABLE: Usá EXCLUSIVAMENTE los datos técnicos provistos abajo. "
+        "NO inventes especificaciones, medidas, duraciones de batería, potencias ni "
+        "compatibilidades que no estén en los datos. Si un dato no está, no lo menciones. "
+        "Preferí una descripción más corta antes que agregar un dato que no tenés.\n\n"
+        f"Nombre del producto: {nombre}\n"
+        f"Marca: {marca or 'sin marca'}\n"
+        f"Modelo: {modelo or 'sin modelo'}\n"
+        f"Atributos técnicos de Mercado Libre (única fuente de verdad técnica):\n"
+        f"{atributos_texto or '(sin atributos cargados)'}\n\n"
+        f"Descripción existente en Mercado Libre (material de base, puede faltar o estar incompleta):\n"
+        f"{desc_ml_recortada or '(sin descripción previa)'}\n\n"
+        "No hace falta que cuentes caracteres ni respetes un largo exacto -- sé breve "
+        "(el párrafo comercial, de 2 a 4 oraciones; la lista, de tres a cinco viñetas) y priorizá "
+        "que todo lo que digas sea verificable en los atributos de arriba.\n"
+        "Respondé SOLO con el HTML (un <p> seguido de un <ul>), sin backticks, sin explicación, sin markdown."
+    )
+
+
+def _generar_descripcion_html_una_vez(
+    generador, api_key: str, nombre: str, marca: Optional[str], modelo: Optional[str],
+    atributos_texto: str, descripcion_ml: str,
+) -> tuple:
+    """Mismo patrón y mismo manejo de errores que _generar_seo_completo_una_vez
+    (ver ese docstring para el porqué de no pedir conteo exacto de caracteres:
+    gpt-oss-120b y deepseek-v4-flash se ponen a contar letra por letra en su
+    razonamiento interno y se quedan sin tokens de salida).
+
+    max_tokens=4000, el doble que el de SEO (2000): una descripción con párrafo +
+    lista de especificaciones en HTML es bastante más larga que un título de 70
+    caracteres + descripción de 160 + 10 tags.
+
+    Devuelve (html, motivo) -- mismo contrato que _generar_seo_completo_una_vez:
+    html es None si falló (motivo: "sin_espacio"/"rate_limit"/"vacio"/"error"),
+    o el HTML crudo del modelo (sin backticks) si salió bien."""
+    if not api_key:
+        return None, "error"
+
+    prompt = _generar_descripcion_html_prompt(nombre, marca, modelo, atributos_texto, descripcion_ml)
+    try:
+        raw = generador(api_key, prompt, max_tokens=4000)
+    except _RespuestaSinEspacio:
+        return None, "sin_espacio"
+    except _LimiteDeVelocidad:
+        return None, "rate_limit"
+    except Exception:
+        return None, "error"
+
+    if not raw or not raw.strip():
+        return None, "vacio"
+    html = _clean_json(raw).strip()  # _clean_json solo saca el cerco de backticks, sirve para cualquier lenguaje
+    if not html:
+        return None, "vacio"
+    return html, None
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -660,7 +761,20 @@ def build_tab_vinculacion(container) -> None:
 
                 async def _cargar() -> None:
                     full = await run.io_bound(ml_get_item, access_token, fuente.get("id"))
-                    descripcion = await run.io_bound(ml_get_item_description, access_token, fuente.get("id"))
+                    # La descripción NO siempre vive en "fuente" (esa se elige para
+                    # atributos/marca/fotos). Diagnóstico 2026-08-28: las publicaciones
+                    # de catálogo tienen descripción heredada casi siempre (40/40 en
+                    # muestra); las propias duplicadas por tier de cuotas casi nunca
+                    # (el recurso ni existe -- 404). Se recorre catálogo primero, después
+                    # propias, y se corta en la primera con texto real no vacío.
+                    candidatos = [x for x in ml_m if x.get("catalog_listing")] + \
+                        [x for x in ml_m if not x.get("catalog_listing")]
+                    descripcion = ""
+                    for cand in candidatos:
+                        txt = await run.io_bound(ml_get_item_description, access_token, cand.get("id"))
+                        if txt:
+                            descripcion = txt
+                            break
                     cats_resp = await run.io_bound(
                         tiendanube_get, tn_creds["store_id"], tn_creds["access_token"],
                         tn_creds["auth_header_style"], "categories",
@@ -675,6 +789,7 @@ def build_tab_vinculacion(container) -> None:
                     cat_options = dict(categorias)
 
                     attrs = (full or {}).get("attributes") or []
+                    atributos_texto = _atributos_a_texto(attrs)
                     peso_g = _peso_gramos_desde_atributos(attrs)
                     gtin_precarga = _atributo_valor(attrs, "GTIN")
                     # Preferencia: MPN nativo de ML primero (es literalmente el mismo dato);
@@ -720,7 +835,22 @@ def build_tab_vinculacion(container) -> None:
                                         "Usar este", on_click=lambda: nombre_input.set_value(catalogo.get("title", ""))
                                     ).props("unelevated no-caps").classes("w-full mt-1")
 
-                        ui.label("Descripción").classes("text-sm font-semibold mt-2")
+                        with ui.row().classes("w-full items-center justify-between mt-2"):
+                            ui.label("Descripción").classes("text-sm font-semibold")
+                            with ui.row().classes("gap-2"):
+                                desc_gemini_btn = ui.button("Gemini", icon="auto_awesome").props("outline dense no-caps size=sm")
+                                desc_groq_btn = ui.button("Groq", icon="auto_awesome").props("outline dense no-caps size=sm")
+                                desc_deepseek_btn = ui.button("DeepSeek", icon="auto_awesome").props("outline dense no-caps size=sm")
+                        ui.label(
+                            "Genera párrafo comercial + lista de especificaciones en HTML, usando SOLO "
+                            "los atributos técnicos de ML -- no inventa datos. Reemplaza el texto actual, "
+                            "revisalo antes de crear."
+                        ).classes("text-xs text-gray-500")
+                        if not descripcion:
+                            ui.label(
+                                "⚠️ Ninguna publicación de este SKU tiene descripción cargada en "
+                                "Mercado Libre. Completala manualmente o generá una con IA."
+                            ).classes("text-sm text-warning")
                         descripcion_input = ui.textarea(value=descripcion).props("outlined dense").classes("w-full").style("min-height:120px")
 
                         ui.label("Identificación").classes("text-sm font-semibold mt-2")
@@ -739,6 +869,50 @@ def build_tab_vinculacion(container) -> None:
                             "es más seguro dejarlo vacío que mandarlo -- un identificador inconsistente "
                             "puede hacer que Google rechace el producto."
                         ).classes("text-xs text-gray-500")
+
+                        def _descripcion_ia_generador(nombre_config: str, api_key_config: str, generador, boton) -> Any:
+                            async def _run() -> None:
+                                api_key = get_app_config(api_key_config)
+                                if not api_key:
+                                    ui.notify(
+                                        f"Configurá tu API key de {nombre_config} en Configuración.", color="negative",
+                                    )
+                                    return
+                                boton.props("loading")
+                                try:
+                                    nombre_base = (nombre_input.value or "").strip() or fuente.get("title", "")
+                                    marca_val = (marca_input.value or "").strip() or None
+                                    modelo_val = (mpn_input.value or "").strip() or None
+                                    resultado, motivo = await run.io_bound(
+                                        _generar_descripcion_html_una_vez, generador, api_key, nombre_base,
+                                        marca_val, modelo_val, atributos_texto, descripcion,
+                                    )
+                                    if resultado is None:
+                                        if motivo == "sin_espacio":
+                                            ui.notify(
+                                                "El modelo se quedó sin espacio para responder -- probá de nuevo "
+                                                "o con otro proveedor.", color="negative",
+                                            )
+                                        elif motivo == "rate_limit":
+                                            ui.notify(
+                                                "Demasiados pedidos -- esperá unos segundos y probá de nuevo.",
+                                                color="negative",
+                                            )
+                                        elif motivo == "vacio":
+                                            ui.notify(
+                                                "La IA no devolvió un resultado usable -- probá de nuevo o con otro "
+                                                "proveedor.", color="negative",
+                                            )
+                                        else:
+                                            ui.notify(f"Error al generar con {nombre_config}.", color="negative")
+                                        return
+                                    descripcion_input.set_value(resultado)
+                                finally:
+                                    boton.props(remove="loading")
+                            return _run
+                        desc_gemini_btn.on_click(_descripcion_ia_generador("Gemini", "gemini_api_key", _gemini_generate, desc_gemini_btn))
+                        desc_groq_btn.on_click(_descripcion_ia_generador("Groq", "groq_api_key", _groq_generate, desc_groq_btn))
+                        desc_deepseek_btn.on_click(_descripcion_ia_generador("DeepSeek", "deepseek_api_key", _deepseek_generate, desc_deepseek_btn))
 
                         with ui.row().classes("w-full items-center justify-between mt-2"):
                             ui.label("SEO").classes("text-sm font-semibold")

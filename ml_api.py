@@ -1353,14 +1353,22 @@ def _extraer_color_desde_texto(texto: str) -> str:
     return ""
 
 
-def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
-    """Obtiene el texto de la descripción del ítem. Devuelve '' si falla.
+def ml_get_item_description(access_token: Optional[str], item_id: str) -> Optional[str]:
+    """Obtiene el texto de la descripción del ítem.
+
+    Devuelve None si la llamada falló (error de red o HTTP != 200 -- p.ej. 404
+    "Description not found", que en la práctica es el caso más común: publicaciones
+    sin el recurso de descripción creado). Devuelve "" si la llamada fue 200 pero el
+    texto vino vacío (descripción vacía de verdad). Devuelve el texto si hay contenido.
+
+    Diagnóstico 2026-08-28 (SKU jbl-t530bt-negro y ~40/358 grupos más): antes esta
+    función devolvía "" en ambos casos por igual, indistinguible desde el caller.
 
     Endpoint SINGULAR /description -- confirmado en vivo 2026-08-27: el endpoint
     PLURAL /descriptions (el que usaba esta función antes) devuelve 410 Gone, ML lo
     deprecó. El singular responde 200 con {"text": "...", "plain_text": "..."}."""
     if not access_token or not str(item_id).strip():
-        return ""
+        return None
     try:
         resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/description",
@@ -1368,7 +1376,11 @@ def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
             timeout=8,
         )
         if not resp.ok:
-            return ""
+            logging.warning(
+                f"[ML-DESC] GET /items/{item_id}/description -> HTTP {resp.status_code}: "
+                f"{resp.text[:200]}"
+            )
+            return None
         data = resp.json()
         if isinstance(data, dict):
             return str(data.get("plain_text") or data.get("text") or "")
@@ -1379,8 +1391,9 @@ def ml_get_item_description(access_token: Optional[str], item_id: str) -> str:
                     if txt:
                         return str(txt)
         return ""
-    except Exception:
-        return ""
+    except Exception as e:
+        logging.warning(f"[ML-DESC] GET /items/{item_id}/description -> excepción: {e}")
+        return None
 
 
 def ml_get_item(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
