@@ -23,6 +23,9 @@ from db import (
     get_tn_categoria_mapeada,
     set_tn_categoria_mapeo,
     get_app_config,
+    get_cotizador_param,
+    COTIZADOR_DEFAULTS,
+    get_producto_tn_descuento,
     GROQ_MODEL,
     DEEPSEEK_MODEL,
     DEEPSEEK_BASE_URL,
@@ -57,6 +60,52 @@ def _fmt_precio_ars(val: Any) -> str:
     if dec == 0:
         return f"${parte_entera}"
     return f"${parte_entera},{dec:02d}"
+
+
+def precio_contado_ml(ml_items_grupo: List[dict]) -> Optional[float]:
+    """Precio de contado de un SKU: el mínimo entre las publicaciones ML del grupo
+    (mismo criterio que usa el popup de creación en TN -- son tiers de cuotas del
+    mismo producto, contado siempre es el más bajo)."""
+    precios = [it.get("price") for it in ml_items_grupo if it.get("price") is not None]
+    return min(precios) if precios else None
+
+
+def _redondear_tn(precio: float, regla: str) -> float:
+    if regla == "10":
+        return round(precio / 10) * 10
+    if regla == "100":
+        return round(precio / 100) * 100
+    if regla == "99":
+        return round((precio + 1) / 100) * 100 - 1
+    if regla == "999":
+        return round((precio + 1) / 1000) * 1000 - 1
+    if regla == "899":
+        return round((precio + 101) / 1000) * 1000 - 101
+    return precio  # "ninguno"
+
+
+def calcular_precio_tn(sku: str, ml_items: List[dict], user_id: int) -> Optional[float]:
+    """Precio objetivo de Tienda Nube para un SKU: precio de contado ML (mínimo del
+    grupo, ver precio_contado_ml) con el descuento configurado -- override por
+    producto si está cargado, si no el global -- y la regla de redondeo configurada."""
+    sku_norm = (sku or "").strip().lower()
+    grupo = [it for it in ml_items if (it.get("seller_sku") or "").strip().lower() == sku_norm]
+    base = precio_contado_ml(grupo)
+    if base is None:
+        return None
+
+    override = get_producto_tn_descuento(sku, user_id)
+    if override is not None:
+        descuento_pct = override
+    else:
+        # tn_descuento_pct (global, cotizador_datos) y productos.tn_descuento_pct
+        # (override) guardan la MISMA unidad: porcentaje directo (10 = 10%), sin
+        # conversión -- ver RANGE_KEYS en tabs/datos.py.
+        raw = get_cotizador_param("tn_descuento_pct", user_id) or COTIZADOR_DEFAULTS["tn_descuento_pct"]
+        descuento_pct = float(raw)
+
+    regla = get_cotizador_param("tn_regla_redondeo", user_id) or COTIZADOR_DEFAULTS["tn_regla_redondeo"]
+    return _redondear_tn(base * (1 - descuento_pct / 100), regla)
 
 
 def _parse_precio_input(texto: Optional[str]) -> Optional[float]:
@@ -744,8 +793,7 @@ def build_tab_vinculacion(container) -> None:
                 )
                 catalogo = next((x for x in ml_m if x.get("catalog_listing")), None)
                 fuente = propia or catalogo or ml_m[0]
-                precios_validos = [x.get("price") for x in ml_m if x.get("price") is not None]
-                precio_min = min(precios_validos) if precios_validos else None
+                precio_min = precio_contado_ml(ml_m)
                 stock_pool = ml_m[0].get("available_quantity")
                 category_id = ml_m[0].get("category_id")
 

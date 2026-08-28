@@ -700,6 +700,12 @@ def init_db() -> None:
         cur.execute("ALTER TABLE productos ADD COLUMN stock INTEGER DEFAULT NULL")
     if "catalog_status" not in _prod_cols:
         cur.execute("ALTER TABLE productos ADD COLUMN catalog_status TEXT DEFAULT NULL")
+    if "tn_descuento_pct" not in _prod_cols:
+        # Override por producto del descuento ML->TN. Porcentaje directo (12.5 = 12.5%),
+        # NO decimal -- a diferencia de cotizador_datos, esta tabla no pasa por PCT_KEYS.
+        # NULL = usa el global (tn_descuento_pct de cotizador_datos). Se edita desde
+        # la página de Diferencias (sin UI todavía).
+        cur.execute("ALTER TABLE productos ADD COLUMN tn_descuento_pct REAL DEFAULT NULL")
 
     # Override de marca: corrige marcas mal cargadas en ML que no se pueden editar ahí
     # (ej. "AfterShokz" -> "Shokz"). Se aplica antes de grabar productos.marca en
@@ -1159,6 +1165,39 @@ def init_db() -> None:
     conn.close()
     init_cron_runs_db()
     init_ads_tables()
+
+
+# ---------------------------------------------------------------------------
+# CRUD — Productos: override de descuento ML->TN
+# ---------------------------------------------------------------------------
+
+
+def get_producto_tn_descuento(sku: str, user_id: int) -> Optional[float]:
+    """Descuento ML->TN cargado a mano para este SKU, o None si usa el global."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT tn_descuento_pct FROM productos WHERE sku = ? AND user_id = ?",
+            (sku, user_id),
+        )
+        row = cur.fetchone()
+        return float(row["tn_descuento_pct"]) if row and row["tn_descuento_pct"] is not None else None
+    finally:
+        conn.close()
+
+
+def set_producto_tn_descuento(sku: str, user_id: int, valor: Optional[float]) -> None:
+    """Guarda (o borra, con valor=None) el override de descuento ML->TN para el SKU."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            "UPDATE productos SET tn_descuento_pct = ?, updated_at = ? WHERE sku = ? AND user_id = ?",
+            (valor, datetime.now().isoformat(timespec="seconds"), sku, user_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -2725,6 +2764,8 @@ COTIZADOR_DEFAULTS = {
     "ml_comision": "0.15", "ml_debcre": "0.006", "ml_sirtac": "0.008", "ml_envios": "5823",
     "ml_iibb_per": "0.055", "ml_envios_gratuitos": "33000", "ml_comision_fija_menor": "2800", "ml_cobrado": "0.836",
     "ml_ganancia_neta_venta": "0.1000",
+    "tn_descuento_pct": "10",
+    "tn_regla_redondeo": "99",
     "cuotas_3x": "0.094", "cuotas_6x": "0.151", "cuotas_9x": "0.207", "cuotas_12x": "0.259",
     "valor_kg_miami": "13.5", "almacenaje_miami_x2": "1.8", "dias_almacenaje_miami": "2", "almacenaje_dias_kg_miami": "0.9",
     "seguro_miami": "24.75", "descuento_lhs_kg": "1.33267522",

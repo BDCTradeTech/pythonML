@@ -33,6 +33,23 @@ PCT_KEYS = {
     "iva_105", "iva_21", "iibb_lhs",
 }
 
+# Campos numéricos simples validados por rango, SIN el ×100/÷100 de PCT_KEYS: se
+# guardan y se leen como el mismo número que se ve en pantalla (10 = 10%), a
+# propósito, para no repetir la unidad "decimal en BD / % en pantalla" de PCT_KEYS
+# en un campo que también se lee desde afuera de esta pantalla (calcular_precio_tn).
+RANGE_KEYS: Dict[str, tuple] = {
+    "tn_descuento_pct": (0, 50),
+}
+
+TN_REDONDEO_OPCIONES = {
+    "ninguno": "Sin redondeo",
+    "10":      "Al 10",
+    "100":     "Al 100",
+    "99":      "Al 99",
+    "999":     "Al 999",
+    "899":     "Al 899",
+}
+
 # Campos con formato peso argentino ($ + punto miles)
 DOLAR_DISPLAY_KEYS = {"dolar_oficial", "dolar_blue", "dolar_sistema", "dolar_despacho"}
 DOLAR_PARSE_KEYS = DOLAR_DISPLAY_KEYS | {"ml_comision_fija_menor", "ml_envios", "ml_envios_gratuitos"}
@@ -47,6 +64,9 @@ USD_KEYS = {
 TOOLTIPS: Dict[str, str] = {
     "ml_cobrado":             "Factor de lo que cobra el vendedor. Ej: 0.836 = 83.6% del precio de venta",
     "ml_comision_fija_menor": "Cargo fijo en $ para ventas con precio menor al mínimo",
+    "tn_descuento_pct":       "Descuento sobre el precio de contado de ML para publicar en Tienda Nube. "
+                              "OJO: mal tipeado afecta TODO el catálogo (ej. 90 en vez de 9 = todo al 10% del valor). "
+                              "Rango permitido: 0 a 50.",
     "cuotas_3x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_6x":  "Tasa de costo de cuotas que ML cobra al vendedor",
     "cuotas_9x":  "Tasa de costo de cuotas que ML cobra al vendedor",
@@ -189,7 +209,15 @@ def build_tab_datos() -> None:
         val = str(display_val or "").strip()
         if not val:
             return True, ""
-        if key in PCT_KEYS:
+        if key in RANGE_KEYS:
+            try:
+                n = float(val.replace(",", "."))
+                lo, hi = RANGE_KEYS[key]
+                if n < lo or n > hi:
+                    return False, f"debe estar entre {lo} y {hi}"
+            except (ValueError, TypeError):
+                return False, "valor inválido"
+        elif key in PCT_KEYS:
             try:
                 n = float(val.replace(",", "."))
                 if n < 0 or n > 100:
@@ -271,11 +299,12 @@ def build_tab_datos() -> None:
     inp_miami:     Dict[str, Any] = {}
     inp_china:     Dict[str, Any] = {}
     inp_impuestos: Dict[str, Any] = {}
+    inp_tn:        Dict[str, Any] = {}
 
     def guardar_params() -> None:
         all_inputs = {
             **inp_dolar, **inp_cuotas, **inp_ml,
-            **inp_miami, **inp_china, **inp_impuestos,
+            **inp_miami, **inp_china, **inp_impuestos, **inp_tn,
         }
         for key, inp in all_inputs.items():
             val = str(inp.value or "").strip()
@@ -391,6 +420,23 @@ def build_tab_datos() -> None:
                     ("Envíos gratis", "ml_envios_gratuitos",    "$"),
                 ]:
                     _add_field(inp_ml, key, lbl, unit)
+
+            # 7. TIENDA NUBE — precios
+            with ui.card().classes("p-3 datos-card").style(_CS):
+                _card_header("ti-discount-2", "Precios Tienda Nube")
+                _add_field(inp_tn, "tn_descuento_pct", "Descuento vs ML", "%")
+                with ui.row().classes("w-full items-center justify-between").style(
+                    "padding:3px 0; border-bottom:0.5px solid #f0f0f0; gap:6px; flex-wrap:nowrap"
+                ):
+                    ui.label("Redondeo").style("font-size:12px; color:#6b7280; flex:1; min-width:0")
+                    sel = ui.select(
+                        options=TN_REDONDEO_OPCIONES,
+                        value=_get("tn_regla_redondeo") or COTIZADOR_DEFAULTS["tn_regla_redondeo"],
+                    ).props('dense outlined').style("width:110px; flex-shrink:0")
+                    def _on_redondeo_change(e: Any) -> None:
+                        set_cotizador_param("tn_regla_redondeo", e.value, uid)
+                        ui.notify("Guardado", type="positive", position="bottom-right", timeout=1500)
+                    sel.on_value_change(_on_redondeo_change)
 
         # Eliminar tablas obsoletas de la BD si existían
         for k in ["tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
