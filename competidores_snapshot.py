@@ -14,6 +14,7 @@ Cron: 0 4 * * * /opt/pythonml/venv/bin/python3 /opt/pythonml/competidores_snapsh
 import sys, json, logging, time
 from collections import Counter
 from datetime import date, datetime
+from typing import Dict, Optional
 sys.path.insert(0, '/opt/pythonml')
 
 import requests
@@ -50,6 +51,29 @@ def _get_with_retry(url, headers, timeout=10, max_retries=MAX_RETRIES_429):
             continue
         return resp
     return resp
+
+
+def fetch_seller_ventas_crudas(sid: str, headers: dict) -> Optional[Dict]:
+    """GET /users/{sid} y devuelve seller_reputation.transactions.total TAL CUAL
+    lo entrega ML, sin pisos ni ajustes — el manejo de bajas/anomalías es
+    responsabilidad de la lectura (UI), no de la escritura. Única función que
+    debe usarse para leer este dato (compartida entre el cron y el botón manual
+    de tabs/competidores.py) para no volver a duplicar esta lógica."""
+    r = _get_with_retry(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
+    if r is None or r.status_code != 200:
+        return None
+    d = r.json()
+    rep = d.get("seller_reputation") or {}
+    txn = rep.get("transactions") or {}
+    total = txn.get("total")
+    if not total:
+        return None
+    return {
+        "nickname": d.get("nickname") or "",
+        "total_ventas": total,
+        "level_id": rep.get("level_id") or "",
+        "power_status": rep.get("power_seller_status") or "",
+    }
 
 
 def get_all_credentials():
@@ -104,6 +128,14 @@ def ensure_table():
         CREATE UNIQUE INDEX IF NOT EXISTS uq_comp_snapshot
         ON competidores_snapshots(user_id, catalog_product_id, seller_id, snapshot_date)
     """)
+    # Migración: es_valor_crudo distingue lo escrito con el guard viejo (max
+    # contra el máximo histórico, retirado 2026-08-31 — no comparable) de lo
+    # escrito con el valor tal cual lo devuelve ML. Ver db.py:init_competidores_snapshots_db.
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(competidores_snapshots)")
+    _cols = [r[1] for r in cur.fetchall()]
+    if "es_valor_crudo" not in _cols:
+        cur.execute("ALTER TABLE competidores_snapshots ADD COLUMN es_valor_crudo INTEGER NOT NULL DEFAULT 0")
     # competidores_seguidos se crea de forma perezosa en tabs/competidores.py al agregar
     # el primer seguido; puede no existir todavía en una DB nueva.
     conn.execute("""
@@ -292,28 +324,9 @@ async def run():
 
             for sid in all_seller_ids:
                 try:
-                    r = _get_with_retry(f"{ML_API}/users/{sid}", headers=headers, timeout=8)
-                    if r.status_code == 200:
-                        d = r.json()
-                        rep = d.get("seller_reputation") or {}
-                        txn = rep.get("transactions") or {}
-                        total = txn.get("total")
-                        if total:  # Solo guardar si tiene ventas
-                            # Guard: nunca guardar un valor menor al máximo histórico
-                            # (ML corrige total hacia abajo por cancelaciones)
-                            conn = get_connection()
-                            max_hist = conn.execute(
-                                "SELECT MAX(seller_total_ventas) FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
-                                (user_id, sid)
-                            ).fetchone()[0] or 0
-                            conn.close()
-                            valor_final = max(total, max_hist)
-                            seller_data[sid] = {
-                                "nickname": d.get("nickname") or "",
-                                "total_ventas": valor_final,
-                                "level_id": rep.get("level_id") or "",
-                                "power_status": rep.get("power_seller_status") or "",
-                            }
+                    sd = fetch_seller_ventas_crudas(sid, headers)
+                    if sd:
+                        seller_data[sid] = sd
                 except Exception as e:
                     log.error("Error usuario %s: %s", sid, e)
                 time.sleep(SLEEP_BETWEEN_REQUESTS)
@@ -335,8 +348,8 @@ async def run():
                             INSERT OR IGNORE INTO competidores_snapshots
                                 (user_id, catalog_product_id, seller_id, seller_nickname,
                                  seller_total_ventas, seller_level_id, seller_power_status,
-                                 price, item_id, snapshot_date)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                 price, item_id, snapshot_date, es_valor_crudo)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                         """, (
                             user_id, cpid, sid,
                             sd["nickname"], sd["total_ventas"],
@@ -359,8 +372,8 @@ async def run():
                         INSERT OR IGNORE INTO competidores_snapshots
                             (user_id, catalog_product_id, seller_id, seller_nickname,
                              seller_total_ventas, seller_level_id, seller_power_status,
-                             snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             snapshot_date, es_valor_crudo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                     """, (
                         user_id, "SEGUIDO", sid,
                         sd["nickname"], sd["total_ventas"],
@@ -382,8 +395,8 @@ async def run():
                         INSERT OR IGNORE INTO competidores_snapshots
                             (user_id, catalog_product_id, seller_id, seller_nickname,
                              seller_total_ventas, seller_level_id, seller_power_status,
-                             snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             snapshot_date, es_valor_crudo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                     """, (
                         user_id, "COMPARADOR", sid,
                         sd["nickname"], sd["total_ventas"],
@@ -407,8 +420,8 @@ async def run():
                         INSERT OR IGNORE INTO competidores_snapshots
                             (user_id, catalog_product_id, seller_id, seller_nickname,
                              seller_total_ventas, seller_level_id, seller_power_status,
-                             snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                             snapshot_date, es_valor_crudo)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
                     """, (
                         user_id, "CONOCIDO", sid,
                         sd["nickname"], sd["total_ventas"],

@@ -103,6 +103,16 @@ def init_competidores_snapshots_db() -> None:
         ON competidores_snapshots(user_id, catalog_product_id, seller_id, snapshot_date)
         """
     )
+    # Migración: marca si seller_total_ventas es el valor crudo de ML o si pudo
+    # haber pasado por el guard viejo (max contra el máximo histórico, retirado
+    # 2026-08-31). Default 0 al agregar la columna => todo lo escrito antes de
+    # este fix queda marcado como no confiable/no comparable; el código nuevo
+    # graba explícitamente es_valor_crudo=1 en cada insert.
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(competidores_snapshots)")
+    _comp_cols = [r[1] for r in cur.fetchall()]
+    if "es_valor_crudo" not in _comp_cols:
+        cur.execute("ALTER TABLE competidores_snapshots ADD COLUMN es_valor_crudo INTEGER NOT NULL DEFAULT 0")
     conn.commit()
     conn.close()
 

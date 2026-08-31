@@ -447,6 +447,7 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
         from ml_api import get_ml_access_token as _get_tok
     except ImportError:
         from db import get_ml_access_token as _get_tok
+    from competidores_snapshot import fetch_seller_ventas_crudas
 
     token = _get_tok(user_id) or ""
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -472,53 +473,36 @@ def _actualizar_ventas_db(user_id: int, progress_label, cancelar_ref: list) -> D
         sid, nick = row[0], row[1]
         try:
             progress_label.set_text(f"Leyendo {i} / {total}...")
-            r = requests.get(f"{_ML_API}/users/{sid}", headers=headers, timeout=8)
-            if r.status_code == 200:
-                d = r.json()
-                rep = d.get("seller_reputation") or {}
-                txn = rep.get("transactions") or {}
-                total_ventas = txn.get("total")
-                nick_nuevo = d.get("nickname") or nick
+            sd = fetch_seller_ventas_crudas(sid, headers)
+            if not sd:
+                sin_ventas += 1
+                continue  # ignorar, no borrar
 
-                if not total_ventas:
-                    sin_ventas += 1
-                    continue  # ignorar, no borrar
-
-                # Obtener el máximo histórico para no bajar nunca
-                conn = get_connection()
-                max_hist = conn.execute(
-                    "SELECT MAX(seller_total_ventas) FROM competidores_snapshots WHERE user_id=? AND seller_id=?",
-                    (user_id, sid)
-                ).fetchone()[0] or 0
-                valor_final = max(total_ventas, max_hist)
-                try:
-                    conn.execute("""
-                        INSERT INTO competidores_snapshots
-                            (user_id, catalog_product_id, seller_id, seller_nickname,
-                             seller_total_ventas, seller_level_id, seller_power_status,
-                             snapshot_date)
-                        VALUES (?, 'MANUAL', ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(user_id, catalog_product_id, seller_id, snapshot_date)
-                        DO UPDATE SET
-                            seller_total_ventas=CASE
-                                WHEN excluded.seller_total_ventas > COALESCE(competidores_snapshots.seller_total_ventas, 0)
-                                THEN excluded.seller_total_ventas
-                                ELSE competidores_snapshots.seller_total_ventas
-                            END,
-                            seller_nickname=excluded.seller_nickname,
-                            seller_level_id=excluded.seller_level_id,
-                            seller_power_status=excluded.seller_power_status,
-                            created_at=CURRENT_TIMESTAMP
-                    """, (
-                        user_id, sid, nick_nuevo, valor_final,
-                        rep.get("level_id") or "",
-                        rep.get("power_seller_status") or "",
-                        today
-                    ))
-                    conn.commit()
-                finally:
-                    conn.close()
-                actualizados += 1
+            conn = get_connection()
+            try:
+                conn.execute("""
+                    INSERT INTO competidores_snapshots
+                        (user_id, catalog_product_id, seller_id, seller_nickname,
+                         seller_total_ventas, seller_level_id, seller_power_status,
+                         snapshot_date, es_valor_crudo)
+                    VALUES (?, 'MANUAL', ?, ?, ?, ?, ?, ?, 1)
+                    ON CONFLICT(user_id, catalog_product_id, seller_id, snapshot_date)
+                    DO UPDATE SET
+                        seller_total_ventas=excluded.seller_total_ventas,
+                        seller_nickname=excluded.seller_nickname,
+                        seller_level_id=excluded.seller_level_id,
+                        seller_power_status=excluded.seller_power_status,
+                        es_valor_crudo=1,
+                        created_at=CURRENT_TIMESTAMP
+                """, (
+                    user_id, sid, sd["nickname"], sd["total_ventas"],
+                    sd["level_id"], sd["power_status"],
+                    today
+                ))
+                conn.commit()
+            finally:
+                conn.close()
+            actualizados += 1
         except Exception:
             pass
 
@@ -608,10 +592,18 @@ def _render_tabla(rows_orig: List[Dict], mis_ids: set, titulo: str, nota: str, f
                             nick_el.on("click", lambda sid=sid, nick_full=nick_full: on_click_nick(sid, nick_full))
                             nick_el.tooltip("Agregar al comparador")
                     with ui.element("td").style(f"padding:2px 8px;text-align:right;border-bottom:0.5px solid #f1f5f9;font-size:11px;font-weight:{fw};{'color:#185FA5' if es_mio else 'color:#374151'}"):
-                        if ventas is not None and int(ventas) >= 0:
-                            ui.html(f"{int(ventas):,}".replace(",","."))
-                        else:
+                        if ventas is None:
                             ui.html("<span style='color:#9ca3af'>—</span>")
+                        elif int(ventas) < 0:
+                            # Baja real entre snapshots (cancelaciones o corrección de ML) — se muestra, no se esconde
+                            txt = f"▼ {abs(int(ventas)):,}".replace(",", ".")
+                            ui.html(
+                                f"<span style='color:#dc2626;font-weight:700' "
+                                f"title='Bajó respecto al período anterior — puede ser cancelaciones o una corrección de ML'>"
+                                f"{txt}</span>"
+                            )
+                        else:
+                            ui.html(f"{int(ventas):,}".replace(",","."))
 
     def _toggle(col):
         if sort_state["col"] == col:
