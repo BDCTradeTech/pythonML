@@ -14,9 +14,11 @@ desglose por ítem queda para el popup (Fase 2).
 from __future__ import annotations
 
 import json
+import math
+import re
 import time
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from nicegui import app, ui, run
@@ -603,6 +605,100 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Mayorista 1/2/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
+# (no la recomendación de ML). ROTO/INVERTIDO siguen yendo por
+# ml_get_pxq_recommendations más arriba, sin cambios: acá solo se crea una
+# escalera nueva donde hoy no hay ninguna, nunca se toca una existente.
+# ---------------------------------------------------------------------------
+
+_CANTIDADES_MAYORISTA_NUEVO = (1, 2, 5, 10)
+
+_CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
+_GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
+
+
+def _num_con_unidad(value_name: Optional[str], factores: Dict[str, float]) -> Optional[float]:
+    if not value_name:
+        return None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(" + "|".join(factores) + r")\b", value_name, re.IGNORECASE)
+    return float(m.group(1)) * factores[m.group(2).lower()] if m else None
+
+
+def _dimensiones_seller_package(item: dict) -> Optional[Tuple[float, float, float, float]]:
+    """Lee SELLER_PACKAGE_HEIGHT/LENGTH/WIDTH/WEIGHT del ítem -- shipping.dimensions
+    viene null en la práctica (verificado en vivo: 0/6 ítems con el campo poblado en
+    esta cuenta). SELLER_PACKAGE_* son los atributos que carga el vendedor para el
+    cálculo de envío y coinciden con el caso de referencia validado (item MLA del
+    FireTVStick-4K-Max: SELLER_PACKAGE_WEIGHT=250 g, HEIGHT=18 cm, LENGTH=4 cm,
+    WIDTH=15 cm)."""
+    vals = {a.get("id"): a.get("value_name") for a in (item.get("attributes") or [])}
+    l = _num_con_unidad(vals.get("SELLER_PACKAGE_LENGTH"), _CM_POR_UNIDAD)
+    w = _num_con_unidad(vals.get("SELLER_PACKAGE_WIDTH"), _CM_POR_UNIDAD)
+    h = _num_con_unidad(vals.get("SELLER_PACKAGE_HEIGHT"), _CM_POR_UNIDAD)
+    peso = _num_con_unidad(vals.get("SELLER_PACKAGE_WEIGHT"), _GRAMOS_POR_UNIDAD)
+    if None in (l, w, h, peso):
+        return None
+    return (l, w, h, peso)
+
+
+def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
+                       peso_g: float, item_price: float) -> Optional[float]:
+    """GET /users/{seller_id}/shipping_options/free -- costo de envío para un lote de
+    dimensiones fijas (L x W x H) y el peso dado. Devuelve coverage.all_country.list_cost
+    o None si ML no puede cotizar (sin cobertura, error, etc.)."""
+    try:
+        r = requests.get(
+            f"{ML_API}/users/{seller_id}/shipping_options/free",
+            params={
+                "dimensions": f"{int(round(l))}x{int(round(w))}x{int(round(h))},{int(round(peso_g))}",
+                "item_price": item_price,
+                "free_shipping": "true",
+            },
+            headers={"Authorization": f"Bearer {token}"}, timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        return (r.json().get("coverage") or {}).get("all_country", {}).get("list_cost")
+    except requests.exceptions.RequestException:
+        return None
+
+
+def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float) -> Optional[Dict[str, Any]]:
+    """Arma la propuesta de mayorista 1/2/5/10 para un ítem SIN mayorista cargado.
+    Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
+    ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N. Las dimensiones
+    (SELLER_PACKAGE_* del propio ítem) quedan fijas -- SOLO el peso escala ×N, no se
+    simula apilado. Es una aproximación (no exacta: ML arma el paquete combinado con
+    su propia tara, el escalado lineal del peso es la mejor aproximación disponible
+    sin una fórmula más exacta documentada). Devuelve None si no hay SELLER_PACKAGE_*
+    cargado, no hay precio base, o ML no puede cotizar el envío para alguna de las 4
+    cantidades."""
+    dims = _dimensiones_seller_package(item)
+    if not dims or not precio_base:
+        return None
+    l, w, h, peso = dims
+    costo_1 = _costo_envio_free(token, seller_id, l, w, h, peso, precio_base)
+    if costo_1 is None:
+        return None
+    propuesta: List[Dict[str, Any]] = []
+    for n in _CANTIDADES_MAYORISTA_NUEVO:
+        costo_n = costo_1 if n == 1 else _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
+        if costo_n is None:
+            return None
+        ahorro_unit = costo_1 - (costo_n / n)
+        pct = math.ceil((ahorro_unit / precio_base) * 10000) / 10000 if ahorro_unit > 0 else 0.0
+        monto = round(precio_base * (1 - pct), 2)
+        propuesta.append({
+            "quantity": n, "amount": monto, "percentage": round(pct * 100, 2),
+            "list_cost": costo_n,
+        })
+    return {
+        "precio_base": precio_base, "dimensiones": f"{l:g}x{w:g}x{h:g}", "peso_base_g": peso,
+        "propuesta": propuesta,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Escritura hacia ML -- SIEMPRE con GET de verificación independiente y log en
 # ml_escrituras (ok o error), nunca confiando en el 200 del PUT/POST.
 # ---------------------------------------------------------------------------
@@ -808,8 +904,36 @@ def build_tab_salud(container) -> None:
                     cat_attrs_ia = await run.io_bound(_fetch_category_attrs, cat_id_ia) if cat_id_ia else []
                     cat_attrs_by_id = {a["id"]: a for a in cat_attrs_ia if a.get("id")}
 
+                    decision_editable = [h for h in clasif["decision"] if h["tipo"] != "mayorista_decision"]
+                    decision_info = [h for h in clasif["decision"] if h["tipo"] == "mayorista_decision"]
+                    grupos_dec = _consolidar(decision_editable)
+
+                    items_by_id = {it["id"]: it for it in items_crudos}
+                    audit_by_id = {r["item"]["id"]: r["audit"] for r in resultado["items"]}
+                    mayorista_nuevo_props: Dict[str, Dict[str, Any]] = {}
+                    for h in decision_info:
+                        it_body = items_by_id.get(h["item_id"])
+                        audit_it = audit_by_id.get(h["item_id"])
+                        if not it_body or not audit_it:
+                            continue
+                        try:
+                            tiers_info = json.loads(audit_it.get("mayorista_tiers_json") or "{}")
+                        except (TypeError, ValueError):
+                            tiers_info = {}
+                        precio_base = tiers_info.get("standard_amount")
+                        if not precio_base:
+                            continue
+                        prop = await run.io_bound(_calcular_mayorista_nuevo, token, seller_id or "", it_body, precio_base)
+                        if prop:
+                            mayorista_nuevo_props[h["item_id"]] = {
+                                "descriptor": h["descriptor"],
+                                "tiene_pxq_absoluto": "standard_price_by_quantity" in (it_body.get("tags") or []),
+                                **prop,
+                            }
+
                     inputs: Dict[str, tuple] = {}
                     mayorista_checks: Dict[str, tuple] = {}
+                    mayorista_nuevo_checks: Dict[str, tuple] = {}
 
                     def _render_campo(g: Dict[str, Any], seccion: str):
                         with ui.column().classes("w-full gap-0"):
@@ -863,15 +987,14 @@ def build_tab_salud(container) -> None:
                                 inp = _render_campo(g, "sugerido")
                                 inputs[f"sug_{i}"] = (g, inp)
 
-                        decision_editable = [h for h in clasif["decision"] if h["tipo"] != "mayorista_decision"]
-                        decision_info = [h for h in clasif["decision"] if h["tipo"] == "mayorista_decision"]
-                        grupos_dec = _consolidar(decision_editable)
                         if clasif["decision"]:
                             ui.label(f"❓ Necesita tu decisión ({len(grupos_dec) + len(decision_info)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_dec):
                                 inp = _render_campo(g, "decision")
                                 inputs[f"dec_{i}"] = (g, inp)
                             for h in decision_info:
+                                if h["item_id"] in mayorista_nuevo_props:
+                                    continue  # se muestra como tarjeta accionable en "Mayorista sin cargar" más abajo
                                 ui.label(
                                     f"• {h['campo']} — {h['item_id']} ({h['descriptor']}) "
                                     f"— no autocompletable acá, es una decisión de precio de negocio"
@@ -892,7 +1015,21 @@ def build_tab_salud(container) -> None:
                                     else:
                                         ui.label("Sin sugerencia de ML para este ítem — revisión manual, no se ofrece autofix").classes("text-xs pl-3").style(f"color:{_MID}")
 
-                        if not clasif["sugeridos"] and not decision_editable and not clasif["mayoristas_roto"]:
+                        if mayorista_nuevo_props:
+                            ui.label(f"💰 Mayorista sin cargar — sugerencia 1/2/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
+                            for item_id, info in mayorista_nuevo_props.items():
+                                with ui.column().classes("w-full gap-0 border rounded p-2"):
+                                    ui.label(f"{item_id} ({info['descriptor']}) — sin mayorista, precio contado ${info['precio_base']}").classes("text-xs font-medium")
+                                    ui.label(
+                                        f"dimensiones {info['dimensiones']} cm, peso base {info['peso_base_g']:g} g "
+                                        "-- aproximación por escalado lineal del peso (no exacta), revisar antes de aplicar"
+                                    ).classes("text-xs text-gray-400 pl-3")
+                                    for p in info["propuesta"]:
+                                        ui.label(f"propuesto: {p['quantity']}+ unidades → ${p['amount']} ({p['percentage']}% off)").classes("text-xs pl-3")
+                                    chk = ui.checkbox(f"Aplicar estos 4 tiers en {item_id}", value=False)
+                                    mayorista_nuevo_checks[item_id] = (info, chk)
+
+                        if not clasif["sugeridos"] and not decision_editable and not clasif["mayoristas_roto"] and not mayorista_nuevo_props:
                             ui.label("Sin hallazgos accionables -- este SKU está al día.").classes("text-sm").style(f"color:{_OK}")
 
                         resumen_area = ui.column().classes("w-full gap-1")
@@ -926,6 +1063,17 @@ def build_tab_salud(container) -> None:
                                 continue
                             err = await run.io_bound(
                                 _escribir_mayorista_pxq, token, uid, sku, item_id, m["propuesta"], m["tiene_pxq_absoluto"],
+                            )
+                            if err:
+                                errores.append(err)
+                            else:
+                                aplicados += 1
+
+                        for item_id, (info, chk) in mayorista_nuevo_checks.items():
+                            if not chk.value:
+                                continue
+                            err = await run.io_bound(
+                                _escribir_mayorista_pxq, token, uid, sku, item_id, info["propuesta"], info["tiene_pxq_absoluto"],
                             )
                             if err:
                                 errores.append(err)
