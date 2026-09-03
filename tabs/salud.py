@@ -371,18 +371,25 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         desc = _item_descriptor(it)
         if (audit.get("descripcion_len") or 0) > 0:
             continue
-        # Prioriza una fuente del mismo tipo (propia->propia, catálogo->catálogo) pero
-        # cruza al otro tipo si ese no tiene texto -- es el mismo producto, no hay
-        # motivo para dejar una copia de catálogo sin descripción solo porque ninguna
-        # OTRA copia de catálogo la tiene, cuando la publicación propia sí.
-        fuente, origen_txt = None, ""
-        propio = not it.get("catalog_listing")
-        preferida, alterna = (propias_con_texto, catalogo_con_texto) if propio else (catalogo_con_texto, propias_con_texto)
-        preferida_txt, alterna_txt = ("propia", "catálogo") if propio else ("catálogo", "propia")
-        if preferida:
-            fuente, origen_txt = preferida[0], f"copiado de {preferida[0]}, {preferida_txt}"
-        elif alterna:
-            fuente, origen_txt = alterna[0], f"copiado de {alterna[0]}, {alterna_txt}"
+        if it.get("catalog_listing"):
+            # ML rechaza el PUT/POST de descripción en publicaciones de catálogo
+            # ("Description is not modifiable on catalog listing item", confirmado
+            # en vivo) -- nunca ofrecerlas como destino de escritura. Se gestiona
+            # desde el producto de catálogo o desde la publicación propia pareja.
+            normal.append(
+                f"Descripción no editable en {iid} ({desc}) -- ML no permite escribirla "
+                "en publicaciones de catálogo; se gestiona en el producto de catálogo"
+            )
+            continue
+        # Publicación propia: prefiere texto de otra propia; si ninguna otra propia
+        # tiene descripción, usa la de una copia de catálogo SOLO como fuente para
+        # copiar (nunca se escribe ahí, eso ya se filtró arriba).
+        if propias_con_texto:
+            fuente, origen_txt = propias_con_texto[0], f"copiado de {propias_con_texto[0]}, propia"
+        elif catalogo_con_texto:
+            fuente, origen_txt = catalogo_con_texto[0], f"copiado de {catalogo_con_texto[0]}, catálogo"
+        else:
+            fuente, origen_txt = None, ""
         if fuente:
             sugeridos.append({
                 "campo": f"Descripción ({origen_txt})", "item_id": iid, "descriptor": desc,
@@ -436,11 +443,6 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
     return {"normal": normal, "sugeridos": sugeridos, "decision": decision, "mayoristas_roto": mayoristas_roto}
 
 
-def _descriptor_corto(descriptor: str) -> str:
-    """'propia, 3x' -> '3x' -- para la lista compacta "se aplicará a"."""
-    return descriptor.split(", ", 1)[1] if ", " in descriptor else descriptor
-
-
 def _consolidar(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Agrupa hallazgos por dato (mismo attr_id, o "descripción" en conjunto) en vez
     de por publicación -- un mismo dato (GTIN, un atributo de ficha técnica, la
@@ -468,7 +470,10 @@ def _consolidar(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def _aplica_a_texto(items: List[Dict[str, str]]) -> str:
-    return "se aplicará a: " + ", ".join(f"{it['item_id']} ({_descriptor_corto(it['descriptor'])})" for it in items)
+    """Incluye el descriptor completo ('propia, 3x' / 'catálogo, contado') -- no solo
+    el tier de cuotas -- para que se entienda de entrada si el destino es una
+    publicación propia o una copia de catálogo (ver restricciones de escritura)."""
+    return "se aplicará a: " + ", ".join(f"{it['item_id']} ({it['descriptor']})" for it in items)
 
 
 def _con_boton_ia(g: Dict[str, Any], seccion: str) -> bool:
@@ -522,7 +527,30 @@ def _contexto_producto(items: List[dict], marca: str) -> str:
     return "\n".join(partes)
 
 
-def _prompt_ia(g: Dict[str, Any], contexto: str) -> str:
+def _fetch_category_attrs(cat_id: str) -> List[dict]:
+    """/categories/{id}/attributes -- endpoint público, sin auth. Se usa para que la
+    sugerencia de IA respete el value_type real del atributo (ej. number_unit con
+    una única unidad permitida, o lista cerrada de valores) en vez de texto libre
+    que ML descarta en silencio -- caso confirmado: USE_TIME es number_unit con
+    allowed_units=['h'] y la IA sugirió '60 minutos', que ML no reconoce."""
+    try:
+        r = requests.get(f"{ML_API}/categories/{cat_id}/attributes", timeout=15)
+        return r.json() if r.status_code == 200 else []
+    except requests.exceptions.RequestException:
+        return []
+
+
+def _match_valor_lista(attr_def: Optional[dict], texto: str) -> bool:
+    """True si `texto` coincide (case-insensitive) con una opción de la lista cerrada
+    del atributo. Si el atributo no tiene lista de valores, no hay nada que validar."""
+    valores = (attr_def or {}).get("values") or []
+    if not valores:
+        return True
+    low = texto.strip().lower()
+    return any((v.get("name") or "").strip().lower() == low for v in valores)
+
+
+def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None) -> str:
     if g["tipo"] == "descripcion":
         return (
             f"{contexto}\n\n"
@@ -531,6 +559,26 @@ def _prompt_ia(g: Dict[str, Any], contexto: str) -> str:
             "información disponible arriba (no inventes características que no estén "
             "sugeridas por el título/atributos). Devolvé SOLO el texto de la "
             "descripción, sin comillas ni encabezados."
+        )
+    value_type = (attr_def or {}).get("value_type")
+    valores = (attr_def or {}).get("values") or []
+    if value_type == "number_unit":
+        unidades = [u.get("id") for u in (attr_def.get("allowed_units") or []) if u.get("id")]
+        unidad = attr_def.get("default_unit") or (unidades[0] if unidades else "")
+        return (
+            f"{contexto}\n\n"
+            f"Sugerí el valor para el atributo de ficha técnica \"{g['campo']}\" de este "
+            f"producto. Es un valor numérico con unidad, y la ÚNICA unidad válida es "
+            f"'{unidad}'. Respondé SOLO con un número seguido de esa unidad (ejemplo: "
+            f"'60 {unidad}'). No uses ninguna otra unidad ni la conviertas a otra."
+        )
+    if valores:
+        opciones = ", ".join(v.get("name", "") for v in valores[:80] if v.get("name"))
+        return (
+            f"{contexto}\n\n"
+            f"Elegí el valor más probable para el atributo de ficha técnica \"{g['campo']}\" "
+            f"de este producto, ELIGIENDO UNA de estas opciones exactas (respondé copiando "
+            f"una tal cual está escrita, sin agregar nada más): {opciones}"
         )
     return (
         f"{contexto}\n\n"
@@ -754,9 +802,11 @@ def build_tab_salud(container) -> None:
                     clasif = await run.io_bound(_clasificar_hallazgos, token, resultado["items"])
 
                     groq_key = get_app_config("groq_api_key")
-                    contexto_ia = await run.io_bound(
-                        _contexto_producto, [r["item"] for r in resultado["items"]], row_actual["marca"],
-                    )
+                    items_crudos = [r["item"] for r in resultado["items"]]
+                    contexto_ia = await run.io_bound(_contexto_producto, items_crudos, row_actual["marca"])
+                    cat_id_ia = _item_principal(items_crudos).get("category_id")
+                    cat_attrs_ia = await run.io_bound(_fetch_category_attrs, cat_id_ia) if cat_id_ia else []
+                    cat_attrs_by_id = {a["id"]: a for a in cat_attrs_ia if a.get("id")}
 
                     inputs: Dict[str, tuple] = {}
                     mayorista_checks: Dict[str, tuple] = {}
@@ -782,12 +832,16 @@ def build_tab_salud(container) -> None:
                                         if not groq_key:
                                             ui.notify("Configurá tu API key de Groq en Config → IA/Sugerencias", color="warning")
                                             return
+                                        attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
                                         try:
-                                            texto = await run.io_bound(_groq_generate, groq_key, _prompt_ia(g, contexto_ia))
+                                            texto = await run.io_bound(_groq_generate, groq_key, _prompt_ia(g, contexto_ia, attr_def))
                                         except Exception as exc:
                                             ui.notify(f"Error al pedir sugerencia a la IA: {exc}", color="negative")
                                             return
                                         inp.value = texto
+                                        if g["tipo"] == "atributo" and not _match_valor_lista(attr_def, texto):
+                                            marca_ia.set_text("✨ sugerido por IA -- no coincide con una opción válida de ML, revisar antes de guardar")
+                                            marca_ia.style(f"color:{_BAD}")
                                         marca_ia.set_visibility(True)
                                     ui.button(icon="auto_awesome", on_click=_click_ia).props("flat dense round size=sm").tooltip("Sugerir con IA")
                             ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
