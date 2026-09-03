@@ -605,7 +605,7 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Mayorista 2/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
+# Mayorista 2/3/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
 # (no la recomendación de ML). ROTO/INVERTIDO siguen yendo por
 # ml_get_pxq_recommendations más arriba, sin cambios: acá solo se crea una
 # escalera nueva donde hoy no hay ninguna, nunca se toca una existente.
@@ -618,7 +618,7 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 # había registrado que el 1 unidad no tiene un % con origen conocido.
 # ---------------------------------------------------------------------------
 
-_CANTIDADES_MAYORISTA_NUEVO = (2, 5, 10)
+_CANTIDADES_MAYORISTA_NUEVO = (2, 3, 5, 10)
 
 _CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
 _GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
@@ -671,7 +671,7 @@ def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
 
 
 def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float) -> Optional[Dict[str, Any]]:
-    """Arma la propuesta de mayorista 2/5/10 para un ítem SIN mayorista cargado.
+    """Arma la propuesta de mayorista 2/3/5/10 para un ítem SIN mayorista cargado.
     Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
     ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N (el costo a 1
     unidad se usa como base de comparación, nunca se ofrece como tier -- ver nota
@@ -680,7 +680,7 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
     el paquete combinado con su propia tara, el escalado lineal del peso es la mejor
     aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
     no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
-    para alguna de las 3 cantidades, o ninguna de las 3 da un % > 0 (ML rechaza tiers
+    para alguna de las 4 cantidades, o ninguna de las 4 da un % > 0 (ML rechaza tiers
     con 0%)."""
     dims = _dimensiones_seller_package(item)
     if not dims or not precio_base:
@@ -1035,7 +1035,7 @@ def build_tab_salud(container) -> None:
                                         ui.label("Sin sugerencia de ML para este ítem — revisión manual, no se ofrece autofix").classes("text-xs pl-3").style(f"color:{_MID}")
 
                         if mayorista_nuevo_props:
-                            ui.label(f"💰 Mayorista sin cargar — sugerencia 2/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
+                            ui.label(f"💰 Mayorista sin cargar — sugerencia 2/3/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
                             for item_id, info in mayorista_nuevo_props.items():
                                 with ui.column().classes("w-full gap-0 border rounded p-2"):
                                     ui.label(f"{item_id} ({info['descriptor']}) — sin mayorista, precio contado ${info['precio_base']}").classes("text-xs font-medium")

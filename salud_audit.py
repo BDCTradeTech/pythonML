@@ -117,7 +117,14 @@ def fetch_all_own_items(token: str, seller_id: str) -> List[dict]:
 
 
 def _wholesale_from_prices(prices_body: dict) -> Dict[str, Any]:
-    """Misma clasificación que wholesale_sweep.py: ROTO/INVERTIDO/OK/SIN_MAYORISTA."""
+    """Misma clasificación que wholesale_sweep.py: ROTO/INVERTIDO/OK/SIN_MAYORISTA.
+    Unifica los DOS sistemas de mayorista de ML: el legacy de precio absoluto
+    (prices[type=standard] con min_purchase_unit) y el nuevo de % B2B
+    (price_per_quantity[type=discount_percentage], el que escribe el popup de Salud
+    vía ml_write_price_per_quantity). Sin esto, cualquier ítem con el sistema nuevo
+    cargado clasifica siempre sin_mayorista -- confirmado en vivo (BHR4245GL,
+    2026-09-03): 3 tiers % cargados y verificados en ML, pero _wholesale_from_prices
+    seguía devolviendo tiers=[] porque nunca miraba price_per_quantity."""
     prices = prices_body.get("prices") or []
     standard_amount = None
     tiers: List[List[float]] = []
@@ -133,6 +140,19 @@ def _wholesale_from_prices(prices_body: dict) -> Dict[str, Any]:
             continue
         if amt is not None:
             tiers.append([int(min_pu), float(amt)])
+
+    for p in prices_body.get("price_per_quantity") or []:
+        if not isinstance(p, dict) or p.get("type") != "discount_percentage":
+            continue
+        cond = p.get("conditions") or {}
+        if cond.get("eligible") is False:
+            continue
+        min_pu = cond.get("min_purchase_unit")
+        pct = p.get("percentage")
+        if min_pu is None or pct is None or standard_amount is None:
+            continue
+        tiers.append([int(min_pu), round(standard_amount * (1 - pct / 100), 2)])
+
     tiers.sort(key=lambda t: t[0])
 
     if not tiers:
