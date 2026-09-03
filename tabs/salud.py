@@ -21,7 +21,7 @@ from typing import Any, Dict, List, Optional
 import requests
 from nicegui import app, ui, run
 
-from db import get_connection, log_ml_escritura
+from db import GROQ_MODEL, get_app_config, get_connection, log_ml_escritura
 from ml_api import (
     get_ml_access_token,
     ml_get_item,
@@ -371,11 +371,18 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         desc = _item_descriptor(it)
         if (audit.get("descripcion_len") or 0) > 0:
             continue
+        # Prioriza una fuente del mismo tipo (propia->propia, catálogo->catálogo) pero
+        # cruza al otro tipo si ese no tiene texto -- es el mismo producto, no hay
+        # motivo para dejar una copia de catálogo sin descripción solo porque ninguna
+        # OTRA copia de catálogo la tiene, cuando la publicación propia sí.
         fuente, origen_txt = None, ""
-        if not it.get("catalog_listing") and propias_con_texto:
-            fuente, origen_txt = propias_con_texto[0], f"copiado de {propias_con_texto[0]}, propia"
-        elif catalogo_con_texto:
-            fuente, origen_txt = catalogo_con_texto[0], f"copiado de {catalogo_con_texto[0]}, catálogo"
+        propio = not it.get("catalog_listing")
+        preferida, alterna = (propias_con_texto, catalogo_con_texto) if propio else (catalogo_con_texto, propias_con_texto)
+        preferida_txt, alterna_txt = ("propia", "catálogo") if propio else ("catálogo", "propia")
+        if preferida:
+            fuente, origen_txt = preferida[0], f"copiado de {preferida[0]}, {preferida_txt}"
+        elif alterna:
+            fuente, origen_txt = alterna[0], f"copiado de {alterna[0]}, {alterna_txt}"
         if fuente:
             sugeridos.append({
                 "campo": f"Descripción ({origen_txt})", "item_id": iid, "descriptor": desc,
@@ -462,6 +469,89 @@ def _consolidar(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def _aplica_a_texto(items: List[Dict[str, str]]) -> str:
     return "se aplicará a: " + ", ".join(f"{it['item_id']} ({_descriptor_corto(it['descriptor'])})" for it in items)
+
+
+def _con_boton_ia(g: Dict[str, Any], seccion: str) -> bool:
+    """Descripción tiene botón de IA en cualquier sección. Atributos de ficha
+    técnica solo en "necesita decisión" (los de "sugerido" ya vienen con un valor
+    conocido de otra publicación). GTIN queda afuera siempre -- sugerir un código
+    de barras es inventarlo, no autocompletarlo."""
+    if g["tipo"] == "descripcion":
+        return True
+    return seccion == "decision" and g["tipo"] == "atributo" and g["attr_id"] != "GTIN"
+
+
+def _item_principal(items: List[dict]) -> dict:
+    """Mismo criterio de 'representante' que usa Productos (tabs/precios.py): la
+    propia gold_special (no catálogo) con más stock; si no hay, cualquier ítem."""
+    return max(
+        items,
+        key=lambda it: (
+            1 if not it.get("catalog_listing") and str(it.get("listing_type_id") or "").lower() == "gold_special" else 0,
+            int(it.get("available_quantity") or 0),
+        ),
+    )
+
+
+def _contexto_producto(items: List[dict], marca: str) -> str:
+    """Arma el bloque de contexto para el prompt de IA: título, marca, categoría y
+    los atributos ya cargados en la publicación representante del grupo. Una sola
+    llamada extra (nombre de categoría, sin auth -- endpoint público) por popup, no
+    por campo."""
+    principal = _item_principal(items)
+    partes = [f"Título de la publicación: {principal.get('title') or ''}"]
+    if marca:
+        partes.append(f"Marca: {marca}")
+    cat_id = principal.get("category_id")
+    if cat_id:
+        cat_nombre = cat_id
+        try:
+            r = requests.get(f"{ML_API}/categories/{cat_id}", timeout=10)
+            if r.status_code == 200:
+                cat_nombre = r.json().get("name") or cat_id
+        except requests.exceptions.RequestException:
+            pass
+        partes.append(f"Categoría: {cat_nombre}")
+    attrs = [
+        f"{a.get('name') or a.get('id')}: {a.get('value_name')}"
+        for a in (principal.get("attributes") or [])
+        if a.get("value_name") and a.get("id") != "GTIN"
+    ]
+    if attrs:
+        partes.append("Atributos ya cargados: " + "; ".join(attrs))
+    return "\n".join(partes)
+
+
+def _prompt_ia(g: Dict[str, Any], contexto: str) -> str:
+    if g["tipo"] == "descripcion":
+        return (
+            f"{contexto}\n\n"
+            "Escribí una descripción de producto para una publicación de MercadoLibre "
+            "en español, clara y comercial, de 150 a 400 palabras, basada solo en la "
+            "información disponible arriba (no inventes características que no estén "
+            "sugeridas por el título/atributos). Devolvé SOLO el texto de la "
+            "descripción, sin comillas ni encabezados."
+        )
+    return (
+        f"{contexto}\n\n"
+        f"Sugerí el valor más probable para el atributo de ficha técnica \"{g['campo']}\" "
+        "de este producto. Respondé SOLO con el valor (una palabra o frase corta), sin "
+        "explicaciones ni puntuación extra."
+    )
+
+
+def _groq_generate(api_key: str, prompt: str) -> str:
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": GROQ_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 500,
+        "temperature": 0.5,
+    }
+    resp = requests.post(url, headers=headers, json=payload, timeout=20)
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"].strip()
 
 
 # ---------------------------------------------------------------------------
@@ -663,8 +753,45 @@ def build_tab_salud(container) -> None:
 
                     clasif = await run.io_bound(_clasificar_hallazgos, token, resultado["items"])
 
+                    groq_key = get_app_config("groq_api_key")
+                    contexto_ia = await run.io_bound(
+                        _contexto_producto, [r["item"] for r in resultado["items"]], row_actual["marca"],
+                    )
+
                     inputs: Dict[str, tuple] = {}
                     mayorista_checks: Dict[str, tuple] = {}
+
+                    def _render_campo(g: Dict[str, Any], seccion: str):
+                        with ui.column().classes("w-full gap-0"):
+                            with ui.row().classes("items-center gap-2 w-full"):
+                                ui.label(g["campo"]).classes("text-xs w-56")
+                                if g["tipo"] == "descripcion":
+                                    inp = ui.textarea(
+                                        value=g["valor_sugerido"] if seccion == "sugerido" else "",
+                                        placeholder=None if seccion == "sugerido" else "(vacío = no tocar)",
+                                    ).props("dense outlined").classes("flex-grow").style("min-height:110px")
+                                else:
+                                    inp = ui.input(
+                                        value=g["valor_sugerido"] if seccion == "sugerido" else "",
+                                        placeholder=None if seccion == "sugerido" else "(vacío = no tocar)",
+                                    ).props("dense outlined").classes("flex-grow")
+                                marca_ia = ui.label("✨ sugerido por IA, sin verificar").classes("text-xs").style(f"color:{_MID}")
+                                marca_ia.set_visibility(False)
+                                if _con_boton_ia(g, seccion):
+                                    async def _click_ia(g=g, inp=inp, marca_ia=marca_ia) -> None:
+                                        if not groq_key:
+                                            ui.notify("Configurá tu API key de Groq en Config → IA/Sugerencias", color="warning")
+                                            return
+                                        try:
+                                            texto = await run.io_bound(_groq_generate, groq_key, _prompt_ia(g, contexto_ia))
+                                        except Exception as exc:
+                                            ui.notify(f"Error al pedir sugerencia a la IA: {exc}", color="negative")
+                                            return
+                                        inp.value = texto
+                                        marca_ia.set_visibility(True)
+                                    ui.button(icon="auto_awesome", on_click=_click_ia).props("flat dense round size=sm").tooltip("Sugerir con IA")
+                            ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
+                        return inp
 
                     body.clear()
                     with body:
@@ -679,11 +806,7 @@ def build_tab_salud(container) -> None:
                         if grupos_sug:
                             ui.label(f"✏️ Sugerido — revisar y confirmar ({len(grupos_sug)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_sug):
-                                with ui.column().classes("w-full gap-0"):
-                                    with ui.row().classes("items-center gap-2 w-full"):
-                                        ui.label(g["campo"]).classes("text-xs w-56")
-                                        inp = ui.input(value=g["valor_sugerido"]).props("dense outlined").classes("flex-grow")
-                                    ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
+                                inp = _render_campo(g, "sugerido")
                                 inputs[f"sug_{i}"] = (g, inp)
 
                         decision_editable = [h for h in clasif["decision"] if h["tipo"] != "mayorista_decision"]
@@ -692,11 +815,7 @@ def build_tab_salud(container) -> None:
                         if clasif["decision"]:
                             ui.label(f"❓ Necesita tu decisión ({len(grupos_dec) + len(decision_info)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_dec):
-                                with ui.column().classes("w-full gap-0"):
-                                    with ui.row().classes("items-center gap-2 w-full"):
-                                        ui.label(g["campo"]).classes("text-xs w-56")
-                                        inp = ui.input(placeholder="(vacío = no tocar)").props("dense outlined").classes("flex-grow")
-                                    ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
+                                inp = _render_campo(g, "decision")
                                 inputs[f"dec_{i}"] = (g, inp)
                             for h in decision_info:
                                 ui.label(
