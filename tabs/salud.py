@@ -28,7 +28,6 @@ from ml_api import (
     get_ml_access_token,
     ml_get_item,
     ml_get_prices_with_version,
-    ml_get_pxq_recommendations,
     ml_get_user_id,
     ml_update_item_attributes,
     ml_write_item_description,
@@ -304,12 +303,12 @@ def _item_descriptor(item: dict) -> str:
 
 def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]:
     """Separa los hallazgos crudos de audit_item() en 3 grupos (normal por diseño /
-    sugerido con valor pre-cargado / necesita decisión de Diego) + una lista aparte
-    de mayoristas ROTO/INVERTIDO a corregir. No escribe nada -- solo lee y clasifica."""
+    sugerido con valor pre-cargado / necesita decisión de Diego). El mayorista de
+    publicaciones gold_special se evalúa aparte, con _evaluar_mayorista_gold_special
+    (ver más abajo) -- no pasa por acá. No escribe nada -- solo lee y clasifica."""
     normal: List[str] = []
     sugeridos: List[Dict[str, Any]] = []
     decision: List[Dict[str, Any]] = []
-    mayoristas_roto: List[Dict[str, Any]] = []
 
     items = [r["item"] for r in resultados]
 
@@ -403,52 +402,17 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
                 "tipo": "descripcion", "valor_sugerido": "",
             })
 
-    # --- mayorista ---
+    # --- mayorista: solo la nota informativa de "no aplica en cuotas" queda acá.
+    # La evaluación real (crear/ok/roto/revisar) de las publicaciones gold_special
+    # vive en _evaluar_mayorista_gold_special, ver más abajo.
     for r in resultados:
         it, audit = r["item"], r["audit"]
         iid = it["id"]
         desc = _item_descriptor(it)
-        estado = audit.get("mayorista_estado")
-        if estado == "sin_mayorista":
-            # El mayorista SOLO aplica a la publicación de contado (gold_special) --
-            # nunca a una de cuotas (gold_pro), porque distorsiona el cálculo
-            # financiado de cada tier. El tag "_campaign" (usado antes acá) NO es un
-            # proxy confiable: hay publicaciones gold_pro sin ningún tag "_campaign"
-            # (confirmado en vivo, 2026-09-03 -- BHR4245GL y Lego-77246-F1VisaRB) que
-            # igual son de cuotas y quedaron mal ofrecidas/escritas por este motivo.
-            if it.get("listing_type_id") != "gold_special":
-                normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (solo aplica a la publicación de contado)")
-            else:
-                decision.append({
-                    "campo": "Mayorista (definir precio)", "item_id": iid, "descriptor": desc,
-                    "tipo": "mayorista_decision", "valor_sugerido": "",
-                })
-        elif estado in ("roto", "invertido"):
-            try:
-                tiers_info = json.loads(audit.get("mayorista_tiers_json") or "{}")
-            except (TypeError, ValueError):
-                tiers_info = {}
-            standard = tiers_info.get("standard_amount")
-            tiers_actuales = tiers_info.get("tiers") or []
-            quantities = [t[0] for t in tiers_actuales][:5]
-            propuesta: List[Dict[str, Any]] = []
-            if standard and quantities:
-                rec = ml_get_pxq_recommendations(token, iid, standard, quantities)
-                if rec and rec.get("recommendations"):
-                    for reco in rec["recommendations"]:
-                        if not reco.get("is_incoherent_quantity"):
-                            propuesta.append({
-                                "quantity": reco["quantity"], "amount": reco["amount"],
-                                "percentage": round(reco.get("discount", {}).get("percentage", 0), 2),
-                            })
-            mayoristas_roto.append({
-                "item_id": iid, "descriptor": desc, "estado": estado,
-                "standard_amount": standard, "tiers_actuales": tiers_actuales,
-                "propuesta": propuesta,
-                "tiene_pxq_absoluto": "standard_price_by_quantity" in (it.get("tags") or []),
-            })
+        if audit.get("mayorista_estado") == "sin_mayorista" and it.get("listing_type_id") != "gold_special":
+            normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (solo aplica a la publicación de contado)")
 
-    return {"normal": normal, "sugeridos": sugeridos, "decision": decision, "mayoristas_roto": mayoristas_roto}
+    return {"normal": normal, "sugeridos": sugeridos, "decision": decision}
 
 
 def _consolidar(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -611,10 +575,10 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Mayorista 2/3/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
-# (no la recomendación de ML). ROTO/INVERTIDO siguen yendo por
-# ml_get_pxq_recommendations más arriba, sin cambios: acá solo se crea una
-# escalera nueva donde hoy no hay ninguna, nunca se toca una existente.
+# Cálculo de la propuesta 2/3/5/10 por fórmula de envío propia (no la
+# recomendación de ML) -- usada tanto para crear tiers donde no hay ninguno como
+# para recalcular el valor "correcto" hoy de un tier ya cargado (ver evaluación
+# unificada más abajo, _evaluar_mayorista_gold_special).
 #
 # El tier de 1 unidad queda AFUERA de la propuesta -- por definición no tiene
 # ahorro de envío contra sí mismo, así que la fórmula siempre da 0% para esa
@@ -718,6 +682,163 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
 
 
 # ---------------------------------------------------------------------------
+# Evaluación unificada de mayorista para publicaciones gold_special (contado) --
+# reemplaza las 2 secciones viejas ("sin cargar" y "a corregir", esta última basada
+# en ml_get_pxq_recommendations). Un solo motor: para cada una de las 4 cantidades
+# objetivo (2/3/5/10) compara lo cargado hoy contra _calcular_mayorista_nuevo
+# recalculado en el momento, y clasifica cada tier en:
+#   - "crear": no hay tier cargado en esa cantidad, se ofrece el calculado.
+#   - "ok": hay tier cargado y está dentro del margen del cálculo actual.
+#   - "roto": el tier cargado da % negativo o cero (precio ≥ precio base) --
+#     objetivo, sin ambigüedad de fórmula, se ofrece corregir junto con "crear".
+#   - "revisar": el tier cargado difiere del calculado más allá del umbral, pero
+#     no es "roto" -- caso ambiguo (la fórmula de envío se puede desviar mucho en
+#     productos muy baratos o muy caros, confirmado en el barrido de cuenta del
+#     2026-09-03: el % calculado varió entre 0.21% y 121% según el precio del
+#     producto). Se muestra como referencia (cargado vs. calculado hoy) pero NUNCA
+#     se ofrece aplicar automático.
+# El umbral (4pp absolutos Y 1.75x relativo) se validó contra el barrido completo
+# de la cuenta: dispara en casos reales como E.Show8-2da-Negro (tier de mayo,
+# 6.59% cargado vs 2.10% calculado hoy) sin falsos positivos sobre los 97 tiers
+# recién escritos con este mismo cálculo.
+#
+# Cantidad=1 y cantidades no estándar (ej. 7) quedan SIEMPRE afuera -- nunca se
+# evalúan ni se tocan, se preservan tal cual estén (ver _construir_payload_mayorista).
+# ---------------------------------------------------------------------------
+
+_QTYS_MAYORISTA = (2, 3, 5, 10)
+_DESVIO_PP_MIN = 4.0
+_DESVIO_RATIO_MIN = 1.75
+
+
+def _standard_amount_de(prices_body: dict) -> Optional[float]:
+    for p in prices_body.get("prices") or []:
+        cond = p.get("conditions") or {}
+        if p.get("type") == "standard" and cond.get("min_purchase_unit") is None and not (cond.get("context_restrictions") or []):
+            return float(p["amount"])
+    return None
+
+
+def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[int, float]:
+    """Tiers cargados HOY en las 4 cantidades objetivo, unificando legacy
+    (prices[type=standard] con min_purchase_unit) y % B2B nuevo (price_per_quantity),
+    ambos a monto absoluto para poder compararlos con el cálculo."""
+    cargado: Dict[int, float] = {}
+    for p in prices_body.get("prices") or []:
+        cond = p.get("conditions") or {}
+        mpu = cond.get("min_purchase_unit")
+        if mpu in _QTYS_MAYORISTA and p.get("amount") is not None:
+            cargado[mpu] = float(p["amount"])
+    for p in prices_body.get("price_per_quantity") or []:
+        if p.get("type") != "discount_percentage":
+            continue
+        cond = p.get("conditions") or {}
+        if cond.get("eligible") is False:
+            continue
+        mpu = cond.get("min_purchase_unit")
+        pct = p.get("percentage")
+        if mpu in _QTYS_MAYORISTA and pct is not None:
+            cargado[mpu] = round(precio_base * (1 - pct / 100), 2)
+    return cargado
+
+
+def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict) -> Optional[Dict[str, Any]]:
+    """Evalúa las 4 cantidades objetivo para UNA publicación gold_special. Devuelve
+    None si no se puede evaluar (sin precio base, sin dimensiones, sin cotización de
+    envío) o si las 4 están "ok" y no hay nada que mostrar. GET en vivo -- no usa el
+    snapshot de la auditoría, que puede estar desactualizado frente a escrituras
+    recientes."""
+    iid = item["id"]
+    try:
+        rp = requests.get(f"{ML_API}/items/{iid}/prices", headers={"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
+    except requests.exceptions.RequestException:
+        return None
+    if rp.status_code != 200:
+        return None
+    prices_body = rp.json()
+    precio_base = _standard_amount_de(prices_body)
+    if not precio_base:
+        return None
+    cargado = _tiers_cargados_por_cantidad(prices_body, precio_base)
+
+    prop = _calcular_mayorista_nuevo(token, seller_id, item, precio_base)
+    calculado = {p["quantity"]: p["amount"] for p in prop["propuesta"]} if prop else {}
+    calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
+
+    tiers: List[Dict[str, Any]] = []
+    for q in _QTYS_MAYORISTA:
+        if q not in cargado:
+            if q in calculado:
+                tiers.append({"quantity": q, "estado": "crear", "pct_calculado": calculado_pct[q], "monto_calculado": calculado[q]})
+            continue  # sin tier cargado y sin cálculo posible -- no se puede ofrecer nada
+        pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
+        pct_calc = calculado_pct.get(q)
+        if pct_calc is None:
+            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+            continue
+        if pct_cargado <= 0:
+            tiers.append({"quantity": q, "estado": "roto", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
+            continue
+        diff_pp = abs(pct_cargado - pct_calc)
+        ratio = max(pct_cargado, pct_calc) / max(min(pct_cargado, pct_calc), 0.01)
+        if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
+            tiers.append({"quantity": q, "estado": "revisar", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
+        else:
+            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+
+    presentes = sorted(cargado.keys())
+    invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))
+
+    if not any(t["estado"] != "ok" for t in tiers) and not invertido:
+        return None  # las 4 están ok (o no evaluables) y no hay inversión -- nada para mostrar
+
+    return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
+
+
+def _tiers_accionables(evaluacion: Dict[str, Any]) -> Tuple[Dict[int, float], List[int]]:
+    """De la evaluación de un ítem, arma (cambios, bloqueadas) para las cantidades
+    "crear"/"roto" -- las "ok"/"revisar" nunca se tocan y actúan como piso: ML exige
+    que el % sea ESTRICTAMENTE creciente al subir la cantidad, no solo no-decreciente
+    (confirmado en vivo el 2026-09-03 probando AW-S11-Black-MEQT4LW: "Price per
+    quantity invalid coherence order" cuando un tier nuevo quedaba más bajo que uno
+    preservado en una cantidad menor, y "Price per quantity amount are not unique"
+    cuando se lo subía hasta IGUALAR el piso en vez de superarlo).
+
+    Se recorre en orden creciente de cantidad manteniendo un piso de %. Un tier
+    "crear"/"roto" que quedaría en o por debajo del piso se sube a piso + 0.01 (nunca
+    se le da MENOS descuento del que ya tiene una cantidad menor, ni el mismo). Pero
+    si ese ajuste aleja el % resultante de su propio valor calculado más allá del
+    mismo umbral de desvío que separa "ok" de "revisar" (4pp y 1.75x), no se fuerza --
+    se bloquea esa cantidad y todas las que siguen (no se puede mantener la escalera
+    coherente sin inventar un número sin sustento), y se marca para revisión manual."""
+    piso = 0.0
+    cambios: Dict[int, float] = {}
+    bloqueadas: List[int] = []
+    for t in sorted(evaluacion["tiers"], key=lambda x: x["quantity"]):
+        q = t["quantity"]
+        if t["estado"] in ("ok", "revisar"):
+            piso = max(piso, t["pct_cargado"])
+            continue
+        if t["estado"] not in ("crear", "roto"):
+            continue
+        if bloqueadas:
+            bloqueadas.append(q)
+            continue
+        pct_calc = t["pct_calculado"]
+        pct_final = pct_calc if pct_calc > piso else round(piso + 0.01, 2)
+        diff_pp = abs(pct_final - pct_calc)
+        ratio = max(pct_final, pct_calc) / max(min(pct_final, pct_calc), 0.01)
+        if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
+            bloqueadas.append(q)
+            continue
+        cambios[q] = pct_final
+        piso = pct_final
+    return cambios, bloqueadas
+
+
+# ---------------------------------------------------------------------------
 # Escritura hacia ML -- SIEMPRE con GET de verificación independiente y log en
 # ml_escrituras (ok o error), nunca confiando en el 200 del PUT/POST -- y a la
 # inversa, tampoco en un status != 200: confirmado en vivo (BHR4245GL) que ML
@@ -766,36 +887,101 @@ def _escribir_descripcion(token: str, uid: int, sku: str, item_id: str,
     return f"Descripción ({item_id}): {detalle}"
 
 
+def _tier_body(mpu: int, pct: float) -> Dict[str, Any]:
+    return {
+        "type": "discount_percentage",
+        "percentage": pct,
+        "conditions": {
+            "context_restrictions": ["channel_marketplace", "user_type_business"],
+            "min_purchase_unit": mpu,
+            "eligible": True,
+        },
+    }
+
+
+def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -> Tuple[List[Dict[str, Any]], bool]:
+    """Arma el body completo para POST /prices/price-per-quantity a partir de lo que
+    hay HOY + los cambios pedidos (cantidad -> % nuevo). El endpoint reemplaza el
+    array entero: cualquier cantidad que no se re-envíe queda eliminada -- por eso
+    acá se reconstruye TODO lo que tiene que sobrevivir (tier de 1 unidad, cantidades
+    no estándar, tiers "ok"/"revisar" que no están en `cambios`), no solo lo nuevo.
+    Si el ítem tiene el sistema legacy (tag standard_price_by_quantity), sus tiers se
+    convierten a % preservando el mismo precio real (remove-absolute-pxq los borra
+    del lado de ML de todas formas, así que hay que re-crearlos acá para no perderlos).
+    Los tiers % existentes que se preservan sin cambios van con su "id" propio -- por
+    la lógica documentada de ML, mandar el id de un precio existente lo deja intacto;
+    omitirlo lo borra."""
+    standard_amount = _standard_amount_de(prices_info)
+    tiene_absoluto = any(
+        p.get("type") == "standard" and (p.get("conditions") or {}).get("min_purchase_unit") is not None
+        for p in prices_info.get("prices") or []
+    )
+    body_items: List[Dict[str, Any]] = []
+    vistos: set = set()
+
+    for p in prices_info.get("prices") or []:
+        cond = p.get("conditions") or {}
+        mpu = cond.get("min_purchase_unit")
+        if mpu is None or p.get("amount") is None or not standard_amount:
+            continue
+        vistos.add(mpu)
+        pct = cambios.get(mpu)
+        if pct is None:
+            pct = round((1 - float(p["amount"]) / standard_amount) * 100, 2)
+        body_items.append(_tier_body(mpu, pct))
+
+    for p in prices_info.get("price_per_quantity") or []:
+        if p.get("type") != "discount_percentage":
+            continue
+        cond = p.get("conditions") or {}
+        mpu = cond.get("min_purchase_unit")
+        if mpu is None or mpu in vistos:
+            continue
+        vistos.add(mpu)
+        if mpu in cambios:
+            body_items.append(_tier_body(mpu, cambios[mpu]))
+        else:
+            preservado = _tier_body(mpu, p.get("percentage"))
+            preservado["id"] = p["id"]
+            body_items.append(preservado)
+
+    for mpu, pct in cambios.items():
+        if mpu not in vistos:
+            body_items.append(_tier_body(mpu, pct))
+
+    return body_items, tiene_absoluto
+
+
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
-                             tiers_deseados: List[Dict[str, Any]], tiene_pxq_absoluto: bool) -> Optional[str]:
+                             cambios: Dict[int, float]) -> Optional[str]:
+    """cambios: {cantidad: porcentaje} SOLO para las cantidades a crear/corregir --
+    todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista)."""
     prices_info = ml_get_prices_with_version(token, item_id)
     if not prices_info or "version" not in prices_info:
         msg = "no se pudo leer la versión de precios (X-Version) antes de escribir"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(tiers_deseados, ensure_ascii=False), "salud_popup", "error", msg)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
         return f"Mayorista ({item_id}): {msg}"
     version = prices_info["version"]
-    body_items = [
-        {
-            "type": "discount_percentage",
-            "percentage": t["percentage"],
-            "conditions": {
-                "context_restrictions": ["channel_marketplace", "user_type_business"],
-                "min_purchase_unit": t["quantity"],
-                "eligible": True,
-            },
-        }
-        for t in tiers_deseados
-    ]
-    valor_nuevo = json.dumps(tiers_deseados, ensure_ascii=False)
+    body_items, tiene_pxq_absoluto = _construir_payload_mayorista(prices_info, cambios)
+    valor_nuevo = json.dumps(cambios, ensure_ascii=False)
     resp = ml_write_price_per_quantity(token, item_id, body_items, version, remove_absolute_pxq=tiene_pxq_absoluto)
     post_detalle = f"status={resp.status_code} {resp.text[:300]}" if resp.status_code != 200 else None
     time.sleep(0.4)
     verify = ml_get_prices_with_version(token, item_id)
-    ok = bool(verify and len(verify.get("price_per_quantity") or []) == len(tiers_deseados))
+    verify_pct = {}
+    if verify:
+        for p in verify.get("price_per_quantity") or []:
+            cond = p.get("conditions") or {}
+            if cond.get("min_purchase_unit") is not None:
+                verify_pct[cond["min_purchase_unit"]] = p.get("percentage")
+    ok = bool(verify) and len(verify_pct) == len(body_items) and all(
+        verify_pct.get(mpu) is not None and abs(verify_pct[mpu] - pct) < 0.05
+        for mpu, pct in cambios.items()
+    )
     if ok:
         log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "ok", None)
         return None
-    detalle = post_detalle or "GET de verificación no coincide en cantidad de tiers"
+    detalle = post_detalle or f"GET de verificación no coincide (quedó {verify_pct!r})"
     log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "error", detalle)
     return f"Mayorista ({item_id}): {detalle}"
 
@@ -929,36 +1115,19 @@ def build_tab_salud(container) -> None:
                     cat_attrs_ia = await run.io_bound(_fetch_category_attrs, cat_id_ia) if cat_id_ia else []
                     cat_attrs_by_id = {a["id"]: a for a in cat_attrs_ia if a.get("id")}
 
-                    decision_editable = [h for h in clasif["decision"] if h["tipo"] != "mayorista_decision"]
-                    decision_info = [h for h in clasif["decision"] if h["tipo"] == "mayorista_decision"]
+                    decision_editable = clasif["decision"]
                     grupos_dec = _consolidar(decision_editable)
 
-                    items_by_id = {it["id"]: it for it in items_crudos}
-                    audit_by_id = {r["item"]["id"]: r["audit"] for r in resultado["items"]}
-                    mayorista_nuevo_props: Dict[str, Dict[str, Any]] = {}
-                    for h in decision_info:
-                        it_body = items_by_id.get(h["item_id"])
-                        audit_it = audit_by_id.get(h["item_id"])
-                        if not it_body or not audit_it:
+                    mayorista_eval: Dict[str, Dict[str, Any]] = {}
+                    for it_body in items_crudos:
+                        if it_body.get("listing_type_id") != "gold_special":
                             continue
-                        try:
-                            tiers_info = json.loads(audit_it.get("mayorista_tiers_json") or "{}")
-                        except (TypeError, ValueError):
-                            tiers_info = {}
-                        precio_base = tiers_info.get("standard_amount")
-                        if not precio_base:
-                            continue
-                        prop = await run.io_bound(_calcular_mayorista_nuevo, token, seller_id or "", it_body, precio_base)
-                        if prop:
-                            mayorista_nuevo_props[h["item_id"]] = {
-                                "descriptor": h["descriptor"],
-                                "tiene_pxq_absoluto": "standard_price_by_quantity" in (it_body.get("tags") or []),
-                                **prop,
-                            }
+                        ev = await run.io_bound(_evaluar_mayorista_gold_special, token, seller_id or "", it_body)
+                        if ev:
+                            mayorista_eval[it_body["id"]] = {"descriptor": _item_descriptor(it_body), **ev}
 
                     inputs: Dict[str, tuple] = {}
                     mayorista_checks: Dict[str, tuple] = {}
-                    mayorista_nuevo_checks: Dict[str, tuple] = {}
 
                     def _render_campo(g: Dict[str, Any], seccion: str):
                         with ui.column().classes("w-full gap-0"):
@@ -1013,48 +1182,57 @@ def build_tab_salud(container) -> None:
                                 inputs[f"sug_{i}"] = (g, inp)
 
                         if clasif["decision"]:
-                            ui.label(f"❓ Necesita tu decisión ({len(grupos_dec) + len(decision_info)})").classes("font-semibold text-sm mt-2")
+                            ui.label(f"❓ Necesita tu decisión ({len(grupos_dec)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_dec):
                                 inp = _render_campo(g, "decision")
                                 inputs[f"dec_{i}"] = (g, inp)
-                            for h in decision_info:
-                                if h["item_id"] in mayorista_nuevo_props:
-                                    continue  # se muestra como tarjeta accionable en "Mayorista sin cargar" más abajo
-                                ui.label(
-                                    f"• {h['campo']} — {h['item_id']} ({h['descriptor']}) "
-                                    f"— no autocompletable acá, es una decisión de precio de negocio"
-                                ).classes("text-xs text-gray-500")
 
-                        if clasif["mayoristas_roto"]:
-                            ui.label(f"⚠️ Mayoristas a corregir ({len(clasif['mayoristas_roto'])})").classes("font-semibold text-sm mt-2").style(f"color:{_BAD}")
-                            for m in clasif["mayoristas_roto"]:
+                        _ESTADO_COLOR = {"crear": _OK, "roto": _BAD, "revisar": _MID, "ok": _GREY, "bloqueada": _MID}
+                        if mayorista_eval:
+                            ui.label(f"💰 Mayorista (contado) — {len(mayorista_eval)} publicación(es)").classes("font-semibold text-sm mt-2")
+                            for item_id, ev in mayorista_eval.items():
+                                cambios, bloqueadas = _tiers_accionables(ev)
                                 with ui.column().classes("w-full gap-0 border rounded p-2"):
-                                    ui.label(f"{m['item_id']} ({m['descriptor']}) — {m['estado'].upper()}, precio contado ${m['standard_amount']}").classes("text-xs font-medium")
-                                    for t in m["tiers_actuales"]:
-                                        ui.label(f"tier actual: {t[0]}+ unidades → ${t[1]}").classes("text-xs text-gray-500 pl-3")
-                                    if m["propuesta"]:
-                                        for p in m["propuesta"]:
-                                            ui.label(f"propuesto (ML): {p['quantity']}+ unidades → ${p['amount']} ({p['percentage']}% off)").classes("text-xs pl-3")
-                                        chk = ui.checkbox(f"Aplicar corrección propuesta en {m['item_id']}", value=False)
-                                        mayorista_checks[m["item_id"]] = (m, chk)
-                                    else:
-                                        ui.label("Sin sugerencia de ML para este ítem — revisión manual, no se ofrece autofix").classes("text-xs pl-3").style(f"color:{_MID}")
+                                    ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
+                                    if ev["invertido"]:
+                                        ui.label("⚠️ tiers cargados en orden invertido (una cantidad mayor cuesta más por unidad que una menor) — revisar manualmente").classes("text-xs pl-3").style(f"color:{_BAD}")
+                                    for t in ev["tiers"]:
+                                        q = t["quantity"]
+                                        if q in bloqueadas:
+                                            txt = (
+                                                f"{q}+ unidades: no se puede {('corregir' if t['estado'] == 'roto' else 'crear')} sin quedar "
+                                                f"incoherente con un tier existente en una cantidad menor (ML exige % no decreciente) — revisar a mano"
+                                            )
+                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
+                                        elif t["estado"] == "crear":
+                                            pct_final = cambios[q]
+                                            extra = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
+                                            monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
+                                            txt = f"{q}+ unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){extra}"
+                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['crear']}")
+                                        elif t["estado"] == "ok":
+                                            txt = f"{q}+ unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
+                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
+                                        elif t["estado"] == "roto":
+                                            pct_final = cambios[q]
+                                            monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
+                                            txt = (
+                                                f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) "
+                                                f"→ corregir a ${_fmt_moneda(monto_final)} ({pct_final}%)"
+                                            )
+                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['roto']}")
+                                        else:  # revisar -- referencia, nunca se aplica
+                                            txt = (
+                                                f"{q}+ unidades: revisar (no se aplica automático) — "
+                                                f"cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) "
+                                                f"vs. calculado hoy ${_fmt_moneda(t['monto_calculado'])} ({t['pct_calculado']}%)"
+                                            )
+                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['revisar']}")
+                                    if cambios:
+                                        chk = ui.checkbox(f"Aplicar los cambios de crear/corregir en {item_id}", value=False)
+                                        mayorista_checks[item_id] = (cambios, chk)
 
-                        if mayorista_nuevo_props:
-                            ui.label(f"💰 Mayorista sin cargar — sugerencia 2/3/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
-                            for item_id, info in mayorista_nuevo_props.items():
-                                with ui.column().classes("w-full gap-0 border rounded p-2"):
-                                    ui.label(f"{item_id} ({info['descriptor']}) — sin mayorista, precio contado ${info['precio_base']}").classes("text-xs font-medium")
-                                    ui.label(
-                                        f"dimensiones {info['dimensiones']} cm, peso base {info['peso_base_g']:g} g "
-                                        "-- aproximación por escalado lineal del peso (no exacta), revisar antes de aplicar"
-                                    ).classes("text-xs text-gray-400 pl-3")
-                                    for p in info["propuesta"]:
-                                        ui.label(f"propuesto: {p['quantity']}+ unidades → ${p['amount']} ({p['percentage']}% off)").classes("text-xs pl-3")
-                                    chk = ui.checkbox(f"Aplicar estos 4 tiers en {item_id}", value=False)
-                                    mayorista_nuevo_checks[item_id] = (info, chk)
-
-                        if not clasif["sugeridos"] and not decision_editable and not clasif["mayoristas_roto"] and not mayorista_nuevo_props:
+                        if not clasif["sugeridos"] and not decision_editable and not mayorista_eval:
                             ui.label("Sin hallazgos accionables -- este SKU está al día.").classes("text-sm").style(f"color:{_OK}")
 
                         resumen_area = ui.column().classes("w-full gap-1")
@@ -1083,22 +1261,11 @@ def build_tab_salud(container) -> None:
                                 else:
                                     aplicados += 1
 
-                        for item_id, (m, chk) in mayorista_checks.items():
+                        for item_id, (cambios, chk) in mayorista_checks.items():
                             if not chk.value:
                                 continue
                             err = await run.io_bound(
-                                _escribir_mayorista_pxq, token, uid, sku, item_id, m["propuesta"], m["tiene_pxq_absoluto"],
-                            )
-                            if err:
-                                errores.append(err)
-                            else:
-                                aplicados += 1
-
-                        for item_id, (info, chk) in mayorista_nuevo_checks.items():
-                            if not chk.value:
-                                continue
-                            err = await run.io_bound(
-                                _escribir_mayorista_pxq, token, uid, sku, item_id, info["propuesta"], info["tiene_pxq_absoluto"],
+                                _escribir_mayorista_pxq, token, uid, sku, item_id, cambios,
                             )
                             if err:
                                 errores.append(err)
