@@ -1804,11 +1804,11 @@ def build_tab_ventas(container) -> None:
                     db_rows.append(db_row)
                     _c_str = str(v.get("cuotas") or "x1").strip().lower()
                     _cuotas_fee = calc.get("cuotas_fee") or 0.0
-                    _up = float(v.get("unit_price") or 0)
+                    _total_price = float(v.get("unit_price") or 0) * int(v.get("cantidad") or 1)
                     if _c_str.startswith("x") and len(_c_str) > 1 and _c_str[1:].isdigit():
                         _n = int(_c_str[1:])
-                        if _n > 1 and _cuotas_fee > 0 and _up > 0:
-                            _pct = _cuotas_fee / _up
+                        if _n > 1 and _cuotas_fee > 0 and _total_price > 0:
+                            _pct = _cuotas_fee / _total_price
                             _fv = v["dt"].strftime("%Y-%m-%d") if v.get("dt") else None
                             if _fv and (_n not in cuotas_recientes or _fv > cuotas_recientes[_n]["fecha"]):
                                 cuotas_recientes[_n] = {"pct": _pct, "fecha": _fv}

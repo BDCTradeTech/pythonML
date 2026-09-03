@@ -1240,35 +1240,71 @@ def ml_get_item_prices(access_token: Optional[str], item_id: str) -> Optional[fl
 
 
 def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Optional[Dict[str, Any]]:
-    """GET /items/{id}/prices — retorna {'amount': float, 'min_quantity': int} o None.
+    """GET /items/{id}/prices con header 'show-all-prices: TRUE' -- SIN ese header la API
+    devuelve 200 pero oculta los tiers de precio por cantidad (PxQ B2B), como si el ítem
+    no tuviera mayorista cargado. Confirmado por auditoria 2026-09: dos items con PxQ
+    real (uno correcto, uno roto) daban la misma respuesta -sin tiers- sin el header.
 
-    "Precio por cantidad" usa type='standard' con conditions.min_purchase_unit > 1.
-    Retorna la primera entrada con min_purchase_unit > 1 (menor umbral mayorista).
+    "Precio por cantidad" usa type='standard' con conditions.min_purchase_unit > 1 y
+    conditions.context_restrictions incluyendo 'user_type_business'.
+
+    Devuelve {'amount', 'min_quantity', 'standard_amount', 'status'} o None si no hay
+    ningun precio 'standard' base (fallo real de la llamada, no ausencia de mayorista).
+    'status' es uno de: 'ok' (el tier mas barato es mas barato que el standard y los
+    tiers son decrecientes), 'roto' (el tier de menor umbral es >= precio standard),
+    'invertido' (hay tiers pero no son estrictamente decrecientes con la cantidad),
+    'sin_mayorista' (no hay ningun tier con min_purchase_unit).
+    Devuelve el tier de menor min_purchase_unit en 'amount'/'min_quantity' siempre que
+    exista al menos un tier, sea cual sea su status -- el status es lo que le dice al
+    caller si ese numero es confiable para mostrar/usar.
     """
     if not access_token or not str(item_id).strip():
         return None
     try:
         resp = get_ml_session().get(
             f"https://api.mercadolibre.com/items/{item_id}/prices",
-            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Accept": "application/json",
+                "show-all-prices": "TRUE",
+            },
             timeout=10,
         )
         resp.raise_for_status()
         prices = resp.json().get("prices") or []
+        standard_amount = None
         tiers = []
         for p in prices:
             if not isinstance(p, dict) or p.get("type") != "standard":
                 continue
             cond = p.get("conditions") or {}
             min_pu = cond.get("min_purchase_unit")
-            if min_pu is not None and int(min_pu) > 1:
-                amt = p.get("amount")
-                if amt is not None:
-                    tiers.append((int(min_pu), float(amt)))
-        if tiers:
-            tiers.sort(key=lambda x: x[0])
-            min_q, amt = tiers[0]
-            return {"amount": amt, "min_quantity": min_q}
+            amt = p.get("amount")
+            if min_pu is None:
+                if amt is not None and not (cond.get("context_restrictions") or []):
+                    standard_amount = float(amt)
+                continue
+            if amt is not None and int(min_pu) > 1:
+                tiers.append((int(min_pu), float(amt)))
+        if standard_amount is None:
+            return None
+        if not tiers:
+            return {
+                "amount": None, "min_quantity": None,
+                "standard_amount": standard_amount, "status": "sin_mayorista",
+            }
+        tiers.sort(key=lambda x: x[0])
+        min_q, amt = tiers[0]
+        if amt >= standard_amount:
+            status = "roto"
+        elif any(tiers[i][1] < tiers[i + 1][1] for i in range(len(tiers) - 1)):
+            status = "invertido"
+        else:
+            status = "ok"
+        return {
+            "amount": amt, "min_quantity": min_q,
+            "standard_amount": standard_amount, "status": status,
+        }
     except Exception:
         pass
     return None
