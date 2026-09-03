@@ -117,6 +117,93 @@ def init_competidores_snapshots_db() -> None:
     conn.close()
 
 
+def init_salud_tables() -> None:
+    """Crea las tablas de la auditoría de Salud (completitud de publicaciones ML).
+    Snapshot append-only por ítem (nunca UPDATE/DELETE) -- ver salud_audit.py, cron
+    nocturno, y build_tab_salud() en tabs/salud.py para el disparo a demanda por SKU.
+    Guarda SIEMPRE el valor crudo leído de la API; la interpretación (ok/roto,
+    completo/incompleto) se calcula al leer, nunca al escribir el snapshot."""
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS salud_item_snapshots (
+            id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id                     INTEGER NOT NULL,
+            item_id                     TEXT NOT NULL,
+            sku                         TEXT NOT NULL,
+            catalog_listing             INTEGER,
+            status                      TEXT,
+            listing_type_id             TEXT,
+            condicion                   TEXT,
+            gtin                        TEXT,
+            descripcion_len             INTEGER,
+            short_status                TEXT,
+            fotos_cantidad              INTEGER,
+            mayorista_estado            TEXT,
+            mayorista_tiers_json        TEXT,
+            flex_status                 TEXT,
+            retiro_persona              INTEGER,
+            garantia_tipo               TEXT,
+            garantia_tiempo             TEXT,
+            envio_gratis                INTEGER,
+            regulatoria_estado          TEXT,
+            atributos_faltantes_editables  INTEGER,
+            atributos_faltantes_bloqueados INTEGER,
+            atributos_faltantes_json    TEXT,
+            performance_score           INTEGER,
+            price                       REAL,
+            error                       TEXT,
+            snapshot_date               DATE NOT NULL,
+            created_at                  DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    # Migración: agregar price si no existe (tabla creada antes de la columna de "Precio" en la tabla de Salud).
+    cur = conn.cursor()
+    cur.execute("PRAGMA table_info(salud_item_snapshots)")
+    _salud_cols = [r[1] for r in cur.fetchall()]
+    if "price" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN price REAL")
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_salud_item_snapshot
+        ON salud_item_snapshots(user_id, item_id, snapshot_date)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS ix_salud_item_snapshots_sku
+        ON salud_item_snapshots(user_id, sku, snapshot_date)
+        """
+    )
+    # Escrituras hacia ML disparadas desde el popup de Salud (GTIN, descripción,
+    # atributos de ficha, tiers de mayorista). APPEND-ONLY, mismo patrón que
+    # tn_escrituras -- nunca UPDATE ni DELETE, se loguea siempre (ok o error).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ml_escrituras (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts             TEXT NOT NULL,
+            user_id        INTEGER NOT NULL,
+            sku            TEXT NOT NULL,
+            item_id        TEXT NOT NULL,
+            campo          TEXT NOT NULL,
+            valor_anterior TEXT,
+            valor_nuevo    TEXT,
+            origen         TEXT NOT NULL,
+            resultado      TEXT NOT NULL,
+            detalle        TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ml_escrituras_sku ON ml_escrituras(user_id, sku, campo, id)"
+    )
+    conn.commit()
+    conn.close()
+
+
 def init_cron_runs_db() -> None:
     """Log de corridas de los crons nocturnos (stock_snapshot / competidores_snapshot), una fila por job+usuario+día."""
     conn = get_connection()
@@ -1206,6 +1293,7 @@ def init_db() -> None:
     conn.close()
     init_cron_runs_db()
     init_ads_tables()
+    init_salud_tables()
 
 
 # ---------------------------------------------------------------------------
@@ -1421,6 +1509,34 @@ def log_tn_escritura(
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _dt.utcnow().isoformat(), user_id, sku, tn_product_id, tn_variant_id, campo,
+                None if valor_anterior is None else str(valor_anterior),
+                None if valor_nuevo is None else str(valor_nuevo),
+                origen, resultado, detalle,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_ml_escritura(
+    user_id: int, sku: str, item_id: str, campo: str,
+    valor_anterior: Any, valor_nuevo: Any, origen: str,
+    resultado: str, detalle: Optional[str] = None,
+) -> None:
+    """Registra una escritura hacia MercadoLibre (GTIN, descripción, atributos de
+    ficha, tiers de mayorista). Se llama SIEMPRE (ok o error) desde la única
+    función de escritura (tabs/salud.py::escribir_ml_verificado) -- nunca UPDATE
+    ni DELETE sobre esta tabla. Mismo patrón que log_tn_escritura."""
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO ml_escrituras "
+            "(ts, user_id, sku, item_id, campo, valor_anterior, valor_nuevo, origen, resultado, detalle) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _dt.utcnow().isoformat(), user_id, sku, item_id, campo,
                 None if valor_anterior is None else str(valor_anterior),
                 None if valor_nuevo is None else str(valor_nuevo),
                 origen, resultado, detalle,

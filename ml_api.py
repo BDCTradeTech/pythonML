@@ -1310,6 +1310,111 @@ def ml_get_item_wholesale_price(access_token: Optional[str], item_id: str) -> Op
     return None
 
 
+def ml_update_item_attributes(access_token: str, item_id: str, attributes: List[Dict[str, Any]]) -> requests.Response:
+    """PUT /items/{id} con solo el array attributes -- carga/actualiza uno o varios
+    atributos (GTIN, ficha técnica) en una sola llamada. Cada elemento debe traer al
+    menos {'id': ATTR_ID, 'value_name': valor}. No toca ningún otro campo del ítem."""
+    return requests.put(
+        f"https://api.mercadolibre.com/items/{item_id}",
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+        json={"attributes": attributes},
+        timeout=20,
+    )
+
+
+def ml_write_item_description(access_token: str, item_id: str, plain_text: str) -> requests.Response:
+    """Crea o reemplaza la descripción de un ítem. POST si no existe descripción
+    todavía (404 en el GET previo), PUT ?api_version=2 si ya existe -- mismo
+    comportamiento documentado en 'descripcion-de-articulos'."""
+    H = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
+    existe = requests.get(
+        f"https://api.mercadolibre.com/items/{item_id}/description",
+        headers={"Authorization": f"Bearer {access_token}"}, timeout=15,
+    )
+    body = {"plain_text": plain_text}
+    if existe.status_code == 200 and (existe.json().get("plain_text") or existe.json().get("text")):
+        return requests.put(
+            f"https://api.mercadolibre.com/items/{item_id}/description?api_version=2",
+            headers=H, json=body, timeout=20,
+        )
+    return requests.post(
+        f"https://api.mercadolibre.com/items/{item_id}/description",
+        headers=H, json=body, timeout=20,
+    )
+
+
+def ml_get_prices_with_version(access_token: str, item_id: str) -> Optional[Dict[str, Any]]:
+    """GET /items/{id}/prices?display_version=true con show-all-prices -- trae el
+    campo 'version' que hay que reenviar como header X-Version en cualquier
+    escritura de price-per-quantity (sistema % B2B nuevo)."""
+    try:
+        r = requests.get(
+            f"https://api.mercadolibre.com/items/{item_id}/prices",
+            params={"display_version": "true"},
+            headers={"Authorization": f"Bearer {access_token}", "show-all-prices": "true"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            return r.json()
+    except requests.exceptions.RequestException:
+        pass
+    return None
+
+
+def ml_get_pxq_recommendations(
+    access_token: str, item_id: str, standard_amount: float,
+    quantities: List[int], currency: str = "ARS",
+) -> Optional[Dict[str, Any]]:
+    """POST /prices-per-quantity/v1/recommendations -- obligatorio consultarlo antes
+    de escribir price-per-quantity (da el % mínimo aceptado por rango). Devuelve
+    None si la cuenta no tiene el tag 'business' u otro error; un 204 (sin
+    recomendaciones) se devuelve como {'recommendations': []} para que el caller
+    sepa que no hay validación de mínimo y puede definir el % libremente."""
+    try:
+        r = requests.post(
+            "https://api.mercadolibre.com/prices-per-quantity/v1/recommendations",
+            headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+            json={
+                "item_id": item_id,
+                "range_item_quantities": quantities[:5],
+                "price": {"standard_amount": standard_amount, "currency": currency},
+            },
+            timeout=20,
+        )
+        if r.status_code == 204:
+            return {"recommendations": []}
+        if r.status_code == 200:
+            return r.json()
+    except requests.exceptions.RequestException:
+        pass
+    return None
+
+
+def ml_write_price_per_quantity(
+    access_token: str, item_id: str, price_per_quantity: List[Dict[str, Any]],
+    version: int, remove_absolute_pxq: bool = False,
+) -> requests.Response:
+    """POST /items/{id}/prices/price-per-quantity -- sistema % B2B nuevo (reemplaza
+    al viejo /prices/standard/quantity, discontinuado 2026-10-27). X-Version
+    obligatorio (evita pisar una escritura concurrente). remove_absolute_pxq=True
+    agrega ?remove-absolute-pxq=true, necesario si el ítem todavía tiene PxQ
+    absoluto del sistema viejo (tag 'standard_price_by_quantity') -- sin esto ML
+    responde 400 'Cannot add price per quantity by percentage when a standard
+    price per quantity for the same context is present'."""
+    url = f"https://api.mercadolibre.com/items/{item_id}/prices/price-per-quantity"
+    if remove_absolute_pxq:
+        url += "?remove-absolute-pxq=true"
+    return requests.post(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}", "Content-Type": "application/json",
+            "X-Version": str(version),
+        },
+        json={"price_per_quantity": price_per_quantity},
+        timeout=20,
+    )
+
+
 def ml_enriquecer_sale_price(items: List[Dict[str, Any]], access_token: Optional[str]) -> None:
     """Enriquece items con sale_price (precio real con promoción) si no lo tienen."""
     if not access_token:
