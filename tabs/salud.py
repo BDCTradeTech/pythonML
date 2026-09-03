@@ -605,13 +605,20 @@ def _groq_generate(api_key: str, prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Mayorista 1/2/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
+# Mayorista 2/5/10 para publicaciones SIN mayorista cargado -- fórmula propia
 # (no la recomendación de ML). ROTO/INVERTIDO siguen yendo por
 # ml_get_pxq_recommendations más arriba, sin cambios: acá solo se crea una
 # escalera nueva donde hoy no hay ninguna, nunca se toca una existente.
+#
+# El tier de 1 unidad queda AFUERA de la propuesta -- por definición no tiene
+# ahorro de envío contra sí mismo, así que la fórmula siempre da 0% para esa
+# cantidad, y ML rechaza cualquier tier de mayorista con 0% ("Percentage must
+# be greater than 0 and less than 100", confirmado en vivo al intentar guardar
+# BHR4245GL). No se inventa un valor para ese caso -- la auditoría original ya
+# había registrado que el 1 unidad no tiene un % con origen conocido.
 # ---------------------------------------------------------------------------
 
-_CANTIDADES_MAYORISTA_NUEVO = (1, 2, 5, 10)
+_CANTIDADES_MAYORISTA_NUEVO = (2, 5, 10)
 
 _CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
 _GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
@@ -664,15 +671,17 @@ def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
 
 
 def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float) -> Optional[Dict[str, Any]]:
-    """Arma la propuesta de mayorista 1/2/5/10 para un ítem SIN mayorista cargado.
+    """Arma la propuesta de mayorista 2/5/10 para un ítem SIN mayorista cargado.
     Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
-    ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N. Las dimensiones
-    (SELLER_PACKAGE_* del propio ítem) quedan fijas -- SOLO el peso escala ×N, no se
-    simula apilado. Es una aproximación (no exacta: ML arma el paquete combinado con
-    su propia tara, el escalado lineal del peso es la mejor aproximación disponible
-    sin una fórmula más exacta documentada). Devuelve None si no hay SELLER_PACKAGE_*
-    cargado, no hay precio base, o ML no puede cotizar el envío para alguna de las 4
-    cantidades."""
+    ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N (el costo a 1
+    unidad se usa como base de comparación, nunca se ofrece como tier -- ver nota
+    arriba). Las dimensiones (SELLER_PACKAGE_* del propio ítem) quedan fijas -- SOLO
+    el peso escala ×N, no se simula apilado. Es una aproximación (no exacta: ML arma
+    el paquete combinado con su propia tara, el escalado lineal del peso es la mejor
+    aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
+    no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
+    para alguna de las 3 cantidades, o ninguna de las 3 da un % > 0 (ML rechaza tiers
+    con 0%)."""
     dims = _dimensiones_seller_package(item)
     if not dims or not precio_base:
         return None
@@ -682,16 +691,20 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
         return None
     propuesta: List[Dict[str, Any]] = []
     for n in _CANTIDADES_MAYORISTA_NUEVO:
-        costo_n = costo_1 if n == 1 else _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
+        costo_n = _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
         if costo_n is None:
             return None
         ahorro_unit = costo_1 - (costo_n / n)
         pct = math.ceil((ahorro_unit / precio_base) * 10000) / 10000 if ahorro_unit > 0 else 0.0
+        if pct <= 0:
+            continue  # ML rechaza tiers de mayorista con 0% -- no se ofrece, no se inventa
         monto = round(precio_base * (1 - pct), 2)
         propuesta.append({
             "quantity": n, "amount": monto, "percentage": round(pct * 100, 2),
             "list_cost": costo_n,
         })
+    if not propuesta:
+        return None
     return {
         "precio_base": precio_base, "dimensiones": f"{l:g}x{w:g}x{h:g}", "peso_base_g": peso,
         "propuesta": propuesta,
@@ -700,35 +713,38 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
 
 # ---------------------------------------------------------------------------
 # Escritura hacia ML -- SIEMPRE con GET de verificación independiente y log en
-# ml_escrituras (ok o error), nunca confiando en el 200 del PUT/POST.
+# ml_escrituras (ok o error), nunca confiando en el 200 del PUT/POST -- y a la
+# inversa, tampoco en un status != 200: confirmado en vivo (BHR4245GL) que ML
+# puede devolver 500 "Internal error calling prices-validator-api" en el POST
+# y aun así aplicar la escritura del lado de ML. El GET de verificación manda
+# siempre, incluso cuando el POST/PUT no dio 200 -- si el GET confirma el
+# valor, es ok; el detalle del POST solo se usa como mensaje de error cuando
+# el GET tampoco confirma.
 # ---------------------------------------------------------------------------
 
 def _escribir_atributo(token: str, uid: int, sku: str, item_id: str, attr_id: str,
                         campo_label: str, valor_anterior: str, valor_nuevo: str) -> Optional[str]:
     """Devuelve None si ok, o un mensaje de error para el resumen si falló."""
     resp = ml_update_item_attributes(token, item_id, [{"id": attr_id, "value_name": valor_nuevo}])
-    if resp.status_code != 200:
-        detalle = f"PUT status={resp.status_code} {resp.text[:200]}"
-        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup", "error", detalle)
-        return f"{campo_label} ({item_id}): {detalle}"
+    post_detalle = f"PUT status={resp.status_code} {resp.text[:200]}" if resp.status_code != 200 else None
     time.sleep(0.4)
     item = ml_get_item(token, item_id)
     actual = None
     if item:
         actual = next((a.get("value_name") for a in (item.get("attributes") or []) if a.get("id") == attr_id), None)
     ok = actual == valor_nuevo
-    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup",
-                      "ok" if ok else "error", None if ok else f"GET de verificación no coincide (quedó {actual!r})")
-    return None if ok else f"{campo_label} ({item_id}): escrito pero el GET de verificación no coincide (quedó {actual!r})"
+    if ok:
+        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup", "ok", None)
+        return None
+    detalle = post_detalle or f"GET de verificación no coincide (quedó {actual!r})"
+    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup", "error", detalle)
+    return f"{campo_label} ({item_id}): {detalle}"
 
 
 def _escribir_descripcion(token: str, uid: int, sku: str, item_id: str,
                            texto_anterior_len: int, texto_nuevo: str) -> Optional[str]:
     resp = ml_write_item_description(token, item_id, texto_nuevo)
-    if resp.status_code not in (200, 201):
-        detalle = f"status={resp.status_code} {resp.text[:200]}"
-        log_ml_escritura(uid, sku, item_id, "descripcion", f"{texto_anterior_len} chars", f"{len(texto_nuevo)} chars", "salud_popup", "error", detalle)
-        return f"Descripción ({item_id}): {detalle}"
+    post_detalle = f"status={resp.status_code} {resp.text[:200]}" if resp.status_code not in (200, 201) else None
     time.sleep(0.4)
     try:
         r = requests.get(f"{ML_API}/items/{item_id}/description", headers={"Authorization": f"Bearer {token}"}, timeout=15)
@@ -736,9 +752,12 @@ def _escribir_descripcion(token: str, uid: int, sku: str, item_id: str,
     except requests.exceptions.RequestException:
         guardado = ""
     ok = guardado == texto_nuevo.strip()
-    log_ml_escritura(uid, sku, item_id, "descripcion", f"{texto_anterior_len} chars", f"{len(texto_nuevo)} chars", "salud_popup",
-                      "ok" if ok else "error", None if ok else "GET de verificación no coincide")
-    return None if ok else f"Descripción ({item_id}): escrita pero el GET de verificación no coincide"
+    if ok:
+        log_ml_escritura(uid, sku, item_id, "descripcion", f"{texto_anterior_len} chars", f"{len(texto_nuevo)} chars", "salud_popup", "ok", None)
+        return None
+    detalle = post_detalle or "GET de verificación no coincide"
+    log_ml_escritura(uid, sku, item_id, "descripcion", f"{texto_anterior_len} chars", f"{len(texto_nuevo)} chars", "salud_popup", "error", detalle)
+    return f"Descripción ({item_id}): {detalle}"
 
 
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
@@ -763,16 +782,16 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
     ]
     valor_nuevo = json.dumps(tiers_deseados, ensure_ascii=False)
     resp = ml_write_price_per_quantity(token, item_id, body_items, version, remove_absolute_pxq=tiene_pxq_absoluto)
-    if resp.status_code != 200:
-        detalle = f"status={resp.status_code} {resp.text[:300]}"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "error", detalle)
-        return f"Mayorista ({item_id}): {detalle}"
+    post_detalle = f"status={resp.status_code} {resp.text[:300]}" if resp.status_code != 200 else None
     time.sleep(0.4)
     verify = ml_get_prices_with_version(token, item_id)
     ok = bool(verify and len(verify.get("price_per_quantity") or []) == len(tiers_deseados))
-    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup",
-                      "ok" if ok else "error", None if ok else "GET de verificación no coincide en cantidad de tiers")
-    return None if ok else f"Mayorista ({item_id}): escrito pero el GET de verificación no coincide"
+    if ok:
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "ok", None)
+        return None
+    detalle = post_detalle or "GET de verificación no coincide en cantidad de tiers"
+    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "error", detalle)
+    return f"Mayorista ({item_id}): {detalle}"
 
 
 def build_tab_salud(container) -> None:
@@ -1016,7 +1035,7 @@ def build_tab_salud(container) -> None:
                                         ui.label("Sin sugerencia de ML para este ítem — revisión manual, no se ofrece autofix").classes("text-xs pl-3").style(f"color:{_MID}")
 
                         if mayorista_nuevo_props:
-                            ui.label(f"💰 Mayorista sin cargar — sugerencia 1/2/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
+                            ui.label(f"💰 Mayorista sin cargar — sugerencia 2/5/10 ({len(mayorista_nuevo_props)})").classes("font-semibold text-sm mt-2")
                             for item_id, info in mayorista_nuevo_props.items():
                                 with ui.column().classes("w-full gap-0 border rounded p-2"):
                                     ui.label(f"{item_id} ({info['descriptor']}) — sin mayorista, precio contado ${info['precio_base']}").classes("text-xs font-medium")
