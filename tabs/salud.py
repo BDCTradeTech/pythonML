@@ -410,8 +410,14 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         desc = _item_descriptor(it)
         estado = audit.get("mayorista_estado")
         if estado == "sin_mayorista":
-            if _tag_cuotas(it):
-                normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (publicación de cuotas)")
+            # El mayorista SOLO aplica a la publicación de contado (gold_special) --
+            # nunca a una de cuotas (gold_pro), porque distorsiona el cálculo
+            # financiado de cada tier. El tag "_campaign" (usado antes acá) NO es un
+            # proxy confiable: hay publicaciones gold_pro sin ningún tag "_campaign"
+            # (confirmado en vivo, 2026-09-03 -- BHR4245GL y Lego-77246-F1VisaRB) que
+            # igual son de cuotas y quedaron mal ofrecidas/escritas por este motivo.
+            if it.get("listing_type_id") != "gold_special":
+                normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (solo aplica a la publicación de contado)")
             else:
                 decision.append({
                     "campo": "Mayorista (definir precio)", "item_id": iid, "descriptor": desc,
