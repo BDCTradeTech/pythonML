@@ -151,10 +151,6 @@ def _magnitud_dim(items: List[dict], val_fn) -> Dict[str, Any]:
     return {"texto": texto, "color": _OK if lo > 0 else _BAD, "orden": float(lo)}
 
 
-def _mayorista_color(v: str) -> str:
-    return {"ok": _OK, "roto": _BAD, "invertido": _BAD, "sin_mayorista": _GREY, "error_sin_standard": _MID}.get(v, _MID)
-
-
 _STATUS_NO_APLICABLE = {"no_aplica_catalogo", "no_aplica_no_activo", "no_determinable"}
 
 
@@ -167,10 +163,70 @@ def _perf_status_ok(status: Optional[str]) -> Optional[bool]:
     return status == "COMPLETED"
 
 
-_MAYORISTA_ETIQUETAS = {
-    "ok": "OK", "roto": "ROTO", "invertido": "INVERTIDO",
-    "sin_mayorista": "Sin mayorista", "error_sin_standard": "Error",
-}
+def _fmt_lista_es(vals: List[int]) -> str:
+    if not vals:
+        return ""
+    if len(vals) == 1:
+        return str(vals[0])
+    return ", ".join(str(v) for v in vals[:-1]) + f" y {vals[-1]}"
+
+
+def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
+    """Columna 'Mayorista' de la tabla resumen -- a diferencia de las demás
+    dimensiones (que promedian el estado sobre TODOS los ítems de la familia),
+    esta cuenta TIERS cargados y sanos sobre las 4 cantidades objetivo (2/3/5/10),
+    solo en publicaciones gold_special (contado) -- mismo alcance que
+    _evaluar_mayorista_gold_special en el popup, para que ambas vistas sean
+    consistentes. Las gold_pro (cuotas) quedan afuera del conteo: el mayorista
+    no aplica ahí y no deben diluirlo (bug confirmado en vivo 2026-09-04:
+    Echo-Dot5-Kids-Stardust mostraba "2/4 ok" contando 2 gold_pro 'sin_mayorista'
+    + 2 gold_special 'ok' como si fueran tiers -- cuando en realidad había 3
+    tiers reales (2/3/5u) cargados y sanos, y el "4" nunca fue el denominador
+    de cantidades objetivo sino la cantidad de ítems de la familia).
+    Consolidado por unión entre las gold_special del grupo -- si dos gold_special
+    tienen los mismos 3 tiers cargados, el resultado sigue siendo 3/4, no se
+    duplica ni se promedia."""
+    gold_special = [it for it in items if it.get("listing_type_id") == "gold_special"]
+    if not gold_special:
+        return {"texto": "—", "color": _GREY, "orden": -1.0, "tooltip": None}
+
+    ok_qtys: set = set()
+    estados_no_ok: List[str] = []
+    for it in gold_special:
+        estado = it.get("mayorista_estado")
+        if estado == "ok":
+            try:
+                tiers = (json.loads(it.get("mayorista_tiers_json") or "{}") or {}).get("tiers") or []
+            except (TypeError, ValueError):
+                tiers = []
+            for q, _amt in tiers:
+                if q in _QTYS_MAYORISTA:
+                    ok_qtys.add(q)
+        elif estado:
+            estados_no_ok.append(estado)
+
+    total = len(_QTYS_MAYORISTA)
+    n = len(ok_qtys)
+    color = _OK if n == total else (_BAD if n == 0 else _MID)
+    texto = f"{n}/{total}"
+
+    if n == total:
+        tooltip = f"Completo ({'/'.join(str(q) for q in _QTYS_MAYORISTA)} cargados y ok)"
+    elif n > 0:
+        faltan = sorted(set(_QTYS_MAYORISTA) - ok_qtys)
+        tooltip = f"Falta: {_fmt_lista_es(faltan)} unidades"
+    elif "roto" in estados_no_ok:
+        tooltip = "Roto — ningún tier válido"
+    elif "invertido" in estados_no_ok:
+        tooltip = "Precios invertidos — revisar tiers"
+    elif "error_sin_standard" in estados_no_ok:
+        tooltip = "Error: sin precio estándar"
+    elif estados_no_ok:
+        tooltip = "Sin mayorista cargado"
+    else:
+        tooltip = "Cargado con cantidades no estándar"
+
+    return {"texto": texto, "color": color, "orden": n / total, "tooltip": tooltip}
 
 
 def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict[str, Any]:
@@ -181,9 +237,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "descripcion": _bool_dim(items, lambda it: (it.get("descripcion_len") or 0) > 0 if it.get("descripcion_len") is not None else None),
         "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
         "fotos": _magnitud_dim(items, lambda it: it.get("fotos_cantidad")),
-        "mayorista": _cat_dim(
-            items, lambda it: it.get("mayorista_estado"), _MAYORISTA_ETIQUETAS, _mayorista_color,
-        ),
+        "mayorista": _mayorista_dim(items),
         "flex": _bool_dim(items, lambda it: _perf_status_ok(it.get("flex_status"))),
         "retiro_persona": _bool_dim(items, lambda it: bool(it.get("retiro_persona")) if it.get("retiro_persona") is not None else None),
         "garantia": _bool_dim(items, lambda it: bool(it.get("garantia_tipo"))),
@@ -1384,7 +1438,9 @@ def build_tab_salud(container) -> None:
                                             else:
                                                 d = row["dims"].get(name)
                                                 if d:
-                                                    ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
+                                                    lbl = ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
+                                                    if d.get("tooltip"):
+                                                        lbl.tooltip(d["tooltip"])
                                                 else:
                                                     ui.label("—")
 
