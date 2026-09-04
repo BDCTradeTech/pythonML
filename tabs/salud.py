@@ -828,6 +828,12 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict) -> O
         pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
         pct_calc = calculado_pct.get(q)
         if pct_calc is None:
+            # TODO(mayorista-revisar-popup, 2026-09-04): si no hay cálculo posible (sin
+            # SELLER_PACKAGE_*, o ML no cotiza envío), un tier con pct_cargado<=0 (roto)
+            # cae acá y queda "ok" en vez de "roto" -- no es un reorden trivial: "roto"
+            # siempre trae pct_calculado/monto_calculado (los usa el popup para sugerir
+            # la corrección); sin cálculo haría falta un estado nuevo y tocar el render.
+            # Evaluar aparte, no mezclado con el fix de checkboxes por tier.
             tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
             continue
         if pct_cargado <= 0:
@@ -851,31 +857,37 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict) -> O
     return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
 
 
-def _tiers_accionables(evaluacion: Dict[str, Any]) -> Tuple[Dict[int, float], List[int]]:
-    """De la evaluación de un ítem, arma (cambios, bloqueadas) para las cantidades
-    "crear"/"roto" -- las "ok"/"revisar" nunca se tocan y actúan como piso: ML exige
-    que el % sea ESTRICTAMENTE creciente al subir la cantidad, no solo no-decreciente
-    (confirmado en vivo el 2026-09-03 probando AW-S11-Black-MEQT4LW: "Price per
-    quantity invalid coherence order" cuando un tier nuevo quedaba más bajo que uno
-    preservado en una cantidad menor, y "Price per quantity amount are not unique"
-    cuando se lo subía hasta IGUALAR el piso en vez de superarlo).
+def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, float], List[int]]:
+    """Arma (cambios, bloqueadas) para las cantidades que el usuario tildó en `incluir`
+    -- generaliza la versión anterior (_tiers_accionables): la decisión de qué corregir
+    ahora es 100% del checkbox por tier del popup. "crear"/"roto" vienen pre-tildados
+    por default, "revisar" no (ver render). Un tier "crear"/"roto"/"revisar" NO tildado
+    no se toca -- si ya tiene un valor cargado (roto/revisar), ese valor sigue siendo
+    el piso para las cantidades mayores: ML exige % ESTRICTAMENTE creciente con la
+    cantidad (confirmado en vivo el 2026-09-03 probando AW-S11-Black-MEQT4LW: "Price
+    per quantity invalid coherence order" cuando un tier nuevo quedaba más bajo que uno
+    preservado en una cantidad menor, y "Price per quantity amount are not unique" al
+    igualarlo en vez de superarlo).
 
-    Se recorre en orden creciente de cantidad manteniendo un piso de %. Un tier
-    "crear"/"roto" que quedaría en o por debajo del piso se sube a piso + 0.01 (nunca
-    se le da MENOS descuento del que ya tiene una cantidad menor, ni el mismo). Pero
-    si ese ajuste aleja el % resultante de su propio valor calculado más allá del
-    mismo umbral de desvío que separa "ok" de "revisar" (4pp y 1.75x), no se fuerza --
-    se bloquea esa cantidad y todas las que siguen (no se puede mantener la escalera
-    coherente sin inventar un número sin sustento), y se marca para revisión manual."""
+    Se recorre en orden creciente de cantidad manteniendo ese piso. Un tier tildado que
+    quedaría en o por debajo del piso se sube a piso + 0.01. Pero si ese ajuste aleja el
+    % resultante de su propio valor calculado más allá del mismo umbral que separa "ok"
+    de "revisar" (4pp y 1.75x), no se fuerza -- se bloquea esa cantidad y todas las que
+    siguen, y se marca para revisión manual."""
     piso = 0.0
     cambios: Dict[int, float] = {}
     bloqueadas: List[int] = []
     for t in sorted(evaluacion["tiers"], key=lambda x: x["quantity"]):
         q = t["quantity"]
-        if t["estado"] in ("ok", "revisar"):
+        estado = t["estado"]
+        if estado == "ok":
             piso = max(piso, t["pct_cargado"])
             continue
-        if t["estado"] not in ("crear", "roto"):
+        if estado not in ("crear", "roto", "revisar"):
+            continue
+        if q not in incluir:
+            if estado in ("roto", "revisar"):
+                piso = max(piso, t["pct_cargado"])
             continue
         if bloqueadas:
             bloqueadas.append(q)
@@ -1181,7 +1193,7 @@ def build_tab_salud(container) -> None:
                             mayorista_eval[it_body["id"]] = {"descriptor": _item_descriptor(it_body), **ev}
 
                     inputs: Dict[str, tuple] = {}
-                    mayorista_checks: Dict[str, tuple] = {}
+                    mayorista_tildes: Dict[str, Dict[int, bool]] = {}
 
                     def _render_campo(g: Dict[str, Any], seccion: str):
                         with ui.column().classes("w-full gap-0"):
@@ -1245,46 +1257,66 @@ def build_tab_salud(container) -> None:
                         if mayorista_eval:
                             ui.label(f"💰 Mayorista (contado) — {len(mayorista_eval)} publicación(es)").classes("font-semibold text-sm mt-2")
                             for item_id, ev in mayorista_eval.items():
-                                cambios, bloqueadas = _tiers_accionables(ev)
-                                with ui.column().classes("w-full gap-0 border rounded p-2"):
-                                    ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
-                                    if ev["invertido"]:
-                                        ui.label("⚠️ tiers cargados en orden invertido (una cantidad mayor cuesta más por unidad que una menor) — revisar manualmente").classes("text-xs pl-3").style(f"color:{_BAD}")
-                                    for t in ev["tiers"]:
-                                        q = t["quantity"]
-                                        if q in bloqueadas:
-                                            txt = (
-                                                f"{q}+ unidades: no se puede {('corregir' if t['estado'] == 'roto' else 'crear')} sin quedar "
-                                                f"incoherente con un tier existente en una cantidad menor (ML exige % no decreciente) — revisar a mano"
-                                            )
-                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
-                                        elif t["estado"] == "crear":
-                                            pct_final = cambios[q]
-                                            extra = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
-                                            monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
-                                            txt = f"{q}+ unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){extra}"
-                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['crear']}")
-                                        elif t["estado"] == "ok":
-                                            txt = f"{q}+ unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
-                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
-                                        elif t["estado"] == "roto":
-                                            pct_final = cambios[q]
-                                            monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
-                                            txt = (
-                                                f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) "
-                                                f"→ corregir a ${_fmt_moneda(monto_final)} ({pct_final}%)"
-                                            )
-                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['roto']}")
-                                        else:  # revisar -- referencia, nunca se aplica
-                                            txt = (
-                                                f"{q}+ unidades: revisar (no se aplica automático) — "
-                                                f"cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) "
-                                                f"vs. calculado hoy ${_fmt_moneda(t['monto_calculado'])} ({t['pct_calculado']}%)"
-                                            )
-                                            ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['revisar']}")
-                                    if cambios:
-                                        chk = ui.checkbox(f"Aplicar los cambios de crear/corregir en {item_id}", value=False)
-                                        mayorista_checks[item_id] = (cambios, chk)
+                                mayorista_tildes[item_id] = {
+                                    t["quantity"]: t["estado"] in ("crear", "roto")
+                                    for t in ev["tiers"] if t["estado"] in ("crear", "roto", "revisar")
+                                }
+                                item_box = ui.column().classes("w-full gap-0 border rounded p-2")
+
+                                def _render_item(item_id=item_id, ev=ev, item_box=item_box):
+                                    tildes = mayorista_tildes[item_id]
+                                    incluir = {q for q, v in tildes.items() if v}
+                                    cambios, bloqueadas = _tiers_plan(ev, incluir)
+                                    item_box.clear()
+                                    with item_box:
+                                        ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
+                                        if ev["invertido"]:
+                                            ui.label(
+                                                "⚠️ tiers cargados en orden invertido (una cantidad mayor cuesta más "
+                                                "por unidad que una menor) — revisar manualmente, sin corrección automática"
+                                            ).classes("text-xs pl-3").style(f"color:{_BAD}")
+                                        for t in ev["tiers"]:
+                                            q = t["quantity"]
+                                            estado = t["estado"]
+                                            if q in bloqueadas:
+                                                txt = (
+                                                    f"{q}+ unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
+                                                    f"incoherente con un tier existente en una cantidad menor (ML exige % no decreciente) — revisar a mano"
+                                                )
+                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
+                                                continue
+                                            if estado == "ok":
+                                                txt = f"{q}+ unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
+                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
+                                                continue
+                                            if estado not in ("crear", "roto", "revisar"):
+                                                continue
+                                            marcado = tildes.get(q, False)
+                                            aplica = marcado and q in cambios
+                                            monto_sugerido = round(ev["precio_base"] * (1 - t["pct_calculado"] / 100), 2)
+                                            if aplica:
+                                                pct_final = cambios[q]
+                                                monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
+                                                extra = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
+                                            if estado == "crear":
+                                                txt = (f"{q}+ unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){extra}" if aplica
+                                                       else f"{q}+ unidades: sugerido crear ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
+                                            elif estado == "roto":
+                                                txt = (f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%){extra}" if aplica
+                                                       else f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%), sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
+                                            else:  # revisar
+                                                txt = (f"{q}+ unidades: revisar → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%) (cargado ${_fmt_moneda(t['monto_cargado'])}, {t['pct_cargado']}%){extra}" if aplica
+                                                       else f"{q}+ unidades: revisar — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) vs. sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%)")
+                                            with ui.row().classes("items-center gap-1 pl-3"):
+                                                chk = ui.checkbox(value=marcado)
+                                                ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR[estado]}")
+
+                                            def _on_toggle(e, item_id=item_id, q=q):
+                                                mayorista_tildes[item_id][q] = e.value
+                                                _render_item()
+                                            chk.on_value_change(_on_toggle)
+
+                                _render_item()
 
                         if not clasif["sugeridos"] and not decision_editable and not mayorista_eval:
                             ui.label("Sin hallazgos accionables -- este SKU está al día.").classes("text-sm").style(f"color:{_OK}")
@@ -1315,8 +1347,12 @@ def build_tab_salud(container) -> None:
                                 else:
                                     aplicados += 1
 
-                        for item_id, (cambios, chk) in mayorista_checks.items():
-                            if not chk.value:
+                        for item_id, ev in mayorista_eval.items():
+                            incluir = {q for q, v in mayorista_tildes.get(item_id, {}).items() if v}
+                            if not incluir:
+                                continue
+                            cambios, _bloqueadas = _tiers_plan(ev, incluir)
+                            if not cambios:
                                 continue
                             err = await run.io_bound(
                                 _escribir_mayorista_pxq, token, uid, sku, item_id, cambios,
