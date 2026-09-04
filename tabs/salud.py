@@ -1075,6 +1075,27 @@ def build_tab_salud(container) -> None:
                             ui.button("Cerrar", on_click=dlg.close).props("flat")
                         return
 
+                    def _aplicar_resultado_a_fila(resultado_audit: Dict[str, Any]) -> None:
+                        prod_meta_single = {sku: {
+                            "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
+                        }}
+                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                        for idx, f in enumerate(filas_todas):
+                            if f["sku"] == sku:
+                                filas_todas[idx] = nueva_fila
+                                break
+                        _render()
+
+                    # Refresca la fila de la tabla YA, con el audit que se acaba de hacer para
+                    # poder mostrar el popup -- así la tabla queda al día apenas se abre, sin
+                    # esperar a que el usuario guarde algo (y sin repetir GETs: reusa exactamente
+                    # lo que este audit_sku de arriba ya trajo). Si el usuario cancela sin tocar
+                    # nada, la fila ya quedó correcta igual. Confirmado en vivo 2026-09-04
+                    # (Lego-77246-F1VisaRB): el popup detectaba "al día" pero la fila seguía
+                    # mostrando el snapshot viejo hasta el próximo F5, porque antes solo se
+                    # refrescaba si aplicados>0 (ver más abajo).
+                    _aplicar_resultado_a_fila(resultado)
+
                     clasif = await run.io_bound(_clasificar_hallazgos, token, resultado["items"])
 
                     groq_key = get_app_config("groq_api_key")
@@ -1291,17 +1312,13 @@ def build_tab_salud(container) -> None:
                                 ui.label("No se marcó ningún campo para guardar.").classes("text-xs text-gray-500")
 
                         if aplicados:
+                            # Acá SÍ hace falta releer ML -- el audit de la apertura del popup
+                            # (resultado) quedó desactualizado por la escritura que se acaba de
+                            # hacer. Sin aplicados, la fila ya está al día por el refresh de
+                            # apertura de arriba -- no repetir el audit_sku sin necesidad.
                             resultado2 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
                             if not resultado2.get("error"):
-                                prod_meta_single = {sku: {
-                                    "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
-                                }}
-                                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado2["items"]], prod_meta_single)
-                                for idx, f in enumerate(filas_todas):
-                                    if f["sku"] == sku:
-                                        filas_todas[idx] = nueva_fila
-                                        break
-                                _render()
+                                _aplicar_resultado_a_fila(resultado2)
                         guardar_btn.props(remove="loading")
 
                     with ui.row().classes("justify-end gap-2 w-full mt-2"):
