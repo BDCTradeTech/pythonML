@@ -234,7 +234,20 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
 
     dims = {
         "gtin": _bool_dim(items, lambda it: bool(it.get("gtin"))),
-        "descripcion": _bool_dim(items, lambda it: (it.get("descripcion_len") or 0) > 0 if it.get("descripcion_len") is not None else None),
+        # Solo publicaciones propias (no catálogo): ML bloquea editar la descripción en
+        # catalog_listing=True (ver _clasificar_hallazgos, "normal por diseño") -- contarlas
+        # acá infla el denominador con huecos que no son un problema real (confirmado en vivo
+        # 2026-09-04, Echo-Dot5-Kids-Stardust: daba "2/4" contando 2 ítems de catálogo sin
+        # descripción -- normal -- como si fueran un hueco, cuando las 2 propias ya la tenían).
+        # TODO(gap-membresia-grupo, 2026-09-04): quedan 3 gold_pro propias de este mismo SKU
+        # sin descripción real (MLA3913903882, MLA3913903838, MLA2062899779) que todavía no
+        # entran a ningún diagnóstico porque audit_sku() arranca de salud_item_snapshots
+        # (gap de membresía del grupo, pendiente y separado) -- van a aparecer solas acá y en
+        # el popup en cuanto ese gap se resuelva, sin tocar nada de esta dimensión.
+        "descripcion": _bool_dim(
+            [it for it in items if not it.get("catalog_listing")],
+            lambda it: (it.get("descripcion_len") or 0) > 0 if it.get("descripcion_len") is not None else None,
+        ),
         "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
         "fotos": _magnitud_dim(items, lambda it: it.get("fotos_cantidad")),
         "mayorista": _mayorista_dim(items),
