@@ -1086,15 +1086,17 @@ def build_tab_salud(container) -> None:
                                 break
                         _render()
 
-                    # Refresca la fila de la tabla YA, con el audit que se acaba de hacer para
-                    # poder mostrar el popup -- así la tabla queda al día apenas se abre, sin
-                    # esperar a que el usuario guarde algo (y sin repetir GETs: reusa exactamente
-                    # lo que este audit_sku de arriba ya trajo). Si el usuario cancela sin tocar
-                    # nada, la fila ya quedó correcta igual. Confirmado en vivo 2026-09-04
-                    # (Lego-77246-F1VisaRB): el popup detectaba "al día" pero la fila seguía
-                    # mostrando el snapshot viejo hasta el próximo F5, porque antes solo se
-                    # refrescaba si aplicados>0 (ver más abajo).
-                    _aplicar_resultado_a_fila(resultado)
+                    # Guarda el audit más reciente para aplicarlo a la fila recién al CERRAR el
+                    # diálogo -- nunca mientras está abierto. BUG 2026-09-04 (VERSION .15):
+                    # llamar _aplicar_resultado_a_fila() (que dispara _render() -> table_container
+                    # .clear()) apenas terminaba este audit_sku() cerraba el popup solo -- el
+                    # diálogo, creado dentro del handler de click de la fila, queda anidado en el
+                    # slot de table_container (patrón normal de NiceGUI para diálogos on-demand),
+                    # así que limpiar table_container borraba el propio diálogo de la vista.
+                    # _guardar() actualiza este holder con el audit post-guardado (resultado2)
+                    # cuando corresponde; el botón "Cancelar" lo aplica recién después de
+                    # dlg.close(), momento en que ya no importa tocar table_container.
+                    cierre_ref: Dict[str, Any] = {"resultado": resultado}
 
                     clasif = await run.io_bound(_clasificar_hallazgos, token, resultado["items"])
 
@@ -1314,15 +1316,20 @@ def build_tab_salud(container) -> None:
                         if aplicados:
                             # Acá SÍ hace falta releer ML -- el audit de la apertura del popup
                             # (resultado) quedó desactualizado por la escritura que se acaba de
-                            # hacer. Sin aplicados, la fila ya está al día por el refresh de
-                            # apertura de arriba -- no repetir el audit_sku sin necesidad.
+                            # hacer. No se aplica a la fila ahora (el diálogo sigue abierto,
+                            # mostrando el resumen de resultados) -- se guarda para aplicarse
+                            # recién al cerrar, junto con _cerrar_dialogo de abajo.
                             resultado2 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
                             if not resultado2.get("error"):
-                                _aplicar_resultado_a_fila(resultado2)
+                                cierre_ref["resultado"] = resultado2
                         guardar_btn.props(remove="loading")
 
+                    def _cerrar_dialogo() -> None:
+                        dlg.close()
+                        _aplicar_resultado_a_fila(cierre_ref["resultado"])
+
                     with ui.row().classes("justify-end gap-2 w-full mt-2"):
-                        ui.button("Cancelar", on_click=dlg.close).props("flat")
+                        ui.button("Cancelar", on_click=_cerrar_dialogo).props("flat")
                         guardar_btn = ui.button("Guardar", on_click=_guardar).props("color=primary")
 
             def _render() -> None:
