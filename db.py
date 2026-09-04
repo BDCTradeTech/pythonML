@@ -164,6 +164,13 @@ def init_salud_tables() -> None:
     _salud_cols = [r[1] for r in cur.fetchall()]
     if "price" not in _salud_cols:
         cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN price REAL")
+    # Migración: mayorista_revisar_json -- detalle de tiers gold_special en estado "revisar"
+    # (cargado vs. calculado con cotización de envío real) e "invertido", calculado en el cron
+    # (ver _evaluar_mayorista_gold_special, movida a salud_audit.py). NULL = no se evaluó (0
+    # tiers cargados, o no es gold_special); {"evaluable": false} = se intentó pero no se pudo
+    # cotizar envío -- ninguno de los dos casos debe mostrarse como "revisado y sano".
+    if "mayorista_revisar_json" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN mayorista_revisar_json TEXT")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_salud_item_snapshot

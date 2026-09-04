@@ -34,11 +34,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
+import re
 import sys
 import time
 from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
@@ -170,8 +172,255 @@ def _wholesale_from_prices(prices_body: dict) -> Dict[str, Any]:
     return {"estado": estado, "standard_amount": standard_amount, "tiers": tiers}
 
 
+# ---------------------------------------------------------------------------
+# Cálculo de la propuesta 2/3/5/10 por fórmula de envío propia (no la
+# recomendación de ML) -- usada tanto para crear tiers donde no hay ninguno como
+# para recalcular el valor "correcto" hoy de un tier ya cargado (ver evaluación
+# unificada más abajo, _evaluar_mayorista_gold_special). Movida acá desde
+# tabs/salud.py (2026-09-04) para que audit_item() también pueda usarla en el
+# cron nocturno -- el popup (tabs/salud.py) la importa de acá.
+#
+# El tier de 1 unidad queda AFUERA de la propuesta -- por definición no tiene
+# ahorro de envío contra sí mismo, así que la fórmula siempre da 0% para esa
+# cantidad, y ML rechaza cualquier tier de mayorista con 0% ("Percentage must
+# be greater than 0 and less than 100", confirmado en vivo al intentar guardar
+# BHR4245GL). No se inventa un valor para ese caso -- la auditoría original ya
+# había registrado que el 1 unidad no tiene un % con origen conocido.
+# ---------------------------------------------------------------------------
+
+_CANTIDADES_MAYORISTA_NUEVO = (2, 3, 5, 10)
+
+_CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
+_GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
+
+
+def _num_con_unidad(value_name: Optional[str], factores: Dict[str, float]) -> Optional[float]:
+    if not value_name:
+        return None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(" + "|".join(factores) + r")\b", value_name, re.IGNORECASE)
+    return float(m.group(1)) * factores[m.group(2).lower()] if m else None
+
+
+def _dimensiones_seller_package(item: dict) -> Optional[Tuple[float, float, float, float]]:
+    """Lee SELLER_PACKAGE_HEIGHT/LENGTH/WIDTH/WEIGHT del ítem -- shipping.dimensions
+    viene null en la práctica (verificado en vivo: 0/6 ítems con el campo poblado en
+    esta cuenta). SELLER_PACKAGE_* son los atributos que carga el vendedor para el
+    cálculo de envío y coinciden con el caso de referencia validado (item MLA del
+    FireTVStick-4K-Max: SELLER_PACKAGE_WEIGHT=250 g, HEIGHT=18 cm, LENGTH=4 cm,
+    WIDTH=15 cm)."""
+    vals = {a.get("id"): a.get("value_name") for a in (item.get("attributes") or [])}
+    l = _num_con_unidad(vals.get("SELLER_PACKAGE_LENGTH"), _CM_POR_UNIDAD)
+    w = _num_con_unidad(vals.get("SELLER_PACKAGE_WIDTH"), _CM_POR_UNIDAD)
+    h = _num_con_unidad(vals.get("SELLER_PACKAGE_HEIGHT"), _CM_POR_UNIDAD)
+    peso = _num_con_unidad(vals.get("SELLER_PACKAGE_WEIGHT"), _GRAMOS_POR_UNIDAD)
+    if None in (l, w, h, peso):
+        return None
+    return (l, w, h, peso)
+
+
+def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
+                       peso_g: float, item_price: float) -> Optional[float]:
+    """GET /users/{seller_id}/shipping_options/free -- costo de envío para un lote de
+    dimensiones fijas (L x W x H) y el peso dado. Devuelve coverage.all_country.list_cost
+    o None si ML no puede cotizar (sin cobertura, error, etc.)."""
+    try:
+        r = requests.get(
+            f"{ML_API}/users/{seller_id}/shipping_options/free",
+            params={
+                "dimensions": f"{int(round(l))}x{int(round(w))}x{int(round(h))},{int(round(peso_g))}",
+                "item_price": item_price,
+                "free_shipping": "true",
+            },
+            headers={"Authorization": f"Bearer {token}"}, timeout=15,
+        )
+        if r.status_code != 200:
+            return None
+        return (r.json().get("coverage") or {}).get("all_country", {}).get("list_cost")
+    except requests.exceptions.RequestException:
+        return None
+
+
+def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float) -> Optional[Dict[str, Any]]:
+    """Arma la propuesta de mayorista 2/3/5/10 para un ítem SIN mayorista cargado.
+    Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
+    ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N (el costo a 1
+    unidad se usa como base de comparación, nunca se ofrece como tier -- ver nota
+    arriba). Las dimensiones (SELLER_PACKAGE_* del propio ítem) quedan fijas -- SOLO
+    el peso escala ×N, no se simula apilado. Es una aproximación (no exacta: ML arma
+    el paquete combinado con su propia tara, el escalado lineal del peso es la mejor
+    aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
+    no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
+    para alguna de las 4 cantidades, o ninguna de las 4 da un % > 0 (ML rechaza tiers
+    con 0%)."""
+    dims = _dimensiones_seller_package(item)
+    if not dims or not precio_base:
+        return None
+    l, w, h, peso = dims
+    costo_1 = _costo_envio_free(token, seller_id, l, w, h, peso, precio_base)
+    if costo_1 is None:
+        return None
+    propuesta: List[Dict[str, Any]] = []
+    for n in _CANTIDADES_MAYORISTA_NUEVO:
+        costo_n = _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
+        if costo_n is None:
+            return None
+        ahorro_unit = costo_1 - (costo_n / n)
+        pct = math.ceil((ahorro_unit / precio_base) * 10000) / 10000 if ahorro_unit > 0 else 0.0
+        if pct <= 0:
+            continue  # ML rechaza tiers de mayorista con 0% -- no se ofrece, no se inventa
+        monto = round(precio_base * (1 - pct), 2)
+        propuesta.append({
+            "quantity": n, "amount": monto, "percentage": round(pct * 100, 2),
+            "list_cost": costo_n,
+        })
+    if not propuesta:
+        return None
+    return {
+        "precio_base": precio_base, "dimensiones": f"{l:g}x{w:g}x{h:g}", "peso_base_g": peso,
+        "propuesta": propuesta,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Evaluación unificada de mayorista para publicaciones gold_special (contado) --
+# reemplaza las 2 secciones viejas ("sin cargar" y "a corregir", esta última basada
+# en ml_get_pxq_recommendations). Un solo motor: para cada una de las 4 cantidades
+# objetivo (2/3/5/10) compara lo cargado hoy contra _calcular_mayorista_nuevo
+# recalculado en el momento, y clasifica cada tier en:
+#   - "crear": no hay tier cargado en esa cantidad, se ofrece el calculado.
+#   - "ok": hay tier cargado y está dentro del margen del cálculo actual.
+#   - "roto": el tier cargado da % negativo o cero (precio ≥ precio base) --
+#     objetivo, sin ambigüedad de fórmula, se ofrece corregir junto con "crear".
+#   - "revisar": el tier cargado difiere del calculado más allá del umbral, pero
+#     no es "roto" -- caso ambiguo (la fórmula de envío se puede desviar mucho en
+#     productos muy baratos o muy caros, confirmado en el barrido de cuenta del
+#     2026-09-03: el % calculado varió entre 0.21% y 121% según el precio del
+#     producto). Se muestra como referencia (cargado vs. calculado hoy) pero NUNCA
+#     se ofrece aplicar automático desde el popup -- el cron SÍ lo persiste (ver
+#     audit_item) para poder mostrar el ⚠️ en la tabla resumen sin recalcular en vivo.
+# El umbral (4pp absolutos Y 1.75x relativo) se validó contra el barrido completo
+# de la cuenta: dispara en casos reales como E.Show8-2da-Negro (tier de mayo,
+# 6.59% cargado vs 2.10% calculado hoy) sin falsos positivos sobre los 97 tiers
+# recién escritos con este mismo cálculo.
+#
+# Cantidad=1 y cantidades no estándar (ej. 7) quedan SIEMPRE afuera -- nunca se
+# evalúan ni se tocan, se preservan tal cual estén (ver _construir_payload_mayorista
+# en tabs/salud.py).
+# ---------------------------------------------------------------------------
+
+_QTYS_MAYORISTA = (2, 3, 5, 10)
+_DESVIO_PP_MIN = 4.0
+_DESVIO_RATIO_MIN = 1.75
+
+
+def _standard_amount_de(prices_body: dict) -> Optional[float]:
+    for p in prices_body.get("prices") or []:
+        cond = p.get("conditions") or {}
+        if p.get("type") == "standard" and cond.get("min_purchase_unit") is None and not (cond.get("context_restrictions") or []):
+            return float(p["amount"])
+    return None
+
+
+def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[int, float]:
+    """Tiers cargados HOY en las 4 cantidades objetivo, unificando legacy
+    (prices[type=standard] con min_purchase_unit) y % B2B nuevo (price_per_quantity),
+    ambos a monto absoluto para poder compararlos con el cálculo."""
+    cargado: Dict[int, float] = {}
+    for p in prices_body.get("prices") or []:
+        cond = p.get("conditions") or {}
+        mpu = cond.get("min_purchase_unit")
+        if mpu in _QTYS_MAYORISTA and p.get("amount") is not None:
+            cargado[mpu] = float(p["amount"])
+    for p in prices_body.get("price_per_quantity") or []:
+        if p.get("type") != "discount_percentage":
+            continue
+        cond = p.get("conditions") or {}
+        if cond.get("eligible") is False:
+            continue
+        mpu = cond.get("min_purchase_unit")
+        pct = p.get("percentage")
+        if mpu in _QTYS_MAYORISTA and pct is not None:
+            cargado[mpu] = round(precio_base * (1 - pct / 100), 2)
+    return cargado
+
+
+def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
+                                     prices_body: Optional[dict] = None,
+                                     siempre_devolver: bool = False) -> Optional[Dict[str, Any]]:
+    """Evalúa las 4 cantidades objetivo para UNA publicación gold_special. Devuelve
+    None si no se puede evaluar (sin precio base, sin dimensiones, sin cotización de
+    envío) o -- si siempre_devolver=False, el default -- si las 4 están "ok" y no hay
+    nada que mostrar (el popup no pasa este flag: quiere el atajo, así no satura la
+    pantalla con ítems totalmente sanos).
+
+    prices_body: si se pasa (el cron ya hizo su propio GET /prices para
+    _wholesale_from_prices), se reusa en vez de pedirlo de nuevo -- ahorra una
+    llamada por ítem. El popup (tabs/salud.py) NO lo pasa: siempre quiere el GET
+    en vivo propio, porque el snapshot de la auditoría puede estar desactualizado
+    frente a escrituras recientes.
+
+    siempre_devolver: el cron (audit_item) lo pasa en True -- necesita distinguir
+    "no se pudo evaluar" (None real: sin precio base, sin cotización de envío) de
+    "se evaluó y las 4 están sanas" (con este flag, devuelve el dict igual en vez
+    del atajo de arriba) para no confundir ambos casos en mayorista_revisar_json."""
+    iid = item["id"]
+    if prices_body is None:
+        try:
+            rp = requests.get(f"{ML_API}/items/{iid}/prices", headers={"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
+        except requests.exceptions.RequestException:
+            return None
+        if rp.status_code != 200:
+            return None
+        prices_body = rp.json()
+    precio_base = _standard_amount_de(prices_body)
+    if not precio_base:
+        return None
+    cargado = _tiers_cargados_por_cantidad(prices_body, precio_base)
+
+    prop = _calcular_mayorista_nuevo(token, seller_id, item, precio_base)
+    calculado = {p["quantity"]: p["amount"] for p in prop["propuesta"]} if prop else {}
+    calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
+
+    tiers: List[Dict[str, Any]] = []
+    for q in _QTYS_MAYORISTA:
+        if q not in cargado:
+            if q in calculado:
+                tiers.append({"quantity": q, "estado": "crear", "pct_calculado": calculado_pct[q], "monto_calculado": calculado[q]})
+            continue  # sin tier cargado y sin cálculo posible -- no se puede ofrecer nada
+        pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
+        pct_calc = calculado_pct.get(q)
+        if pct_calc is None:
+            # TODO(mayorista-revisar-popup, 2026-09-04): si no hay cálculo posible (sin
+            # SELLER_PACKAGE_*, o ML no cotiza envío), un tier con pct_cargado<=0 (roto)
+            # cae acá y queda "ok" en vez de "roto" -- no es un reorden trivial: "roto"
+            # siempre trae pct_calculado/monto_calculado (los usa el popup para sugerir
+            # la corrección); sin cálculo haría falta un estado nuevo y tocar el render.
+            # Evaluar aparte, no mezclado con el fix de checkboxes por tier.
+            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+            continue
+        if pct_cargado <= 0:
+            tiers.append({"quantity": q, "estado": "roto", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
+            continue
+        diff_pp = abs(pct_cargado - pct_calc)
+        ratio = max(pct_cargado, pct_calc) / max(min(pct_cargado, pct_calc), 0.01)
+        if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
+            tiers.append({"quantity": q, "estado": "revisar", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
+        else:
+            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+
+    presentes = sorted(cargado.keys())
+    invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))
+
+    if not siempre_devolver and not any(t["estado"] != "ok" for t in tiers) and not invertido:
+        return None  # las 4 están ok (o no evaluables) y no hay inversión -- nada para mostrar (popup)
+
+    return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
+
+
 def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
-                session: Optional[requests.Session] = None) -> Dict[str, Any]:
+                seller_id: str = "", session: Optional[requests.Session] = None) -> Dict[str, Any]:
     """Audita UN ítem propio ya traído (item = body completo de /items/{id} o del
     multiget). Devuelve el dict de columnas crudas para salud_item_snapshots.
     Nunca levanta excepción: cualquier llamada que falle deja su campo en None
@@ -193,6 +442,7 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         "fotos_cantidad": len(item.get("pictures") or []),
         "mayorista_estado": None,
         "mayorista_tiers_json": None,
+        "mayorista_revisar_json": None,
         "flex_status": None,
         "retiro_persona": None,
         "garantia_tipo": "",
@@ -234,11 +484,15 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
     except requests.exceptions.RequestException as e:
         errores.append(f"description error={e}")
 
+    prices_body_para_revisar: Optional[dict] = None
+    tiene_tiers_cargados = False
     try:
         r = S.get(f"{ML_API}/items/{iid}/prices", headers={**H, "show-all-prices": "TRUE"}, timeout=15)
         if r.status_code == 200:
-            w = _wholesale_from_prices(r.json())
+            prices_body_para_revisar = r.json()
+            w = _wholesale_from_prices(prices_body_para_revisar)
             data["mayorista_estado"] = w["estado"]
+            tiene_tiers_cargados = bool(w["tiers"])
             import json as _json
             data["mayorista_tiers_json"] = _json.dumps(
                 {"standard_amount": w["standard_amount"], "tiers": w["tiers"]}, ensure_ascii=False
@@ -247,6 +501,32 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             errores.append(f"prices status={r.status_code} {_err_detalle(r)}")
     except requests.exceptions.RequestException as e:
         errores.append(f"prices error={e}")
+
+    # Mayorista "revisar"/"invertido" (cotización de envío real por cantidad objetivo) --
+    # solo gold_special con >=1 tier cargado (sin nada cargado no hay contra qué comparar).
+    # A diferencia del popup (que siempre recalcula en vivo al abrir, tabs/salud.py), acá
+    # se PERSISTE en el snapshot -- así la tabla resumen muestra el ⚠️ sin recalcular en
+    # cada render (ver _mayorista_dim). "evaluable": false = se intentó pero no se pudo
+    # cotizar envío (sin SELLER_PACKAGE_*, o ML no cotiza) -- no cuenta como sano ni como
+    # revisar, queda "sin evaluar".
+    if item.get("listing_type_id") == "gold_special" and seller_id and tiene_tiers_cargados:
+        try:
+            ev = _evaluar_mayorista_gold_special(
+                token, seller_id, item, prices_body=prices_body_para_revisar, siempre_devolver=True,
+            )
+            import json as _json
+            if ev is None:
+                # con siempre_devolver=True, None es inequívoco: no se pudo leer/evaluar
+                # (sin precio base o sin cotización de envío posible) -- no "las 4 ok".
+                data["mayorista_revisar_json"] = _json.dumps({"evaluable": False}, ensure_ascii=False)
+            else:
+                tiers_revisar = [t for t in ev["tiers"] if t["estado"] == "revisar"]
+                data["mayorista_revisar_json"] = _json.dumps(
+                    {"evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar},
+                    ensure_ascii=False,
+                )
+        except Exception as e:
+            errores.append(f"mayorista_revisar error={e}")
 
     try:
         r = S.get(f"{ML_API}/item/{iid}/performance", headers=H, timeout=15)
@@ -326,7 +606,7 @@ def write_snapshot(conn, user_id: int, item_id: str, data: Dict[str, Any], snaps
     cols = [
         "sku", "catalog_listing", "status", "listing_type_id", "condicion", "gtin",
         "descripcion_len", "short_status", "fotos_cantidad", "mayorista_estado",
-        "mayorista_tiers_json", "flex_status", "retiro_persona", "garantia_tipo",
+        "mayorista_tiers_json", "mayorista_revisar_json", "flex_status", "retiro_persona", "garantia_tipo",
         "garantia_tiempo", "envio_gratis", "regulatoria_estado",
         "atributos_faltantes_editables", "atributos_faltantes_bloqueados",
         "atributos_faltantes_json", "performance_score", "price", "error",
@@ -401,7 +681,7 @@ def audit_sku(user_id: int, seller_id: str, sku: str, persist: bool = True) -> D
     cat_attrs_cache: Dict[str, list] = {}
     resultados = []
     for it in group:
-        data = audit_item(token, it, cat_attrs_cache, session)
+        data = audit_item(token, it, cat_attrs_cache, seller_id, session)
         if persist:
             write_snapshot(conn, user_id, it["id"], data, hoy)
         resultados.append({"item": it, "audit": data})
@@ -425,7 +705,7 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     session = requests.Session()
     n_errores = 0
     for idx, it in enumerate(items):
-        data = audit_item(token, it, cat_attrs_cache, session)
+        data = audit_item(token, it, cat_attrs_cache, seller_id, session)
         if data.get("error"):
             n_errores += 1
         write_snapshot(conn, user_id, it["id"], data, hoy)
