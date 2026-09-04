@@ -193,6 +193,70 @@ _CANTIDADES_MAYORISTA_NUEVO = (2, 3, 5, 10)
 _CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
 _GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
 
+# ---------------------------------------------------------------------------
+# Esquema fijo para publicaciones SIN envío gratis obligatorio -- la fórmula de
+# ahorro de envío (_costo_envio_free) no tiene base económica ahí: el costo de
+# envío que cotiza ML es ~fijo independientemente del precio, así que en un
+# producto barato esa fracción explota. Confirmado en vivo 2026-09-04:
+# Google-G1001-USB ($8.999) daba 110.06% en la cantidad de 5+ -> monto de
+# -$905 (precio NEGATIVO). El corte se detecta por el tag "mandatory_free_shipping"
+# del propio ítem (GET /items/{id}, ya viene en el body -- sin llamada extra),
+# no por un precio hardcodeado: se verificó en vivo contra la cuenta que ese tag
+# aparece exactamente a partir de $33.000 (coincide con el parámetro
+# ml_envios_gratuitos ya usado en cuotas.py/precios.py/promos.py/ventas.py), y
+# así queda correcto si ML cambia el umbral en el futuro.
+# Esquema confirmado con Diego: 2->1%, 3->2%, 5->3%, 10->4%. Cantidades "extra"
+# fuera de esos 4 puntos (tiers ya cargados en otra cantidad, ver
+# _evaluar_mayorista_gold_special) se interpolan linealmente entre los dos
+# puntos fijos más cercanos; por debajo de 2 o por encima de 10 se extrapola
+# con la pendiente del tramo más cercano (2->3, o 5->10).
+# ---------------------------------------------------------------------------
+
+_PCTS_FIJOS_SIN_ENVIO_GRATIS = {2: 1.0, 3: 2.0, 5: 3.0, 10: 4.0}
+
+# Piso de sanidad genérico, independiente de la causa puntual de arriba: ningún
+# camino (fórmula de envío, esquema fijo, o lo que se agregue después) puede
+# proponer un % que dé un precio negativo o casi regalado. Se aplica acá (nunca
+# se propone) y de nuevo en tabs/salud.py::_construir_payload_mayorista (nunca
+# se escribe a ML), como doble chequeo.
+_PCT_TECHO_SANIDAD = 90.0
+
+
+def _pct_fijo_interpolado(n: int) -> float:
+    """% fijo (puntos porcentuales) para la cantidad `n`, ver
+    _PCTS_FIJOS_SIN_ENVIO_GRATIS. Interpola/extrapola linealmente para
+    cantidades fuera de los 4 puntos definidos."""
+    puntos = sorted(_PCTS_FIJOS_SIN_ENVIO_GRATIS.items())
+    if n in _PCTS_FIJOS_SIN_ENVIO_GRATIS:
+        return _PCTS_FIJOS_SIN_ENVIO_GRATIS[n]
+    if n < puntos[0][0]:
+        (q1, p1), (q2, p2) = puntos[0], puntos[1]
+    elif n > puntos[-1][0]:
+        (q1, p1), (q2, p2) = puntos[-2], puntos[-1]
+    else:
+        q1, p1 = max(((q, p) for q, p in puntos if q < n), key=lambda x: x[0])
+        q2, p2 = min(((q, p) for q, p in puntos if q > n), key=lambda x: x[0])
+    pendiente = (p2 - p1) / (q2 - q1)
+    return p1 + pendiente * (n - q1)
+
+
+def _propuesta_fija(precio_base: float, cantidades: Tuple[int, ...]) -> Optional[Dict[str, Any]]:
+    """Propuesta de mayorista para publicaciones sin envío gratis obligatorio --
+    mismo shape de retorno que _calcular_mayorista_nuevo (solo "propuesta" con
+    quantity/amount/percentage se usa río abajo, ver _evaluar_mayorista_gold_special)."""
+    if not precio_base:
+        return None
+    propuesta: List[Dict[str, Any]] = []
+    for n in cantidades:
+        pct = _pct_fijo_interpolado(n)
+        if pct <= 0 or pct >= _PCT_TECHO_SANIDAD:
+            continue
+        monto = round(precio_base * (1 - pct / 100), 2)
+        propuesta.append({"quantity": n, "amount": monto, "percentage": round(pct, 2)})
+    if not propuesta:
+        return None
+    return {"precio_base": precio_base, "dimensiones": None, "peso_base_g": None, "propuesta": propuesta}
+
 
 def _num_con_unidad(value_name: Optional[str], factores: Dict[str, float]) -> Optional[float]:
     if not value_name:
@@ -255,7 +319,14 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
     aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
     no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
     para alguna de las cantidades pedidas, o ninguna da un % > 0 (ML rechaza tiers
-    con 0%)."""
+    con 0%).
+
+    Si el ítem NO tiene envío gratis obligatorio (tag "mandatory_free_shipping"
+    ausente en item["shipping"]["tags"]), esta fórmula no aplica -- ver
+    _PCTS_FIJOS_SIN_ENVIO_GRATIS más arriba -- y se usa el esquema fijo en su lugar."""
+    tags = ((item.get("shipping") or {}).get("tags") or [])
+    if "mandatory_free_shipping" not in tags:
+        return _propuesta_fija(precio_base, cantidades)
     dims = _dimensiones_seller_package(item)
     if not dims or not precio_base:
         return None
@@ -272,6 +343,8 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
         pct = math.ceil((ahorro_unit / precio_base) * 10000) / 10000 if ahorro_unit > 0 else 0.0
         if pct <= 0:
             continue  # ML rechaza tiers de mayorista con 0% -- no se ofrece, no se inventa
+        if pct * 100 >= _PCT_TECHO_SANIDAD:
+            continue  # piso de sanidad -- nunca proponer un % que deje un precio negativo o casi regalado
         monto = round(precio_base * (1 - pct), 2)
         propuesta.append({
             "quantity": n, "amount": monto, "percentage": round(pct * 100, 2),

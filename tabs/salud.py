@@ -34,6 +34,7 @@ from ml_api import (
 from salud_audit import (
     _DESVIO_PP_MIN,
     _DESVIO_RATIO_MIN,
+    _PCT_TECHO_SANIDAD,
     _QTYS_MAYORISTA,
     _evaluar_mayorista_gold_special,
     _standard_amount_de,
@@ -826,7 +827,15 @@ def _tier_body(mpu: int, pct: float) -> Dict[str, Any]:
     }
 
 
-def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -> Tuple[List[Dict[str, Any]], bool]:
+def _pct_seguro(pct: Optional[float]) -> bool:
+    """Piso de sanidad genérico (independiente de la causa puntual del esquema fijo
+    en salud_audit.py, ver _PCT_TECHO_SANIDAD): ningún % que llegue a este punto --
+    cualquiera sea su origen -- puede escribirse a ML si da un precio negativo o
+    casi regalado. Segundo chequeo, redundante con el de salud_audit.py a propósito."""
+    return pct is not None and 0 < pct < _PCT_TECHO_SANIDAD
+
+
+def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -> Tuple[List[Dict[str, Any]], bool, List[Dict[str, Any]]]:
     """Arma el body completo para POST /prices/price-per-quantity a partir de lo que
     hay HOY + los cambios pedidos (cantidad -> % nuevo). El endpoint reemplaza el
     array entero: cualquier cantidad que no se re-envíe queda eliminada -- por eso
@@ -837,7 +846,13 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
     del lado de ML de todas formas, así que hay que re-crearlos acá para no perderlos).
     Los tiers % existentes que se preservan sin cambios van con su "id" propio -- por
     la lógica documentada de ML, mandar el id de un precio existente lo deja intacto;
-    omitirlo lo borra."""
+    omitirlo lo borra.
+
+    Devuelve además `descartados`: cantidades pedidas en `cambios` con un % inválido
+    (faltante, <=0 o >=_PCT_TECHO_SANIDAD -- ver _pct_seguro) que NO se escribieron.
+    Si la cantidad ya tenía un tier cargado, se preserva el valor actual (no se borra
+    un tier existente por un cálculo nuevo inválido); si era un tier nuevo ("crear"),
+    directamente no se agrega."""
     standard_amount = _standard_amount_de(prices_info)
     tiene_absoluto = any(
         p.get("type") == "standard" and (p.get("conditions") or {}).get("min_purchase_unit") is not None
@@ -845,6 +860,7 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
     )
     body_items: List[Dict[str, Any]] = []
     vistos: set = set()
+    descartados: List[Dict[str, Any]] = []
 
     for p in prices_info.get("prices") or []:
         cond = p.get("conditions") or {}
@@ -853,6 +869,9 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
             continue
         vistos.add(mpu)
         pct = cambios.get(mpu)
+        if pct is not None and not _pct_seguro(pct):
+            descartados.append({"quantity": mpu, "pct_pedido": pct})
+            pct = None
         if pct is None:
             pct = round((1 - float(p["amount"]) / standard_amount) * 100, 2)
         body_items.append(_tier_body(mpu, pct))
@@ -865,8 +884,12 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
         if mpu is None or mpu in vistos:
             continue
         vistos.add(mpu)
-        if mpu in cambios:
-            body_items.append(_tier_body(mpu, cambios[mpu]))
+        pct = cambios.get(mpu)
+        if mpu in cambios and not _pct_seguro(pct):
+            descartados.append({"quantity": mpu, "pct_pedido": pct})
+            pct = None
+        if pct is not None:
+            body_items.append(_tier_body(mpu, pct))
         else:
             preservado = _tier_body(mpu, p.get("percentage"))
             preservado["id"] = p["id"]
@@ -874,6 +897,9 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
 
     for mpu, pct in cambios.items():
         if mpu not in vistos:
+            if not _pct_seguro(pct):
+                descartados.append({"quantity": mpu, "pct_pedido": pct})
+                continue
             body_items.append(_tier_body(mpu, pct))
 
     # Los tiers "crear" (nuevos, recién agregados arriba) quedan al final del array en
@@ -882,21 +908,31 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
     # orden del array además de a los valores en sí. Se ordena siempre por cantidad
     # ascendente antes de enviar, sin importar en qué orden se armó arriba.
     body_items.sort(key=lambda b: b["conditions"]["min_purchase_unit"])
-    return body_items, tiene_absoluto
+    return body_items, tiene_absoluto, descartados
 
 
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
-                             cambios: Dict[int, float]) -> Optional[str]:
+                             cambios: Dict[int, float]) -> Tuple[Optional[str], List[str]]:
     """cambios: {cantidad: porcentaje} SOLO para las cantidades a crear/corregir --
-    todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista)."""
+    todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista).
+    Devuelve (error, advertencias) -- advertencias lista las cantidades que
+    _construir_payload_mayorista descartó por el piso de sanidad (nunca se
+    escribieron a ML), aunque el resto se haya guardado bien (error=None)."""
     prices_info = ml_get_prices_with_version(token, item_id)
     if not prices_info or "version" not in prices_info:
         msg = "no se pudo leer la versión de precios (X-Version) antes de escribir"
         log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
-        return f"Mayorista ({item_id}): {msg}"
+        return f"Mayorista ({item_id}): {msg}", []
     version = prices_info["version"]
-    body_items, tiene_pxq_absoluto = _construir_payload_mayorista(prices_info, cambios)
-    valor_nuevo = json.dumps(cambios, ensure_ascii=False)
+    body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios)
+    advertencias = [
+        f"Mayorista ({item_id}) {d['quantity']}+: % pedido inválido ({d['pct_pedido']}) descartado, no se envió a ML"
+        for d in descartados
+    ]
+    cambios_efectivos = {mpu: pct for mpu, pct in cambios.items() if mpu not in {d["quantity"] for d in descartados}}
+    if not cambios_efectivos:
+        return None, advertencias  # todo lo pedido se descartó por el piso de sanidad -- nada que escribir
+    valor_nuevo = json.dumps(cambios_efectivos, ensure_ascii=False)
     resp = ml_write_price_per_quantity(token, item_id, body_items, version, remove_absolute_pxq=tiene_pxq_absoluto)
     post_detalle = f"status={resp.status_code} {resp.text[:300]}" if resp.status_code != 200 else None
     time.sleep(0.4)
@@ -909,14 +945,14 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
                 verify_pct[cond["min_purchase_unit"]] = p.get("percentage")
     ok = bool(verify) and len(verify_pct) == len(body_items) and all(
         verify_pct.get(mpu) is not None and abs(verify_pct[mpu] - pct) < 0.05
-        for mpu, pct in cambios.items()
+        for mpu, pct in cambios_efectivos.items()
     )
     if ok:
         log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "ok", None)
-        return None
+        return None, advertencias
     detalle = post_detalle or f"GET de verificación no coincide (quedó {verify_pct!r})"
     log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "error", detalle)
-    return f"Mayorista ({item_id}): {detalle}"
+    return f"Mayorista ({item_id}): {detalle}", advertencias
 
 
 def build_tab_salud(container) -> None:
@@ -1204,6 +1240,7 @@ def build_tab_salud(container) -> None:
                     async def _guardar() -> None:
                         guardar_btn.props("loading")
                         errores: List[str] = []
+                        advertencias: List[str] = []
                         aplicados = 0
                         for g, inp in inputs.values():
                             valor = (inp.value or "").strip()
@@ -1232,9 +1269,10 @@ def build_tab_salud(container) -> None:
                             cambios, _bloqueadas, _conflictos = _tiers_plan(ev, incluir)
                             if not cambios:
                                 continue
-                            err = await run.io_bound(
+                            err, adv = await run.io_bound(
                                 _escribir_mayorista_pxq, token, uid, sku, item_id, cambios,
                             )
+                            advertencias.extend(adv)
                             if err:
                                 errores.append(err)
                             else:
@@ -1247,7 +1285,9 @@ def build_tab_salud(container) -> None:
                                 ui.label(f"✅ {aplicados} campo(s) aplicados y verificados").style(f"color:{_OK}").classes("text-sm")
                             for e in errores:
                                 ui.label(f"❌ {e}").style(f"color:{_BAD}").classes("text-xs")
-                            if not aplicados and not errores:
+                            for a in advertencias:
+                                ui.label(f"⚠️ {a}").style(f"color:{_MID}").classes("text-xs")
+                            if not aplicados and not errores and not advertencias:
                                 ui.label("No se marcó ningún campo para guardar.").classes("text-xs text-gray-500")
 
                         if aplicados:
