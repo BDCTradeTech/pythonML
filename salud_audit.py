@@ -240,8 +240,12 @@ def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
         return None
 
 
-def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float) -> Optional[Dict[str, Any]]:
-    """Arma la propuesta de mayorista 2/3/5/10 para un ítem SIN mayorista cargado.
+def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float,
+                               cantidades: Tuple[int, ...] = _CANTIDADES_MAYORISTA_NUEVO) -> Optional[Dict[str, Any]]:
+    """Arma la propuesta de mayorista para un ítem, para las `cantidades` pedidas
+    (default 2/3/5/10 -- el popup pasa además las cantidades "extra" que el ítem ya
+    tenga cargadas fuera de ese set estándar, en una llamada aparte, para no acoplar
+    su cotización a la de las 4 estándar: ver _evaluar_mayorista_gold_special).
     Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
     ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N (el costo a 1
     unidad se usa como base de comparación, nunca se ofrece como tier -- ver nota
@@ -250,7 +254,7 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
     el paquete combinado con su propia tara, el escalado lineal del peso es la mejor
     aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
     no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
-    para alguna de las 4 cantidades, o ninguna de las 4 da un % > 0 (ML rechaza tiers
+    para alguna de las cantidades pedidas, o ninguna da un % > 0 (ML rechaza tiers
     con 0%)."""
     dims = _dimensiones_seller_package(item)
     if not dims or not precio_base:
@@ -260,7 +264,7 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
     if costo_1 is None:
         return None
     propuesta: List[Dict[str, Any]] = []
-    for n in _CANTIDADES_MAYORISTA_NUEVO:
+    for n in cantidades:
         costo_n = _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
         if costo_n is None:
             return None
@@ -303,9 +307,19 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
 # 6.59% cargado vs 2.10% calculado hoy) sin falsos positivos sobre los 97 tiers
 # recién escritos con este mismo cálculo.
 #
-# Cantidad=1 y cantidades no estándar (ej. 7) quedan SIEMPRE afuera -- nunca se
-# evalúan ni se tocan, se preservan tal cual estén (ver _construir_payload_mayorista
-# en tabs/salud.py).
+# Cantidades "extra" (cualquier tier ya cargado fuera de 2/3/5/10, ej. 7, 15, 20) --
+# desde 2026-09-04 SÍ se evalúan, con el mismo criterio ok/roto/revisar (marcadas
+# "extra": True en el tier), para que el popup pueda mostrar y corregir un tier que
+# de otro modo quedaba invisible y volvía incoherente cualquier corrección de las 4
+# estándar (ver _tiers_plan en tabs/salud.py, caso real MLA1944479697/MLA1944467261,
+# tier de 15+ al 6.23%).
+#
+# Cantidad=1 es la ÚNICA excepción que sigue SIEMPRE afuera: la fórmula de ahorro de
+# envío da 0% por definición para n=1 (ahorro contra sí mismo), así que nunca puede
+# tener pct_calculado -- incluirla en el piso ascendente de _tiers_plan arriesgaría
+# distorsionar el margen exigido a las demás cantidades con un valor sin referencia
+# de cálculo. Un tier de 1 unidad cargado se preserva tal cual esté, nunca se evalúa
+# ni se toca (ver _construir_payload_mayorista en tabs/salud.py).
 # ---------------------------------------------------------------------------
 
 _QTYS_MAYORISTA = (2, 3, 5, 10)
@@ -321,15 +335,17 @@ def _standard_amount_de(prices_body: dict) -> Optional[float]:
     return None
 
 
-def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[int, float]:
-    """Tiers cargados HOY en las 4 cantidades objetivo, unificando legacy
-    (prices[type=standard] con min_purchase_unit) y % B2B nuevo (price_per_quantity),
-    ambos a monto absoluto para poder compararlos con el cálculo."""
+def _tiers_cargados_todos(prices_body: dict, precio_base: float) -> Dict[int, float]:
+    """TODOS los tiers de mayorista cargados HOY, cualquier cantidad (no solo
+    2/3/5/10) -- unifica legacy (prices[type=standard] con min_purchase_unit) y %
+    B2B nuevo (price_per_quantity), ambos a monto absoluto para poder compararlos
+    con el cálculo. Cantidad=1 (precio base, sin min_purchase_unit) queda afuera --
+    no es un tier de mayorista, es el precio de referencia."""
     cargado: Dict[int, float] = {}
     for p in prices_body.get("prices") or []:
         cond = p.get("conditions") or {}
         mpu = cond.get("min_purchase_unit")
-        if mpu in _QTYS_MAYORISTA and p.get("amount") is not None:
+        if mpu is not None and p.get("amount") is not None:
             cargado[mpu] = float(p["amount"])
     for p in prices_body.get("price_per_quantity") or []:
         if p.get("type") != "discount_percentage":
@@ -339,9 +355,16 @@ def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[
             continue
         mpu = cond.get("min_purchase_unit")
         pct = p.get("percentage")
-        if mpu in _QTYS_MAYORISTA and pct is not None:
+        if mpu is not None and pct is not None:
             cargado[mpu] = round(precio_base * (1 - pct / 100), 2)
     return cargado
+
+
+def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[int, float]:
+    """Subconjunto de _tiers_cargados_todos acotado a las 4 cantidades objetivo
+    estándar (2/3/5/10) -- usado por _wholesale_from_prices-adyacentes que solo
+    quieren el set estándar."""
+    return {q: m for q, m in _tiers_cargados_todos(prices_body, precio_base).items() if q in _QTYS_MAYORISTA}
 
 
 def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
@@ -362,7 +385,19 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
     siempre_devolver: el cron (audit_item) lo pasa en True -- necesita distinguir
     "no se pudo evaluar" (None real: sin precio base, sin cotización de envío) de
     "se evaluó y las 4 están sanas" (con este flag, devuelve el dict igual en vez
-    del atajo de arriba) para no confundir ambos casos en mayorista_revisar_json."""
+    del atajo de arriba) para no confundir ambos casos en mayorista_revisar_json.
+
+    Tiers "extra" (cualquier cantidad ya cargada fuera de 2/3/5/10, ej. 15+): se
+    evalúan con el MISMO criterio ok/roto/revisar que los estándar (marcados con
+    "extra": True), pero nunca se ofrecen para "crear" -- por definición ya están
+    cargados. Se cotizan aparte (llamada propia a _calcular_mayorista_nuevo, no
+    mezclada con la de 2/3/5/10) para que si ML no puede cotizar esa cantidad
+    puntual, no tire abajo el cálculo de las 4 estándar. Confirmado en vivo
+    2026-09-04 (MLA1944479697/MLA1944467261): un tier de 15+ al 6.23%, invisible
+    para este motor hasta ahora, quedaba silenciosamente re-enviado sin tocar por
+    _construir_payload_mayorista y volvía incoherente al POST cuando se subían los
+    tiers 2/5/10 -- "Price per quantity invalid coherence order" -- porque ML exige
+    % no decreciente con la cantidad y nadie evaluaba ese 15+ contra la corrección."""
     iid = item["id"]
     if prices_body is None:
         try:
@@ -375,17 +410,28 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
     precio_base = _standard_amount_de(prices_body)
     if not precio_base:
         return None
-    cargado = _tiers_cargados_por_cantidad(prices_body, precio_base)
+    cargado = _tiers_cargados_todos(prices_body, precio_base)
+    extra_qtys = tuple(sorted(q for q in cargado if q not in _QTYS_MAYORISTA and q != 1))
 
     prop = _calcular_mayorista_nuevo(token, seller_id, item, precio_base)
     calculado = {p["quantity"]: p["amount"] for p in prop["propuesta"]} if prop else {}
     calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
 
+    if extra_qtys:
+        prop_extra = _calcular_mayorista_nuevo(token, seller_id, item, precio_base, cantidades=extra_qtys)
+        if prop_extra:
+            calculado.update({p["quantity"]: p["amount"] for p in prop_extra["propuesta"]})
+            calculado_pct.update({p["quantity"]: p["percentage"] for p in prop_extra["propuesta"]})
+
+    qtys_a_evaluar = sorted(set(_QTYS_MAYORISTA) | set(extra_qtys))
+
     tiers: List[Dict[str, Any]] = []
-    for q in _QTYS_MAYORISTA:
+    for q in qtys_a_evaluar:
+        es_extra = q not in _QTYS_MAYORISTA
         if q not in cargado:
             if q in calculado:
-                tiers.append({"quantity": q, "estado": "crear", "pct_calculado": calculado_pct[q], "monto_calculado": calculado[q]})
+                tiers.append({"quantity": q, "estado": "crear", "extra": es_extra,
+                              "pct_calculado": calculado_pct[q], "monto_calculado": calculado[q]})
             continue  # sin tier cargado y sin cálculo posible -- no se puede ofrecer nada
         pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
         pct_calc = calculado_pct.get(q)
@@ -396,19 +442,19 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
             # siempre trae pct_calculado/monto_calculado (los usa el popup para sugerir
             # la corrección); sin cálculo haría falta un estado nuevo y tocar el render.
             # Evaluar aparte, no mezclado con el fix de checkboxes por tier.
-            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+            tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
             continue
         if pct_cargado <= 0:
-            tiers.append({"quantity": q, "estado": "roto", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+            tiers.append({"quantity": q, "estado": "roto", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
                           "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
             continue
         diff_pp = abs(pct_cargado - pct_calc)
         ratio = max(pct_cargado, pct_calc) / max(min(pct_cargado, pct_calc), 0.01)
         if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
-            tiers.append({"quantity": q, "estado": "revisar", "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+            tiers.append({"quantity": q, "estado": "revisar", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
                           "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
         else:
-            tiers.append({"quantity": q, "estado": "ok", "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+            tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
 
     presentes = sorted(cargado.keys())
     invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))

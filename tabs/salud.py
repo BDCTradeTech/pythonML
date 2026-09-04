@@ -686,27 +686,54 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, float], List[int]]:
-    """Arma (cambios, bloqueadas) para las cantidades que el usuario tildó en `incluir`
-    -- generaliza la versión anterior (_tiers_accionables): la decisión de qué corregir
-    ahora es 100% del checkbox por tier del popup. "crear"/"roto" vienen pre-tildados
-    por default, "revisar" no (ver render). Un tier "crear"/"roto"/"revisar" NO tildado
-    no se toca -- si ya tiene un valor cargado (roto/revisar), ese valor sigue siendo
-    el piso para las cantidades mayores: ML exige % ESTRICTAMENTE creciente con la
+def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, float], List[int], List[Dict[str, Any]]]:
+    """Arma (cambios, bloqueadas, conflictos) para las cantidades que el usuario tildó
+    en `incluir` -- generaliza la versión anterior (_tiers_accionables): la decisión de
+    qué corregir ahora es 100% del checkbox por tier del popup. "crear"/"roto" vienen
+    pre-tildados por default, "revisar" no (ver render). `evaluacion["tiers"]` incluye
+    tanto las 4 cantidades estándar (2/3/5/10) como cualquier tier "extra" que el ítem
+    ya tenga cargado en otra cantidad (ver _evaluar_mayorista_gold_special) -- ambos se
+    tratan con el mismo criterio acá, no hay caso especial por ser "extra".
+
+    Un tier "crear"/"roto"/"revisar" NO tildado no se toca -- si ya tiene un valor
+    cargado (roto/revisar), ese valor sigue siendo el PISO para las cantidades mayores
+    Y EL TECHO para las cantidades menores: ML exige % ESTRICTAMENTE creciente con la
     cantidad (confirmado en vivo el 2026-09-03 probando AW-S11-Black-MEQT4LW: "Price
     per quantity invalid coherence order" cuando un tier nuevo quedaba más bajo que uno
     preservado en una cantidad menor, y "Price per quantity amount are not unique" al
-    igualarlo en vez de superarlo).
+    igualarlo en vez de superarlo). El caso techo (un tier NO tildado en una cantidad
+    MAYOR que queda por debajo de la corrección pedida en una cantidad menor) se
+    confirmó en vivo el 2026-09-04 con MLA1944479697/MLA1944467261: un tier de 15+
+    cargado al 6.23%, nunca gestionado por el popup hasta ahora, volvía incoherente
+    cualquier corrección de 2/5/10 hacia arriba de ese valor -- el 400 de ML no era
+    (solo) por el orden del array, era porque nadie chequeaba ese techo antes de
+    guardar.
 
-    Se recorre en orden creciente de cantidad manteniendo ese piso. Un tier tildado que
-    quedaría en o por debajo del piso se sube a piso + 0.01. Pero si ese ajuste aleja el
-    % resultante de su propio valor calculado más allá del mismo umbral que separa "ok"
-    de "revisar" (4pp y 1.75x), no se fuerza -- se bloquea esa cantidad y todas las que
-    siguen, y se marca para revisión manual."""
+    Se recorre en orden creciente de cantidad manteniendo el piso. Antes de eso se
+    calcula, de atrás para adelante, el techo que impone cada tier NO tildado (roto o
+    revisar) sobre las cantidades menores. Un tier tildado que quedaría en o por debajo
+    del piso se sube a piso + 0.01. Si ese ajuste aleja el % resultante de su propio
+    valor calculado más allá del mismo umbral que separa "ok" de "revisar" (4pp y
+    1.75x), no se fuerza -- se bloquea esa cantidad y todas las que siguen, y se marca
+    para revisión manual. Si en cambio el % resultante iguala o supera el techo de un
+    tier NO tildado en una cantidad mayor, también se bloquea, pero además se reporta
+    en `conflictos` -- el render lo muestra como "tildá también esa cantidad" en vez
+    del mensaje genérico de revisión manual."""
+    tiers_ordenados = sorted(evaluacion["tiers"], key=lambda x: x["quantity"])
+
+    techo: Optional[Tuple[float, int]] = None  # (pct, cantidad que lo impone)
+    techo_por_qty: Dict[int, Optional[Tuple[float, int]]] = {}
+    for t in reversed(tiers_ordenados):
+        techo_por_qty[t["quantity"]] = techo
+        if t["quantity"] not in incluir and t["estado"] in ("roto", "revisar") and t.get("pct_cargado") is not None:
+            if techo is None or t["pct_cargado"] < techo[0]:
+                techo = (t["pct_cargado"], t["quantity"])
+
     piso = 0.0
     cambios: Dict[int, float] = {}
     bloqueadas: List[int] = []
-    for t in sorted(evaluacion["tiers"], key=lambda x: x["quantity"]):
+    conflictos: List[Dict[str, Any]] = []
+    for t in tiers_ordenados:
         q = t["quantity"]
         estado = t["estado"]
         if estado == "ok":
@@ -723,6 +750,11 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
             continue
         pct_calc = t["pct_calculado"]
         pct_final = pct_calc if pct_calc > piso else round(piso + 0.01, 2)
+        techo_q = techo_por_qty.get(q)
+        if techo_q is not None and pct_final >= techo_q[0]:
+            bloqueadas.append(q)
+            conflictos.append({"quantity": q, "conflicto_con": techo_q[1], "techo_pct": techo_q[0]})
+            continue
         diff_pp = abs(pct_final - pct_calc)
         ratio = max(pct_final, pct_calc) / max(min(pct_final, pct_calc), 0.01)
         if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
@@ -730,7 +762,7 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
             continue
         cambios[q] = pct_final
         piso = pct_final
-    return cambios, bloqueadas
+    return cambios, bloqueadas, conflictos
 
 
 # ---------------------------------------------------------------------------
@@ -844,6 +876,12 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
         if mpu not in vistos:
             body_items.append(_tier_body(mpu, pct))
 
+    # Los tiers "crear" (nuevos, recién agregados arriba) quedan al final del array en
+    # el orden en que se procesaron, no por cantidad -- confirmado en vivo 2026-09-04
+    # (MLA1944479697/MLA1944467261) que ML valida "invalid coherence order" sensible al
+    # orden del array además de a los valores en sí. Se ordena siempre por cantidad
+    # ascendente antes de enviar, sin importar en qué orden se armó arriba.
+    body_items.sort(key=lambda b: b["conditions"]["min_purchase_unit"])
     return body_items, tiene_absoluto
 
 
@@ -1095,7 +1133,8 @@ def build_tab_salud(container) -> None:
                                 def _render_item(item_id=item_id, ev=ev, item_box=item_box):
                                     tildes = mayorista_tildes[item_id]
                                     incluir = {q for q, v in tildes.items() if v}
-                                    cambios, bloqueadas = _tiers_plan(ev, incluir)
+                                    cambios, bloqueadas, conflictos = _tiers_plan(ev, incluir)
+                                    conflicto_por_qty = {c["quantity"]: c for c in conflictos}
                                     item_box.clear()
                                     with item_box:
                                         ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
@@ -1107,15 +1146,25 @@ def build_tab_salud(container) -> None:
                                         for t in ev["tiers"]:
                                             q = t["quantity"]
                                             estado = t["estado"]
+                                            sufijo_qty = f"{q}+" + (" (cantidad no estándar)" if t.get("extra") else "")
+                                            if q in conflicto_por_qty:
+                                                c = conflicto_por_qty[q]
+                                                txt = (
+                                                    f"{sufijo_qty} unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
+                                                    f"incoherente con el tier de {c['conflicto_con']}+ ({c['techo_pct']}% off), que no está tildado — "
+                                                    f"tildá también {c['conflicto_con']}+ para poder guardar juntos"
+                                                )
+                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
+                                                continue
                                             if q in bloqueadas:
                                                 txt = (
-                                                    f"{q}+ unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
+                                                    f"{sufijo_qty} unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
                                                     f"incoherente con un tier existente en una cantidad menor (ML exige % no decreciente) — revisar a mano"
                                                 )
                                                 ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
                                                 continue
                                             if estado == "ok":
-                                                txt = f"{q}+ unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
+                                                txt = f"{sufijo_qty} unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
                                                 ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
                                                 continue
                                             if estado not in ("crear", "roto", "revisar"):
@@ -1126,16 +1175,16 @@ def build_tab_salud(container) -> None:
                                             if aplica:
                                                 pct_final = cambios[q]
                                                 monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
-                                                extra = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
+                                                ajuste = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
                                             if estado == "crear":
-                                                txt = (f"{q}+ unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){extra}" if aplica
-                                                       else f"{q}+ unidades: sugerido crear ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
+                                                txt = (f"{sufijo_qty} unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){ajuste}" if aplica
+                                                       else f"{sufijo_qty} unidades: sugerido crear ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
                                             elif estado == "roto":
-                                                txt = (f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%){extra}" if aplica
-                                                       else f"{q}+ unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%), sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
+                                                txt = (f"{sufijo_qty} unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%){ajuste}" if aplica
+                                                       else f"{sufijo_qty} unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%), sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
                                             else:  # revisar
-                                                txt = (f"{q}+ unidades: revisar → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%) (cargado ${_fmt_moneda(t['monto_cargado'])}, {t['pct_cargado']}%){extra}" if aplica
-                                                       else f"{q}+ unidades: revisar — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) vs. sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%)")
+                                                txt = (f"{sufijo_qty} unidades: revisar → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%) (cargado ${_fmt_moneda(t['monto_cargado'])}, {t['pct_cargado']}%){ajuste}" if aplica
+                                                       else f"{sufijo_qty} unidades: revisar — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) vs. sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%)")
                                             with ui.row().classes("items-center gap-1 pl-3"):
                                                 chk = ui.checkbox(value=marcado)
                                                 ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR[estado]}")
@@ -1180,7 +1229,7 @@ def build_tab_salud(container) -> None:
                             incluir = {q for q, v in mayorista_tildes.get(item_id, {}).items() if v}
                             if not incluir:
                                 continue
-                            cambios, _bloqueadas = _tiers_plan(ev, incluir)
+                            cambios, _bloqueadas, _conflictos = _tiers_plan(ev, incluir)
                             if not cambios:
                                 continue
                             err = await run.io_bound(
