@@ -1316,13 +1316,22 @@ def build_tab_salud(container) -> None:
                         if aplicados:
                             # Acá SÍ hace falta releer ML -- el audit de la apertura del popup
                             # (resultado) quedó desactualizado por la escritura que se acaba de
-                            # hacer. No se aplica a la fila ahora (el diálogo sigue abierto,
-                            # mostrando el resumen de resultados) -- se guarda para aplicarse
-                            # recién al cerrar, junto con _cerrar_dialogo de abajo.
+                            # hacer.
                             resultado2 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
                             if not resultado2.get("error"):
                                 cierre_ref["resultado"] = resultado2
                         guardar_btn.props(remove="loading")
+
+                        if aplicados and not errores:
+                            # Guardado exitoso (sin errores) -- cierra solo, como siempre fue el
+                            # comportamiento esperado. Si hubo algún error se deja el popup abierto
+                            # mostrando el resumen (✅/❌/⚠️) para que el usuario lo vea antes de
+                            # cerrar manualmente con "Cancelar". Recién acá se toca table_container
+                            # (vía _aplicar_resultado_a_fila -> _render()), con el diálogo ya
+                            # cerrándose -- no antes, para no repetir el bug de auto-cierre en
+                            # apertura (ver dfa63a8/9da0237).
+                            dlg.close()
+                            _aplicar_resultado_a_fila(cierre_ref["resultado"])
 
                     def _cerrar_dialogo() -> None:
                         dlg.close()
