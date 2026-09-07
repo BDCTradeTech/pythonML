@@ -159,6 +159,28 @@ def _gtin_dim(items: List[dict]) -> Dict[str, Any]:
     }
 
 
+def _descripcion_dim(items: List[dict]) -> Dict[str, Any]:
+    """Mismo split que _gtin_dim (ver esa función): propias (accionable -- ML permite
+    editar la descripción) vs. catálogo (informativo -- se hereda del catalog_product,
+    ML bloquea el PUT ahí, ver _clasificar_hallazgos/"normal por diseño"). `orden`
+    (sort + score de esta dimensión) usa SOLO propias, igual que GTIN -- una descripción
+    faltante en catálogo nunca cuenta como problema del SKU."""
+    def _tiene_desc(it: dict) -> Optional[bool]:
+        v = it.get("descripcion_len")
+        return None if v is None else v > 0
+
+    propias = [it for it in items if not it.get("catalog_listing") and _tiene_desc(it) is not None]
+    catalogo = [it for it in items if it.get("catalog_listing") and _tiene_desc(it) is not None]
+    prop_tot, prop_ok = len(propias), sum(1 for it in propias if _tiene_desc(it))
+    cat_tot, cat_ok = len(catalogo), sum(1 for it in catalogo if _tiene_desc(it))
+    orden = (prop_ok / prop_tot) if prop_tot else -1.0
+    return {
+        "propias_ok": prop_ok, "propias_total": prop_tot,
+        "catalogo_ok": cat_ok, "catalogo_total": cat_tot,
+        "orden": orden,
+    }
+
+
 def _cat_dim(items: List[dict], val_fn, etiquetas: Dict[str, str], color_fn) -> Dict[str, Any]:
     vals = [val_fn(it) for it in items if val_fn(it) is not None]
     total = len(vals)
@@ -305,20 +327,16 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
 
     dims = {
         "gtin": _gtin_dim(items),
-        # Solo publicaciones propias (no catálogo): ML bloquea editar la descripción en
-        # catalog_listing=True (ver _clasificar_hallazgos, "normal por diseño") -- contarlas
-        # acá infla el denominador con huecos que no son un problema real (confirmado en vivo
-        # 2026-09-04, Echo-Dot5-Kids-Stardust: daba "2/4" contando 2 ítems de catálogo sin
-        # descripción -- normal -- como si fueran un hueco, cuando las 2 propias ya la tenían).
+        # Mismo split propias/catálogo que GTIN desde 2026-09-07 (ver _descripcion_dim) --
+        # antes solo excluía catálogo del denominador (fix 2026-09-04, Echo-Dot5-Kids-Stardust:
+        # el "2/4" contaba 2 ítems de catálogo sin descripción -- normal, ML lo bloquea -- como
+        # si fueran un hueco real). Ahora además muestra el lado catálogo como informativo.
         # TODO(gap-membresia-grupo, 2026-09-04): quedan 3 gold_pro propias de este mismo SKU
         # sin descripción real (MLA3913903882, MLA3913903838, MLA2062899779) que todavía no
         # entran a ningún diagnóstico porque audit_sku() arranca de salud_item_snapshots
         # (gap de membresía del grupo, pendiente y separado) -- van a aparecer solas acá y en
         # el popup en cuanto ese gap se resuelva, sin tocar nada de esta dimensión.
-        "descripcion": _bool_dim(
-            [it for it in items if not it.get("catalog_listing")],
-            lambda it: (it.get("descripcion_len") or 0) > 0 if it.get("descripcion_len") is not None else None,
-        ),
+        "descripcion": _descripcion_dim(items),
         "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
         "fotos": _magnitud_dim(items, lambda it: it.get("fotos_cantidad")),
         "mayorista": _mayorista_dim(items),
@@ -334,7 +352,29 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
 
     editables_vals = [it.get("atributos_faltantes_editables") for it in items if it.get("atributos_faltantes_editables") is not None]
     bloqueados_vals = [it.get("atributos_faltantes_bloqueados") for it in items if it.get("atributos_faltantes_bloqueados") is not None]
-    total_editables = sum(editables_vals) if editables_vals else None
+    # Unión de attr_id únicos entre publicaciones del SKU, no suma -- si una misma
+    # característica falta en 3 de 5 publicaciones cuenta 1 vez, no 3 (confirmado en vivo
+    # 2026-09-07: SKUs con varias publicaciones casi idénticas mostraban un número inflado
+    # por publicación en vez de las características realmente distintas). Requiere
+    # atributos_faltantes_json (guarda el id de cada atributo, no solo el conteo); si ningún
+    # ítem del grupo lo tiene todavía (snapshot corrido antes de que existiera esa columna),
+    # cae a la suma vieja para no perder el dato.
+    faltantes_ids: set = set()
+    tiene_json = False
+    for it in items:
+        raw = it.get("atributos_faltantes_json")
+        if not raw:
+            continue
+        tiene_json = True
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except (TypeError, ValueError):
+            continue
+        for entry in (parsed or {}).get("editables") or []:
+            aid = entry.get("id")
+            if aid:
+                faltantes_ids.add(aid)
+    total_editables = len(faltantes_ids) if tiene_json else (sum(editables_vals) if editables_vals else None)
 
     scores = [it.get("performance_score") for it in items if it.get("performance_score") is not None]
     puntaje = round(sum(scores) / len(scores)) if scores else None
@@ -463,7 +503,7 @@ _COLUMNS = [
     {"name": "envio_gratis", "label": "Envío gratis", "field": "envio_gratis", "align": "center", "w": "85px"},
     {"name": "regulatoria", "label": "Regulatoria", "field": "regulatoria", "align": "center", "w": "90px", "sortable": False},
     {"name": "condicion", "label": "Condición", "field": "condicion", "align": "center", "w": "75px"},
-    {"name": "atributos_editables", "label": "Características", "field": "atributos_editables", "align": "right", "w": "95px"},
+    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "95px"},
     {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "right", "w": "80px"},
 ]
 
@@ -508,13 +548,67 @@ def _item_descriptor(item: dict) -> str:
     return f"{rol}, cuotas"
 
 
+_NORMAL_POR_DISENO_INTRO = (
+    "ML no aplica cambios en publicaciones de catálogo -- atributos y descripción se "
+    "heredan del producto de catálogo (el PUT puede devolver 200 igual, sin aplicarse) -- "
+    "y el mayorista solo se carga en la publicación de contado, nunca en cuotas/Nx."
+)
+
+
+def _agrupar_normal_por_diseno(hechos: List[Dict[str, Any]]) -> List[str]:
+    """Colapsa los hechos crudos de "normal por diseño" (uno por atributo x publicación,
+    hasta decenas por SKU) en pocas líneas legibles: un renglón por publicación para los
+    atributos heredados de catálogo (junta los nombres en vez de repetir la publicación
+    una vez por atributo), y un único renglón agregado para descripción/mayorista (el
+    motivo es el mismo para todas, no aporta nada repetirlo por item_id)."""
+    lineas: List[str] = []
+
+    por_item: Dict[str, Dict[str, Any]] = {}
+    orden_items: List[str] = []
+    for h in hechos:
+        if h["tipo"] != "atributo_catalogo":
+            continue
+        if h["item_id"] not in por_item:
+            por_item[h["item_id"]] = {"descriptor": h["descriptor"], "campos": []}
+            orden_items.append(h["item_id"])
+        por_item[h["item_id"]]["campos"].append(h["campo"])
+    for iid in orden_items:
+        e = por_item[iid]
+        n = len(e["campos"])
+        lineas.append(
+            f"{n} atributo{'s' if n != 1 else ''} heredado{'s' if n != 1 else ''} de catálogo "
+            f"({', '.join(e['campos'])}) — {iid} ({e['descriptor']})"
+        )
+
+    n_desc = sum(1 for h in hechos if h["tipo"] == "descripcion_catalogo")
+    if n_desc:
+        lineas.append(
+            f"Descripción no editable en {n_desc} publicaci{'ón' if n_desc == 1 else 'ones'} de catálogo "
+            "— se gestiona en el producto de catálogo"
+        )
+
+    n_mayor = sum(1 for h in hechos if h["tipo"] == "mayorista_no_aplica")
+    if n_mayor:
+        lineas.append(
+            f"Mayorista no aplica en {n_mayor} publicaci{'ón' if n_mayor == 1 else 'ones'} (cuotas/Nx) "
+            "— regla de negocio: solo aplica a la publicación de contado"
+        )
+
+    return lineas
+
+
 def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]:
     """Separa los hallazgos crudos de audit_item() en 4 grupos (normal por diseño /
     sugerido con valor pre-cargado / necesita decisión de Diego / opcional -- SEO,
     no obligatorio, nunca cuenta como hallazgo accionable). El mayorista de
     publicaciones gold_special se evalúa aparte, con _evaluar_mayorista_gold_special
-    (ver más abajo) -- no pasa por acá. No escribe nada -- solo lee y clasifica."""
-    normal: List[str] = []
+    (ver más abajo) -- no pasa por acá. No escribe nada -- solo lee y clasifica.
+
+    "normal" viene ya agrupado (ver _agrupar_normal_por_diseno) -- el popup no debe
+    repetir la misma explicación una vez por atributo y por publicación (llegó a 47
+    líneas casi idénticas en SKUs con varias publicaciones de catálogo, ver
+    OpenFit2-T920-Negro 2026-09-07)."""
+    normal_hechos: List[Dict[str, Any]] = []
     sugeridos: List[Dict[str, Any]] = []
     decision: List[Dict[str, Any]] = []
     opcionales: List[Dict[str, Any]] = []
@@ -547,11 +641,7 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
                 # PUT de un atributo sobre una publicación de catálogo pero no lo aplica
                 # -- se hereda del producto de catálogo. Confirmado en vivo el 2026-09-07
                 # con OS_VERSION en GoogleTV-GA05662-US (PUT 200, GET siguió sin el valor).
-                normal.append(
-                    f"{nombre} no editable en {iid} ({desc}) -- ML no aplica cambios de "
-                    "atributos en publicaciones de catálogo (se heredan del producto de "
-                    "catálogo), aunque el PUT devuelva 200"
-                )
+                normal_hechos.append({"tipo": "atributo_catalogo", "item_id": iid, "descriptor": desc, "campo": nombre})
                 continue
             entry = {
                 "campo": nombre, "attr_id": aid, "item_id": iid,
@@ -585,11 +675,7 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
             # opcional bloqueado por catálogo, no solo GTIN.
             for f in faltantes_raw.get("opcionales", []):
                 aid, nombre = f.get("id"), f.get("name") or f.get("id")
-                normal.append(
-                    f"{nombre} no editable en {iid} ({desc}) -- ML no aplica cambios de "
-                    "atributos en publicaciones de catálogo (se heredan del producto de "
-                    "catálogo), aunque el PUT devuelva 200"
-                )
+                normal_hechos.append({"tipo": "atributo_catalogo", "item_id": iid, "descriptor": desc, "campo": nombre})
 
     # --- descripcion ---
     propias_con_texto = [
@@ -625,10 +711,7 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
             # ("Description is not modifiable on catalog listing item", confirmado
             # en vivo) -- nunca ofrecerlas como destino de escritura. Se gestiona
             # desde el producto de catálogo o desde la publicación propia pareja.
-            normal.append(
-                f"Descripción no editable en {iid} ({desc}) -- ML no permite escribirla "
-                "en publicaciones de catálogo; se gestiona en el producto de catálogo"
-            )
+            normal_hechos.append({"tipo": "descripcion_catalogo", "item_id": iid, "descriptor": desc})
             continue
         # Publicación propia: prefiere texto de otra propia; si ninguna otra propia
         # tiene descripción, usa la de una copia de catálogo SOLO como fuente para
@@ -658,8 +741,9 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         iid = it["id"]
         desc = _item_descriptor(it)
         if audit.get("mayorista_estado") == "sin_mayorista" and it.get("listing_type_id") != "gold_special":
-            normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (solo aplica a la publicación de contado)")
+            normal_hechos.append({"tipo": "mayorista_no_aplica", "item_id": iid, "descriptor": desc})
 
+    normal = {"count": len(normal_hechos), "lineas": _agrupar_normal_por_diseno(normal_hechos)}
     return {"normal": normal, "sugeridos": sugeridos, "decision": decision, "opcionales": opcionales}
 
 
@@ -1665,9 +1749,12 @@ def build_tab_salud(container) -> None:
                     with body:
                         ui.label(f"{len(resultado['items'])} publicaciones · datos actualizados recién ahora").classes("text-xs text-gray-500")
 
-                        if clasif["normal"]:
-                            with ui.expansion(f"ℹ️ Normal por diseño ({len(clasif['normal'])})", value=False).classes("w-full text-sm"):
-                                for txt in clasif["normal"]:
+                        n_normal = clasif["normal"]["count"]
+                        if n_normal:
+                            etiqueta = f"ℹ️ {n_normal} elemento{'s' if n_normal != 1 else ''} no editable{'s' if n_normal != 1 else ''} por diseño"
+                            with ui.expansion(etiqueta, value=False).classes("w-full text-sm"):
+                                ui.label(_NORMAL_POR_DISENO_INTRO).classes("text-xs text-gray-400 italic mb-1")
+                                for txt in clasif["normal"]["lineas"]:
                                     ui.label(f"• {txt}").classes("text-xs text-gray-500")
 
                         grupos_sug = _consolidar(clasif["sugeridos"])
@@ -1946,7 +2033,9 @@ def build_tab_salud(container) -> None:
 
                 visibles = sorted(visibles, key=lambda r: _sort_key(r, sort_ref["col"]), reverse=not sort_ref["asc"])
 
-                contador_lbl.set_text(f"mostrando {len(visibles)} de {len(filas_todas)}")
+                contador_lbl.set_text(
+                    f"mostrando {len(visibles)} de {len(filas_todas)} · 👤 publicación propia · 🏬 publicación catálogo"
+                )
 
                 header_div.clear()
                 table_container.clear()
@@ -2026,6 +2115,36 @@ def build_tab_salud(container) -> None:
                                                     tooltip = (
                                                         f"Propias: {po}/{pt} con GTIN (accionable) · "
                                                         f"Catálogo: {co}/{ct} con GTIN (informativo, ML no permite editarlo)"
+                                                    )
+                                                    with ui.column().classes("gap-0 items-center"):
+                                                        with ui.row().classes("items-center gap-0.5") as fila_prop:
+                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(f"{po}/{pt}").classes("text-xs font-semibold").style(f"color:{color_prop}")
+                                                        fila_prop.tooltip(tooltip)
+                                                        if ct:
+                                                            color_cat = _GREY if co == ct else _MID
+                                                            with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                                ui.icon("storefront", size="12px").style(f"color:{color_cat}")
+                                                                ui.label(f"{co}/{ct}").classes("text-xs").style(f"color:{color_cat}")
+                                                            fila_cat.tooltip(tooltip)
+                                            elif name == "descripcion":
+                                                d = row["dims"].get("descripcion")
+                                                if not d or (d["propias_total"] == 0 and d["catalogo_total"] == 0):
+                                                    ui.label("—")
+                                                else:
+                                                    pt, po = d["propias_total"], d["propias_ok"]
+                                                    ct, co = d["catalogo_total"], d["catalogo_ok"]
+                                                    if pt == 0:
+                                                        color_prop = _GREY
+                                                    elif po == pt:
+                                                        color_prop = _OK
+                                                    elif po == 0:
+                                                        color_prop = _BAD
+                                                    else:
+                                                        color_prop = _MID
+                                                    tooltip = (
+                                                        f"Propias: {po}/{pt} con descripción (accionable) · "
+                                                        f"Catálogo: {co}/{ct} con descripción (informativo, heredada del producto de catálogo)"
                                                     )
                                                     with ui.column().classes("gap-0 items-center"):
                                                         with ui.row().classes("items-center gap-0.5") as fila_prop:
