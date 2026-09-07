@@ -522,9 +522,9 @@ _COLUMNS = [
     {"name": "retiro_persona", "label": "Retiro en persona", "field": "retiro_persona", "align": "center", "w": "95px"},
     {"name": "garantia", "label": "Garantía", "field": "garantia", "align": "center", "w": "75px"},
     {"name": "envio_gratis", "label": "Envío gratis", "field": "envio_gratis", "align": "center", "w": "85px"},
-    {"name": "regulatoria", "label": "Regulatoria", "field": "regulatoria", "align": "center", "w": "90px", "sortable": False},
+    {"name": "regulatoria", "label": "Regulatoria", "field": "regulatoria", "align": "center", "w": "45px", "sortable": False},
     {"name": "condicion", "label": "Condición", "field": "condicion", "align": "center", "w": "75px"},
-    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "105px"},
+    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "70px"},
     {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "right", "w": "80px"},
 ]
 
@@ -2121,7 +2121,8 @@ def build_tab_salud(container) -> None:
                                             elif name == "variantes":
                                                 ui.label(str(row["n_items"]))
                                             elif name == "regulatoria":
-                                                ui.label(row["regulatoria_texto"]).style(f"color:{_GREY}")
+                                                lbl_reg = ui.label("N/D").style(f"color:{_GREY}")
+                                                lbl_reg.tooltip(row["regulatoria_texto"])
                                             elif name == "atributos_editables":
                                                 obl = row.get("atributos_editables_total")
                                                 opc = row.get("atributos_opcionales_total")
