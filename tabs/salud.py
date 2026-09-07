@@ -14,7 +14,9 @@ desglose por ítem queda para el popup (Fase 2).
 from __future__ import annotations
 
 import json
+import re
 import time
+import unicodedata
 from collections import Counter, defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -445,6 +447,17 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
             faltantes = []
         for f in faltantes:
             aid, nombre = f.get("id"), f.get("name") or f.get("id")
+            if it.get("catalog_listing"):
+                # Mismo bloqueo que la descripción (ver más abajo): ML devuelve 200 en el
+                # PUT de un atributo sobre una publicación de catálogo pero no lo aplica
+                # -- se hereda del producto de catálogo. Confirmado en vivo el 2026-09-07
+                # con OS_VERSION en GoogleTV-GA05662-US (PUT 200, GET siguió sin el valor).
+                normal.append(
+                    f"{nombre} no editable en {iid} ({desc}) -- ML no aplica cambios de "
+                    "atributos en publicaciones de catálogo (se heredan del producto de "
+                    "catálogo), aunque el PUT devuelva 200"
+                )
+                continue
             entry = {
                 "campo": nombre, "attr_id": aid, "item_id": iid,
                 "descriptor": desc, "tipo": "atributo",
@@ -625,14 +638,105 @@ def _fetch_category_attrs(cat_id: str) -> List[dict]:
         return []
 
 
-def _match_valor_lista(attr_def: Optional[dict], texto: str) -> bool:
-    """True si `texto` coincide (case-insensitive) con una opción de la lista cerrada
-    del atributo. Si el atributo no tiene lista de valores, no hay nada que validar."""
-    valores = (attr_def or {}).get("values") or []
-    if not valores:
-        return True
-    low = texto.strip().lower()
-    return any((v.get("name") or "").strip().lower() == low for v in valores)
+def _norm(s: Optional[str]) -> str:
+    """Normaliza para matchear contra values[]/allowed_units sin que tilde/mayúscula/
+    espaciado de más rompan el match (caso confirmado: 'días' vs 'dias', '64mb' vs
+    '64 MB'). También pareja el espaciado alrededor de comas: ML devuelve el
+    value_name de un atributo multivalued SIN espacio después de la coma -- verificado
+    de forma independiente el 2026-09-07 con un GET directo a MLA3403904978
+    (AW-Se3-Black-MEH94LW), que devolvió LANGUAGES.value_name = 'Español,Inglés' pese a
+    que el popup escribe "Español, Inglés" (coma + espacio). Sin este ajuste, una
+    escritura que sí se aplicó bien se reportaba como "GET no coincide" por diferencia
+    de formato, no de contenido."""
+    s = unicodedata.normalize("NFKD", s or "").encode("ascii", "ignore").decode()
+    s = " ".join(s.strip().lower().split())
+    return re.sub(r"\s*,\s*", ",", s)
+
+
+def _tiene_tag(attr_def: Optional[dict], tag: str) -> bool:
+    """La API de atributos devuelve `tags` como dict ({'multivalued': true, ...}) en
+    /categories/{id}/attributes, pero la doc de ML también muestra variantes con
+    `tags` como lista de strings -- se soportan ambas para no asumir de más."""
+    tags = (attr_def or {}).get("tags")
+    if isinstance(tags, dict):
+        return bool(tags.get(tag))
+    if isinstance(tags, list):
+        return tag in tags
+    return False
+
+
+def _valores_de(attr_def: Optional[dict]) -> List[dict]:
+    return (attr_def or {}).get("values") or []
+
+
+def _tipo_campo(attr_def: Optional[dict]) -> str:
+    """Determina qué widget corresponde para un atributo. El discriminante real NO es
+    value_type solo -- es si `values[]` viene poblado. Un atributo "string" con
+    values[] poblado y tag multivalued (ej. LANGUAGES) exige matchear nombres exactos
+    de esa lista igual que un "list", aunque el tipo diga string. En cambio
+    `suggested_values` (values[] vacío) es solo un hint de autocompletado -- ML sigue
+    aceptando texto libre nuevo ahí (confirmado contra la doc oficial de atributos).
+
+    Devuelve: "closed" (boolean/list -- nunca texto libre, siempre value_id),
+    "number_unit", "multivalued" (string/number con values[] + tag multivalued),
+    "closed_or_free" (string/number con values[] sin multivalued -- ML tolera un
+    value_name nuevo), o "free" (sin values[], o sin attr_def -- texto libre, sin
+    cambios de comportamiento)."""
+    if not attr_def:
+        return "free"
+    value_type = attr_def.get("value_type")
+    if value_type in ("boolean", "list"):
+        return "closed"
+    if value_type == "number_unit":
+        return "number_unit"
+    valores = _valores_de(attr_def)
+    if valores and _tiene_tag(attr_def, "multivalued"):
+        return "multivalued"
+    if valores:
+        return "closed_or_free"
+    return "free"
+
+
+def _match_valor_id(attr_def: Optional[dict], texto: str) -> Optional[str]:
+    """Busca en values[] un name que matchee (normalizado) `texto`. Devuelve el
+    value_id si matchea, None si no hay match."""
+    low = _norm(texto)
+    if not low:
+        return None
+    for v in _valores_de(attr_def):
+        if _norm(v.get("name")) == low:
+            return v.get("id")
+    return None
+
+
+def _match_valor_nombre(attr_def: Optional[dict], texto: str) -> Optional[str]:
+    """Como _match_valor_id pero devuelve el name canónico (con el casing/tildes
+    reales de ML) en vez del id -- para armar value_name en vez de value_id."""
+    low = _norm(texto)
+    if not low:
+        return None
+    for v in _valores_de(attr_def):
+        if _norm(v.get("name")) == low:
+            return v.get("name")
+    return None
+
+
+_NUM_RE = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
+
+
+def _parse_number_unit(texto: str, attr_def: dict) -> Tuple[str, str]:
+    """Separa un texto tipo '60 h' / '64mb' / '5 - 7 días' en (número, unidad_id) lo
+    mejor posible: toma el primer número que aparece y matchea lo que sigue contra
+    allowed_units (normalizado). Si no reconoce la unidad, cae al default_unit de la
+    categoría o a la primera de allowed_units -- nunca deja la unidad en blanco si hay
+    una sola opción posible (caso USE_TIME: allowed_units=['h'])."""
+    unidades = [u.get("id") for u in (attr_def.get("allowed_units") or []) if u.get("id")]
+    default_unit = attr_def.get("default_unit") or (unidades[0] if unidades else "")
+    m = _NUM_RE.search(texto or "")
+    numero = m.group(0).replace(",", ".") if m else ""
+    resto = _norm((texto or "")[m.end():]) if m else _norm(texto or "")
+    unidad = next((u for u in unidades if _norm(u) == resto), None) or default_unit
+    return numero, unidad
 
 
 def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None) -> str:
@@ -645,9 +749,9 @@ def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None
             "sugeridas por el título/atributos). Devolvé SOLO el texto de la "
             "descripción, sin comillas ni encabezados."
         )
-    value_type = (attr_def or {}).get("value_type")
-    valores = (attr_def or {}).get("values") or []
-    if value_type == "number_unit":
+    tipo_campo = _tipo_campo(attr_def)
+    valores = _valores_de(attr_def)
+    if tipo_campo == "number_unit":
         unidades = [u.get("id") for u in (attr_def.get("allowed_units") or []) if u.get("id")]
         unidad = attr_def.get("default_unit") or (unidades[0] if unidades else "")
         return (
@@ -655,7 +759,18 @@ def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None
             f"Sugerí el valor para el atributo de ficha técnica \"{g['campo']}\" de este "
             f"producto. Es un valor numérico con unidad, y la ÚNICA unidad válida es "
             f"'{unidad}'. Respondé SOLO con un número seguido de esa unidad (ejemplo: "
-            f"'60 {unidad}'). No uses ninguna otra unidad ni la conviertas a otra."
+            f"'60 {unidad}'). No uses ninguna otra unidad ni la conviertas a otra. Si no "
+            "podés inferir el valor con confianza, respondé exactamente VACIO."
+        )
+    if tipo_campo == "multivalued":
+        opciones = ", ".join(v.get("name", "") for v in valores[:80] if v.get("name"))
+        return (
+            f"{contexto}\n\n"
+            f"Elegí las opciones que apliquen para el atributo de ficha técnica "
+            f"\"{g['campo']}\" de este producto, ELIGIENDO SOLO entre estas opciones "
+            f"exactas (copiá cada una tal cual está escrita; si elegís más de una, "
+            f"separalas con coma): {opciones}. Si ninguna aplica con confianza, "
+            "respondé exactamente VACIO."
         )
     if valores:
         opciones = ", ".join(v.get("name", "") for v in valores[:80] if v.get("name"))
@@ -663,14 +778,45 @@ def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None
             f"{contexto}\n\n"
             f"Elegí el valor más probable para el atributo de ficha técnica \"{g['campo']}\" "
             f"de este producto, ELIGIENDO UNA de estas opciones exactas (respondé copiando "
-            f"una tal cual está escrita, sin agregar nada más): {opciones}"
+            f"una tal cual está escrita, sin agregar nada más): {opciones}. Si ninguna "
+            "aplica con confianza, respondé exactamente VACIO."
         )
     return (
         f"{contexto}\n\n"
         f"Sugerí el valor más probable para el atributo de ficha técnica \"{g['campo']}\" "
         "de este producto. Respondé SOLO con el valor (una palabra o frase corta), sin "
-        "explicaciones ni puntuación extra."
+        "explicaciones ni puntuación extra. Si no podés inferirlo con confianza, "
+        "respondé exactamente VACIO."
     )
+
+
+class _CampoWidget:
+    """Envuelve el/los widgets ya renderizados de un campo editable del popup para que
+    _guardar() y el botón de IA no necesiten conocer, campo por campo, si el atributo
+    es boolean/list (value_id), number_unit (número+unidad), string multivalued (chips)
+    o texto libre -- cada _CampoWidget sabe armar su propio payload de escritura y su
+    propia visualización, sin que el resto del popup tenga que ramificar por tipo."""
+
+    def __init__(self, tiene_valor, payload, display, set_texto):
+        self._tiene_valor = tiene_valor
+        self._payload = payload
+        self._display = display
+        self._set_texto = set_texto
+
+    def tiene_valor(self) -> bool:
+        return self._tiene_valor()
+
+    def payload(self) -> Optional[Dict[str, Any]]:
+        return self._payload()
+
+    def display(self) -> str:
+        return self._display()
+
+    def set_texto(self, texto: str) -> bool:
+        """Aplica un texto (típicamente sugerido por IA) al widget. Devuelve True si
+        el texto matcheaba limpio contra el dominio cerrado del atributo (o si el
+        campo no tiene dominio cerrado que validar), False si no matcheaba."""
+        return self._set_texto(texto)
 
 
 def _groq_generate(api_key: str, prompt: str) -> str:
@@ -778,21 +924,31 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
 # ---------------------------------------------------------------------------
 
 def _escribir_atributo(token: str, uid: int, sku: str, item_id: str, attr_id: str,
-                        campo_label: str, valor_anterior: str, valor_nuevo: str) -> Optional[str]:
-    """Devuelve None si ok, o un mensaje de error para el resumen si falló."""
-    resp = ml_update_item_attributes(token, item_id, [{"id": attr_id, "value_name": valor_nuevo}])
+                        campo_label: str, valor_anterior: str, attr_payload: Dict[str, Any],
+                        valor_mostrado: str) -> Optional[str]:
+    """Devuelve None si ok, o un mensaje de error para el resumen si falló. `attr_payload`
+    ya viene armado por el popup ({"id": attr_id, "value_id": ...} para boolean/list,
+    {"id": attr_id, "value_name": ...} para number_unit/multivalued/string/N-A) -- acá
+    no se decide el tipo, solo se escribe y se verifica contra el campo que corresponda
+    (value_id si se mandó value_id, value_name si no -- comparar siempre por value_name
+    cuando se escribió value_id es lo que generaba falsos "no coincide": ML puede
+    normalizar/completar el value_name mostrado distinto al que se mandó)."""
+    resp = ml_update_item_attributes(token, item_id, [attr_payload])
     post_detalle = f"PUT status={resp.status_code} {resp.text[:200]}" if resp.status_code != 200 else None
     time.sleep(0.4)
     item = ml_get_item(token, item_id)
-    actual = None
+    actual_attr = None
     if item:
-        actual = next((a.get("value_name") for a in (item.get("attributes") or []) if a.get("id") == attr_id), None)
-    ok = actual == valor_nuevo
+        actual_attr = next((a for a in (item.get("attributes") or []) if a.get("id") == attr_id), None)
+    if attr_payload.get("value_id") not in (None, ""):
+        ok = actual_attr is not None and str(actual_attr.get("value_id") or "") == str(attr_payload["value_id"])
+    else:
+        ok = actual_attr is not None and _norm(actual_attr.get("value_name")) == _norm(attr_payload.get("value_name"))
     if ok:
-        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup", "ok", None)
+        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, "salud_popup", "ok", None)
         return None
-    detalle = post_detalle or f"GET de verificación no coincide (quedó {actual!r})"
-    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_nuevo, "salud_popup", "error", detalle)
+    detalle = post_detalle or f"GET de verificación no coincide (quedó {actual_attr!r})"
+    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, "salud_popup", "error", detalle)
     return f"{campo_label} ({item_id}): {detalle}"
 
 
@@ -1121,41 +1277,196 @@ def build_tab_salud(container) -> None:
                     inputs: Dict[str, tuple] = {}
                     mayorista_tildes: Dict[str, Dict[int, bool]] = {}
 
-                    def _render_campo(g: Dict[str, Any], seccion: str):
+                    def _render_campo(g: Dict[str, Any], seccion: str) -> _CampoWidget:
+                        attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
+                        tipo_campo = _tipo_campo(attr_def) if g["tipo"] == "atributo" else "free"
+                        valor_inicial = g["valor_sugerido"] if seccion == "sugerido" else ""
+                        placeholder = None if seccion == "sugerido" else "(vacío = no tocar)"
+                        attr_id = g.get("attr_id")
+
                         with ui.column().classes("w-full gap-0"):
                             with ui.row().classes("items-center gap-2 w-full"):
                                 ui.label(g["campo"]).classes("text-xs w-56")
+
                                 if g["tipo"] == "descripcion":
                                     inp = ui.textarea(
-                                        value=g["valor_sugerido"] if seccion == "sugerido" else "",
-                                        placeholder=None if seccion == "sugerido" else "(vacío = no tocar)",
+                                        value=valor_inicial, placeholder=placeholder,
                                     ).props("dense outlined").classes("flex-grow").style("min-height:110px")
-                                else:
-                                    inp = ui.input(
-                                        value=g["valor_sugerido"] if seccion == "sugerido" else "",
-                                        placeholder=None if seccion == "sugerido" else "(vacío = no tocar)",
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda inp=inp: bool((inp.value or "").strip()),
+                                        payload=lambda: None,
+                                        display=lambda inp=inp: (inp.value or "").strip(),
+                                        set_texto=lambda texto, inp=inp: (setattr(inp, "value", texto), True)[1],
+                                    )
+
+                                elif tipo_campo == "closed":
+                                    # boolean/list: NUNCA texto libre -- ML exige value_id de un
+                                    # conjunto cerrado de verdad (confirmado contra la doc oficial).
+                                    opciones = {v.get("id"): v.get("name") for v in _valores_de(attr_def) if v.get("id") and v.get("name")}
+                                    default_id = _match_valor_id(attr_def, valor_inicial) if valor_inicial else None
+                                    sel = ui.select(opciones, value=default_id, with_input=True).props("dense outlined").classes("flex-grow")
+
+                                    def _set_texto_closed(texto, sel=sel, attr_def=attr_def):
+                                        vid = _match_valor_id(attr_def, texto)
+                                        if vid:
+                                            sel.value = vid
+                                            return True
+                                        return False
+
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda sel=sel: bool(sel.value),
+                                        payload=lambda sel=sel, attr_id=attr_id: {"id": attr_id, "value_id": sel.value} if sel.value else None,
+                                        display=lambda sel=sel, opciones=opciones: opciones.get(sel.value, ""),
+                                        set_texto=_set_texto_closed,
+                                    )
+
+                                elif tipo_campo == "number_unit":
+                                    unidades = [u.get("id") for u in (attr_def.get("allowed_units") or []) if u.get("id")]
+                                    numero_ini, unidad_parsed = _parse_number_unit(valor_inicial, attr_def) if valor_inicial else ("", "")
+                                    # ui.select revienta con ValueError si `value` no está entre las
+                                    # opciones -- unidad_parsed puede no coincidir con `unidades` si
+                                    # default_unit viniera mal cargado en ML; nunca confiar ciego.
+                                    unidad_ini = unidad_parsed if unidad_parsed in unidades else (unidades[0] if unidades else None)
+                                    with ui.row().classes("flex-grow gap-2 items-center no-wrap"):
+                                        numero_inp = ui.input(value=numero_ini, placeholder=placeholder or "número").props("dense outlined").classes("w-24")
+                                        unidad_sel = ui.select({u: u for u in unidades}, value=unidad_ini).props("dense outlined").classes("w-24")
+
+                                    def _set_texto_nu(texto, numero_inp=numero_inp, unidad_sel=unidad_sel, attr_def=attr_def):
+                                        n, u = _parse_number_unit(texto, attr_def)
+                                        if not n:
+                                            return False
+                                        numero_inp.value = n
+                                        matched = bool(u) and _norm(u) in _norm(texto)
+                                        if u:
+                                            unidad_sel.value = u
+                                        return matched
+
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda numero_inp=numero_inp: bool((numero_inp.value or "").strip()),
+                                        payload=lambda numero_inp=numero_inp, unidad_sel=unidad_sel, attr_id=attr_id: (
+                                            {"id": attr_id, "value_name": f"{(numero_inp.value or '').strip()} {unidad_sel.value}"}
+                                            if (numero_inp.value or "").strip() else None
+                                        ),
+                                        display=lambda numero_inp=numero_inp, unidad_sel=unidad_sel: f"{(numero_inp.value or '').strip()} {unidad_sel.value}".strip(),
+                                        set_texto=_set_texto_nu,
+                                    )
+
+                                elif tipo_campo == "multivalued":
+                                    # string/number con values[] + tag multivalued (LANGUAGES,
+                                    # FUNCTIONS, SMARTWATCH_FUNCTIONS): igual que "closed", nunca
+                                    # texto libre -- cada opción tiene que venir de values[].
+                                    opciones_mv = {v.get("name"): v.get("name") for v in _valores_de(attr_def) if v.get("name")}
+                                    default_list: List[str] = []
+                                    if valor_inicial:
+                                        for parte in valor_inicial.split(","):
+                                            nombre = _match_valor_nombre(attr_def, parte)
+                                            if nombre and nombre not in default_list:
+                                                default_list.append(nombre)
+                                    sel = ui.select(
+                                        opciones_mv, value=default_list, multiple=True, with_input=True,
+                                    ).props("dense outlined use-chips").classes("flex-grow")
+
+                                    def _set_texto_mv(texto, sel=sel, attr_def=attr_def):
+                                        partes = [p for p in (texto or "").split(",") if p.strip()]
+                                        matched: List[str] = []
+                                        todas_ok = bool(partes)
+                                        for p in partes:
+                                            nombre = _match_valor_nombre(attr_def, p)
+                                            if nombre:
+                                                if nombre not in matched:
+                                                    matched.append(nombre)
+                                            else:
+                                                todas_ok = False
+                                        sel.value = matched
+                                        return todas_ok and bool(matched)
+
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda sel=sel: bool(sel.value),
+                                        payload=lambda sel=sel, attr_id=attr_id: {"id": attr_id, "value_name": ", ".join(sel.value)} if sel.value else None,
+                                        display=lambda sel=sel: ", ".join(sel.value or []),
+                                        set_texto=_set_texto_mv,
+                                    )
+
+                                elif tipo_campo == "closed_or_free":
+                                    # string/number con values[] pero sin multivalued (ej.
+                                    # OS_VERSION): ML tolera un value_name nuevo (doc: "para el
+                                    # caso de nuevos valores basta con enviar únicamente el name"),
+                                    # así que el select permite elegir una opción real O escribir
+                                    # una nueva -- nunca inventa por su cuenta, eso lo decide Diego.
+                                    opciones_cf = {v.get("name"): v.get("name") for v in _valores_de(attr_def) if v.get("name")}
+                                    default_cf = None
+                                    if valor_inicial:
+                                        default_cf = _match_valor_nombre(attr_def, valor_inicial) or valor_inicial
+                                        opciones_cf.setdefault(default_cf, default_cf)
+                                    sel = ui.select(
+                                        opciones_cf, value=default_cf, with_input=True, new_value_mode="add-unique",
                                     ).props("dense outlined").classes("flex-grow")
+
+                                    def _payload_cf(sel=sel, attr_def=attr_def, attr_id=attr_id):
+                                        if not sel.value:
+                                            return None
+                                        vid = _match_valor_id(attr_def, sel.value)
+                                        return {"id": attr_id, "value_id": vid} if vid else {"id": attr_id, "value_name": sel.value}
+
+                                    def _set_texto_cf(texto, sel=sel, attr_def=attr_def):
+                                        if not texto:
+                                            return False
+                                        canon = _match_valor_nombre(attr_def, texto) or texto
+                                        if canon not in sel.options:
+                                            # value=<no registrada en options> no rompe (ValueError solo
+                                            # se dispara en el constructor), pero queda "invisible" en el
+                                            # dropdown -- se registra antes para que se vea seleccionada.
+                                            sel.options[canon] = canon
+                                            sel.update()
+                                        sel.value = canon
+                                        return True
+
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda sel=sel: bool(sel.value),
+                                        payload=_payload_cf,
+                                        display=lambda sel=sel: sel.value or "",
+                                        set_texto=_set_texto_cf,
+                                    )
+
+                                else:  # "free" -- string/number sin values[], o sin attr_def: sin cambios.
+                                    inp = ui.input(value=valor_inicial, placeholder=placeholder).props("dense outlined").classes("flex-grow")
+                                    campo = _CampoWidget(
+                                        tiene_valor=lambda inp=inp: bool((inp.value or "").strip()),
+                                        payload=lambda inp=inp, attr_id=attr_id: (
+                                            {"id": attr_id, "value_name": (inp.value or "").strip()} if (inp.value or "").strip() else None
+                                        ),
+                                        display=lambda inp=inp: (inp.value or "").strip(),
+                                        set_texto=lambda texto, inp=inp: (setattr(inp, "value", texto), True)[1],
+                                    )
+
                                 marca_ia = ui.label("✨ sugerido por IA, sin verificar").classes("text-xs").style(f"color:{_MID}")
                                 marca_ia.set_visibility(False)
                                 if _con_boton_ia(g, seccion):
-                                    async def _click_ia(g=g, inp=inp, marca_ia=marca_ia) -> None:
+                                    async def _click_ia(g=g, campo=campo, marca_ia=marca_ia, attr_def=attr_def) -> None:
                                         if not groq_key:
                                             ui.notify("Configurá tu API key de Groq en Config → IA/Sugerencias", color="warning")
                                             return
-                                        attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
                                         try:
                                             texto = await run.io_bound(_groq_generate, groq_key, _prompt_ia(g, contexto_ia, attr_def))
                                         except Exception as exc:
                                             ui.notify(f"Error al pedir sugerencia a la IA: {exc}", color="negative")
                                             return
-                                        inp.value = texto
-                                        if g["tipo"] == "atributo" and not _match_valor_lista(attr_def, texto):
+                                        if texto.strip().upper() == "VACIO":
+                                            marca_ia.set_text("✨ la IA no encontró un valor confiable -- dejalo vacío o completalo a mano")
+                                            marca_ia.style(f"color:{_MID}")
+                                            marca_ia.set_visibility(True)
+                                            return
+                                        ok = campo.set_texto(texto)
+                                        if g["tipo"] == "atributo" and not ok:
                                             marca_ia.set_text("✨ sugerido por IA -- no coincide con una opción válida de ML, revisar antes de guardar")
                                             marca_ia.style(f"color:{_BAD}")
+                                        else:
+                                            marca_ia.set_text("✨ sugerido por IA, sin verificar")
+                                            marca_ia.style(f"color:{_MID}")
                                         marca_ia.set_visibility(True)
                                     ui.button(icon="auto_awesome", on_click=_click_ia).props("flat dense round size=sm").tooltip("Sugerir con IA")
                             ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
-                        return inp
+                        return campo
 
                     body.clear()
                     with body:
@@ -1170,14 +1481,14 @@ def build_tab_salud(container) -> None:
                         if grupos_sug:
                             ui.label(f"✏️ Sugerido — revisar y confirmar ({len(grupos_sug)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_sug):
-                                inp = _render_campo(g, "sugerido")
-                                inputs[f"sug_{i}"] = (g, inp)
+                                campo = _render_campo(g, "sugerido")
+                                inputs[f"sug_{i}"] = (g, campo)
 
                         if clasif["decision"]:
                             ui.label(f"❓ Necesita tu decisión ({len(grupos_dec)})").classes("font-semibold text-sm mt-2")
                             for i, g in enumerate(grupos_dec):
-                                inp = _render_campo(g, "decision")
-                                inputs[f"dec_{i}"] = (g, inp)
+                                campo = _render_campo(g, "decision")
+                                inputs[f"dec_{i}"] = (g, campo)
 
                         _ESTADO_COLOR = {"crear": _OK, "roto": _BAD, "revisar": _MID, "ok": _GREY, "bloqueada": _MID}
                         if mayorista_eval:
@@ -1265,18 +1576,21 @@ def build_tab_salud(container) -> None:
                         errores: List[str] = []
                         advertencias: List[str] = []
                         aplicados = 0
-                        for g, inp in inputs.values():
-                            valor = (inp.value or "").strip()
-                            if not valor:
+                        for g, campo in inputs.values():
+                            if not campo.tiene_valor():
                                 continue
                             for it in g["items"]:
                                 if g["tipo"] == "atributo":
+                                    payload = campo.payload()
+                                    if not payload:
+                                        continue
                                     err = await run.io_bound(
-                                        _escribir_atributo, token, uid, sku, it["item_id"], g["attr_id"], g["campo"], None, valor,
+                                        _escribir_atributo, token, uid, sku, it["item_id"], g["attr_id"], g["campo"],
+                                        None, payload, campo.display(),
                                     )
                                 elif g["tipo"] == "descripcion":
                                     err = await run.io_bound(
-                                        _escribir_descripcion, token, uid, sku, it["item_id"], 0, valor,
+                                        _escribir_descripcion, token, uid, sku, it["item_id"], 0, campo.display(),
                                     )
                                 else:
                                     continue
