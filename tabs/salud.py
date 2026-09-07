@@ -359,13 +359,18 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     # atributos_faltantes_json (guarda el id de cada atributo, no solo el conteo); si ningún
     # ítem del grupo lo tiene todavía (snapshot corrido antes de que existiera esa columna),
     # cae a la suma vieja para no perder el dato.
-    # Mismo criterio para las opcionales (tags.required != true en la categoría, ver
-    # salud_audit.audit_item) -- se cuentan aparte porque no cuentan para el score (ver
-    # CAMBIO 4, 2026-09-07): un SKU como OpenFit2-T920-Negro daba "0 características" con
-    # solo obligatorias (correcto desde FIX 3) pero tenía 8 opcionales sin completar que
-    # quedaban invisibles detrás de ese "0".
-    faltantes_ids: set = set()
-    opcionales_ids: set = set()
+    # Separado por catalog_listing -- audit_item() clasifica editable/opcional a nivel
+    # de atributo (tags.read_only/hidden), sin mirar catalog_listing (confirmado
+    # 2026-09-07, OpenRunPro2-S820-Silver): un atributo que falta SOLO en copias de
+    # catálogo (ML no deja tocarlo, se hereda del producto) mezclado con uno que falta
+    # en las propias (accionable) hacía ver "4 pendientes" cuando Diego solo tenía 1
+    # cosa real para corregir. 3 números: obligatorias/opcionales que faltan en propias
+    # (accionable, ver CAMBIO 4 2026-09-07) + un tercero 🏬 solo-catálogo (100%
+    # informativo, nunca cuenta) -- un attr_id que falta en propias Y catálogo cuenta
+    # como propias, nunca se duplica en el tercero.
+    propias_editables_ids: set = set()
+    propias_opcionales_ids: set = set()
+    catalogo_ids: set = set()
     tiene_json = False
     for it in items:
         raw = it.get("atributos_faltantes_json")
@@ -376,16 +381,19 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
             parsed = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, ValueError):
             continue
+        es_catalogo = bool(it.get("catalog_listing"))
         for entry in (parsed or {}).get("editables") or []:
             aid = entry.get("id")
             if aid:
-                faltantes_ids.add(aid)
+                (catalogo_ids if es_catalogo else propias_editables_ids).add(aid)
         for entry in (parsed or {}).get("opcionales") or []:
             aid = entry.get("id")
             if aid:
-                opcionales_ids.add(aid)
-    total_editables = len(faltantes_ids) if tiene_json else (sum(editables_vals) if editables_vals else None)
-    total_opcionales = len(opcionales_ids) if tiene_json else None
+                (catalogo_ids if es_catalogo else propias_opcionales_ids).add(aid)
+    catalogo_ids -= propias_editables_ids | propias_opcionales_ids
+    total_editables = len(propias_editables_ids) if tiene_json else (sum(editables_vals) if editables_vals else None)
+    total_opcionales = len(propias_opcionales_ids) if tiene_json else None
+    total_solo_catalogo = len(catalogo_ids) if tiene_json else None
 
     scores = [it.get("performance_score") for it in items if it.get("performance_score") is not None]
     puntaje = round(sum(scores) / len(scores)) if scores else None
@@ -407,6 +415,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "regulatoria_texto": "No determinable",
         "atributos_editables_total": total_editables,
         "atributos_opcionales_total": total_opcionales,
+        "atributos_solo_catalogo_total": total_solo_catalogo,
         "atributos_bloqueados_total": sum(bloqueados_vals) if bloqueados_vals else 0,
         "puntaje_ml": puntaje,
     }
@@ -515,7 +524,7 @@ _COLUMNS = [
     {"name": "envio_gratis", "label": "Envío gratis", "field": "envio_gratis", "align": "center", "w": "85px"},
     {"name": "regulatoria", "label": "Regulatoria", "field": "regulatoria", "align": "center", "w": "90px", "sortable": False},
     {"name": "condicion", "label": "Condición", "field": "condicion", "align": "center", "w": "75px"},
-    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "95px"},
+    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "105px"},
     {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "right", "w": "80px"},
 ]
 
@@ -2055,7 +2064,8 @@ def build_tab_salud(container) -> None:
                 contador_lbl.set_text(
                     f"mostrando {len(visibles)} de {len(filas_todas)} · "
                     "👤 publicación propia · 🏬 publicación catálogo · "
-                    "❗ obligatoria · 🔧 opcional"
+                    "❗ obligatoria · 🔧 opcional (en Car. faltantes, 🏬 va sin separar "
+                    "obligatoria/opcional -- informativo, nunca cuenta)"
                 )
 
                 header_div.clear()
@@ -2115,23 +2125,31 @@ def build_tab_salud(container) -> None:
                                             elif name == "atributos_editables":
                                                 obl = row.get("atributos_editables_total")
                                                 opc = row.get("atributos_opcionales_total")
-                                                if obl is None and opc is None:
+                                                cat = row.get("atributos_solo_catalogo_total")
+                                                if obl is None and opc is None and cat is None:
                                                     ui.label("—")
                                                 else:
                                                     tooltip = (
-                                                        f"{obl or 0} obligatoria(s) faltante(s) (cuenta para el score) · "
-                                                        f"{opc or 0} opcional(es) sin completar (informativo, no cuenta)"
+                                                        f"{obl or 0} obligatoria(s) faltante(s) en tus publicaciones (accionable, cuenta para el score) · "
+                                                        f"{opc or 0} opcional(es) sin completar en tus publicaciones (informativo, no cuenta) · "
+                                                        f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (informativo, ML no permite editarlo, no cuenta)"
                                                     )
                                                     color_obl = _BAD if (obl or 0) > 0 else _GREY
                                                     with ui.column().classes("gap-0 items-end"):
                                                         with ui.row().classes("items-center gap-0.5") as fila_obl:
                                                             ui.icon("priority_high", size="12px").style(f"color:{color_obl}")
+                                                            ui.icon("person", size="10px").style(f"color:{color_obl}")
                                                             ui.label(str(obl) if obl is not None else "—").classes("text-xs font-semibold").style(f"color:{color_obl}")
                                                         fila_obl.tooltip(tooltip)
                                                         with ui.row().classes("items-center gap-0.5") as fila_opc:
                                                             ui.icon("build", size="12px").style(f"color:{_GREY}")
+                                                            ui.icon("person", size="10px").style(f"color:{_GREY}")
                                                             ui.label(str(opc) if opc is not None else "—").classes("text-xs").style(f"color:{_GREY}")
                                                         fila_opc.tooltip(tooltip)
+                                                        with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                            ui.icon("storefront", size="12px").style(f"color:{_GREY}")
+                                                            ui.label(str(cat) if cat is not None else "—").classes("text-xs").style(f"color:{_GREY}")
+                                                        fila_cat.tooltip(tooltip)
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
                                                 ui.label(str(v) if v is not None else "—")
