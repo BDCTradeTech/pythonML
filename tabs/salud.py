@@ -1677,43 +1677,50 @@ def build_tab_salud(container) -> None:
                                     )
 
                                 elif tipo_campo == "closed_or_free":
-                                    # string/number con values[] pero sin multivalued (ej.
-                                    # OS_VERSION): ML tolera un value_name nuevo (doc: "para el
-                                    # caso de nuevos valores basta con enviar únicamente el name"),
-                                    # así que el select permite elegir una opción real O escribir
-                                    # una nueva -- nunca inventa por su cuenta, eso lo decide Diego.
+                                    # string/number con values[] pero sin multivalued (ej. OS_VERSION,
+                                    # CELL_BATTERY_TYPE): ML tolera un value_name nuevo (doc: "para el
+                                    # caso de nuevos valores basta con enviar únicamente el name"). El
+                                    # select ya soporta escribir y agregar (with_input + add-unique),
+                                    # pero Diego pidió un input de texto libre EXPLÍCITO además del
+                                    # select -- no le resultaba evidente que el dropdown aceptara texto
+                                    # nuevo (caso real: "Baterías de Litio" en CELL_BATTERY_TYPE,
+                                    # Awei-Y669-negro, sin match en values[]=[AAA,AA]). El texto libre,
+                                    # si tiene contenido, siempre gana sobre el select al guardar -- el
+                                    # select queda como atajo para valores ya catalogados.
                                     opciones_cf = {v.get("name"): v.get("name") for v in _valores_de(attr_def) if v.get("name")}
                                     default_cf = None
                                     if valor_inicial:
                                         default_cf = _match_valor_nombre(attr_def, valor_inicial) or valor_inicial
                                         opciones_cf.setdefault(default_cf, default_cf)
-                                    sel = ui.select(
-                                        opciones_cf, value=default_cf, with_input=True, new_value_mode="add-unique",
-                                    ).props("dense outlined").classes("flex-grow")
+                                    with ui.column().classes("flex-grow gap-1"):
+                                        sel = ui.select(
+                                            opciones_cf, value=default_cf, with_input=True, new_value_mode="add-unique",
+                                        ).props("dense outlined").classes("w-full")
+                                        with ui.row().classes("items-center gap-2 w-full"):
+                                            ui.label("o escribí un valor nuevo:").classes("text-xs text-gray-400 shrink-0")
+                                            libre = ui.input(placeholder="ej: Baterías de Litio").props("dense outlined").classes("flex-grow")
 
-                                    def _payload_cf(sel=sel, attr_def=attr_def, attr_id=attr_id):
-                                        if not sel.value:
+                                    def _payload_cf(sel=sel, libre=libre, attr_def=attr_def, attr_id=attr_id):
+                                        texto_libre = (libre.value or "").strip()
+                                        valor = texto_libre or sel.value
+                                        if not valor:
                                             return None
-                                        vid = _match_valor_id(attr_def, sel.value)
-                                        return {"id": attr_id, "value_id": vid} if vid else {"id": attr_id, "value_name": sel.value}
+                                        vid = _match_valor_id(attr_def, valor)
+                                        return {"id": attr_id, "value_id": vid} if vid else {"id": attr_id, "value_name": valor}
 
-                                    def _set_texto_cf(texto, sel=sel, attr_def=attr_def):
+                                    def _set_texto_cf(texto, libre=libre):
+                                        # Sugerencia de IA va directo al campo de texto libre -- mismo
+                                        # resultado final que antes (siempre gana si tiene contenido),
+                                        # canal más simple.
                                         if not texto:
                                             return False
-                                        canon = _match_valor_nombre(attr_def, texto) or texto
-                                        if canon not in sel.options:
-                                            # value=<no registrada en options> no rompe (ValueError solo
-                                            # se dispara en el constructor), pero queda "invisible" en el
-                                            # dropdown -- se registra antes para que se vea seleccionada.
-                                            sel.options[canon] = canon
-                                            sel.update()
-                                        sel.value = canon
+                                        libre.value = texto
                                         return True
 
                                     campo = _CampoWidget(
-                                        tiene_valor=lambda sel=sel: bool(sel.value),
+                                        tiene_valor=lambda sel=sel, libre=libre: bool((libre.value or "").strip()) or bool(sel.value),
                                         payload=_payload_cf,
-                                        display=lambda sel=sel: sel.value or "",
+                                        display=lambda sel=sel, libre=libre: (libre.value or "").strip() or (sel.value or ""),
                                         set_texto=_set_texto_cf,
                                     )
 
