@@ -387,17 +387,39 @@ def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_bas
 # estándar (ver _tiers_plan en tabs/salud.py, caso real MLA1944479697/MLA1944467261,
 # tier de 15+ al 6.23%).
 #
-# Cantidad=1 es la ÚNICA excepción que sigue SIEMPRE afuera: la fórmula de ahorro de
-# envío da 0% por definición para n=1 (ahorro contra sí mismo), así que nunca puede
-# tener pct_calculado -- incluirla en el piso ascendente de _tiers_plan arriesgaría
-# distorsionar el margen exigido a las demás cantidades con un valor sin referencia
-# de cálculo. Un tier de 1 unidad cargado se preserva tal cual esté, nunca se evalúa
-# ni se toca (ver _construir_payload_mayorista en tabs/salud.py).
+# Cantidad=1 sigue sin pasar por _calcular_mayorista_nuevo (la fórmula de ahorro de
+# envío da 0% por definición para n=1, ahorro contra sí mismo -- no hay pct_calculado
+# posible por esa vía). Pero desde 2026-09-07 SÍ se evalúa cuando el ítem tiene un
+# tier legacy cargado ahí (min_purchase_unit=1, sistema B2B viejo): confirmado en vivo
+# que quedaba invisible para este motor y volvía incoherente cualquier corrección de
+# 2/3/5/10 (mismo síntoma que el caso de 15+ de arriba, pero para qty=1) -- ver barrido
+# de cuenta del 2026-09-07, 83 ítems/54 SKUs con esto cargado. Referencia de "sano" para
+# qty=1: _pct_qty1_sano, mitad del % de la cantidad 2 (ver ahí). Si el tier de qty=1
+# está roto en un sentido no cubierto por esa fórmula (precio de mayorista MÁS CARO que
+# el estándar por mucho, ej. -80%: dato claramente corrupto, no una diferencia real de
+# %), se deja afuera con _PCT_QTY1_GUARD_MIN -- limpieza de datos aparte, no de este fix
+# (4 casos reales detectados, MacBookNeo-8-512 Azul/Amarillo).
 # ---------------------------------------------------------------------------
 
 _QTYS_MAYORISTA = (2, 3, 5, 10)
 _DESVIO_PP_MIN = 4.0
 _DESVIO_RATIO_MIN = 1.75
+_PCT_QTY1_GUARD_MIN = -15.0
+
+
+def _pct_qty1_sano(pct_qty2: Optional[float]) -> Optional[float]:
+    """% 'sano' propuesto para un tier legacy cargado en cantidad=1 -- no hay ahorro de
+    envío calculable para 1 unidad (ver nota arriba), pero si ML tiene ahí un precio
+    configurado tiene que quedar coherente con el resto. Regla (Diego, 2026-09-07):
+    mitad del % de la cantidad 2 (actual si está cargada, calculado si no -- lo resuelve
+    el caller), piso de 0.01% (solo evita 0/negativo, no fuerza un mínimo real), siempre
+    estrictamente menor al de qty=2. Devuelve None si pct_qty2 no está disponible."""
+    if pct_qty2 is None:
+        return None
+    propuesto = max(0.01, round(pct_qty2 / 2, 2))
+    if propuesto >= pct_qty2:
+        propuesto = max(0.01, round(pct_qty2 - 0.01, 2))
+    return propuesto if propuesto < pct_qty2 else None
 
 
 def _standard_amount_de(prices_body: dict) -> Optional[float]:
@@ -528,6 +550,31 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
                           "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
         else:
             tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+
+    if 1 in cargado:
+        pct_cargado_1 = round((precio_base - cargado[1]) / precio_base * 100, 2)
+        if pct_cargado_1 >= _PCT_QTY1_GUARD_MIN:
+            if 2 in cargado:
+                pct_qty2_ref = round((precio_base - cargado[2]) / precio_base * 100, 2)
+            else:
+                pct_qty2_ref = calculado_pct.get(2)
+            pct_sano_1 = _pct_qty1_sano(pct_qty2_ref)
+            if pct_sano_1 is not None:
+                if pct_cargado_1 <= 0:
+                    estado_1 = "roto"
+                else:
+                    diff_pp_1 = abs(pct_cargado_1 - pct_sano_1)
+                    ratio_1 = max(pct_cargado_1, pct_sano_1) / max(min(pct_cargado_1, pct_sano_1), 0.01)
+                    estado_1 = "revisar" if (diff_pp_1 >= _DESVIO_PP_MIN and ratio_1 >= _DESVIO_RATIO_MIN) else "ok"
+                entry_1 = {"quantity": 1, "estado": estado_1, "extra": True,
+                           "pct_cargado": pct_cargado_1, "monto_cargado": cargado[1]}
+                if estado_1 != "ok":
+                    entry_1["pct_calculado"] = pct_sano_1
+                    entry_1["monto_calculado"] = round(precio_base * (1 - pct_sano_1 / 100), 2)
+                tiers.append(entry_1)
+            # sin referencia de qty=2 (ni cargada ni calculable) -- no se puede proponer
+            # nada sano para qty=1, se deja afuera de tiers (igual que antes de este fix)
+        # pct_cargado_1 < _PCT_QTY1_GUARD_MIN: dato roto (ver nota arriba), fuera de este fix
 
     presentes = sorted(cargado.keys())
     invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))
@@ -698,7 +745,7 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         item_attr_ids = {a.get("id") for a in item.get("attributes") or [] if a.get("id")}
         condicion = (item.get("condition") or "").lower()
         hidden_tag_por_condicion = {"new": "new_hidden", "used": "used_hidden"}.get(condicion)
-        editables, bloqueados = [], []
+        editables, bloqueados, opcionales = [], [], []
         for a in cat_attrs:
             aid = a.get("id")
             tags = a.get("tags") or {}
@@ -709,12 +756,21 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             if aid in item_attr_ids:
                 continue
             entry = {"id": aid, "name": a.get("name") or aid}
+            # Confirmado en vivo el 2026-09-07 (LIGHT_COLOR en AKGN5HYBRIDBLKAM-BDC):
+            # ML expone en /categories/{id}/attributes TODOS los atributos de la
+            # categoría, no solo los obligatorios -- tags.required es lo único que
+            # distingue "ML lo exige" de "existe como opción, completalo si querés
+            # mejor SEO/ficha técnica". Sin este filtro, cualquier atributo opcional
+            # sin cargar contaba como "pendiente" igual que uno realmente obligatorio.
+            if not tags.get("required"):
+                opcionales.append(entry)
+                continue
             (bloqueados if tags.get("read_only") else editables).append(entry)
         data["atributos_faltantes_editables"] = len(editables)
         data["atributos_faltantes_bloqueados"] = len(bloqueados)
         import json as _json
         data["atributos_faltantes_json"] = _json.dumps(
-            {"editables": editables, "bloqueados": bloqueados}, ensure_ascii=False
+            {"editables": editables, "bloqueados": bloqueados, "opcionales": opcionales}, ensure_ascii=False
         )
 
     data["error"] = " | ".join(errores) if errores else None

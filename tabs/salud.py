@@ -417,13 +417,15 @@ def _item_descriptor(item: dict) -> str:
 
 
 def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]:
-    """Separa los hallazgos crudos de audit_item() en 3 grupos (normal por diseño /
-    sugerido con valor pre-cargado / necesita decisión de Diego). El mayorista de
+    """Separa los hallazgos crudos de audit_item() en 4 grupos (normal por diseño /
+    sugerido con valor pre-cargado / necesita decisión de Diego / opcional -- SEO,
+    no obligatorio, nunca cuenta como hallazgo accionable). El mayorista de
     publicaciones gold_special se evalúa aparte, con _evaluar_mayorista_gold_special
     (ver más abajo) -- no pasa por acá. No escribe nada -- solo lee y clasifica."""
     normal: List[str] = []
     sugeridos: List[Dict[str, Any]] = []
     decision: List[Dict[str, Any]] = []
+    opcionales: List[Dict[str, Any]] = []
 
     items = [r["item"] for r in resultados]
 
@@ -442,9 +444,10 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         iid = it["id"]
         desc = _item_descriptor(it)
         try:
-            faltantes = json.loads(audit.get("atributos_faltantes_json") or "{}").get("editables", [])
+            faltantes_raw = json.loads(audit.get("atributos_faltantes_json") or "{}")
         except (TypeError, ValueError):
-            faltantes = []
+            faltantes_raw = {}
+        faltantes = faltantes_raw.get("editables", [])
         for f in faltantes:
             aid, nombre = f.get("id"), f.get("name") or f.get("id")
             if it.get("catalog_listing"):
@@ -468,6 +471,20 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
             else:
                 entry["valor_sugerido"] = ""
                 decision.append(entry)
+
+        # Atributos NO obligatorios (tags.required != true en la categoría, ver
+        # salud_audit.audit_item) -- van aparte, nunca mezclados con "sugerido"/
+        # "decisión": son mejora de SEO/ficha técnica, no un hallazgo accionable.
+        # En catálogo tampoco se pueden escribir (mismo bloqueo de arriba), pero no
+        # vale la pena listarlos como "normal" -- ya son opcionales de por sí.
+        if not it.get("catalog_listing"):
+            for f in faltantes_raw.get("opcionales", []):
+                aid, nombre = f.get("id"), f.get("name") or f.get("id")
+                opcionales.append({
+                    "campo": nombre, "attr_id": aid, "item_id": iid,
+                    "descriptor": desc, "tipo": "atributo",
+                    "valor_sugerido": valores_conocidos.get(aid, ""),
+                })
 
     # --- descripcion ---
     propias_con_texto = [
@@ -538,7 +555,7 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         if audit.get("mayorista_estado") == "sin_mayorista" and it.get("listing_type_id") != "gold_special":
             normal.append(f"Mayorista no cargado en {iid} ({desc}) — regla de negocio (solo aplica a la publicación de contado)")
 
-    return {"normal": normal, "sugeridos": sugeridos, "decision": decision}
+    return {"normal": normal, "sugeridos": sugeridos, "decision": decision, "opcionales": opcionales}
 
 
 def _consolidar(entries: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -843,7 +860,7 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
     tratan con el mismo criterio acá, no hay caso especial por ser "extra".
 
     Un tier "crear"/"roto"/"revisar" NO tildado no se toca -- si ya tiene un valor
-    cargado (roto/revisar), ese valor sigue siendo el PISO para las cantidades mayores
+    cargado (roto/revisar/ok), ese valor sigue siendo el PISO para las cantidades mayores
     Y EL TECHO para las cantidades menores: ML exige % ESTRICTAMENTE creciente con la
     cantidad (confirmado en vivo el 2026-09-03 probando AW-S11-Black-MEQT4LW: "Price
     per quantity invalid coherence order" cuando un tier nuevo quedaba más bajo que uno
@@ -856,9 +873,18 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
     (solo) por el orden del array, era porque nadie chequeaba ese techo antes de
     guardar.
 
+    El techo lo impone CUALQUIER tier no tildado con un valor cargado, sin importar su
+    estado -- antes solo lo hacían "roto"/"revisar", dejando afuera un tier sano ("ok")
+    en una cantidad mayor. Confirmado en vivo el 2026-09-07 (Samsung-BudsCore-SMR410-
+    Blanco/MLA1846800581 y GoogleTV-GA05662-US/MLA2612433346): la cantidad 3 tenía un
+    tier "ok" (5.04% y 1.97% respectivamente, sano en soledad), pero corregir la
+    cantidad 2 hacia un % mayor lo dejaba incoherente igual -- nadie lo frenaba porque
+    "ok" no entraba al cálculo del techo. Mismo error de ML ("Price per quantity invalid
+    coherence order"), causa distinta a la de MLA1944479697/MLA1944467261.
+
     Se recorre en orden creciente de cantidad manteniendo el piso. Antes de eso se
-    calcula, de atrás para adelante, el techo que impone cada tier NO tildado (roto o
-    revisar) sobre las cantidades menores. Un tier tildado que quedaría en o por debajo
+    calcula, de atrás para adelante, el techo que impone cada tier NO tildado (cualquier
+    estado, no solo roto o revisar) sobre las cantidades menores. Un tier tildado que quedaría en o por debajo
     del piso se sube a piso + 0.01. Si ese ajuste aleja el % resultante de su propio
     valor calculado más allá del mismo umbral que separa "ok" de "revisar" (4pp y
     1.75x), no se fuerza -- se bloquea esa cantidad y todas las que siguen, y se marca
@@ -872,7 +898,7 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
     techo_por_qty: Dict[int, Optional[Tuple[float, int]]] = {}
     for t in reversed(tiers_ordenados):
         techo_por_qty[t["quantity"]] = techo
-        if t["quantity"] not in incluir and t["estado"] in ("roto", "revisar") and t.get("pct_cargado") is not None:
+        if t["quantity"] not in incluir and t.get("pct_cargado") is not None:
             if techo is None or t["pct_cargado"] < techo[0]:
                 techo = (t["pct_cargado"], t["quantity"])
 
@@ -1489,6 +1515,18 @@ def build_tab_salud(container) -> None:
                             for i, g in enumerate(grupos_dec):
                                 campo = _render_campo(g, "decision")
                                 inputs[f"dec_{i}"] = (g, campo)
+
+                        # Opcionales (tags.required != true) -- sección propia, colapsada por
+                        # default: mejora de SEO/ficha técnica, nunca un problema. No entran a
+                        # grupos_sug/grupos_dec ni al chequeo de "Sin hallazgos accionables" de
+                        # abajo -- completarlos es a discreción, no algo que el SKU necesite.
+                        grupos_opc = _consolidar(clasif["opcionales"])
+                        if grupos_opc:
+                            with ui.expansion(f"🔧 Opcionales — SEO / calidad, no obligatorios ({len(grupos_opc)})", value=False).classes("w-full text-sm mt-2"):
+                                for i, g in enumerate(grupos_opc):
+                                    seccion = "sugerido" if g["valor_sugerido"] else "decision"
+                                    campo = _render_campo(g, seccion)
+                                    inputs[f"opc_{i}"] = (g, campo)
 
                         _ESTADO_COLOR = {"crear": _OK, "roto": _BAD, "revisar": _MID, "ok": _GREY, "bloqueada": _MID}
                         if mayorista_eval:
