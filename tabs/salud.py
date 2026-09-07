@@ -1698,7 +1698,7 @@ def build_tab_salud(container) -> None:
                                         ).props("dense outlined").classes("w-full")
                                         with ui.row().classes("items-center gap-2 w-full"):
                                             ui.label("o escribí un valor nuevo:").classes("text-xs text-gray-400 shrink-0")
-                                            libre = ui.input(placeholder="ej: Baterías de Litio").props("dense outlined").classes("flex-grow")
+                                            libre = ui.input(placeholder="Completá otra opción que no esté en el select").props("dense outlined").classes("flex-grow")
 
                                     def _payload_cf(sel=sel, libre=libre, attr_def=attr_def, attr_id=attr_id):
                                         texto_libre = (libre.value or "").strip()
