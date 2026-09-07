@@ -138,6 +138,27 @@ def _bool_dim(items: List[dict], ok_fn) -> Dict[str, Any]:
     return {"texto": f"{n_ok}/{total}", "color": _MID, "orden": n_ok / total}
 
 
+def _gtin_dim(items: List[dict]) -> Dict[str, Any]:
+    """GTIN separado en propias (accionable -- ML permite editarlo) vs. catálogo
+    (informativo -- se hereda del producto de catálogo, ML nunca aplica un PUT ahí,
+    ver _clasificar_hallazgos/"normal por diseño"). `orden` (para sort y para el
+    score de esta dimensión) usa SOLO propias -- un hueco de catálogo nunca cuenta
+    como problema del SKU. Confirmado en vivo 2026-09-07 con JBL-T530BT-Azul: antes
+    de este fix el "6/10" mezclaba todo y marcaba el SKU con problema aunque las 5
+    propias ya tuvieran GTIN completo -- el único hueco real era en las 4 de catálogo,
+    donde ML no deja escribirlo."""
+    propias = [it for it in items if not it.get("catalog_listing")]
+    catalogo = [it for it in items if it.get("catalog_listing")]
+    prop_tot, prop_ok = len(propias), sum(1 for it in propias if it.get("gtin"))
+    cat_tot, cat_ok = len(catalogo), sum(1 for it in catalogo if it.get("gtin"))
+    orden = (prop_ok / prop_tot) if prop_tot else -1.0
+    return {
+        "propias_ok": prop_ok, "propias_total": prop_tot,
+        "catalogo_ok": cat_ok, "catalogo_total": cat_tot,
+        "orden": orden,
+    }
+
+
 def _cat_dim(items: List[dict], val_fn, etiquetas: Dict[str, str], color_fn) -> Dict[str, Any]:
     vals = [val_fn(it) for it in items if val_fn(it) is not None]
     total = len(vals)
@@ -283,7 +304,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     n_items = len(items)
 
     dims = {
-        "gtin": _bool_dim(items, lambda it: bool(it.get("gtin"))),
+        "gtin": _gtin_dim(items),
         # Solo publicaciones propias (no catálogo): ML bloquea editar la descripción en
         # catalog_listing=True (ver _clasificar_hallazgos, "normal por diseño") -- contarlas
         # acá infla el denominador con huecos que no son un problema real (confirmado en vivo
@@ -556,6 +577,19 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
                     "descriptor": desc, "tipo": "atributo",
                     "valor_sugerido": valores_conocidos.get(aid, ""),
                 })
+        else:
+            # Antes de FIX 3 (2026-09-07) estos caían en "editables" y el bloqueo de
+            # arriba los mandaba a "normal" con este mismo mensaje -- al pasar a
+            # "opcionales" quedaban silenciosamente afuera de todo (ni ofrecidos ni
+            # explicados). Restaura el mensaje informativo para cualquier atributo
+            # opcional bloqueado por catálogo, no solo GTIN.
+            for f in faltantes_raw.get("opcionales", []):
+                aid, nombre = f.get("id"), f.get("name") or f.get("id")
+                normal.append(
+                    f"{nombre} no editable en {iid} ({desc}) -- ML no aplica cambios de "
+                    "atributos en publicaciones de catálogo (se heredan del producto de "
+                    "catálogo), aunque el PUT devuelva 200"
+                )
 
     # --- descripcion ---
     propias_con_texto = [
@@ -921,7 +955,8 @@ def _groq_generate(api_key: str, prompt: str) -> str:
     return resp.json()["choices"][0]["message"]["content"].strip()
 
 
-def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, float], List[int], List[Dict[str, Any]]]:
+def _tiers_plan(evaluacion: Dict[str, Any], incluir: set,
+                 eliminar: Optional[set] = None) -> Tuple[Dict[int, float], List[int], List[Dict[str, Any]]]:
     """Arma (cambios, bloqueadas, conflictos) para las cantidades que el usuario tildó
     en `incluir` -- generaliza la versión anterior (_tiers_accionables): la decisión de
     qué corregir ahora es 100% del checkbox por tier del popup. "crear"/"roto" vienen
@@ -962,14 +997,20 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
     para revisión manual. Si en cambio el % resultante iguala o supera el techo de un
     tier NO tildado en una cantidad mayor, también se bloquea, pero además se reporta
     en `conflictos` -- el render lo muestra como "tildá también esa cantidad" en vez
-    del mensaje genérico de revisión manual."""
+    del mensaje genérico de revisión manual.
+
+    `eliminar`: cantidades tildadas para sacar del array (ver FIX A / tope de 5,
+    2026-09-07) -- un tier eliminado no impone piso ni techo (no va a existir más
+    del lado de ML), y nunca entra a `cambios` aunque también esté en `incluir`
+    (mutuamente excluyente por diseño en el popup; acá es solo la segunda capa)."""
+    eliminar = eliminar or set()
     tiers_ordenados = sorted(evaluacion["tiers"], key=lambda x: x["quantity"])
 
     techo: Optional[Tuple[float, int]] = None  # (pct, cantidad que lo impone)
     techo_por_qty: Dict[int, Optional[Tuple[float, int]]] = {}
     for t in reversed(tiers_ordenados):
         techo_por_qty[t["quantity"]] = techo
-        if t["quantity"] not in incluir and t.get("pct_cargado") is not None:
+        if t["quantity"] not in incluir and t["quantity"] not in eliminar and t.get("pct_cargado") is not None:
             if techo is None or t["pct_cargado"] < techo[0]:
                 techo = (t["pct_cargado"], t["quantity"])
 
@@ -980,6 +1021,8 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set) -> Tuple[Dict[int, flo
     for t in tiers_ordenados:
         q = t["quantity"]
         estado = t["estado"]
+        if q in eliminar:
+            continue
         if estado == "ok":
             piso = max(piso, t["pct_cargado"])
             continue
@@ -1088,7 +1131,8 @@ def _pct_seguro(pct: Optional[float]) -> bool:
     return pct is not None and 0 < pct < _PCT_TECHO_SANIDAD
 
 
-def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -> Tuple[List[Dict[str, Any]], bool, List[Dict[str, Any]]]:
+def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float],
+                                  eliminar: Optional[set] = None) -> Tuple[List[Dict[str, Any]], bool, List[Dict[str, Any]]]:
     """Arma el body completo para POST /prices/price-per-quantity a partir de lo que
     hay HOY + los cambios pedidos (cantidad -> % nuevo). El endpoint reemplaza el
     array entero: cualquier cantidad que no se re-envíe queda eliminada -- por eso
@@ -1101,11 +1145,18 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
     la lógica documentada de ML, mandar el id de un precio existente lo deja intacto;
     omitirlo lo borra.
 
+    `eliminar`: cantidades que el usuario tildó explícitamente para sacar del array
+    (ver FIX A / tope de 5, 2026-09-07) -- se excluyen de body_items sin importar si
+    venían del sistema legacy o del % nuevo, y sin importar si además aparecen en
+    `cambios` (eliminar gana; el popup ya las trata como mutuamente excluyentes por
+    tier, esto es solo la segunda capa de defensa).
+
     Devuelve además `descartados`: cantidades pedidas en `cambios` con un % inválido
     (faltante, <=0 o >=_PCT_TECHO_SANIDAD -- ver _pct_seguro) que NO se escribieron.
     Si la cantidad ya tenía un tier cargado, se preserva el valor actual (no se borra
     un tier existente por un cálculo nuevo inválido); si era un tier nuevo ("crear"),
     directamente no se agrega."""
+    eliminar = eliminar or set()
     standard_amount = _standard_amount_de(prices_info)
     tiene_absoluto = any(
         p.get("type") == "standard" and (p.get("conditions") or {}).get("min_purchase_unit") is not None
@@ -1121,6 +1172,8 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
         if mpu is None or p.get("amount") is None or not standard_amount:
             continue
         vistos.add(mpu)
+        if mpu in eliminar:
+            continue
         pct = cambios.get(mpu)
         if pct is not None and not _pct_seguro(pct):
             descartados.append({"quantity": mpu, "pct_pedido": pct})
@@ -1137,6 +1190,8 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
         if mpu is None or mpu in vistos:
             continue
         vistos.add(mpu)
+        if mpu in eliminar:
+            continue
         pct = cambios.get(mpu)
         if mpu in cambios and not _pct_seguro(pct):
             descartados.append({"quantity": mpu, "pct_pedido": pct})
@@ -1149,7 +1204,7 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
             body_items.append(preservado)
 
     for mpu, pct in cambios.items():
-        if mpu not in vistos:
+        if mpu not in vistos and mpu not in eliminar:
             if not _pct_seguro(pct):
                 descartados.append({"quantity": mpu, "pct_pedido": pct})
                 continue
@@ -1164,10 +1219,16 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float]) -
     return body_items, tiene_absoluto, descartados
 
 
+_ML_MAX_TIERS_PXQ = 5
+
+
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
-                             cambios: Dict[int, float]) -> Tuple[Optional[str], List[str]]:
+                             cambios: Dict[int, float],
+                             eliminar: Optional[set] = None) -> Tuple[Optional[str], List[str]]:
     """cambios: {cantidad: porcentaje} SOLO para las cantidades a crear/corregir --
     todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista).
+    eliminar: cantidades tildadas para sacar del array y liberar lugar (ver FIX A /
+    tope de 5, 2026-09-07).
     Devuelve (error, advertencias) -- advertencias lista las cantidades que
     _construir_payload_mayorista descartó por el piso de sanidad (nunca se
     escribieron a ML), aunque el resto se haya guardado bien (error=None)."""
@@ -1177,15 +1238,29 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
         return f"Mayorista ({item_id}): {msg}", []
     version = prices_info["version"]
-    body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios)
+    body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios, eliminar)
+    if len(body_items) > _ML_MAX_TIERS_PXQ:
+        # Backstop server-side: el popup ya bloquea el guardado antes de llegar acá
+        # (banner ⛔ + mayorista_sobre_tope en build_tab_salud), pero el GET de acá es
+        # más fresco que el que vio el popup al abrirse -- si algo cambió del lado de
+        # ML entre medio
+        # (otra escritura, otra pestaña), nunca se manda un POST que ML va a
+        # rechazar con "Maximum 5 price_per_quantity entries allowed" (caso real
+        # MLA3684456394, 2026-09-07: 5 cargados + 1 "crear" = 6, 400).
+        msg = f"quedarían {len(body_items)} precios por cantidad, ML permite máximo {_ML_MAX_TIERS_PXQ} -- no se envió"
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
+        return f"Mayorista ({item_id}): {msg}", []
     advertencias = [
         f"Mayorista ({item_id}) {d['quantity']}+: % pedido inválido ({d['pct_pedido']}) descartado, no se envió a ML"
         for d in descartados
     ]
     cambios_efectivos = {mpu: pct for mpu, pct in cambios.items() if mpu not in {d["quantity"] for d in descartados}}
-    if not cambios_efectivos:
+    if not cambios_efectivos and not eliminar:
         return None, advertencias  # todo lo pedido se descartó por el piso de sanidad -- nada que escribir
-    valor_nuevo = json.dumps(cambios_efectivos, ensure_ascii=False)
+    valor_nuevo = json.dumps(
+        {"cambios": cambios_efectivos, "eliminados": sorted(eliminar)} if eliminar else cambios_efectivos,
+        ensure_ascii=False,
+    )
     resp = ml_write_price_per_quantity(token, item_id, body_items, version, remove_absolute_pxq=tiene_pxq_absoluto)
     post_detalle = f"status={resp.status_code} {resp.text[:300]}" if resp.status_code != 200 else None
     time.sleep(0.4)
@@ -1384,6 +1459,16 @@ def build_tab_salud(container) -> None:
 
                     inputs: Dict[str, tuple] = {}
                     mayorista_tildes: Dict[str, Dict[int, bool]] = {}
+                    # Cantidades tildadas para SACAR del array de price-per-quantity, para
+                    # hacer lugar bajo el tope real de ML (5 -- ver FIX A, 2026-09-07). Un
+                    # tier tildado acá queda mutuamente excluyente con mayorista_tildes: si
+                    # el usuario tilda "eliminar" en uno que también tenía "corregir"
+                    # tildado, el toggle de eliminar lo destilda (ver _on_toggle_eliminar).
+                    mayorista_eliminar: Dict[str, set] = {}
+                    # Recalculado en cada _render_item() -- True si el estado actual de
+                    # tildes/eliminar de ese ítem superaría el tope de 5; _guardar() lo usa
+                    # para no mandar nada de ese ítem a ML (ver banner ⛔ en el render).
+                    mayorista_sobre_tope: Dict[str, bool] = {}
 
                     def _render_campo(g: Dict[str, Any], seccion: str) -> _CampoWidget:
                         attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
@@ -1618,13 +1703,24 @@ def build_tab_salud(container) -> None:
                                     t["quantity"]: t["estado"] in ("crear", "roto")
                                     for t in ev["tiers"] if t["estado"] in ("crear", "roto", "revisar")
                                 }
+                                mayorista_eliminar[item_id] = set()
                                 item_box = ui.column().classes("w-full gap-0 border rounded p-2")
 
                                 def _render_item(item_id=item_id, ev=ev, item_box=item_box):
                                     tildes = mayorista_tildes[item_id]
-                                    incluir = {q for q, v in tildes.items() if v}
-                                    cambios, bloqueadas, conflictos = _tiers_plan(ev, incluir)
+                                    elim = mayorista_eliminar[item_id]
+                                    incluir = {q for q, v in tildes.items() if v and q not in elim}
+                                    cambios, bloqueadas, conflictos = _tiers_plan(ev, incluir, elim)
                                     conflicto_por_qty = {c["quantity"]: c for c in conflictos}
+                                    # Cantidades que hoy tienen ALGO cargado (legacy o % nuevo) --
+                                    # exactamente lo que _construir_payload_mayorista preserva vía
+                                    # `vistos` si no se elimina. Cualquier `cambios[q]` que no esté
+                                    # acá es un tier "crear" nuevo: suma una entrada más al array.
+                                    cargado_qtys = {t["quantity"] for t in ev["tiers"] if t.get("pct_cargado") is not None}
+                                    nuevas_qtys = {q for q in cambios if q not in cargado_qtys}
+                                    total_resultante = len(cargado_qtys - elim) + len(nuevas_qtys)
+                                    sobre_tope = total_resultante > _ML_MAX_TIERS_PXQ
+                                    mayorista_sobre_tope[item_id] = sobre_tope
                                     item_box.clear()
                                     with item_box:
                                         ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
@@ -1633,10 +1729,38 @@ def build_tab_salud(container) -> None:
                                                 "⚠️ tiers cargados en orden invertido (una cantidad mayor cuesta más "
                                                 "por unidad que una menor) — revisar manualmente, sin corrección automática"
                                             ).classes("text-xs pl-3").style(f"color:{_BAD}")
+                                        if sobre_tope:
+                                            ui.label(
+                                                f"⛔ ML permite máximo {_ML_MAX_TIERS_PXQ} precios por cantidad — hoy tenés "
+                                                f"{len(cargado_qtys)} cargados, esto sumaría {total_resultante}. Tildá "
+                                                f"\"eliminar\" en alguno de los tiers de abajo para hacer lugar antes de guardar "
+                                                f"(no se guarda nada de este ítem hasta que baje de {_ML_MAX_TIERS_PXQ})."
+                                            ).classes("text-xs pl-3 font-semibold").style(f"color:{_BAD}")
+
+                                        def _chk_eliminar(q: int):
+                                            chk_e = ui.checkbox(value=q in elim).props("dense size=sm")
+                                            ui.label("eliminar").classes("text-xs").style(f"color:{_BAD}")
+
+                                            def _on_toggle_elim(e, item_id=item_id, q=q):
+                                                if e.value:
+                                                    mayorista_eliminar[item_id].add(q)
+                                                    mayorista_tildes[item_id][q] = False  # mutuamente excluyente con "corregir"
+                                                else:
+                                                    mayorista_eliminar[item_id].discard(q)
+                                                _render_item()
+                                            chk_e.on_value_change(_on_toggle_elim)
+
                                         for t in ev["tiers"]:
                                             q = t["quantity"]
                                             estado = t["estado"]
                                             sufijo_qty = f"{q}+" + (" (cantidad no estándar)" if t.get("extra") else "")
+
+                                            if q in elim:
+                                                txt = f"{sufijo_qty} unidades: tildado para ELIMINAR — hoy ${_fmt_moneda(t.get('monto_cargado'))} ({t.get('pct_cargado')}% off)"
+                                                with ui.row().classes("items-center gap-1 pl-3"):
+                                                    _chk_eliminar(q)
+                                                    ui.label(txt).classes("text-xs").style(f"color:{_BAD}")
+                                                continue
                                             if q in conflicto_por_qty:
                                                 c = conflicto_por_qty[q]
                                                 txt = (
@@ -1655,7 +1779,9 @@ def build_tab_salud(container) -> None:
                                                 continue
                                             if estado == "ok":
                                                 txt = f"{sufijo_qty} unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
-                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
+                                                with ui.row().classes("items-center gap-1 pl-3"):
+                                                    ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR['ok']}")
+                                                    _chk_eliminar(q)
                                                 continue
                                             if estado not in ("crear", "roto", "revisar"):
                                                 continue
@@ -1678,9 +1804,13 @@ def build_tab_salud(container) -> None:
                                             with ui.row().classes("items-center gap-1 pl-3"):
                                                 chk = ui.checkbox(value=marcado)
                                                 ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR[estado]}")
+                                                if estado in ("roto", "revisar"):  # ya cargado -- también se puede eliminar en vez de corregir
+                                                    _chk_eliminar(q)
 
                                             def _on_toggle(e, item_id=item_id, q=q):
                                                 mayorista_tildes[item_id][q] = e.value
+                                                if e.value:
+                                                    mayorista_eliminar[item_id].discard(q)  # mutuamente excluyente con "eliminar"
                                                 _render_item()
                                             chk.on_value_change(_on_toggle)
 
@@ -1720,14 +1850,24 @@ def build_tab_salud(container) -> None:
                                     aplicados += 1
 
                         for item_id, ev in mayorista_eval.items():
-                            incluir = {q for q, v in mayorista_tildes.get(item_id, {}).items() if v}
-                            if not incluir:
+                            if mayorista_sobre_tope.get(item_id):
+                                # Backstop: el banner ⛔ del render ya explica por qué -- acá
+                                # solo nos aseguramos de no mandar nada de este ítem a ML
+                                # mientras siga por encima del tope de 5 (ver FIX A).
+                                errores.append(
+                                    f"Mayorista ({item_id}): sin guardar -- por encima del tope de "
+                                    f"{_ML_MAX_TIERS_PXQ} precios por cantidad, tildá \"eliminar\" en algún tier primero"
+                                )
                                 continue
-                            cambios, _bloqueadas, _conflictos = _tiers_plan(ev, incluir)
-                            if not cambios:
+                            elim = mayorista_eliminar.get(item_id) or set()
+                            incluir = {q for q, v in mayorista_tildes.get(item_id, {}).items() if v and q not in elim}
+                            if not incluir and not elim:
+                                continue
+                            cambios, _bloqueadas, _conflictos = _tiers_plan(ev, incluir, elim)
+                            if not cambios and not elim:
                                 continue
                             err, adv = await run.io_bound(
-                                _escribir_mayorista_pxq, token, uid, sku, item_id, cambios,
+                                _escribir_mayorista_pxq, token, uid, sku, item_id, cambios, elim,
                             )
                             advertencias.extend(adv)
                             if err:
@@ -1856,6 +1996,36 @@ def build_tab_salud(container) -> None:
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
                                                 ui.label(str(v) if v is not None else "—")
+                                            elif name == "gtin":
+                                                d = row["dims"].get("gtin")
+                                                if not d or (d["propias_total"] == 0 and d["catalogo_total"] == 0):
+                                                    ui.label("—")
+                                                else:
+                                                    pt, po = d["propias_total"], d["propias_ok"]
+                                                    ct, co = d["catalogo_total"], d["catalogo_ok"]
+                                                    if pt == 0:
+                                                        color_prop = _GREY
+                                                    elif po == pt:
+                                                        color_prop = _OK
+                                                    elif po == 0:
+                                                        color_prop = _BAD
+                                                    else:
+                                                        color_prop = _MID
+                                                    tooltip = (
+                                                        f"Propias: {po}/{pt} con GTIN (accionable) · "
+                                                        f"Catálogo: {co}/{ct} con GTIN (informativo, ML no permite editarlo)"
+                                                    )
+                                                    with ui.column().classes("gap-0 items-center"):
+                                                        with ui.row().classes("items-center gap-0.5") as fila_prop:
+                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(f"{po}/{pt}").classes("text-xs font-semibold").style(f"color:{color_prop}")
+                                                        fila_prop.tooltip(tooltip)
+                                                        if ct:
+                                                            color_cat = _GREY if co == ct else _MID
+                                                            with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                                ui.icon("storefront", size="12px").style(f"color:{color_cat}")
+                                                                ui.label(f"{co}/{ct}").classes("text-xs").style(f"color:{color_cat}")
+                                                            fila_cat.tooltip(tooltip)
                                             else:
                                                 d = row["dims"].get(name)
                                                 if d:
