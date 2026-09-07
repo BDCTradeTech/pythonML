@@ -359,7 +359,13 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     # atributos_faltantes_json (guarda el id de cada atributo, no solo el conteo); si ningún
     # ítem del grupo lo tiene todavía (snapshot corrido antes de que existiera esa columna),
     # cae a la suma vieja para no perder el dato.
+    # Mismo criterio para las opcionales (tags.required != true en la categoría, ver
+    # salud_audit.audit_item) -- se cuentan aparte porque no cuentan para el score (ver
+    # CAMBIO 4, 2026-09-07): un SKU como OpenFit2-T920-Negro daba "0 características" con
+    # solo obligatorias (correcto desde FIX 3) pero tenía 8 opcionales sin completar que
+    # quedaban invisibles detrás de ese "0".
     faltantes_ids: set = set()
+    opcionales_ids: set = set()
     tiene_json = False
     for it in items:
         raw = it.get("atributos_faltantes_json")
@@ -374,7 +380,12 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
             aid = entry.get("id")
             if aid:
                 faltantes_ids.add(aid)
+        for entry in (parsed or {}).get("opcionales") or []:
+            aid = entry.get("id")
+            if aid:
+                opcionales_ids.add(aid)
     total_editables = len(faltantes_ids) if tiene_json else (sum(editables_vals) if editables_vals else None)
+    total_opcionales = len(opcionales_ids) if tiene_json else None
 
     scores = [it.get("performance_score") for it in items if it.get("performance_score") is not None]
     puntaje = round(sum(scores) / len(scores)) if scores else None
@@ -395,6 +406,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "dims": dims,
         "regulatoria_texto": "No determinable",
         "atributos_editables_total": total_editables,
+        "atributos_opcionales_total": total_opcionales,
         "atributos_bloqueados_total": sum(bloqueados_vals) if bloqueados_vals else 0,
         "puntaje_ml": puntaje,
     }
@@ -2034,7 +2046,9 @@ def build_tab_salud(container) -> None:
                 visibles = sorted(visibles, key=lambda r: _sort_key(r, sort_ref["col"]), reverse=not sort_ref["asc"])
 
                 contador_lbl.set_text(
-                    f"mostrando {len(visibles)} de {len(filas_todas)} · 👤 publicación propia · 🏬 publicación catálogo"
+                    f"mostrando {len(visibles)} de {len(filas_todas)} · "
+                    "👤 publicación propia · 🏬 publicación catálogo · "
+                    "❗ obligatoria · 🔧 opcional"
                 )
 
                 header_div.clear()
@@ -2092,8 +2106,25 @@ def build_tab_salud(container) -> None:
                                             elif name == "regulatoria":
                                                 ui.label(row["regulatoria_texto"]).style(f"color:{_GREY}")
                                             elif name == "atributos_editables":
-                                                v = row["atributos_editables_total"]
-                                                ui.label(str(v) if v is not None else "—")
+                                                obl = row.get("atributos_editables_total")
+                                                opc = row.get("atributos_opcionales_total")
+                                                if obl is None and opc is None:
+                                                    ui.label("—")
+                                                else:
+                                                    tooltip = (
+                                                        f"{obl or 0} obligatoria(s) faltante(s) (cuenta para el score) · "
+                                                        f"{opc or 0} opcional(es) sin completar (informativo, no cuenta)"
+                                                    )
+                                                    color_obl = _BAD if (obl or 0) > 0 else _GREY
+                                                    with ui.column().classes("gap-0 items-end"):
+                                                        with ui.row().classes("items-center gap-0.5") as fila_obl:
+                                                            ui.icon("priority_high", size="12px").style(f"color:{color_obl}")
+                                                            ui.label(str(obl) if obl is not None else "—").classes("text-xs font-semibold").style(f"color:{color_obl}")
+                                                        fila_obl.tooltip(tooltip)
+                                                        with ui.row().classes("items-center gap-0.5") as fila_opc:
+                                                            ui.icon("build", size="12px").style(f"color:{_GREY}")
+                                                            ui.label(str(opc) if opc is not None else "—").classes("text-xs").style(f"color:{_GREY}")
+                                                        fila_opc.tooltip(tooltip)
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
                                                 ui.label(str(v) if v is not None else "—")
