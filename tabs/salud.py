@@ -18,15 +18,17 @@ import re
 import time
 import unicodedata
 from collections import Counter, defaultdict
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
-from nicegui import app, ui, run
+from nicegui import app, background_tasks, ui, run
 
 from db import GROQ_MODEL, get_app_config, get_connection, log_ml_escritura
 from ml_api import (
     get_ml_access_token,
     ml_get_item,
+    ml_get_items_multiget_with_attributes,
     ml_get_prices_with_version,
     ml_get_user_id,
     ml_update_item_attributes,
@@ -351,6 +353,75 @@ def _build_rows(user_id: int) -> tuple:
 
     filas = [_sku_summary(sku, grp, prod_meta) for sku, grp in por_sku.items()]
     return filas, snap_date
+
+
+def _stock_fresco_sync(uid: int, snap_date: str) -> Dict[str, int]:
+    """Corre en un worker thread (run.io_bound desde el caller) -- multiget en vivo de
+    available_quantity/status para TODAS las publicaciones de los SKUs que hoy tienen
+    productos.stock > 0 en esta cuenta (acotado a esa cuenta, nunca cruza user_id). Una
+    publicación pausada (típicamente por quedarse sin stock) cuenta como 0, no como su
+    available_quantity crudo -- confirmado en vivo 2026-09-07 que ML pausa la publicación
+    y devuelve available_quantity=0 en ese caso, pero no siempre es así en otros motivos
+    de pausa, así que se fuerza igual por las dudas. El stock del SKU es la suma de sus
+    publicaciones (mismo universo que ya usa el filtro Con/Sin stock).
+
+    Persiste el resultado en productos.stock (mismo UPDATE que ya usa tabs/precios.py) --
+    de paso deja el dato más al día también para esa pestaña, sin necesitar un cron nuevo.
+    Devuelve {sku: stock_nuevo} para que el caller actualice las filas ya renderizadas."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.sku, s.item_id
+            FROM salud_item_snapshots s
+            JOIN productos p ON p.sku = s.sku AND p.user_id = s.user_id
+            WHERE s.user_id=? AND s.snapshot_date=? AND p.stock > 0
+            """,
+            (uid, snap_date),
+        ).fetchall()
+    finally:
+        conn.close()
+    if not rows:
+        return {}
+
+    por_sku: Dict[str, List[str]] = defaultdict(list)
+    for sku, item_id in rows:
+        por_sku[sku].append(item_id)
+    item_a_sku = {iid: sku for sku, ids in por_sku.items() for iid in ids}
+    todos_ids = list(item_a_sku.keys())
+
+    token = get_ml_access_token(uid)
+    if not token:
+        return {}
+
+    stock_por_item: Dict[str, int] = {}
+    for i in range(0, len(todos_ids), 20):
+        batch = todos_ids[i:i + 20]
+        bodies = ml_get_items_multiget_with_attributes(token, batch, "id,available_quantity,status")
+        for b in bodies:
+            if not b or not b.get("id"):
+                continue
+            qty = b.get("available_quantity") or 0
+            if b.get("status") != "active":
+                qty = 0
+            stock_por_item[b["id"]] = qty
+
+    stock_por_sku: Dict[str, int] = {}
+    for iid, qty in stock_por_item.items():
+        sku = item_a_sku[iid]
+        stock_por_sku[sku] = stock_por_sku.get(sku, 0) + qty
+
+    ahora = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    conn = get_connection()
+    try:
+        conn.executemany(
+            "UPDATE productos SET stock=?, updated_at=? WHERE sku=? AND user_id=?",
+            [(qty, ahora, sku, uid) for sku, qty in stock_por_sku.items()],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return stock_por_sku
 
 
 _COLUMNS = [
@@ -1144,6 +1215,15 @@ def build_tab_salud(container) -> None:
         return
     uid = user["id"]
 
+    # Guard de condición de carrera para el refresh de stock en background (ver más abajo):
+    # cada apertura/re-render de esta pestaña bumpea la "generación" guardada en el propio
+    # `container` (que persiste entre llamadas, a diferencia de las variables locales). Un
+    # refresh en vuelo de una generación anterior (cuenta distinta u otra apertura de la
+    # pestaña) se detecta comparando contra esto antes de tocar filas_todas/_render -- así
+    # nunca pisa la vista de la cuenta que Diego está mirando ahora.
+    generacion = getattr(container, "_salud_generacion", 0) + 1
+    container._salud_generacion = generacion
+
     filas_todas, snap_date = _build_rows(uid)
     ultima_corrida = _ultima_corrida_completa(uid)
 
@@ -1184,6 +1264,8 @@ def build_tab_salud(container) -> None:
                 ).classes("w-64")
 
             contador_lbl = ui.label("").classes("text-xs text-gray-500")
+            indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
+            indicador_stock.set_visibility(False)
 
             header_div = ui.element("div").style("width:100%;overflow:hidden")
             table_container = ui.element("div").style("width:100%;height:calc(100vh - 320px);overflow-y:scroll;overflow-x:auto")
@@ -1787,3 +1869,26 @@ def build_tab_salud(container) -> None:
             marca_sel.on_value_change(lambda: _render())
             buscador.on_value_change(lambda: _render())
             _render()
+
+            async def _refrescar_stock_bg() -> None:
+                """Corre en background apenas se termina de pintar la tabla con el dato
+                stale -- nunca bloquea el render inicial. Acotado a `uid` (la cuenta que
+                se abrió en ESTA llamada de build_tab_salud), nunca cruza cuentas."""
+                indicador_stock.set_visibility(True)
+                try:
+                    stock_por_sku = await run.io_bound(_stock_fresco_sync, uid, snap_date)
+                finally:
+                    if getattr(container, "_salud_generacion", None) == generacion:
+                        indicador_stock.set_visibility(False)
+                if not stock_por_sku or getattr(container, "_salud_generacion", None) != generacion:
+                    return  # cuenta activa cambió (otro login o se reabrió la pestaña) -- descartar
+                cambio = False
+                for f in filas_todas:
+                    nuevo = stock_por_sku.get(f["sku"])
+                    if nuevo is not None and nuevo != f["stock"]:
+                        f["stock"] = nuevo
+                        cambio = True
+                if cambio:
+                    _render()
+
+            background_tasks.create(_refrescar_stock_bg(), name=f"salud_refrescar_stock_{uid}")
