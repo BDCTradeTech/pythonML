@@ -1738,17 +1738,24 @@ def build_tab_salud(container) -> None:
                                             ).classes("text-xs pl-3 font-semibold").style(f"color:{_BAD}")
 
                                         def _chk_eliminar(q: int):
-                                            chk_e = ui.checkbox(value=q in elim).props("dense size=sm")
-                                            ui.label("eliminar").classes("text-xs").style(f"color:{_BAD}")
+                                            # Fila propia (no sibling del checkbox de "corregir") -- con los 4
+                                            # elementos en una sola fila, un texto largo de tier hacía wrappear
+                                            # el layout y el checkbox de "corregir" terminaba visualmente
+                                            # separado de su propio texto (confirmado en vivo 2026-09-07,
+                                            # MLA3684456394, tier 10+). Separando en dos filas queda inequívoco
+                                            # cuál checkbox es cuál sin importar el largo del texto.
+                                            with ui.row().classes("items-center gap-1 pl-6"):
+                                                chk_e = ui.checkbox(value=q in elim).props("dense size=sm")
+                                                ui.label("eliminar").classes("text-xs").style(f"color:{_BAD}")
 
-                                            def _on_toggle_elim(e, item_id=item_id, q=q):
-                                                if e.value:
-                                                    mayorista_eliminar[item_id].add(q)
-                                                    mayorista_tildes[item_id][q] = False  # mutuamente excluyente con "corregir"
-                                                else:
-                                                    mayorista_eliminar[item_id].discard(q)
-                                                _render_item()
-                                            chk_e.on_value_change(_on_toggle_elim)
+                                                def _on_toggle_elim(e, item_id=item_id, q=q):
+                                                    if e.value:
+                                                        mayorista_eliminar[item_id].add(q)
+                                                        mayorista_tildes[item_id][q] = False  # mutuamente excluyente con "corregir"
+                                                    else:
+                                                        mayorista_eliminar[item_id].discard(q)
+                                                    _render_item()
+                                                chk_e.on_value_change(_on_toggle_elim)
 
                                         for t in ev["tiers"]:
                                             q = t["quantity"]
@@ -1758,8 +1765,14 @@ def build_tab_salud(container) -> None:
                                             if q in elim:
                                                 txt = f"{sufijo_qty} unidades: tildado para ELIMINAR — hoy ${_fmt_moneda(t.get('monto_cargado'))} ({t.get('pct_cargado')}% off)"
                                                 with ui.row().classes("items-center gap-1 pl-3"):
-                                                    _chk_eliminar(q)
+                                                    chk_e = ui.checkbox(value=True).props("dense size=sm")
                                                     ui.label(txt).classes("text-xs").style(f"color:{_BAD}")
+
+                                                def _on_toggle_elim(e, item_id=item_id, q=q):
+                                                    if not e.value:
+                                                        mayorista_eliminar[item_id].discard(q)
+                                                    _render_item()
+                                                chk_e.on_value_change(_on_toggle_elim)
                                                 continue
                                             if q in conflicto_por_qty:
                                                 c = conflicto_por_qty[q]
@@ -1779,9 +1792,8 @@ def build_tab_salud(container) -> None:
                                                 continue
                                             if estado == "ok":
                                                 txt = f"{sufijo_qty} unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
-                                                with ui.row().classes("items-center gap-1 pl-3"):
-                                                    ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR['ok']}")
-                                                    _chk_eliminar(q)
+                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
+                                                _chk_eliminar(q)
                                                 continue
                                             if estado not in ("crear", "roto", "revisar"):
                                                 continue
@@ -1804,8 +1816,8 @@ def build_tab_salud(container) -> None:
                                             with ui.row().classes("items-center gap-1 pl-3"):
                                                 chk = ui.checkbox(value=marcado)
                                                 ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR[estado]}")
-                                                if estado in ("roto", "revisar"):  # ya cargado -- también se puede eliminar en vez de corregir
-                                                    _chk_eliminar(q)
+                                            if estado in ("roto", "revisar"):  # ya cargado -- también se puede eliminar en vez de corregir
+                                                _chk_eliminar(q)
 
                                             def _on_toggle(e, item_id=item_id, q=q):
                                                 mayorista_tildes[item_id][q] = e.value
