@@ -1001,7 +1001,11 @@ def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None
             "en español, clara y comercial, de 150 a 400 palabras, basada solo en la "
             "información disponible arriba (no inventes características que no estén "
             "sugeridas por el título/atributos). Devolvé SOLO el texto de la "
-            "descripción, sin comillas ni encabezados."
+            "descripción, en TEXTO PLANO puro: sin comillas, sin encabezados, sin "
+            "Markdown (nada de **negrita**, *itálica*, `código`, #encabezados ni "
+            "viñetas con - o *), sin HTML, y sin emojis ni símbolos decorativos "
+            "(●, ➤, ★, etc.). Párrafos separados por un salto de línea simple es lo "
+            "único de formato permitido. Nunca superes 2000 caracteres en total."
         )
     tipo_campo = _tipo_campo(attr_def)
     valores = _valores_de(attr_def)
@@ -1044,6 +1048,48 @@ def _prompt_ia(g: Dict[str, Any], contexto: str, attr_def: Optional[dict] = None
     )
 
 
+_DESCRIPCION_TRANSLITERAR = str.maketrans({
+    "‘": "'", "’": "'", "“": '"', "”": '"',
+    "–": "-", "—": "-", "…": "...", " ": " ",
+})
+# Letras latinas con acentos/ñ (incl. mayúsculas) + ASCII imprimible + saltos de línea
+# y tabs -- todo lo demás (emojis, viñetas unicode, flechas, símbolos decorativos) se
+# descarta. Excluye × (0xD7) y ÷ (0xF7), que caen en el hueco entre los dos rangos.
+_DESCRIPCION_FUERA_DE_RANGO = re.compile(r"[^\x20-\x7E\n\tÀ-ÖØ-öø-ÿ]")
+
+
+def _sanitizar_descripcion(texto: str) -> str:
+    """Deja `texto` en texto plano puro para POST/PUT /items/{id}/description -- ML
+    rechaza con cause_id 398 "item.description.type.invalid" cualquier HTML o
+    caracter de formato (confirmado contra la doc oficial vía MCP, ver
+    descripcion-de-articulos), reportando la posición exacta del caracter. Sanitizamos
+    ACÁ, antes de mandar nada, para que ese 400 nunca le llegue a Diego al Guardar --
+    tanto si escribió el texto a mano como si vino de la sugerencia de IA (mismo
+    camino para los dos, ver _render_campo). Saltos de línea normales se preservan;
+    HTML, markdown (encabezados, negrita/itálica/tachado/código, viñetas, citas) y
+    cualquier caracter fuera del rango latino básico (emojis, símbolos decorativos)
+    se eliminan o normalizan a su equivalente ASCII."""
+    if not texto:
+        return texto
+    t = texto.replace("\r\n", "\n").replace("\r", "\n")
+    t = re.sub(r"<[^>]*>", "", t)
+    t = t.translate(_DESCRIPCION_TRANSLITERAR)
+    t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)          # encabezados markdown
+    t = re.sub(r"(?m)^\s{0,3}>\s?", "", t)                # citas markdown
+    t = re.sub(r"(?m)^\s*[*\-+•‣▪○●◦]\s+", "- ", t)       # viñetas markdown/unicode
+    t = re.sub(r"\*\*(.+?)\*\*", r"\1", t)                # **negrita**
+    t = re.sub(r"__(.+?)__", r"\1", t)                    # __negrita__
+    t = re.sub(r"\*(\S(?:.*?\S)?)\*", r"\1", t)           # *itálica*
+    t = re.sub(r"(?<!\w)_(\S(?:.*?\S)?)_(?!\w)", r"\1", t)  # _itálica_ (no toca guiones_bajos de una palabra)
+    t = re.sub(r"~~(.+?)~~", r"\1", t)                    # ~~tachado~~
+    t = re.sub(r"`([^`]+)`", r"\1", t)                    # `código`
+    t = t.replace("`", "").replace("~", "")
+    t = _DESCRIPCION_FUERA_DE_RANGO.sub("", t)            # emojis/símbolos decorativos
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
 class _CampoWidget:
     """Envuelve el/los widgets ya renderizados de un campo editable del popup para que
     _guardar() y el botón de IA no necesiten conocer, campo por campo, si el atributo
@@ -1051,11 +1097,12 @@ class _CampoWidget:
     o texto libre -- cada _CampoWidget sabe armar su propio payload de escritura y su
     propia visualización, sin que el resto del popup tenga que ramificar por tipo."""
 
-    def __init__(self, tiene_valor, payload, display, set_texto):
+    def __init__(self, tiene_valor, payload, display, set_texto, sobre_limite=None):
         self._tiene_valor = tiene_valor
         self._payload = payload
         self._display = display
         self._set_texto = set_texto
+        self._sobre_limite = sobre_limite or (lambda: False)
 
     def tiene_valor(self) -> bool:
         return self._tiene_valor()
@@ -1065,6 +1112,13 @@ class _CampoWidget:
 
     def display(self) -> str:
         return self._display()
+
+    def sobre_limite(self) -> bool:
+        """True si el valor actual del campo supera un límite duro (hoy solo lo usa
+        descripción, contra _ML_MAX_DESCRIPCION) -- _guardar() lo chequea para
+        bloquear SOLO ese campo puntual, no el popup entero (ver render de
+        tipo=='descripcion')."""
+        return self._sobre_limite()
 
     def set_texto(self, texto: str) -> bool:
         """Aplica un texto (típicamente sugerido por IA) al widget. Devuelve True si
@@ -1354,6 +1408,13 @@ def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float],
 
 _ML_MAX_TIERS_PXQ = 5
 
+# Confirmado EMPÍRICAMENTE en vivo el 2026-09-08 contra MLA2489345232 (Awei-KA3,
+# catalog_listing=False) -- la doc oficial (descripcion-de-articulos, verificada por
+# MCP) no documenta un número. ML devuelve cause_id 200
+# "item.description.plain_text.max": "More than 50000 characters is not allowed."
+# arriba de este valor; 50000 exacto fue aceptado (200), 50001 rechazado (400).
+_ML_MAX_DESCRIPCION = 50000
+
 
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
                              cambios: Dict[int, float],
@@ -1621,8 +1682,9 @@ def build_tab_salud(container) -> None:
                                     campo = _CampoWidget(
                                         tiene_valor=lambda inp=inp: bool((inp.value or "").strip()),
                                         payload=lambda: None,
-                                        display=lambda inp=inp: (inp.value or "").strip(),
+                                        display=lambda inp=inp: _sanitizar_descripcion((inp.value or "").strip()),
                                         set_texto=lambda texto, inp=inp: (setattr(inp, "value", texto), True)[1],
+                                        sobre_limite=lambda inp=inp: len(_sanitizar_descripcion(inp.value or "")) > _ML_MAX_DESCRIPCION,
                                     )
 
                                 elif tipo_campo == "closed":
@@ -1798,6 +1860,20 @@ def build_tab_salud(container) -> None:
                                             marca_ia.style(f"color:{_MID}")
                                         marca_ia.set_visibility(True)
                                     ui.button(icon="auto_awesome", on_click=_click_ia).props("flat dense round size=sm").tooltip("Sugerir con IA")
+                            if g["tipo"] == "descripcion":
+                                contador = ui.label().classes("text-xs pl-1")
+
+                                def _actualizar_contador(inp=inp, contador=contador):
+                                    n = len(_sanitizar_descripcion(inp.value or ""))
+                                    sobre = n > _ML_MAX_DESCRIPCION
+                                    texto_contador = f"{n} / {_ML_MAX_DESCRIPCION} caracteres"
+                                    if sobre:
+                                        texto_contador += " -- supera el máximo, no se puede guardar este campo"
+                                    contador.set_text(texto_contador)
+                                    contador.style(f"color:{_BAD if sobre else _GREY}")
+
+                                inp.on_value_change(_actualizar_contador)
+                                _actualizar_contador()
                             ui.label(_aplica_a_texto(g["items"])).classes("text-xs text-gray-400 pl-1")
                         return campo
 
@@ -1983,6 +2059,16 @@ def build_tab_salud(container) -> None:
                         aplicados = 0
                         for g, campo in inputs.values():
                             if not campo.tiene_valor():
+                                continue
+                            if g["tipo"] == "descripcion" and campo.sobre_limite():
+                                # Backstop: el contador rojo del render ya lo explica -- acá nos
+                                # aseguramos de no mandar nada de este campo a ML mientras siga
+                                # por encima de _ML_MAX_DESCRIPCION (bloquea solo este campo, el
+                                # resto del popup sigue guardando lo suyo con normalidad).
+                                errores.append(
+                                    f"Descripción: sin guardar -- supera el máximo de "
+                                    f"{_ML_MAX_DESCRIPCION} caracteres que acepta ML, recortá el texto primero"
+                                )
                                 continue
                             for it in g["items"]:
                                 if g["tipo"] == "atributo":
