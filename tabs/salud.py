@@ -444,8 +444,9 @@ def _stock_fresco_sync(uid: int, snap_date: str) -> Dict[str, int]:
     publicación pausada (típicamente por quedarse sin stock) cuenta como 0, no como su
     available_quantity crudo -- confirmado en vivo 2026-09-07 que ML pausa la publicación
     y devuelve available_quantity=0 en ese caso, pero no siempre es así en otros motivos
-    de pausa, así que se fuerza igual por las dudas. El stock del SKU es la suma de sus
-    publicaciones (mismo universo que ya usa el filtro Con/Sin stock).
+    de pausa, así que se fuerza igual por las dudas. El stock del SKU es el MÁXIMO entre
+    sus publicaciones, no la suma -- son el mismo inventario físico repartido en varias
+    publicaciones, no unidades distintas (mismo universo que ya usa el filtro Con/Sin stock).
 
     Persiste el resultado en productos.stock (mismo UPDATE que ya usa tabs/precios.py) --
     de paso deja el dato más al día también para esa pestaña, sin necesitar un cron nuevo.
@@ -491,7 +492,7 @@ def _stock_fresco_sync(uid: int, snap_date: str) -> Dict[str, int]:
     stock_por_sku: Dict[str, int] = {}
     for iid, qty in stock_por_item.items():
         sku = item_a_sku[iid]
-        stock_por_sku[sku] = stock_por_sku.get(sku, 0) + qty
+        stock_por_sku[sku] = max(stock_por_sku.get(sku, 0), qty)
 
     ahora = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     conn = get_connection()
@@ -512,7 +513,7 @@ _COLUMNS = [
     {"name": "marca", "label": "Marca", "field": "marca", "align": "left", "w": "90px"},
     {"name": "precio", "label": "Precio", "field": "precio", "align": "right", "w": "85px"},
     {"name": "stock", "label": "Stock", "field": "stock", "align": "right", "w": "70px"},
-    {"name": "variantes", "label": "Variantes", "field": "variantes", "align": "right", "w": "75px", "sortable": False},
+    {"name": "variantes", "label": "Publicaciones", "field": "variantes", "align": "right", "w": "75px", "sortable": False},
     {"name": "gtin", "label": "GTIN", "field": "gtin", "align": "center", "w": "65px"},
     {"name": "descripcion", "label": "Descripción", "field": "descripcion", "align": "center", "w": "85px"},
     {"name": "short", "label": "Short", "field": "short", "align": "center", "w": "65px"},
