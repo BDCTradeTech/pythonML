@@ -39,8 +39,8 @@ from salud_audit import (
     _DESVIO_PP_MIN,
     _DESVIO_RATIO_MIN,
     _PCT_TECHO_SANIDAD,
-    _QTYS_MAYORISTA,
     _evaluar_mayorista_gold_special,
+    _qtys_mayorista_para_stock,
     _standard_amount_de,
     audit_sku,
 )
@@ -224,24 +224,36 @@ def _fmt_lista_es(vals: List[int]) -> str:
     return ", ".join(str(v) for v in vals[:-1]) + f" y {vals[-1]}"
 
 
-def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
+def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
     """Columna 'Mayorista' de la tabla resumen -- a diferencia de las demás
     dimensiones (que promedian el estado sobre TODOS los ítems de la familia),
-    esta cuenta TIERS cargados y sanos sobre las 4 cantidades objetivo (2/3/5/10),
-    solo en publicaciones gold_special (contado) -- mismo alcance que
-    _evaluar_mayorista_gold_special en el popup, para que ambas vistas sean
-    consistentes. Las gold_pro (cuotas) quedan afuera del conteo: el mayorista
-    no aplica ahí y no deben diluirlo (bug confirmado en vivo 2026-09-04:
+    esta cuenta TIERS cargados y sanos sobre las cantidades objetivo del SKU
+    (según su stock, ver _qtys_mayorista_para_stock -- desde 2026-09-08 ya no es
+    el set fijo 2/3/5/10 para cualquier stock), solo en publicaciones gold_special
+    (contado). Las gold_pro (cuotas) quedan afuera del conteo: el mayorista no
+    aplica ahí y no deben diluirlo (bug confirmado en vivo 2026-09-04:
     Echo-Dot5-Kids-Stardust mostraba "2/4 ok" contando 2 gold_pro 'sin_mayorista'
     + 2 gold_special 'ok' como si fueran tiers -- cuando en realidad había 3
     tiers reales (2/3/5u) cargados y sanos, y el "4" nunca fue el denominador
     de cantidades objetivo sino la cantidad de ítems de la familia).
     Consolidado por unión entre las gold_special del grupo -- si dos gold_special
-    tienen los mismos 3 tiers cargados, el resultado sigue siendo 3/4, no se
-    duplica ni se promedia."""
+    tienen los mismos 3 tiers cargados, el resultado sigue siendo 3/N, no se
+    duplica ni se promedia.
+
+    `stock`: agregado de productos.stock para el SKU (mismo valor que ya muestra
+    la columna "Stock" de esta misma fila) -- esta dimensión es una vista
+    consolidada por SKU, no por publicación individual, así que usa el mismo
+    stock que el resto de la fila para que el badge sea internamente consistente
+    (a diferencia de _evaluar_mayorista_gold_special, que sí usa el stock de cada
+    publicación individual porque ahí sí se escribe a ML)."""
     gold_special = [it for it in items if it.get("listing_type_id") == "gold_special"]
     if not gold_special:
         return {"texto": "—", "color": _GREY, "orden": -1.0, "tooltip": None}
+
+    qtys_objetivo = _qtys_mayorista_para_stock(stock)
+    total = len(qtys_objetivo)
+    if total == 0:
+        return {"texto": "—", "color": _GREY, "orden": -1.0, "tooltip": "Sin mayorista posible (stock ≤ 1)"}
 
     ok_qtys: set = set()
     estados_no_ok: List[str] = []
@@ -253,20 +265,23 @@ def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
             except (TypeError, ValueError):
                 tiers = []
             for q, _amt in tiers:
-                if q in _QTYS_MAYORISTA:
+                if q in qtys_objetivo:
                     ok_qtys.add(q)
         elif estado:
             estados_no_ok.append(estado)
 
-    # ⚠️ "revisar"/"invertido" -- calculado en el cron con cotización de envío real
-    # (ver audit_item en salud_audit.py), independiente de si el tier ya cuenta o no
-    # en `n`: un tier puede estar cargado y ser "ok" a nivel _wholesale_from_prices
-    # (no roto, no invertido) y AUN ASÍ estar muy lejos del % que le corresponde según
-    # el cálculo de envío -- confirmado en vivo 2026-09-04, Tag-Royal-LF12: el 5+
-    # contaba en el "1/4" como ok, cargado 16.28% vs. 57.05% calculado. mayorista_revisar_json
-    # NULL = no se evaluó (0 tiers cargados en ese ítem); {"evaluable": false} = se
-    # intentó pero no se pudo cotizar envío -- ninguno de los dos casos prende el ⚠️.
-    # Deduplicado entre las gold_special del grupo (mismo criterio de unión que ok_qtys).
+    # ⚠️ "revisar"/"invertido"/"stock_bajo" -- calculado en el cron (ver audit_item
+    # en salud_audit.py), independiente de si el tier ya cuenta o no en `n`: un
+    # tier puede estar cargado y ser "ok" a nivel _wholesale_from_prices (no roto,
+    # no invertido) y AUN ASÍ estar muy lejos del % recomendado por ML -- confirmado
+    # en vivo 2026-09-04, Tag-Royal-LF12: el 5+ contaba en el "1/4" como ok, cargado
+    # 16.28% vs. 57.05% calculado. mayorista_revisar_json NULL = no se evaluó (0
+    # tiers cargados en ese ítem); {"evaluable": false} = se intentó pero no se pudo
+    # evaluar -- ninguno de los dos casos prende el ⚠️. {"motivo": "stock_bajo"} =
+    # el cron no hizo la evaluación completa para este stock (desde 2026-09-08, ver
+    # audit_item) -- SÍ prende el ⚠️, como invitación a abrir el popup (ahí se
+    # recalcula todo en vivo). Deduplicado entre las gold_special del grupo (mismo
+    # criterio de unión que ok_qtys).
     advertencias: List[str] = []
     vistas_tier: set = set()
     invertido_visto = False
@@ -279,6 +294,9 @@ def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
         except (TypeError, ValueError):
             continue
         if not info.get("evaluable"):
+            continue
+        if info.get("motivo") == "stock_bajo":
+            advertencias.append(f"Stock bajo ({info.get('stock')} u.) — abrir el SKU para recalcular cantidades de mayorista")
             continue
         for t in info.get("tiers_revisar") or []:
             clave = (t.get("quantity"), t.get("pct_cargado"), t.get("pct_calculado"))
@@ -293,7 +311,6 @@ def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
             invertido_visto = True
             advertencias.append("Invertido: hay tiers cargados en orden invertido — revisar manualmente")
 
-    total = len(_QTYS_MAYORISTA)
     n = len(ok_qtys)
     color = _OK if n == total else (_BAD if n == 0 else _MID)
     texto = f"{n}/{total}"
@@ -301,9 +318,9 @@ def _mayorista_dim(items: List[dict]) -> Dict[str, Any]:
         texto += " ⚠️"
 
     if n == total:
-        tooltip = f"Completo ({'/'.join(str(q) for q in _QTYS_MAYORISTA)} cargados y ok)"
+        tooltip = f"Completo ({'/'.join(str(q) for q in qtys_objetivo)} cargados y ok)"
     elif n > 0:
-        faltan = sorted(set(_QTYS_MAYORISTA) - ok_qtys)
+        faltan = sorted(set(qtys_objetivo) - ok_qtys)
         tooltip = f"Falta: {_fmt_lista_es(faltan)} unidades"
     elif "roto" in estados_no_ok:
         tooltip = "Roto — ningún tier válido"
@@ -339,7 +356,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "descripcion": _descripcion_dim(items),
         "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
         "fotos": _magnitud_dim(items, lambda it: it.get("fotos_cantidad")),
-        "mayorista": _mayorista_dim(items),
+        "mayorista": _mayorista_dim(items, (prod_meta.get(sku) or {}).get("stock")),
         "flex": _bool_dim(items, lambda it: _perf_status_ok(it.get("flex_status"))),
         "retiro_persona": _bool_dim(items, lambda it: bool(it.get("retiro_persona")) if it.get("retiro_persona") is not None else None),
         "garantia": _bool_dim(items, lambda it: bool(it.get("garantia_tipo"))),
@@ -1067,9 +1084,10 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set,
     en `incluir` -- generaliza la versión anterior (_tiers_accionables): la decisión de
     qué corregir ahora es 100% del checkbox por tier del popup. "crear"/"roto" vienen
     pre-tildados por default, "revisar" no (ver render). `evaluacion["tiers"]` incluye
-    tanto las 4 cantidades estándar (2/3/5/10) como cualquier tier "extra" que el ítem
-    ya tenga cargado en otra cantidad (ver _evaluar_mayorista_gold_special) -- ambos se
-    tratan con el mismo criterio acá, no hay caso especial por ser "extra".
+    tanto las cantidades objetivo para el stock actual (ver _qtys_mayorista_para_stock,
+    salud_audit.py) como cualquier tier "extra" que el ítem ya tenga cargado fuera de
+    ese objetivo (ver _evaluar_mayorista_gold_special) -- ambos se tratan con el mismo
+    criterio acá, no hay caso especial por ser "extra".
 
     Un tier "crear"/"roto"/"revisar" NO tildado no se toca -- si ya tiene un valor
     cargado (roto/revisar/ok), ese valor sigue siendo el PISO para las cantidades mayores
@@ -1559,7 +1577,7 @@ def build_tab_salud(container) -> None:
                     for it_body in items_crudos:
                         if it_body.get("listing_type_id") != "gold_special":
                             continue
-                        ev = await run.io_bound(_evaluar_mayorista_gold_special, token, seller_id or "", it_body)
+                        ev = await run.io_bound(_evaluar_mayorista_gold_special, token, it_body)
                         if ev:
                             mayorista_eval[it_body["id"]] = {"descriptor": _item_descriptor(it_body), **ev}
 

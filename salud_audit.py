@@ -34,8 +34,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
-import re
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -50,7 +48,7 @@ load_dotenv(BASE_DIR / ".env")
 
 import requests
 from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run
-from ml_api import get_ml_access_token
+from ml_api import get_ml_access_token, ml_get_pxq_recommendations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
@@ -173,253 +171,102 @@ def _wholesale_from_prices(prices_body: dict) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Cálculo de la propuesta 2/3/5/10 por fórmula de envío propia (no la
-# recomendación de ML) -- usada tanto para crear tiers donde no hay ninguno como
-# para recalcular el valor "correcto" hoy de un tier ya cargado (ver evaluación
-# unificada más abajo, _evaluar_mayorista_gold_special). Movida acá desde
-# tabs/salud.py (2026-09-04) para que audit_item() también pueda usarla en el
-# cron nocturno -- el popup (tabs/salud.py) la importa de acá.
-#
-# El tier de 1 unidad queda AFUERA de la propuesta -- por definición no tiene
-# ahorro de envío contra sí mismo, así que la fórmula siempre da 0% para esa
-# cantidad, y ML rechaza cualquier tier de mayorista con 0% ("Percentage must
-# be greater than 0 and less than 100", confirmado en vivo al intentar guardar
-# BHR4245GL). No se inventa un valor para ese caso -- la auditoría original ya
-# había registrado que el 1 unidad no tiene un % con origen conocido.
+# Cálculo de la propuesta de mayorista vía el endpoint oficial de ML
+# (POST /prices-per-quantity/v1/recommendations, ml_get_pxq_recommendations en
+# ml_api.py) -- reemplaza la aproximación por cotización de envío propia y la
+# tabla fija que usaba este archivo hasta 2026-09-08 (ninguna de las dos
+# consultaba nunca el endpoint real contra el que ML valida "Amount above
+# recommended"/cause_id 5599, confirmado en vivo con Awei-H21/MLA1568099745
+# el 2026-09-08: la tabla fija proponía 1/2/3/4% cuando ML pedía 6.18/6.19/9.16%).
 # ---------------------------------------------------------------------------
 
-_CANTIDADES_MAYORISTA_NUEVO = (2, 3, 5, 10)
-
-_CM_POR_UNIDAD = {"mm": 0.1, "cm": 1.0, "m": 100.0}
-_GRAMOS_POR_UNIDAD = {"mg": 0.001, "g": 1.0, "kg": 1000.0}
-
-# ---------------------------------------------------------------------------
-# Esquema fijo para publicaciones SIN envío gratis obligatorio -- la fórmula de
-# ahorro de envío (_costo_envio_free) no tiene base económica ahí: el costo de
-# envío que cotiza ML es ~fijo independientemente del precio, así que en un
-# producto barato esa fracción explota. Confirmado en vivo 2026-09-04:
-# Google-G1001-USB ($8.999) daba 110.06% en la cantidad de 5+ -> monto de
-# -$905 (precio NEGATIVO). El corte se detecta por el tag "mandatory_free_shipping"
-# del propio ítem (GET /items/{id}, ya viene en el body -- sin llamada extra),
-# no por un precio hardcodeado: se verificó en vivo contra la cuenta que ese tag
-# aparece exactamente a partir de $33.000 (coincide con el parámetro
-# ml_envios_gratuitos ya usado en cuotas.py/precios.py/promos.py/ventas.py), y
-# así queda correcto si ML cambia el umbral en el futuro.
-# Esquema confirmado con Diego: 2->1%, 3->2%, 5->3%, 10->4%. Cantidades "extra"
-# fuera de esos 4 puntos (tiers ya cargados en otra cantidad, ver
-# _evaluar_mayorista_gold_special) se interpolan linealmente entre los dos
-# puntos fijos más cercanos; por debajo de 2 o por encima de 10 se extrapola
-# con la pendiente del tramo más cercano (2->3, o 5->10).
-# ---------------------------------------------------------------------------
-
-_PCTS_FIJOS_SIN_ENVIO_GRATIS = {2: 1.0, 3: 2.0, 5: 3.0, 10: 4.0}
-
-# Piso de sanidad genérico, independiente de la causa puntual de arriba: ningún
-# camino (fórmula de envío, esquema fijo, o lo que se agregue después) puede
-# proponer un % que dé un precio negativo o casi regalado. Se aplica acá (nunca
-# se propone) y de nuevo en tabs/salud.py::_construir_payload_mayorista (nunca
-# se escribe a ML), como doble chequeo.
+# Piso de sanidad genérico: ningún % propuesto puede dejar un precio negativo o
+# casi regalado. Se aplica acá (nunca se propone) y de nuevo en
+# tabs/salud.py::_construir_payload_mayorista (nunca se escribe a ML), como
+# doble chequeo.
 _PCT_TECHO_SANIDAD = 90.0
 
 
-def _pct_fijo_interpolado(n: int) -> float:
-    """% fijo (puntos porcentuales) para la cantidad `n`, ver
-    _PCTS_FIJOS_SIN_ENVIO_GRATIS. Interpola/extrapola linealmente para
-    cantidades fuera de los 4 puntos definidos."""
-    puntos = sorted(_PCTS_FIJOS_SIN_ENVIO_GRATIS.items())
-    if n in _PCTS_FIJOS_SIN_ENVIO_GRATIS:
-        return _PCTS_FIJOS_SIN_ENVIO_GRATIS[n]
-    if n < puntos[0][0]:
-        (q1, p1), (q2, p2) = puntos[0], puntos[1]
-    elif n > puntos[-1][0]:
-        (q1, p1), (q2, p2) = puntos[-2], puntos[-1]
-    else:
-        q1, p1 = max(((q, p) for q, p in puntos if q < n), key=lambda x: x[0])
-        q2, p2 = min(((q, p) for q, p in puntos if q > n), key=lambda x: x[0])
-    pendiente = (p2 - p1) / (q2 - q1)
-    return p1 + pendiente * (n - q1)
-
-
-def _propuesta_fija(precio_base: float, cantidades: Tuple[int, ...]) -> Optional[Dict[str, Any]]:
-    """Propuesta de mayorista para publicaciones sin envío gratis obligatorio --
-    mismo shape de retorno que _calcular_mayorista_nuevo (solo "propuesta" con
-    quantity/amount/percentage se usa río abajo, ver _evaluar_mayorista_gold_special)."""
-    if not precio_base:
+def _calcular_mayorista_recomendado(token: str, item_id: str, precio_base: float,
+                                     cantidades: Tuple[int, ...]) -> Optional[Dict[str, Any]]:
+    """Pide a ML el % mínimo aceptado (el más caro que ML permite, nunca regalar
+    margen de más) para cada cantidad de `cantidades`, vía el endpoint oficial de
+    recomendaciones de precio por cantidad. Cantidad=1 se pide igual que
+    cualquier otra -- confirmado en vivo el 2026-09-08 que ML la maneja bien,
+    sola o mezclada con otras cantidades en el mismo batch (mismo % en los tres
+    casos probados contra MLA1568099745). Ignora cantidades que ML marca
+    is_incoherent_quantity=True (no se puede registrar un precio ahí ahora
+    mismo, sin importar el %) o que caen por el piso/techo de sanidad."""
+    if not cantidades or not precio_base:
+        return None
+    rec = ml_get_pxq_recommendations(token, item_id, precio_base, list(cantidades))
+    if not rec or not rec.get("recommendations"):
         return None
     propuesta: List[Dict[str, Any]] = []
-    for n in cantidades:
-        pct = _pct_fijo_interpolado(n)
-        if pct <= 0 or pct >= _PCT_TECHO_SANIDAD:
+    for r in rec["recommendations"]:
+        if r.get("is_incoherent_quantity"):
             continue
-        monto = round(precio_base * (1 - pct / 100), 2)
-        propuesta.append({"quantity": n, "amount": monto, "percentage": round(pct, 2)})
+        pct = (r.get("discount") or {}).get("percentage")
+        monto = r.get("amount")
+        if pct is None or monto is None or pct <= 0 or pct >= _PCT_TECHO_SANIDAD:
+            continue
+        propuesta.append({"quantity": r["quantity"], "amount": monto, "percentage": round(pct, 2)})
     if not propuesta:
         return None
-    return {"precio_base": precio_base, "dimensiones": None, "peso_base_g": None, "propuesta": propuesta}
-
-
-def _num_con_unidad(value_name: Optional[str], factores: Dict[str, float]) -> Optional[float]:
-    if not value_name:
-        return None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(" + "|".join(factores) + r")\b", value_name, re.IGNORECASE)
-    return float(m.group(1)) * factores[m.group(2).lower()] if m else None
-
-
-def _dimensiones_seller_package(item: dict) -> Optional[Tuple[float, float, float, float]]:
-    """Lee SELLER_PACKAGE_HEIGHT/LENGTH/WIDTH/WEIGHT del ítem -- shipping.dimensions
-    viene null en la práctica (verificado en vivo: 0/6 ítems con el campo poblado en
-    esta cuenta). SELLER_PACKAGE_* son los atributos que carga el vendedor para el
-    cálculo de envío y coinciden con el caso de referencia validado (item MLA del
-    FireTVStick-4K-Max: SELLER_PACKAGE_WEIGHT=250 g, HEIGHT=18 cm, LENGTH=4 cm,
-    WIDTH=15 cm)."""
-    vals = {a.get("id"): a.get("value_name") for a in (item.get("attributes") or [])}
-    l = _num_con_unidad(vals.get("SELLER_PACKAGE_LENGTH"), _CM_POR_UNIDAD)
-    w = _num_con_unidad(vals.get("SELLER_PACKAGE_WIDTH"), _CM_POR_UNIDAD)
-    h = _num_con_unidad(vals.get("SELLER_PACKAGE_HEIGHT"), _CM_POR_UNIDAD)
-    peso = _num_con_unidad(vals.get("SELLER_PACKAGE_WEIGHT"), _GRAMOS_POR_UNIDAD)
-    if None in (l, w, h, peso):
-        return None
-    return (l, w, h, peso)
-
-
-def _costo_envio_free(token: str, seller_id: str, l: float, w: float, h: float,
-                       peso_g: float, item_price: float) -> Optional[float]:
-    """GET /users/{seller_id}/shipping_options/free -- costo de envío para un lote de
-    dimensiones fijas (L x W x H) y el peso dado. Devuelve coverage.all_country.list_cost
-    o None si ML no puede cotizar (sin cobertura, error, etc.)."""
-    try:
-        r = requests.get(
-            f"{ML_API}/users/{seller_id}/shipping_options/free",
-            params={
-                "dimensions": f"{int(round(l))}x{int(round(w))}x{int(round(h))},{int(round(peso_g))}",
-                "item_price": item_price,
-                "free_shipping": "true",
-            },
-            headers={"Authorization": f"Bearer {token}"}, timeout=15,
-        )
-        if r.status_code != 200:
-            return None
-        return (r.json().get("coverage") or {}).get("all_country", {}).get("list_cost")
-    except requests.exceptions.RequestException:
-        return None
-
-
-def _calcular_mayorista_nuevo(token: str, seller_id: str, item: dict, precio_base: float,
-                               cantidades: Tuple[int, ...] = _CANTIDADES_MAYORISTA_NUEVO) -> Optional[Dict[str, Any]]:
-    """Arma la propuesta de mayorista para un ítem, para las `cantidades` pedidas
-    (default 2/3/5/10 -- el popup pasa además las cantidades "extra" que el ítem ya
-    tenga cargadas fuera de ese set estándar, en una llamada aparte, para no acoplar
-    su cotización a la de las 4 estándar: ver _evaluar_mayorista_gold_special).
-    Fórmula validada: % = ceil(ahorro_envío / precio_base × 10000) / 10000, donde
-    ahorro_envío = costo_envío(1 unidad) − costo_envío(N unidades)/N (el costo a 1
-    unidad se usa como base de comparación, nunca se ofrece como tier -- ver nota
-    arriba). Las dimensiones (SELLER_PACKAGE_* del propio ítem) quedan fijas -- SOLO
-    el peso escala ×N, no se simula apilado. Es una aproximación (no exacta: ML arma
-    el paquete combinado con su propia tara, el escalado lineal del peso es la mejor
-    aproximación disponible sin una fórmula más exacta documentada). Devuelve None si
-    no hay SELLER_PACKAGE_* cargado, no hay precio base, ML no puede cotizar el envío
-    para alguna de las cantidades pedidas, o ninguna da un % > 0 (ML rechaza tiers
-    con 0%).
-
-    Si el ítem NO tiene envío gratis obligatorio (tag "mandatory_free_shipping"
-    ausente en item["shipping"]["tags"]), esta fórmula no aplica -- ver
-    _PCTS_FIJOS_SIN_ENVIO_GRATIS más arriba -- y se usa el esquema fijo en su lugar."""
-    tags = ((item.get("shipping") or {}).get("tags") or [])
-    if "mandatory_free_shipping" not in tags:
-        return _propuesta_fija(precio_base, cantidades)
-    dims = _dimensiones_seller_package(item)
-    if not dims or not precio_base:
-        return None
-    l, w, h, peso = dims
-    costo_1 = _costo_envio_free(token, seller_id, l, w, h, peso, precio_base)
-    if costo_1 is None:
-        return None
-    propuesta: List[Dict[str, Any]] = []
-    for n in cantidades:
-        costo_n = _costo_envio_free(token, seller_id, l, w, h, peso * n, precio_base * n)
-        if costo_n is None:
-            return None
-        ahorro_unit = costo_1 - (costo_n / n)
-        pct = math.ceil((ahorro_unit / precio_base) * 10000) / 10000 if ahorro_unit > 0 else 0.0
-        if pct <= 0:
-            continue  # ML rechaza tiers de mayorista con 0% -- no se ofrece, no se inventa
-        if pct * 100 >= _PCT_TECHO_SANIDAD:
-            continue  # piso de sanidad -- nunca proponer un % que deje un precio negativo o casi regalado
-        monto = round(precio_base * (1 - pct), 2)
-        propuesta.append({
-            "quantity": n, "amount": monto, "percentage": round(pct * 100, 2),
-            "list_cost": costo_n,
-        })
-    if not propuesta:
-        return None
-    return {
-        "precio_base": precio_base, "dimensiones": f"{l:g}x{w:g}x{h:g}", "peso_base_g": peso,
-        "propuesta": propuesta,
-    }
+    return {"precio_base": precio_base, "propuesta": propuesta}
 
 
 # ---------------------------------------------------------------------------
 # Evaluación unificada de mayorista para publicaciones gold_special (contado) --
-# reemplaza las 2 secciones viejas ("sin cargar" y "a corregir", esta última basada
-# en ml_get_pxq_recommendations). Un solo motor: para cada una de las 4 cantidades
-# objetivo (2/3/5/10) compara lo cargado hoy contra _calcular_mayorista_nuevo
-# recalculado en el momento, y clasifica cada tier en:
-#   - "crear": no hay tier cargado en esa cantidad, se ofrece el calculado.
-#   - "ok": hay tier cargado y está dentro del margen del cálculo actual.
+# un solo motor: para cada cantidad objetivo (según el stock de la publicación,
+# ver _qtys_mayorista_para_stock) compara lo cargado hoy contra la recomendación
+# oficial de ML recalculada en el momento, y clasifica cada tier en:
+#   - "crear": no hay tier cargado en esa cantidad, se ofrece el recomendado.
+#   - "ok": hay tier cargado y está dentro del margen de lo recomendado hoy.
 #   - "roto": el tier cargado da % negativo o cero (precio ≥ precio base) --
-#     objetivo, sin ambigüedad de fórmula, se ofrece corregir junto con "crear".
-#   - "revisar": el tier cargado difiere del calculado más allá del umbral, pero
-#     no es "roto" -- caso ambiguo (la fórmula de envío se puede desviar mucho en
-#     productos muy baratos o muy caros, confirmado en el barrido de cuenta del
-#     2026-09-03: el % calculado varió entre 0.21% y 121% según el precio del
-#     producto). Se muestra como referencia (cargado vs. calculado hoy) pero NUNCA
-#     se ofrece aplicar automático desde el popup -- el cron SÍ lo persiste (ver
-#     audit_item) para poder mostrar el ⚠️ en la tabla resumen sin recalcular en vivo.
-# El umbral (4pp absolutos Y 1.75x relativo) se validó contra el barrido completo
-# de la cuenta: dispara en casos reales como E.Show8-2da-Negro (tier de mayo,
-# 6.59% cargado vs 2.10% calculado hoy) sin falsos positivos sobre los 97 tiers
-# recién escritos con este mismo cálculo.
+#     objetivo, sin ambigüedad, se ofrece corregir junto con "crear".
+#   - "revisar": el tier cargado difiere de lo recomendado más allá del umbral,
+#     pero no es "roto" -- se muestra como referencia (cargado vs. recomendado)
+#     pero NUNCA se ofrece aplicar automático desde el popup.
+# El umbral (4pp absolutos Y 1.75x relativo) se mantiene igual que antes de este
+# cambio (2026-09-08).
 #
-# Cantidades "extra" (cualquier tier ya cargado fuera de 2/3/5/10, ej. 7, 15, 20) --
-# desde 2026-09-04 SÍ se evalúan, con el mismo criterio ok/roto/revisar (marcadas
-# "extra": True en el tier), para que el popup pueda mostrar y corregir un tier que
-# de otro modo quedaba invisible y volvía incoherente cualquier corrección de las 4
-# estándar (ver _tiers_plan en tabs/salud.py, caso real MLA1944479697/MLA1944467261,
-# tier de 15+ al 6.23%).
+# Cantidades "extra" (cualquier tier ya cargado fuera del objetivo para el stock
+# actual -- una cantidad no estándar como 7/15/20, O una cantidad que el stock
+# actual ya no admite, ej. un tier de 10 cargado con stock=4) se evalúan con el
+# mismo criterio ok/roto/revisar (marcadas "extra": True), nunca se ofrecen para
+# "crear" -- el popup ya ofrece "eliminar" para cualquier tier cargado sea cual
+# sea su estado (tabs/salud.py), así que un tier que sobra por stock bajo queda
+# candidato a eliminar con el mismo mecanismo, sin código nuevo en el popup.
 #
-# Cantidad=1 sigue sin pasar por _calcular_mayorista_nuevo (la fórmula de ahorro de
-# envío da 0% por definición para n=1, ahorro contra sí mismo -- no hay pct_calculado
-# posible por esa vía). Pero desde 2026-09-07 SÍ se evalúa cuando el ítem tiene un
-# tier legacy cargado ahí (min_purchase_unit=1, sistema B2B viejo): confirmado en vivo
-# que quedaba invisible para este motor y volvía incoherente cualquier corrección de
-# 2/3/5/10 (mismo síntoma que el caso de 15+ de arriba, pero para qty=1) -- ver barrido
-# de cuenta del 2026-09-07, 83 ítems/54 SKUs con esto cargado. Referencia de "sano" para
-# qty=1: _pct_qty1_sano, mitad del % de la cantidad 2 (ver ahí). Si el tier de qty=1
-# está roto en un sentido no cubierto por esa fórmula (precio de mayorista MÁS CARO que
-# el estándar por mucho, ej. -80%: dato claramente corrupto, no una diferencia real de
-# %), se deja afuera con _PCT_QTY1_GUARD_MIN -- limpieza de datos aparte, no de este fix
-# (4 casos reales detectados, MacBookNeo-8-512 Azul/Amarillo).
+# Cantidad=1 se evalúa por el mismo camino genérico que cualquier otra cuando
+# corresponde (stock 2-5, ver _qtys_mayorista_para_stock) -- sin tratamiento
+# especial desde 2026-09-08 (antes tenía un bloque aparte, _pct_qty1_sano,
+# reemplazado por la consulta directa a ML de arriba).
 # ---------------------------------------------------------------------------
 
-_QTYS_MAYORISTA = (2, 3, 5, 10)
 _DESVIO_PP_MIN = 4.0
 _DESVIO_RATIO_MIN = 1.75
-_PCT_QTY1_GUARD_MIN = -15.0
 
 
-def _pct_qty1_sano(pct_qty2: Optional[float]) -> Optional[float]:
-    """% 'sano' propuesto para un tier legacy cargado en cantidad=1 -- no hay ahorro de
-    envío calculable para 1 unidad (ver nota arriba), pero si ML tiene ahí un precio
-    configurado tiene que quedar coherente con el resto. Regla (Diego, 2026-09-07):
-    mitad del % de la cantidad 2 (actual si está cargada, calculado si no -- lo resuelve
-    el caller), piso de 0.01% (solo evita 0/negativo, no fuerza un mínimo real), siempre
-    estrictamente menor al de qty=2. Devuelve None si pct_qty2 no está disponible."""
-    if pct_qty2 is None:
-        return None
-    propuesto = max(0.01, round(pct_qty2 / 2, 2))
-    if propuesto >= pct_qty2:
-        propuesto = max(0.01, round(pct_qty2 - 0.01, 2))
-    return propuesto if propuesto < pct_qty2 else None
+def _qtys_mayorista_para_stock(stock: Optional[int]) -> Tuple[int, ...]:
+    """Cantidades objetivo de mayorista según el stock disponible de la
+    publicación (Diego, 2026-09-08) -- reemplaza el set fijo (2,3,5,10) que se
+    usaba para cualquier stock. stock=0 o 1: sin mayorista posible (no hay
+    "comprá más, pagá menos" real con 0 o 1 unidad en stock)."""
+    if not stock or stock <= 1:
+        return ()
+    if stock == 2:
+        return (1, 2)
+    if stock == 3:
+        return (1, 2, 3)
+    if stock == 4:
+        return (1, 2, 3, 4)
+    if stock == 5:
+        return (1, 2, 3, 5)
+    if stock < 10:
+        return (2, 3, 5, stock)
+    return (2, 3, 5, 10)
 
 
 def _standard_amount_de(prices_body: dict) -> Optional[float]:
@@ -455,21 +302,15 @@ def _tiers_cargados_todos(prices_body: dict, precio_base: float) -> Dict[int, fl
     return cargado
 
 
-def _tiers_cargados_por_cantidad(prices_body: dict, precio_base: float) -> Dict[int, float]:
-    """Subconjunto de _tiers_cargados_todos acotado a las 4 cantidades objetivo
-    estándar (2/3/5/10) -- usado por _wholesale_from_prices-adyacentes que solo
-    quieren el set estándar."""
-    return {q: m for q, m in _tiers_cargados_todos(prices_body, precio_base).items() if q in _QTYS_MAYORISTA}
-
-
-def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
+def _evaluar_mayorista_gold_special(token: str, item: dict,
                                      prices_body: Optional[dict] = None,
                                      siempre_devolver: bool = False) -> Optional[Dict[str, Any]]:
-    """Evalúa las 4 cantidades objetivo para UNA publicación gold_special. Devuelve
-    None si no se puede evaluar (sin precio base, sin dimensiones, sin cotización de
-    envío) o -- si siempre_devolver=False, el default -- si las 4 están "ok" y no hay
-    nada que mostrar (el popup no pasa este flag: quiere el atajo, así no satura la
-    pantalla con ítems totalmente sanos).
+    """Evalúa las cantidades objetivo (según el stock actual de la publicación,
+    ver _qtys_mayorista_para_stock) para UNA publicación gold_special. Devuelve
+    None si no se puede evaluar (sin precio base) o -- si siempre_devolver=False,
+    el default -- si todo está "ok" y no hay nada que mostrar (el popup no pasa
+    este flag: quiere el atajo, así no satura la pantalla con ítems totalmente
+    sanos).
 
     prices_body: si se pasa (el cron ya hizo su propio GET /prices para
     _wholesale_from_prices), se reusa en vez de pedirlo de nuevo -- ahorra una
@@ -478,21 +319,31 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
     frente a escrituras recientes.
 
     siempre_devolver: el cron (audit_item) lo pasa en True -- necesita distinguir
-    "no se pudo evaluar" (None real: sin precio base, sin cotización de envío) de
-    "se evaluó y las 4 están sanas" (con este flag, devuelve el dict igual en vez
-    del atajo de arriba) para no confundir ambos casos en mayorista_revisar_json.
+    "no se pudo evaluar" (None real: sin precio base) de "se evaluó y todo está
+    sano" (con este flag, devuelve el dict igual en vez del atajo de arriba) para
+    no confundir ambos casos en mayorista_revisar_json.
 
-    Tiers "extra" (cualquier cantidad ya cargada fuera de 2/3/5/10, ej. 15+): se
-    evalúan con el MISMO criterio ok/roto/revisar que los estándar (marcados con
+    El stock sale de item.get("available_quantity") -- ya viene en el body que
+    el caller siempre tiene (multiget/GET item), cero llamadas extra. El PxQ se
+    configura por publicación (item_id) en ML, no por SKU, así que es el stock
+    de ESTA publicación el que decide, no un agregado de productos.stock.
+
+    Tiers "extra" (cualquier cantidad cargada fuera del objetivo para el stock
+    actual -- una cantidad no estándar como 7/15/20, O una cantidad que el stock
+    actual ya no admite, ej. un tier de 10 cargado con stock=4): se evalúan con
+    el MISMO criterio ok/roto/revisar que las del objetivo (marcados con
     "extra": True), pero nunca se ofrecen para "crear" -- por definición ya están
-    cargados. Se cotizan aparte (llamada propia a _calcular_mayorista_nuevo, no
-    mezclada con la de 2/3/5/10) para que si ML no puede cotizar esa cantidad
-    puntual, no tire abajo el cálculo de las 4 estándar. Confirmado en vivo
-    2026-09-04 (MLA1944479697/MLA1944467261): un tier de 15+ al 6.23%, invisible
-    para este motor hasta ahora, quedaba silenciosamente re-enviado sin tocar por
-    _construir_payload_mayorista y volvía incoherente al POST cuando se subían los
-    tiers 2/5/10 -- "Price per quantity invalid coherence order" -- porque ML exige
-    % no decreciente con la cantidad y nadie evaluaba ese 15+ contra la corrección."""
+    cargados. Se cotizan aparte (llamada propia a _calcular_mayorista_recomendado,
+    no mezclada con la del objetivo) para que si ML no puede evaluar esa cantidad
+    puntual, no tire abajo el cálculo de las demás. Confirmado en vivo 2026-09-04
+    (MLA1944479697/MLA1944467261): un tier de 15+ al 6.23%, invisible para este
+    motor hasta ahora, quedaba silenciosamente re-enviado sin tocar por
+    _construir_payload_mayorista y volvía incoherente al POST cuando se subían
+    otros tiers -- "Price per quantity invalid coherence order" -- porque ML
+    exige % no decreciente con la cantidad y nadie evaluaba ese 15+ contra la
+    corrección. El popup ya ofrece "eliminar" para cualquier tier cargado sea
+    cual sea su estado, así que un tier "extra" por stock bajo queda candidato a
+    eliminar con el mismo mecanismo, sin código nuevo ahí."""
     iid = item["id"]
     if prices_body is None:
         try:
@@ -505,24 +356,26 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
     precio_base = _standard_amount_de(prices_body)
     if not precio_base:
         return None
+    stock = item.get("available_quantity") or 0
+    qtys_objetivo = _qtys_mayorista_para_stock(stock)
     cargado = _tiers_cargados_todos(prices_body, precio_base)
-    extra_qtys = tuple(sorted(q for q in cargado if q not in _QTYS_MAYORISTA and q != 1))
+    extra_qtys = tuple(sorted(q for q in cargado if q not in qtys_objetivo))
 
-    prop = _calcular_mayorista_nuevo(token, seller_id, item, precio_base)
+    prop = _calcular_mayorista_recomendado(token, iid, precio_base, qtys_objetivo)
     calculado = {p["quantity"]: p["amount"] for p in prop["propuesta"]} if prop else {}
     calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
 
     if extra_qtys:
-        prop_extra = _calcular_mayorista_nuevo(token, seller_id, item, precio_base, cantidades=extra_qtys)
+        prop_extra = _calcular_mayorista_recomendado(token, iid, precio_base, extra_qtys)
         if prop_extra:
             calculado.update({p["quantity"]: p["amount"] for p in prop_extra["propuesta"]})
             calculado_pct.update({p["quantity"]: p["percentage"] for p in prop_extra["propuesta"]})
 
-    qtys_a_evaluar = sorted(set(_QTYS_MAYORISTA) | set(extra_qtys))
+    qtys_a_evaluar = sorted(set(qtys_objetivo) | set(extra_qtys))
 
     tiers: List[Dict[str, Any]] = []
     for q in qtys_a_evaluar:
-        es_extra = q not in _QTYS_MAYORISTA
+        es_extra = q not in qtys_objetivo
         if q not in cargado:
             if q in calculado:
                 tiers.append({"quantity": q, "estado": "crear", "extra": es_extra,
@@ -531,12 +384,13 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
         pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
         pct_calc = calculado_pct.get(q)
         if pct_calc is None:
-            # TODO(mayorista-revisar-popup, 2026-09-04): si no hay cálculo posible (sin
-            # SELLER_PACKAGE_*, o ML no cotiza envío), un tier con pct_cargado<=0 (roto)
-            # cae acá y queda "ok" en vez de "roto" -- no es un reorden trivial: "roto"
-            # siempre trae pct_calculado/monto_calculado (los usa el popup para sugerir
-            # la corrección); sin cálculo haría falta un estado nuevo y tocar el render.
-            # Evaluar aparte, no mezclado con el fix de checkboxes por tier.
+            # TODO(mayorista-revisar-popup, 2026-09-04): si no hay cálculo posible (ML
+            # no respondió, la cuenta no tiene el tag "business", o ML marcó esta
+            # cantidad puntual is_incoherent_quantity=True), un tier con pct_cargado<=0
+            # (roto) cae acá y queda "ok" en vez de "roto" -- no es un reorden trivial:
+            # "roto" siempre trae pct_calculado/monto_calculado (los usa el popup para
+            # sugerir la corrección); sin cálculo haría falta un estado nuevo y tocar
+            # el render. Evaluar aparte, no mezclado con el fix de checkboxes por tier.
             tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
             continue
         if pct_cargado <= 0:
@@ -551,36 +405,11 @@ def _evaluar_mayorista_gold_special(token: str, seller_id: str, item: dict,
         else:
             tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
 
-    if 1 in cargado:
-        pct_cargado_1 = round((precio_base - cargado[1]) / precio_base * 100, 2)
-        if pct_cargado_1 >= _PCT_QTY1_GUARD_MIN:
-            if 2 in cargado:
-                pct_qty2_ref = round((precio_base - cargado[2]) / precio_base * 100, 2)
-            else:
-                pct_qty2_ref = calculado_pct.get(2)
-            pct_sano_1 = _pct_qty1_sano(pct_qty2_ref)
-            if pct_sano_1 is not None:
-                if pct_cargado_1 <= 0:
-                    estado_1 = "roto"
-                else:
-                    diff_pp_1 = abs(pct_cargado_1 - pct_sano_1)
-                    ratio_1 = max(pct_cargado_1, pct_sano_1) / max(min(pct_cargado_1, pct_sano_1), 0.01)
-                    estado_1 = "revisar" if (diff_pp_1 >= _DESVIO_PP_MIN and ratio_1 >= _DESVIO_RATIO_MIN) else "ok"
-                entry_1 = {"quantity": 1, "estado": estado_1, "extra": True,
-                           "pct_cargado": pct_cargado_1, "monto_cargado": cargado[1]}
-                if estado_1 != "ok":
-                    entry_1["pct_calculado"] = pct_sano_1
-                    entry_1["monto_calculado"] = round(precio_base * (1 - pct_sano_1 / 100), 2)
-                tiers.append(entry_1)
-            # sin referencia de qty=2 (ni cargada ni calculable) -- no se puede proponer
-            # nada sano para qty=1, se deja afuera de tiers (igual que antes de este fix)
-        # pct_cargado_1 < _PCT_QTY1_GUARD_MIN: dato roto (ver nota arriba), fuera de este fix
-
     presentes = sorted(cargado.keys())
     invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))
 
     if not siempre_devolver and not any(t["estado"] != "ok" for t in tiers) and not invertido:
-        return None  # las 4 están ok (o no evaluables) y no hay inversión -- nada para mostrar (popup)
+        return None  # todo está ok (o no evaluable) y no hay inversión -- nada para mostrar (popup)
 
     return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
 
@@ -668,28 +497,41 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
     except requests.exceptions.RequestException as e:
         errores.append(f"prices error={e}")
 
-    # Mayorista "revisar"/"invertido" (cotización de envío real por cantidad objetivo) --
-    # solo gold_special con >=1 tier cargado (sin nada cargado no hay contra qué comparar).
-    # A diferencia del popup (que siempre recalcula en vivo al abrir, tabs/salud.py), acá
-    # se PERSISTE en el snapshot -- así la tabla resumen muestra el ⚠️ sin recalcular en
-    # cada render (ver _mayorista_dim). "evaluable": false = se intentó pero no se pudo
-    # cotizar envío (sin SELLER_PACKAGE_*, o ML no cotiza) -- no cuenta como sano ni como
-    # revisar, queda "sin evaluar".
+    # Mayorista "revisar"/"invertido" -- solo gold_special con >=1 tier cargado
+    # (sin nada cargado no hay contra qué comparar). A diferencia del popup (que
+    # siempre recalcula en vivo al abrir, tabs/salud.py, para CUALQUIER stock),
+    # el cron nocturno solo hace la evaluación completa (Cambio 1 + Cambio 2:
+    # endpoint oficial + cantidades por stock) cuando stock>=10 -- Diego,
+    # 2026-09-08, para no disparar de una sola corrida las advertencias de
+    # detalle en los ~274 SKUs de CAMINIZA con stock<10 que tienen mayorista
+    # cargado (medido en vivo ese día: 362 SKUs con mayorista, 274 con stock<10).
+    # Para stock<10 el cron solo marca un ⚠️ genérico "stock bajo" -- sin tiers
+    # ni % calculado -- para que se revise a mano abriendo el popup, que ahí sí
+    # hace la evaluación completa en vivo. Se PERSISTE en el snapshot -- así la
+    # tabla resumen muestra el ⚠️ sin recalcular en cada render (ver _mayorista_dim).
+    # "evaluable": false = se intentó pero no se pudo evaluar -- no cuenta como
+    # sano ni como revisar, queda "sin evaluar".
     if item.get("listing_type_id") == "gold_special" and seller_id and tiene_tiers_cargados:
         try:
-            ev = _evaluar_mayorista_gold_special(
-                token, seller_id, item, prices_body=prices_body_para_revisar, siempre_devolver=True,
-            )
             import json as _json
-            if ev is None:
-                # con siempre_devolver=True, None es inequívoco: no se pudo leer/evaluar
-                # (sin precio base o sin cotización de envío posible) -- no "las 4 ok".
-                data["mayorista_revisar_json"] = _json.dumps({"evaluable": False}, ensure_ascii=False)
+            stock_item = item.get("available_quantity") or 0
+            if stock_item >= 10:
+                ev = _evaluar_mayorista_gold_special(
+                    token, item, prices_body=prices_body_para_revisar, siempre_devolver=True,
+                )
+                if ev is None:
+                    # con siempre_devolver=True, None es inequívoco: no se pudo leer/evaluar
+                    # (sin precio base) -- no "todo ok".
+                    data["mayorista_revisar_json"] = _json.dumps({"evaluable": False}, ensure_ascii=False)
+                else:
+                    tiers_revisar = [t for t in ev["tiers"] if t["estado"] == "revisar"]
+                    data["mayorista_revisar_json"] = _json.dumps(
+                        {"evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar},
+                        ensure_ascii=False,
+                    )
             else:
-                tiers_revisar = [t for t in ev["tiers"] if t["estado"] == "revisar"]
                 data["mayorista_revisar_json"] = _json.dumps(
-                    {"evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar},
-                    ensure_ascii=False,
+                    {"evaluable": True, "motivo": "stock_bajo", "stock": stock_item}, ensure_ascii=False,
                 )
         except Exception as e:
             errores.append(f"mayorista_revisar error={e}")
