@@ -284,6 +284,7 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
     # criterio de unión que ok_qtys).
     advertencias: List[str] = []
     vistas_tier: set = set()
+    stocks_bajo_vistos: set = set()
     invertido_visto = False
     for it in gold_special:
         raw = it.get("mayorista_revisar_json")
@@ -296,7 +297,15 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
         if not info.get("evaluable"):
             continue
         if info.get("motivo") == "stock_bajo":
-            advertencias.append(f"Stock bajo ({info.get('stock')} u.) — abrir el SKU para recalcular cantidades de mayorista")
+            # Dedupe por VALOR de stock, no por un flag "ya vi uno" -- dos
+            # publicaciones del mismo SKU podrían en teoría tener
+            # available_quantity distinto entre si (aunque en la practica casi
+            # siempre coincide), y en ese caso interesa mostrar ambos valores,
+            # no esconder el segundo.
+            st = info.get("stock")
+            if st not in stocks_bajo_vistos:
+                stocks_bajo_vistos.add(st)
+                advertencias.append(f"Stock bajo ({st} u.) — abrir el SKU para recalcular cantidades de mayorista")
             continue
         for t in info.get("tiers_revisar") or []:
             clave = (t.get("quantity"), t.get("pct_cargado"), t.get("pct_calculado"))
