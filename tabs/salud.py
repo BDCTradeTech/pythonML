@@ -1052,6 +1052,12 @@ _DESCRIPCION_TRANSLITERAR = str.maketrans({
     "‘": "'", "’": "'", "“": '"', "”": '"',
     "–": "-", "—": "-", "…": "...", " ": " ",
 })
+# Variantes unicode de espacio (narrow no-break, thin, ideográfico, etc.) -- confirmado
+# en vivo el 2026-09-08 que la sugerencia de Groq las usa entre número y unidad ("42
+# mm", "64 GB"): si se dejaran caer en _DESCRIPCION_FUERA_DE_RANGO sin reemplazo, las
+# palabras quedarían pegadas ("42mm"). Se normalizan a espacio ASCII antes del filtro.
+_DESCRIPCION_ESPACIOS_UNICODE = re.compile("[  -   　]")
+
 # Letras latinas con acentos/ñ (incl. mayúsculas) + ASCII imprimible + saltos de línea
 # y tabs -- todo lo demás (emojis, viñetas unicode, flechas, símbolos decorativos) se
 # descarta. Excluye × (0xD7) y ÷ (0xF7), que caen en el hueco entre los dos rangos.
@@ -1074,6 +1080,7 @@ def _sanitizar_descripcion(texto: str) -> str:
     t = texto.replace("\r\n", "\n").replace("\r", "\n")
     t = re.sub(r"<[^>]*>", "", t)
     t = t.translate(_DESCRIPCION_TRANSLITERAR)
+    t = _DESCRIPCION_ESPACIOS_UNICODE.sub(" ", t)         # nbsp/espacios angostos -> " "
     t = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", t)          # encabezados markdown
     t = re.sub(r"(?m)^\s{0,3}>\s?", "", t)                # citas markdown
     t = re.sub(r"(?m)^\s*[*\-+•‣▪○●◦]\s+", "- ", t)       # viñetas markdown/unicode
