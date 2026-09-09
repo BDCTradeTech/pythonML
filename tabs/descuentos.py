@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, background_tasks, run, ui
 
 from ml_api import get_ml_access_token, ml_get_my_items
+from tabs.cuotas import _cuotas_key
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -82,10 +83,7 @@ def build_tab_descuentos(container) -> None:
                     with body_col:
                         ui.label(f"❌ Error al conectar con MercadoLibre: {e}").classes("text-negative")
                     return
-                items = [
-                    it for it in (data.get("results") or [])
-                    if (it.get("available_quantity") or 0) > 0 and it.get("id")
-                ]
+                items = [it for it in (data.get("results") or []) if it.get("id")]
                 body_col.clear()
                 with body_col:
                     _build_selector(items)
@@ -95,16 +93,51 @@ def build_tab_descuentos(container) -> None:
                     ui.label("No hay publicaciones con stock para esta cuenta.").classes("text-sm text-gray-400")
                     return
 
-                items_by_id: Dict[str, Dict[str, Any]] = {str(it["id"]): it for it in items}
+                # Agrupación por SKU (misma lógica que Productos/Cuotas -- tabs/cuotas.py
+                # _cuotas_key, con la regla de absorción de catálogo huérfano) para que el
+                # selector muestre un producto real por opción, no una por publicación
+                # (propia + catálogo x planes de cuotas).
+                _cpid_to_skus: Dict[str, set] = {}
+                for it in items:
+                    _cpid = (it.get("catalog_product_id") or "").strip()
+                    _sku_it = (it.get("seller_sku") or "").strip()
+                    if _cpid and _sku_it:
+                        _cpid_to_skus.setdefault(_cpid, set()).add(_sku_it.lower())
+
+                groups: Dict[tuple, List[Dict[str, Any]]] = {}
+                for it in items:
+                    groups.setdefault(_cuotas_key(it, _cpid_to_skus), []).append(it)
+
+                # Principal del grupo: mismo criterio que tabs/precios.py -- gana la propia
+                # gold_special con más stock; si no hay propia gold_special, gana la de más
+                # stock entre las restantes (típicamente la de catálogo).
+                productos: List[Dict[str, Any]] = []
+                for grupo in groups.values():
+                    principal = max(
+                        grupo,
+                        key=lambda x: (
+                            1 if not x.get("catalog_listing") and
+                                 str(x.get("listing_type_id") or "").lower() == "gold_special" else 0,
+                            int(x.get("available_quantity") or 0),
+                        ),
+                    )
+                    if (principal.get("available_quantity") or 0) > 0:
+                        productos.append(principal)
+
+                if not productos:
+                    ui.label("No hay publicaciones con stock para esta cuenta.").classes("text-sm text-gray-400")
+                    return
+
+                items_by_id: Dict[str, Dict[str, Any]] = {str(it["id"]): it for it in productos}
                 opciones = {
-                    iid: f"{it.get('title') or iid} — SKU: {it.get('seller_sku') or '(sin SKU)'}"
+                    iid: f"{it.get('title') or iid} ({it.get('seller_sku') or 'sin SKU'})"
                     for iid, it in items_by_id.items()
                 }
 
                 with ui.row().classes("items-center gap-3 flex-wrap w-full"):
                     sel = ui.select(
                         opciones, value=None, with_input=True, clearable=True,
-                        label=f"Publicación con stock ({len(opciones)}) -- título o SKU",
+                        label=f"Producto con stock ({len(opciones)}) -- nombre o SKU",
                     ).props("dense outlined").classes("w-[28rem] max-w-full")
                     descuento_inp = ui.number(
                         label="Descuento deseado (%)", value=44, min=0.01, max=99.99, step=1,
