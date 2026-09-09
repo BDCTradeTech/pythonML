@@ -24,6 +24,7 @@ TAB_REGISTRY: List[Tuple[str, str, str]] = [
     ("MercadoLibre", "ventas", "Ventas"),
     ("MercadoLibre", "productos", "Productos"),
     ("MercadoLibre", "salud", "Salud"),
+    ("MercadoLibre", "descuentos", "Descuentos"),
     ("MercadoLibre", "cuotas", "Cuotas"),
     ("MercadoLibre", "promos", "Promos"),
     ("MercadoLibre", "publicidad", "Publicidad"),
@@ -72,7 +73,7 @@ EXTRA_PERMISSION_KEYS: List[Tuple[str, str]] = [
 
 # Grupos de tabs para control de acceso por defecto
 TABS_BASE: Set[str] = {"home", "pedidos", "importacion", "pesos", "arca", "datos", "configuracion"}
-TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "salud", "busqueda", "balance", "dashboard", "cuotas", "promos", "publicidad", "competidores", "preguntas", "flex", "historicos", "stock_bdc", "stock"}
+TABS_ML:   Set[str] = {"estadisticas", "ventas", "productos", "salud", "descuentos", "busqueda", "balance", "dashboard", "cuotas", "promos", "publicidad", "competidores", "preguntas", "flex", "historicos", "stock_bdc", "stock"}
 TABS_QB:   Set[str] = {"compras", "compras_lista"}
 
 # ---------------------------------------------------------------------------
@@ -84,6 +85,7 @@ TAB_DESCRIPTIONS: Dict[str, str] = {
     "ventas": "gestión de ventas y órdenes.",
     "productos": "catálogo de productos.",
     "salud": "auditoría de completitud de publicaciones: GTIN, descripción, fotos, mayorista, Flex, atributos faltantes y puntaje de ML, por SKU.",
+    "descuentos": "[EXPERIMENTAL, solo lectura] calculadora de precio de lista para simular un % de descuento en una publicación -- no escribe nada en ML todavía.",
     "busqueda": "buscar productos en el catálogo.",
     "balance": "gastos, ingresos y resultados.",
     "dashboard": "resumen ejecutivo con alertas, KPIs de productos, ventas y reputación ML.",
@@ -116,6 +118,7 @@ LABEL_BY_TAB: Dict[str, str] = {
     "ventas": "Ventas",
     "productos": "Productos",
     "salud": "Salud",
+    "descuentos": "Descuentos",
     "busqueda": "Búsqueda",
     "balance": "Balance",
     "dashboard": "Dashboard",
