@@ -183,6 +183,36 @@ def init_salud_tables() -> None:
         ON salud_item_snapshots(user_id, sku, snapshot_date)
         """
     )
+    # Correcciones de tiers de mayorista aplicadas SOLAS por el cron nocturno
+    # (Diego, 2026-09-09) -- solo pérdida real inequívoca (monto_cargado <
+    # monto_calculado), nunca los falsos positivos del artefacto de base de
+    # /recommendations. APPEND-ONLY, una fila por tier corregido (ok o error),
+    # mismo patrón que ml_escrituras -- esta es la fuente para el resumen que
+    # se lee a la mañana (ver _reportar_resumen_correcciones_automaticas en
+    # salud_audit.py); ml_escrituras sigue llevando el log genérico de la
+    # escritura en sí (origen="cron_auto_mayorista").
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS mayorista_correcciones_automaticas (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts             TEXT NOT NULL,
+            user_id        INTEGER NOT NULL,
+            sku            TEXT NOT NULL,
+            item_id        TEXT NOT NULL,
+            quantity       INTEGER NOT NULL,
+            pct_anterior   REAL,
+            monto_anterior REAL,
+            pct_nuevo      REAL,
+            monto_nuevo    REAL,
+            resultado      TEXT NOT NULL,
+            detalle        TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mayorista_correcciones_ts ON mayorista_correcciones_automaticas(ts)"
+    )
     # Escrituras hacia ML disparadas desde el popup de Salud (GTIN, descripción,
     # atributos de ficha, tiers de mayorista). APPEND-ONLY, mismo patrón que
     # tn_escrituras -- nunca UPDATE ni DELETE, se loguea siempre (ok o error).
@@ -1519,6 +1549,34 @@ def log_tn_escritura(
                 None if valor_anterior is None else str(valor_anterior),
                 None if valor_nuevo is None else str(valor_nuevo),
                 origen, resultado, detalle,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def log_correccion_automatica_mayorista(
+    user_id: int, sku: str, item_id: str, quantity: int,
+    pct_anterior: Optional[float], monto_anterior: Optional[float],
+    pct_nuevo: Optional[float], monto_nuevo: Optional[float],
+    resultado: str, detalle: Optional[str] = None,
+) -> None:
+    """Registra UN tier corregido automáticamente por el cron nocturno de
+    mayorista (ver _construir_correccion_automatica_mayorista en
+    salud_audit.py). Se llama SIEMPRE (ok o error), una fila por tier -- un
+    mismo item_id puede aportar varias filas si se corrigió más de un tier en
+    el mismo POST. Nunca UPDATE ni DELETE."""
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT INTO mayorista_correcciones_automaticas "
+            "(ts, user_id, sku, item_id, quantity, pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                _dt.utcnow().isoformat(), user_id, sku, item_id, quantity,
+                pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle,
             ),
         )
         conn.commit()

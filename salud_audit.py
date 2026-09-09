@@ -47,7 +47,7 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 import requests
-from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run
+from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run, log_correccion_automatica_mayorista
 from ml_api import get_ml_access_token, ml_get_pxq_recommendations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -414,8 +414,118 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
     return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
 
 
+# ---------------------------------------------------------------------------
+# Auto-corrección nocturna de mayorista (Diego, 2026-09-09) -- el cron ya no
+# solo flaguea "revisar", corrige solo cuando hay pérdida real inequívoca.
+# Reglas de seguridad (no son opcionales):
+#   1) SOLO corrige tiers roto/revisar donde monto_cargado < monto_calculado
+#      (el precio de hoy está POR DEBAJO del piso que ML calcula ahora). Si
+#      monto_cargado >= monto_calculado -- el patrón de falso positivo
+#      confirmado el 2026-09-09 en Awei-H18/Awei-T56anc-negro/Spen-ZFold5-EJPF946,
+#      donde el % que devuelve ML viene calculado contra una base implícita
+#      DISTINTA a precio_base y por eso no es comparable en % -- NO se toca,
+#      sin importar el %. Esto filtra el artefacto de batching solo, sin
+#      necesidad de arreglarlo primero: si no hay pérdida real en $, no hay
+#      nada que corregir.
+#   2) El % objetivo de un tier corregido se calcula contra precio_base (el
+#      REAL de la publicación), nunca con el pct_calculado que devuelve ML --
+#      mismo motivo que (1), confirmado en vivo en Awei-H35 10+ (2026-09-09):
+#      pct_calculado=15.57% pero eso era contra una base ~$36.629, no contra
+#      el precio_base real (~$42.699); el % correcto contra la base real daba
+#      27.57%, coherente con el resto de los tiers.
+#   3) Todos los tiers de la publicación (menos "crear") se evalúan y
+#      escriben juntos en un solo POST (ver _escribir_mayorista_pxq, que ya
+#      preserva por id cualquier tier no incluido en `cambios`) -- nunca solo
+#      el tier flageado, para no repetir "invalid coherence order" (cause_id
+#      5512, visto en la primera pasada de la corrección manual de hoy).
+#   4) Si corregir el/los tier(s) con pérdida real deja el conjunto completo
+#      de tiers (corregidos + los que NO se pueden tocar por regla 1)
+#      incoherente -- % no estrictamente creciente con la cantidad -- NO se
+#      autocorrige NADA de ese ítem: queda todo flageado como "revisar" para
+#      el popup, igual que hoy. Es una extensión directa de la misma cautela
+#      que pidió Diego para el tope de 5 (punto siguiente): ante conflicto,
+#      no actuar solo.
+#   5) Si el resultado final (mismos tiers ya cargados hoy, ninguno nuevo)
+#      superara el tope de 5 entradas de ML, tampoco se autocorrige --
+#      _escribir_mayorista_pxq ya tiene este backstop (ver _ML_MAX_TIERS_PXQ
+#      en tabs/salud.py) y no manda el POST; acá además se chequea antes de
+#      intentar, para poder reportarlo con un motivo claro en vez de un error
+#      genérico.
+# ---------------------------------------------------------------------------
+
+_ML_MAX_TIERS_PXQ_MAYORISTA = 5  # debe reflejar tabs.salud._ML_MAX_TIERS_PXQ
+
+
+def _construir_correccion_automatica_mayorista(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """A partir del resultado de _evaluar_mayorista_gold_special (motor
+    completo, TODOS los tiers de la publicación), decide qué corresponde
+    auto-corregir esta noche. Ver el bloque de comentario de arriba para las
+    reglas de seguridad -- no tocar sin releerlas.
+
+    Devuelve {"cambios": {cantidad: pct_nuevo}, "detalle": [...], "motivo_skip": None|str}.
+    "cambios" vacío + motivo_skip=None: nada que corregir (todo ok, o todo lo
+    revisar/roto es falso positivo). motivo_skip != None: había >=1 tier con
+    pérdida real pero no se puede autocorregir con seguridad (coherencia con
+    un tier no tocable, o tope de 5) -- "cambios" queda vacío también en ese
+    caso, no se corrige nada parcial."""
+    precio_base = ev["precio_base"]
+    tiers = [t for t in ev["tiers"] if t.get("estado") != "crear"]
+
+    candidatos: Dict[int, float] = {}
+    detalle: List[Dict[str, Any]] = []
+    for t in tiers:
+        q = t["quantity"]
+        if t["estado"] in ("revisar", "roto"):
+            monto_cargado = t.get("monto_cargado")
+            monto_calculado = t.get("monto_calculado")
+            if monto_cargado is not None and monto_calculado is not None and monto_cargado < monto_calculado:
+                pct_nuevo = round((precio_base - monto_calculado) / precio_base * 100, 2)
+                candidatos[q] = pct_nuevo
+                detalle.append({
+                    "quantity": q, "accion": "corregir_perdida_real",
+                    "pct_anterior": t.get("pct_cargado"), "monto_anterior": monto_cargado,
+                    "pct_nuevo": pct_nuevo, "monto_nuevo_estimado": monto_calculado,
+                })
+            else:
+                detalle.append({
+                    "quantity": q, "accion": "no_tocar_falso_positivo",
+                    "pct_anterior": t.get("pct_cargado"), "monto_anterior": monto_cargado,
+                    "pct_calculado_ml": t.get("pct_calculado"), "monto_calculado_ml": monto_calculado,
+                })
+
+    if not candidatos:
+        return {"cambios": {}, "detalle": detalle, "motivo_skip": None}
+
+    if len(tiers) > _ML_MAX_TIERS_PXQ_MAYORISTA:
+        return {"cambios": {}, "detalle": detalle, "motivo_skip": "tope_5_tiers"}
+
+    # Target final = candidatos corregidos + el resto EXACTAMENTE como está
+    # hoy (nunca se mueve un tier no tocable solo para acomodar coherencia).
+    # Si el conjunto completo no queda estrictamente creciente en % con la
+    # cantidad, no se escribe nada de este ítem (regla 4 de arriba).
+    target = {t["quantity"]: t.get("pct_cargado") for t in tiers if t.get("pct_cargado") is not None}
+    target.update(candidatos)
+    qtys_desc = sorted(target.keys(), reverse=True)
+    for i in range(1, len(qtys_desc)):
+        if target[qtys_desc[i]] >= target[qtys_desc[i - 1]]:
+            return {"cambios": {}, "detalle": detalle, "motivo_skip": "rompe_coherencia_con_tier_no_tocable"}
+
+    return {"cambios": candidatos, "detalle": detalle, "motivo_skip": None}
+
+
+def _ejecutar_correccion_automatica_mayorista(token: str, user_id: int, sku: str, item_id: str,
+                                               cambios: Dict[int, float]) -> Tuple[Optional[str], List[str]]:
+    """Import perezoso de _escribir_mayorista_pxq (tabs/salud.py importa DE este
+    módulo a nivel de archivo -- un import a nivel de módulo acá crearía un
+    ciclo; funciona bien adentro de la función porque para cuando se llama ya
+    están ambos módulos completamente cargados)."""
+    from tabs.salud import _escribir_mayorista_pxq
+    return _escribir_mayorista_pxq(token, user_id, sku, item_id, cambios, origen="cron_auto_mayorista")
+
+
 def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
-                seller_id: str = "", session: Optional[requests.Session] = None) -> Dict[str, Any]:
+                seller_id: str = "", session: Optional[requests.Session] = None,
+                user_id: Optional[int] = None, auto_corregir: bool = False) -> Dict[str, Any]:
     """Audita UN ítem propio ya traído (item = body completo de /items/{id} o del
     multiget). Devuelve el dict de columnas crudas para salud_item_snapshots.
     Nunca levanta excepción: cualquier llamada que falle deja su campo en None
@@ -524,11 +634,45 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
                     # (sin precio base) -- no "todo ok".
                     data["mayorista_revisar_json"] = _json.dumps({"evaluable": False}, ensure_ascii=False)
                 else:
-                    tiers_revisar = [t for t in ev["tiers"] if t["estado"] == "revisar"]
-                    data["mayorista_revisar_json"] = _json.dumps(
-                        {"evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar},
-                        ensure_ascii=False,
-                    )
+                    tiers_revisar = [t for t in ev["tiers"] if t["estado"] in ("revisar", "roto")]
+                    revisar_payload: Dict[str, Any] = {
+                        "evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar,
+                    }
+                    # Auto-corrección nocturna (Diego, 2026-09-09) -- solo cuando el caller la
+                    # pide explícitamente (auto_corregir=True, desde _run_user/el cron real).
+                    # audit_sku (popup a demanda) NUNCA la pide -- abrir el popup a mirar un SKU
+                    # no debe disparar una escritura a ML por su cuenta. Ver el bloque de reglas
+                    # de seguridad arriba de _construir_correccion_automatica_mayorista.
+                    if auto_corregir and user_id is not None and tiers_revisar:
+                        correccion = _construir_correccion_automatica_mayorista(ev)
+                        if correccion["cambios"]:
+                            sku_item = data["sku"]
+                            err, _advertencias = _ejecutar_correccion_automatica_mayorista(
+                                token, user_id, sku_item, iid, correccion["cambios"],
+                            )
+                            corregidos = [d for d in correccion["detalle"] if d["accion"] == "corregir_perdida_real"]
+                            resultado_tier = "ok" if err is None else "error"
+                            for d in corregidos:
+                                d["resultado"] = resultado_tier
+                                d["detalle_error"] = err
+                                log_correccion_automatica_mayorista(
+                                    user_id, sku_item, iid, d["quantity"],
+                                    d["pct_anterior"], d["monto_anterior"],
+                                    d["pct_nuevo"], d["monto_nuevo_estimado"],
+                                    resultado_tier, err,
+                                )
+                            revisar_payload["tiers_corregidos_automaticamente"] = corregidos
+                            if resultado_tier == "ok":
+                                # los tiers recién corregidos ya no son una alerta pendiente para
+                                # HOY (mañana el cron los va a re-evaluar solos y deberían salir
+                                # "ok") -- se sacan de tiers_revisar para no duplicar la señal.
+                                qtys_corregidos = {d["quantity"] for d in corregidos}
+                                revisar_payload["tiers_revisar"] = [
+                                    t for t in tiers_revisar if t["quantity"] not in qtys_corregidos
+                                ]
+                        elif correccion["motivo_skip"]:
+                            revisar_payload["motivo_no_autocorregido"] = correccion["motivo_skip"]
+                    data["mayorista_revisar_json"] = _json.dumps(revisar_payload, ensure_ascii=False)
             else:
                 data["mayorista_revisar_json"] = _json.dumps(
                     {"evaluable": True, "motivo": "stock_bajo", "stock": stock_item}, ensure_ascii=False,
@@ -722,7 +866,7 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     session = requests.Session()
     n_errores = 0
     for idx, it in enumerate(items):
-        data = audit_item(token, it, cat_attrs_cache, seller_id, session)
+        data = audit_item(token, it, cat_attrs_cache, seller_id, session, user_id=user_id, auto_corregir=True)
         if data.get("error"):
             n_errores += 1
         write_snapshot(conn, user_id, it["id"], data, hoy)
@@ -770,6 +914,82 @@ def run() -> None:
         log_cron_run("salud_audit", user_id, status, result["items_procesados"],
                      time.time() - t0, f"{result['errores']} items con error" if result["errores"] else None)
         time.sleep(1)
+
+    _reportar_resumen_correcciones_automaticas(date.today().isoformat())
+    _reportar_resumen_flags_pendientes(date.today().isoformat())
+
+
+def _reportar_resumen_correcciones_automaticas(fecha: str) -> None:
+    """Resumen de lo que el cron corrigió SOLO esta noche (las 3 cuentas juntas,
+    mismo alcance que run()) -- para leer a la mañana en /var/log/pythonml_salud.log
+    (Diego, 2026-09-09, punto 5). Lee mayorista_correcciones_automaticas, que
+    audit_item llena fila por fila en el momento de cada corrección."""
+    conn = get_connection()
+    filas = conn.execute(
+        "SELECT * FROM mayorista_correcciones_automaticas WHERE date(ts)=? ORDER BY user_id, item_id, quantity",
+        (fecha,),
+    ).fetchall()
+    conn.close()
+    ok = [f for f in filas if f["resultado"] == "ok"]
+    err = [f for f in filas if f["resultado"] != "ok"]
+    log.info("=== RESUMEN correccion automatica de mayorista -- %s ===", fecha)
+    log.info("Tiers corregidos OK: %d | Fallidos (se escribio pero no verifico, o error de ML): %d", len(ok), len(err))
+    for f in ok:
+        log.info(
+            "  OK item=%s sku=%s user_id=%s qty=%s+: %s%% ($%s) -> %s%% ($%s)",
+            f["item_id"], f["sku"], f["user_id"], f["quantity"],
+            f["pct_anterior"], f["monto_anterior"], f["pct_nuevo"], f["monto_nuevo"],
+        )
+    for f in err:
+        log.info(
+            "  FALLO item=%s sku=%s user_id=%s qty=%s+: intento %s%% ($%s) -> %s%% ($%s) -- %s",
+            f["item_id"], f["sku"], f["user_id"], f["quantity"],
+            f["pct_anterior"], f["monto_anterior"], f["pct_nuevo"], f["monto_nuevo"], f["detalle"],
+        )
+    if not filas:
+        log.info("  (ninguna publicacion necesito correccion automatica hoy)")
+
+
+def _reportar_resumen_flags_pendientes(fecha: str) -> None:
+    """Complementa el resumen de arriba: cuántos tiers quedaron flageados como
+    "revisar" SIN auto-corregir hoy, separando pérdida real bloqueada (tope de
+    5 / conflicto de coherencia -- requieren revisión manual en el popup) de
+    falso positivo (no requiere ninguna acción, el % que se ve no es
+    comparable por el artefacto de base de /recommendations)."""
+    import json as _json
+    conn = get_connection()
+    filas = conn.execute(
+        "SELECT user_id, item_id, sku, mayorista_revisar_json FROM salud_item_snapshots "
+        "WHERE snapshot_date=? AND mayorista_revisar_json IS NOT NULL",
+        (fecha,),
+    ).fetchall()
+    conn.close()
+    pendientes_perdida_real = []
+    n_falsos_positivos = 0
+    for f in filas:
+        try:
+            rj = _json.loads(f["mayorista_revisar_json"])
+        except Exception:
+            continue
+        if not rj.get("evaluable") or not rj.get("tiers_revisar"):
+            continue
+        motivo = rj.get("motivo_no_autocorregido")
+        for t in rj["tiers_revisar"]:
+            mc, mcalc = t.get("monto_cargado"), t.get("monto_calculado")
+            if mc is not None and mcalc is not None and mc < mcalc:
+                pendientes_perdida_real.append({
+                    "user_id": f["user_id"], "item_id": f["item_id"], "sku": f["sku"],
+                    "quantity": t.get("quantity"), "motivo": motivo or "sin_evaluar_aun",
+                })
+            else:
+                n_falsos_positivos += 1
+    log.info(
+        "Tiers flageados SIN tocar por perdida real bloqueada (tope de 5 / conflicto de coherencia): %d",
+        len(pendientes_perdida_real),
+    )
+    for p in pendientes_perdida_real:
+        log.info("  item=%s sku=%s user_id=%s qty=%s+: motivo=%s", p["item_id"], p["sku"], p["user_id"], p["quantity"], p["motivo"])
+    log.info("Tiers flageados SIN tocar por falso positivo (no es perdida real, no requiere accion): %d", n_falsos_positivos)
 
 
 if __name__ == "__main__":

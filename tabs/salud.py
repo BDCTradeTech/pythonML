@@ -1431,18 +1431,22 @@ _ML_MAX_DESCRIPCION = 50000
 
 def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
                              cambios: Dict[int, float],
-                             eliminar: Optional[set] = None) -> Tuple[Optional[str], List[str]]:
+                             eliminar: Optional[set] = None,
+                             origen: str = "salud_popup") -> Tuple[Optional[str], List[str]]:
     """cambios: {cantidad: porcentaje} SOLO para las cantidades a crear/corregir --
     todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista).
     eliminar: cantidades tildadas para sacar del array y liberar lugar (ver FIX A /
     tope de 5, 2026-09-07).
+    origen: se pasa tal cual a ml_escrituras.origen (Diego, 2026-09-09) -- el default
+    preserva el comportamiento de siempre para el popup; el cron de auto-corrección
+    nocturna pasa "cron_auto_mayorista" para poder distinguir ambos en el log.
     Devuelve (error, advertencias) -- advertencias lista las cantidades que
     _construir_payload_mayorista descartó por el piso de sanidad (nunca se
     escribieron a ML), aunque el resto se haya guardado bien (error=None)."""
     prices_info = ml_get_prices_with_version(token, item_id)
     if not prices_info or "version" not in prices_info:
         msg = "no se pudo leer la versión de precios (X-Version) antes de escribir"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
         return f"Mayorista ({item_id}): {msg}", []
     version = prices_info["version"]
     body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios, eliminar)
@@ -1453,9 +1457,11 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         # ML entre medio
         # (otra escritura, otra pestaña), nunca se manda un POST que ML va a
         # rechazar con "Maximum 5 price_per_quantity entries allowed" (caso real
-        # MLA3684456394, 2026-09-07: 5 cargados + 1 "crear" = 6, 400).
+        # MLA3684456394, 2026-09-07: 5 cargados + 1 "crear" = 6, 400). El cron de
+        # auto-corrección (origen="cron_auto_mayorista") también depende de este
+        # mismo backstop para su regla de "no auto-corregir si se pasa el tope de 5".
         msg = f"quedarían {len(body_items)} precios por cantidad, ML permite máximo {_ML_MAX_TIERS_PXQ} -- no se envió"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), "salud_popup", "error", msg)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
         return f"Mayorista ({item_id}): {msg}", []
     advertencias = [
         f"Mayorista ({item_id}) {d['quantity']}+: % pedido inválido ({d['pct_pedido']}) descartado, no se envió a ML"
@@ -1483,10 +1489,10 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         for mpu, pct in cambios_efectivos.items()
     )
     if ok:
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "ok", None)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, origen, "ok", None)
         return None, advertencias
     detalle = post_detalle or f"GET de verificación no coincide (quedó {verify_pct!r})"
-    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, "salud_popup", "error", detalle)
+    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, origen, "error", detalle)
     return f"Mayorista ({item_id}): {detalle}", advertencias
 
 
