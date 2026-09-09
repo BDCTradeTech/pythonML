@@ -924,18 +924,24 @@ def _valores_de(attr_def: Optional[dict]) -> List[dict]:
 
 
 def _tipo_campo(attr_def: Optional[dict]) -> str:
-    """Determina qué widget corresponde para un atributo. El discriminante real NO es
-    value_type solo -- es si `values[]` viene poblado. Un atributo "string" con
-    values[] poblado y tag multivalued (ej. LANGUAGES) exige matchear nombres exactos
-    de esa lista igual que un "list", aunque el tipo diga string. En cambio
-    `suggested_values` (values[] vacío) es solo un hint de autocompletado -- ML sigue
-    aceptando texto libre nuevo ahí (confirmado contra la doc oficial de atributos).
+    """Determina qué widget corresponde para un atributo. El discriminante real es
+    value_type: "list" es el único que ML guarda como referencia a un catálogo
+    cerrado (value_id, sin texto libre nunca) -- confirmado 2026-09-09 tratando de
+    forzar VALUE_ADDED_TAX (list) con un value_name fuera de catálogo. Cualquier
+    otro value_type (string, number) tolera un value_name nuevo aunque tenga
+    values[] poblado, sea o no multivalued -- confirmado el mismo día con PUT real
+    + GET fresco sobre LANGUAGES (agregado "Klingon", fuera de values[]=[Español,
+    Francés,Inglés], persistido) y con evidencia natural en SMARTWATCH_FUNCTIONS del
+    mismo item (10 valores cargados, ninguno matchea los 6 del catálogo de la
+    categoría). El supuesto anterior ("multivalued nunca acepta texto libre",
+    basado en LANGUAGES/FUNCTIONS sin probarlo) era incorrecto.
 
     Devuelve: "closed" (boolean/list -- nunca texto libre, siempre value_id),
-    "number_unit", "multivalued" (string/number con values[] + tag multivalued),
-    "closed_or_free" (string/number con values[] sin multivalued -- ML tolera un
-    value_name nuevo), o "free" (sin values[], o sin attr_def -- texto libre, sin
-    cambios de comportamiento)."""
+    "number_unit", "multivalued" (string/number con values[] + tag multivalued --
+    UI de selección múltiple + texto libre que SUMA valores nuevos a los tildados),
+    "closed_or_free" (string/number con values[] sin multivalued -- texto libre que
+    REEMPLAZA la selección del combo), o "free" (sin values[], o sin attr_def --
+    texto libre, sin cambios de comportamiento)."""
     if not attr_def:
         return "free"
     value_type = attr_def.get("value_type")
@@ -1747,38 +1753,63 @@ def build_tab_salud(container) -> None:
                                     )
 
                                 elif tipo_campo == "multivalued":
-                                    # string/number con values[] + tag multivalued (LANGUAGES,
-                                    # FUNCTIONS, SMARTWATCH_FUNCTIONS): igual que "closed", nunca
-                                    # texto libre -- cada opción tiene que venir de values[].
+                                    # string/number con values[] + tag multivalued (CHARACTERS,
+                                    # LANGUAGES, FUNCTIONS, SMARTWATCH_FUNCTIONS): ML tolera un
+                                    # value_name nuevo igual que closed_or_free (confirmado 2026-09-09,
+                                    # ver docstring de _tipo_campo) -- el texto libre acá SUMA valores
+                                    # nuevos a los tildados en el select, no reemplaza (a diferencia de
+                                    # closed_or_free que es de a un valor). Los pedazos de valor_inicial
+                                    # que no matchean values[] van al campo libre en vez de perderse
+                                    # (antes se descartaban en silencio si ya eran texto libre guardado).
                                     opciones_mv = {v.get("name"): v.get("name") for v in _valores_de(attr_def) if v.get("name")}
                                     default_list: List[str] = []
+                                    default_libres: List[str] = []
                                     if valor_inicial:
                                         for parte in valor_inicial.split(","):
+                                            parte = parte.strip()
+                                            if not parte:
+                                                continue
                                             nombre = _match_valor_nombre(attr_def, parte)
-                                            if nombre and nombre not in default_list:
-                                                default_list.append(nombre)
-                                    sel = ui.select(
-                                        opciones_mv, value=default_list, multiple=True, with_input=True,
-                                    ).props("dense outlined use-chips").classes("flex-grow")
+                                            if nombre:
+                                                if nombre not in default_list:
+                                                    default_list.append(nombre)
+                                            elif parte not in default_libres:
+                                                default_libres.append(parte)
+                                    with ui.column().classes("flex-grow gap-1"):
+                                        sel = ui.select(
+                                            opciones_mv, value=default_list, multiple=True, with_input=True,
+                                        ).props("dense outlined use-chips").classes("w-full")
+                                        with ui.row().classes("items-center gap-2 w-full"):
+                                            ui.label("o sumá valores nuevos separados por coma:").classes("text-xs text-gray-400 shrink-0")
+                                            libre = ui.input(value=", ".join(default_libres), placeholder="Valor nuevo que no esté en el select").props("dense outlined").classes("flex-grow")
 
-                                    def _set_texto_mv(texto, sel=sel, attr_def=attr_def):
-                                        partes = [p for p in (texto or "").split(",") if p.strip()]
+                                    def _payload_mv(sel=sel, libre=libre, attr_id=attr_id):
+                                        nuevos = [p.strip() for p in (libre.value or "").split(",") if p.strip()]
+                                        todos: List[str] = []
+                                        for nombre in list(sel.value or []) + nuevos:
+                                            if nombre not in todos:
+                                                todos.append(nombre)
+                                        return {"id": attr_id, "value_name": ", ".join(todos)} if todos else None
+
+                                    def _set_texto_mv(texto, sel=sel, libre=libre, attr_def=attr_def):
+                                        partes = [p.strip() for p in (texto or "").split(",") if p.strip()]
                                         matched: List[str] = []
-                                        todas_ok = bool(partes)
+                                        libres: List[str] = []
                                         for p in partes:
                                             nombre = _match_valor_nombre(attr_def, p)
                                             if nombre:
                                                 if nombre not in matched:
                                                     matched.append(nombre)
-                                            else:
-                                                todas_ok = False
+                                            elif p not in libres:
+                                                libres.append(p)
                                         sel.value = matched
-                                        return todas_ok and bool(matched)
+                                        libre.value = ", ".join(libres)
+                                        return bool(partes)
 
                                     campo = _CampoWidget(
-                                        tiene_valor=lambda sel=sel: bool(sel.value),
-                                        payload=lambda sel=sel, attr_id=attr_id: {"id": attr_id, "value_name": ", ".join(sel.value)} if sel.value else None,
-                                        display=lambda sel=sel: ", ".join(sel.value or []),
+                                        tiene_valor=lambda sel=sel, libre=libre: bool(sel.value) or bool((libre.value or "").strip()),
+                                        payload=_payload_mv,
+                                        display=lambda sel=sel, libre=libre: ", ".join(list(sel.value or []) + [p.strip() for p in (libre.value or "").split(",") if p.strip()]),
                                         set_texto=_set_texto_mv,
                                     )
 
