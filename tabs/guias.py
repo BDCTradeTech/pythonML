@@ -711,8 +711,13 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
                 params.append(_inicio.isoformat())
         busqueda = (filtros.get("busqueda") or "").strip()
         if busqueda:
-            where_parts.append("(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ? OR LOWER(hawb) LIKE ?)")
-            params.extend([f"%{busqueda.lower()}%", f"%{busqueda.lower()}%", f"%{busqueda.lower()}%"])
+            # `productos` es el JSON crudo de la lista de ítems (sku, descripcion, cantidad, ...)
+            # que ya se guarda en la tabla -- un LIKE sobre el texto crudo alcanza para matchear
+            # por sku o descripción sin tener que parsear JSON en SQL.
+            where_parts.append(
+                "(LOWER(nro_invoice) LIKE ? OR LOWER(nro_factura) LIKE ? OR LOWER(hawb) LIKE ? OR LOWER(productos) LIKE ?)"
+            )
+            params.extend([f"%{busqueda.lower()}%"] * 4)
     where_sql = " AND ".join(where_parts)
     conn = get_connection()
     rows = conn.execute(
@@ -2848,9 +2853,9 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
                 "font-size:12px;height:34px;border-radius:4px;width:110px"
             )
         with ui.element("div").style("display:flex;flex-direction:column;gap:3px;flex:1"):
-            ui.label("Invoice / Factura / HAWB").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.label("Invoice / Factura / HAWB / Producto").style("font-size:11px;color:var(--color-text-secondary)")
             ui.input(
-                placeholder="Buscar invoice / factura / HAWB...",
+                placeholder="Buscar invoice / factura / HAWB / producto...",
                 on_change=lambda e: _filter_change("busqueda", e.value or ""),
             ).props("dense outlined").style(
                 "font-size:12px;height:34px;border-radius:4px;width:100%;min-width:280px"
