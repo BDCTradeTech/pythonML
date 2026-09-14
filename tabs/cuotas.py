@@ -642,7 +642,11 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                                                                         cl = context.client
                                                                                         async def _act(client_=cl, s4=s3, precio=nuevo, item2=item, rr2=rr, af2=afn) -> None:
                                                                                             try:
-                                                                                                await run.io_bound(ml_update_item_price, access_token, item2, precio)
+                                                                                                _precio_ant = s4.get("price")
+                                                                                                await run.io_bound(
+                                                                                                    ml_update_item_price, access_token, item2, precio,
+                                                                                                    uid, rr2.get("seller_sku") or "", "cuotas_editar_precio", _precio_ant,
+                                                                                                )
                                                                                                 s4["price"] = precio
                                                                                                 with client_:
                                                                                                     _render(_sort_rows(filtrados_ref["val"]))
@@ -771,7 +775,10 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                                                             return
                                                             for gkey, iid, old_p, new_p in to_correct:
                                                                 try:
-                                                                    await run.io_bound(ml_update_item_price, access_token, iid, new_p)
+                                                                    await run.io_bound(
+                                                                        ml_update_item_price, access_token, iid, new_p,
+                                                                        uid, rr2.get("seller_sku") or "", "cuotas_corregir", old_p,
+                                                                    )
                                                                     rr2[gkey]["price"] = new_p
                                                                     with client_:
                                                                         ui.notify(
@@ -819,7 +826,10 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
                                                     return
                                                 for _gk, _iid, _old, _new in _to_fix:
                                                     try:
-                                                        await run.io_bound(ml_update_item_price, access_token, _iid, _new)
+                                                        await run.io_bound(
+                                                            ml_update_item_price, access_token, _iid, _new,
+                                                            uid, rr.get("seller_sku") or "", "cuotas_fix", _old,
+                                                        )
                                                     except Exception as _err:
                                                         with client_:
                                                             ui.notify(f"Error al corregir {_iid}: {_err}", color="negative")
@@ -934,7 +944,11 @@ async def _mostrar_tabla_cuotas(result_area, data: Dict[str, Any], access_token:
 
                                                             async def _actualizar(client_=cl, s2=s, precio=nuevo, item=i) -> None:
                                                                 try:
-                                                                    await run.io_bound(ml_update_item_price, access_token, item, precio)
+                                                                    _precio_ant = s2.get("price")
+                                                                    await run.io_bound(
+                                                                        ml_update_item_price, access_token, item, precio,
+                                                                        uid, r.get("seller_sku") or "", "cuotas_editar_precio", _precio_ant,
+                                                                    )
                                                                     s2["price"] = precio
                                                                     with client_:
                                                                         ui.notify("Precio actualizado correctamente.", color="positive")

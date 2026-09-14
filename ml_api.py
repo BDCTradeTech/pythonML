@@ -18,7 +18,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from db import get_connection, get_ml_app_credentials
+from db import get_connection, get_ml_app_credentials, log_ml_escritura
 
 
 # ==========================
@@ -455,22 +455,101 @@ def _body_to_precios_item(body: dict) -> dict:
     return _parse_ml_item_body(body)
 
 
-def ml_update_item_price(access_token: str, item_id: str, price: float) -> Dict[str, Any]:
-    """Actualiza el precio de una publicación en MercadoLibre (PUT /items/{id}). Solo publicaciones propias."""
+def ml_update_item_price(
+    access_token: str, item_id: str, price: float,
+    user_id: int, sku: str, origen: str, valor_anterior: Any = None,
+) -> Dict[str, Any]:
+    """Actualiza el precio de una publicación en MercadoLibre (PUT /items/{id}). Solo
+    publicaciones propias.
+
+    user_id/sku/origen/valor_anterior son OBLIGATORIOS (salvo valor_anterior, que puede
+    ir en None si el caller no lo tiene a mano) -- auditan SIEMPRE (ok o error) en
+    ml_escrituras, igual que ya hace _escribir_mayorista_pxq (tabs/salud.py). Antes de esto
+    (incidente echodot5-azul, 2026-09-14) esta función no dejaba ningún rastro: el único
+    log de escrituras del sistema (ml_escrituras) solo cubría el popup de Salud, nunca los
+    cambios de precio de Cuotas/Precios/Descuentos -- agujero real, cerrado acá."""
     base = "https://api.mercadolibre.com"
     headers = {
         "Authorization": f"Bearer {access_token}",
         "Accept": "application/json",
         "Content-Type": "application/json",
     }
-    resp = get_ml_session().put(
-        f"{base}/items/{item_id}",
+    valor_nuevo = int(round(price))
+    try:
+        resp = get_ml_session().put(
+            f"{base}/items/{item_id}",
+            headers=headers,
+            json={"price": valor_nuevo},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+        precio_confirmado = body.get("price")
+        if precio_confirmado is None or int(precio_confirmado) != valor_nuevo:
+            # ML respondió 2xx pero el precio que confirma NO es el pedido (p.ej. un precio
+            # topeado por una promo activa que ML revierte en silencio -- ver
+            # _detect_promo_lock en tabs/cuotas.py). No devolver como si hubiera salido
+            # bien: el caller tiene que enterarse por excepción, no confiando en "no tiró
+            # error" (Diego, 2026-09-14). Un solo log acá abajo, en el except.
+            raise RuntimeError(f"ML confirmó price={precio_confirmado!r}, se pidió {valor_nuevo}")
+        log_ml_escritura(user_id, sku or "", item_id, "price", valor_anterior, valor_nuevo, origen, "ok", None)
+        return body
+    except Exception as e:
+        log_ml_escritura(user_id, sku or "", item_id, "price", valor_anterior, valor_nuevo, origen, "error", str(e))
+        raise
+
+
+def ml_create_price_discount(
+    access_token: str, item_id: str, deal_price: float, start_date: str, finish_date: str,
+) -> Dict[str, Any]:
+    """POST /seller-promotions/items/{id} promotion_type=PRICE_DISCOUNT -- crea un descuento
+    individual (verificado contra el servidor MCP de MercadoLibre, 2026-09-14: no había
+    ejemplo de escritura documentado en el repo). Devuelve {'price': deal_price,
+    'original_price': precio actual}. Reglas de ML (no controladas acá, dejar que el error
+    real de ML llegue al caller sin adivinar un workaround):
+    - descuento debe ser >=5% y <80% del precio actual del ítem.
+    - si el ítem tiene un DEAL activo (status=started), esta promo no se aplica hasta que
+      termine ese DEAL -- chequear con ml_get_seller_promotions_item antes de llamar.
+    - la activación es asincrónica (sync_requested -> started); el caller debe releer con
+      ml_get_seller_promotions_item hasta confirmar 'started', no asumir con la respuesta
+      del POST.
+    start_date/finish_date: 'YYYY-MM-DDTHH:MM:SS', sin timezone (formato exacto del MCP)."""
+    base = "https://api.mercadolibre.com"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    resp = get_ml_session().post(
+        f"{base}/seller-promotions/items/{item_id}",
         headers=headers,
-        json={"price": int(round(price))},
+        params={"app_version": "v2"},
+        json={
+            "deal_price": deal_price,
+            "start_date": start_date,
+            "finish_date": finish_date,
+            "promotion_type": "PRICE_DISCOUNT",
+        },
         timeout=15,
     )
     resp.raise_for_status()
     return resp.json()
+
+
+def ml_delete_price_discount(access_token: str, item_id: str) -> requests.Response:
+    """DELETE /seller-promotions/items/{id}?promotion_type=PRICE_DISCOUNT -- elimina el
+    descuento individual completo (no se puede eliminar por nivel de comprador). 200 OK
+    esperado (verificado contra el servidor MCP de MercadoLibre, 2026-09-14). Devuelve el
+    Response crudo (no .json(): ML no documenta body en la respuesta de DELETE) para que el
+    caller decida qué hacer con el status_code."""
+    base = "https://api.mercadolibre.com"
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    return get_ml_session().delete(
+        f"{base}/seller-promotions/items/{item_id}",
+        headers=headers,
+        params={"promotion_type": "PRICE_DISCOUNT", "app_version": "v2"},
+        timeout=15,
+    )
 
 
 def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:

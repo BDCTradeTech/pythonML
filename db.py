@@ -241,6 +241,94 @@ def init_salud_tables() -> None:
     conn.close()
 
 
+def init_descuentos_activaciones_table() -> None:
+    """Estado de las activaciones reales de 'subir precio de lista + PRICE_DISCOUNT'
+    de tabs/descuentos.py (Activar/Revertir). A diferencia de ml_escrituras (append-only,
+    log de auditoría), esta tabla SÍ se UPDATE-ea: una fila por activación de un grupo de
+    5 publicaciones (contado+3x+6x+9x+12x), con estado 'activo'/'revertido'/'error_parcial'
+    e items_json actualizado publicación por publicación a medida que cada paso se confirma
+    -- así "Revertir" (que puede ejecutarse horas/días después, en otra sesión) sabe
+    exactamente qué tocar aunque "Activar" se haya frenado a mitad de camino."""
+    conn = get_connection()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS descuentos_activaciones (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id        INTEGER NOT NULL,
+            sku            TEXT NOT NULL,
+            ts_activacion  TEXT NOT NULL,
+            ts_reversion   TEXT,
+            estado         TEXT NOT NULL,
+            descuento_pct  REAL NOT NULL,
+            items_json     TEXT NOT NULL,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_descuentos_activaciones_sku ON descuentos_activaciones(user_id, sku, estado)"
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_activacion_descuento_vigente(user_id: int, sku: str) -> Optional[Dict[str, Any]]:
+    """Última activación 'activo' o 'error_parcial' (todavía sin revertir del todo) para
+    este user_id/sku, o None si no hay ninguna pendiente. Usado para bloquear un segundo
+    Activar sobre el mismo grupo y para saber qué mostrarle a Revertir."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM descuentos_activaciones WHERE user_id = ? AND sku = ? "
+            "AND estado IN ('activo', 'error_parcial') ORDER BY id DESC LIMIT 1",
+            (user_id, sku),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def crear_activacion_descuento(user_id: int, sku: str, descuento_pct: float, items_json: str) -> int:
+    conn = get_connection()
+    try:
+        cur = conn.execute(
+            "INSERT INTO descuentos_activaciones (user_id, sku, ts_activacion, estado, descuento_pct, items_json) "
+            "VALUES (?, ?, ?, 'activo', ?, ?)",
+            (user_id, sku, datetime.utcnow().isoformat(), descuento_pct, items_json),
+        )
+        conn.commit()
+        return cur.lastrowid
+    finally:
+        conn.close()
+
+
+def actualizar_activacion_descuento(
+    activacion_id: int, items_json: str, estado: Optional[str] = None, marcar_revertido: bool = False,
+) -> None:
+    """Se llama después de CADA publicación (no solo al final) para que items_json
+    siempre refleje lo que realmente se confirmó contra ML hasta el momento."""
+    conn = get_connection()
+    try:
+        if estado is not None and marcar_revertido:
+            conn.execute(
+                "UPDATE descuentos_activaciones SET items_json = ?, estado = ?, ts_reversion = ? WHERE id = ?",
+                (items_json, estado, datetime.utcnow().isoformat(), activacion_id),
+            )
+        elif estado is not None:
+            conn.execute(
+                "UPDATE descuentos_activaciones SET items_json = ?, estado = ? WHERE id = ?",
+                (items_json, estado, activacion_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE descuentos_activaciones SET items_json = ? WHERE id = ?",
+                (items_json, activacion_id),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def init_cron_runs_db() -> None:
     """Log de corridas de los crons nocturnos (stock_snapshot / competidores_snapshot), una fila por job+usuario+día."""
     conn = get_connection()
@@ -1331,6 +1419,7 @@ def init_db() -> None:
     init_cron_runs_db()
     init_ads_tables()
     init_salud_tables()
+    init_descuentos_activaciones_table()
 
 
 # ---------------------------------------------------------------------------

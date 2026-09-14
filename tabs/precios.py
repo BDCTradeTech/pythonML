@@ -409,7 +409,10 @@ def _show_item_detail_dialog(
 
         async def _actualizar():
             try:
-                await run.io_bound(ml_update_item_price, access_token, item_id, nuevo_precio)
+                await run.io_bound(
+                    ml_update_item_price, access_token, item_id, nuevo_precio,
+                    uid, sku_real, "precios_editar_precio", row.get("price"),
+                )
                 if not sku_real:
                     logging.warning(
                         "[PRECIOS] Publicacion sin SELLER_SKU en ML -- no se guarda costo/fob en "
@@ -1676,7 +1679,10 @@ def _mostrar_tabla_precios(
 
                     async def _actualizar_precio() -> None:
                         try:
-                            await run.io_bound(ml_update_item_price, access_token, item_id, nuevo)
+                            await run.io_bound(
+                                ml_update_item_price, access_token, item_id, nuevo,
+                                _uid, str(row.get("seller_sku") or ""), "precios_editar_precio_celda", row.get("price"),
+                            )
                             _sku_cel = str(row.get("seller_sku") or "").strip()
                             if _sku_cel:
                                 def _save_rev_cel() -> None:
