@@ -61,6 +61,7 @@ from db import (
     actualizar_activacion_descuento,
     crear_activacion_descuento,
     get_activacion_descuento_vigente,
+    get_financiacion_cuotas_ml,
     get_historial_precio,
     get_producto_costo,
     log_ml_escritura,
@@ -439,16 +440,52 @@ def build_tab_descuentos(container) -> None:
                         })
                     return out
 
+                def _tracked_item_por_tramo(sku: str) -> Dict[str, str]:
+                    """item_id por tramo de la última activación vigente (activo/error_parcial
+                    en descuentos_activaciones) para este SKU, mecanismo seller_campaign -- o
+                    {} si no hay ninguna fila vigente (ej. activado por script)."""
+                    if not sku:
+                        return {}
+                    vigente = get_activacion_descuento_vigente(uid, sku)
+                    if not vigente:
+                        return {}
+                    out: Dict[str, str] = {}
+                    try:
+                        for it_ in _json.loads(vigente["items_json"]):
+                            if it_.get("mecanismo") == "seller_campaign" and it_.get("item_id") and it_.get("tramo"):
+                                out[it_["tramo"]] = it_["item_id"]
+                    except Exception:
+                        pass
+                    return out
+
                 async def _resolver_familia_live(item_id: str) -> List[Dict[str, Any]]:
                     """Relee en vivo (GET directo, no la lista de `items` cargada al abrir la
                     pestaña -- puede llevar rato abierta) las hasta 5 publicaciones de la
-                    familia: contado (principal ya resuelto por _cuotas_key) + hermanas de
-                    cuotas vía _cuotas_siblings. Tramos sin hermana simplemente no entran."""
+                    familia: contado (principal ya resuelto por _cuotas_key, fijo por la
+                    selección del combo) + un ítem por tramo de cuotas.
+
+                    Para cada tramo de cuotas, PRIORIZA el item_id trackeado en la última
+                    activación vigente de este SKU (_tracked_item_por_tramo) sobre el
+                    re-resuelto en vivo por _cuotas_siblings -- si no, dos renders de esta
+                    misma pantalla (ej. el refresh automático tras Activar, y el click en
+                    Desactivar un minuto después) pueden resolver una publicación "hermana"
+                    distinta para el mismo tramo (el precio de Activar puede mover quién gana
+                    el buybox de catálogo) y Desactivar termina actuando sobre el item_id
+                    equivocado. Bug real 2026-09-14 con Echo-Dot-5-Blanco (ver memoria
+                    descuentos-desactivar-hermano-cuotas-bug): 4 publicaciones quedaron con
+                    precio inflado y sin promo activa por esto. Solo cae a la resolución en
+                    vivo para un tramo si no hay ninguna fila vigente que lo trackee."""
                     it = items_by_id.get(item_id)
+                    sku = (it.get("seller_sku") or "").strip() if it else ""
                     grupo = grupos_by_id.get(item_id) or []
                     siblings = _cuotas_siblings(grupo)
+                    tracked = _tracked_item_por_tramo(sku)
                     candidatos: List[tuple] = [("contado", it)]
                     for gkey in ("x3", "x6", "x9", "x12"):
+                        tracked_id = tracked.get(gkey)
+                        if tracked_id:
+                            candidatos.append((gkey, {"id": tracked_id}))
+                            continue
                         sib = siblings.get(gkey)
                         if sib:
                             candidatos.append((gkey, sib))
@@ -480,11 +517,23 @@ def build_tab_descuentos(container) -> None:
                 def _costo_sku(sku: str) -> Optional[tuple]:
                     return get_producto_costo(sku, uid)
 
-                def _margen(precio: Optional[float], costo: Optional[tuple]) -> Optional[float]:
+                def _margen(precio: Optional[float], costo: Optional[tuple], tramo: str = "contado") -> Optional[float]:
+                    """Margen completo contra el costo real del SKU. _calc_margen_prod
+                    (tabs/dashboard.py) NO resta el costo de financiación de cuotas de ML --
+                    para cualquier tramo que no sea contado hay que restarlo acá, igual que
+                    hace _calc() en tabs/promos.py, si no el número de esta pantalla queda
+                    sobrestimado (pasó dos veces el 2026-09-14: echodot5-azul x12 y
+                    Tag-Royal-LF12 x6/x12 -- ver memoria margen-no-incluye-financiacion-cuotas)."""
                     if not costo or not precio or precio <= 0:
                         return None
                     costo_usd, tipo_iva = costo
-                    return _calc_margen_prod(precio, costo_usd, tipo_iva, _load_params_prod(uid))
+                    margen = _calc_margen_prod(precio, costo_usd, tipo_iva, _load_params_prod(uid))
+                    if margen is None:
+                        return None
+                    if tramo != "contado" and tramo.startswith("x") and tramo[1:].isdigit():
+                        tasa = get_financiacion_cuotas_ml().get(int(tramo[1:]), {}).get("pct", 0.0)
+                        margen -= precio * tasa
+                    return margen
 
                 def _objetivo_tramo(f: Dict[str, Any]) -> tuple:
                     """(precio_final_deseado, precio_lista, pct) para este tramo, según los
@@ -616,7 +665,7 @@ def build_tab_descuentos(container) -> None:
                                                     f"🟢 Activa: {activa.get('name') or activa.get('type')} "
                                                     f"-{pct_off:.1f}% → {_fmt_moneda(precio_promo)}"
                                                 ).classes("text-positive")
-                                            margen = _margen(precio_promo, costo)
+                                            margen = _margen(precio_promo, costo, f["tramo"])
                                             with ui.element("td").style("padding:3px 6px"):
                                                 if margen is None:
                                                     ui.label("—").classes("text-gray-400")
@@ -647,7 +696,7 @@ def build_tab_descuentos(container) -> None:
                                                         f"Sin promo -- campaña '{candidatas[0].get('name') or candidatas[0]['id']}' disponible"
                                                     ).classes("text-gray-600")
                                             final_deseado, precio_lista, _pct = _objetivo_tramo(f)
-                                            margen = _margen(final_deseado, costo) if precio_lista else None
+                                            margen = _margen(final_deseado, costo, f["tramo"]) if precio_lista else None
                                             with ui.element("td").style("padding:3px 6px"):
                                                 if not precio_lista or margen is None:
                                                     ui.label(
@@ -752,7 +801,7 @@ def build_tab_descuentos(container) -> None:
                                     for f in seleccion:
                                         camp = campania_elegida.get(f["tramo"]) or f["candidatas"][0]
                                         final_deseado, precio_lista = objetivos[f["tramo"]]
-                                        margen = _margen(final_deseado, costo)
+                                        margen = _margen(final_deseado, costo, f["tramo"])
                                         margen_txt = f"${margen:,.0f} ({100*margen/final_deseado:.1f}%)" if (margen is not None and final_deseado) else "sin dato"
                                         with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
                                             with ui.element("td").style("padding:3px 6px"):
@@ -921,7 +970,7 @@ def build_tab_descuentos(container) -> None:
                                     continue
 
                             item["deal_price"], item["alcanzo_exacto"] = deal_price_final, alcanzo_exacto
-                            margen = _margen(deal_price_final, costo)
+                            margen = _margen(deal_price_final, costo, item["tramo"])
                             margen_pct = (100 * margen / deal_price_final) if (margen is not None and deal_price_final) else None
                             item["margen"], item["margen_pct"] = margen, margen_pct
                             if not alcanzo_exacto:
