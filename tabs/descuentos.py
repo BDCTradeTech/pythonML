@@ -12,21 +12,31 @@ Desde 2026-09-14 también existe la activación REAL y auditada de un descuento,
 para toda la familia de cuotas del producto seleccionado (contado +
 3x/6x/9x/12x, misma agrupación de _cuotas_key que ya usa Productos/Cuotas).
 
-Mecanismo (2do intento, el que quedó validado ese mismo día): el 1er intento
--- subir el precio y crear una promoción PRICE_DISCOUNT propia -- causó el
-incidente echodot5-azul/Tag-Royal-LF12 (ML rechaza casi cualquier descuento
-individual con ERROR_CREDIBILITY_DISCOUNTED_PRICE, y una publicación quedó
-horas con el precio inflado sin vender). El mecanismo que sí funciona es
-unirse a una SELLER_CAMPAIGN que ML ya tiene disponible para la publicación
-(candidate), pidiendo el descuento MÍNIMO que ML acepta (max_discounted_price)
-sobre el precio real -- sin inflar nada por default:
-  Activar:    por cada tramo de la familia, relee en vivo si hay una campaña
-              SELLER_CAMPAIGN candidata, pide su max_discounted_price fresco,
-              chequea margen contra el costo real del SKU (si da pérdida o
-              <5%, queda afuera del lote salvo confirmación explícita) y se
-              une con ml_join_seller_promotion. Opción avanzada (no default):
-              inflar el precio de lista antes de unirse, para un badge más
-              alto -- ahí si ML rechaza el precio inflado, se revierte solo.
+Mecanismo (2026-09-14, 2do rediseño): el 1er intento -- subir el precio y
+crear una promoción PRICE_DISCOUNT propia -- causó el incidente
+echodot5-azul/Tag-Royal-LF12 (ML rechaza casi cualquier descuento individual
+con ERROR_CREDIBILITY_DISCOUNTED_PRICE, y una publicación quedó horas con el
+precio inflado sin vender). El mecanismo que sí funciona es unirse a una
+SELLER_CAMPAIGN que ML ya tiene disponible para la publicación (candidate).
+Desde este rediseño, inflar el precio de lista es el comportamiento POR
+DEFECTO de Activar (no una opción avanzada escondida), usando los campos
+"Precio final deseado" / "Descuento deseado (%)" que ya están arriba de la
+pantalla:
+  Activar:    por cada tramo de la familia, calcula precio_lista =
+              precio_final_deseado / (1 - descuento_deseado/100) -- si Diego
+              no tocó "Precio final deseado", usa el precio real actual de
+              CADA publicación como ancla (mismo criterio que la calculadora
+              de arriba). Sube el precio a precio_lista, relee fresco el
+              rango de credibilidad de la campaña candidata, e intenta
+              primero deal_price = precio_final_deseado EXACTO; si ML lo
+              rechaza con ERROR_CREDIBILITY_DISCOUNTED_PRICE, reintenta
+              automáticamente con el mínimo que ML acepta
+              (max_discounted_price) sin frenar el lote ni pedir otra
+              confirmación -- el resumen final marca qué tramos no llegaron
+              al precio exacto pedido. El margen contra el costo real del SKU
+              se muestra siempre como alerta visual (antes y después de
+              activar) pero NO bloquea ni pide un check aparte -- es
+              información, no un freno.
   Desactivar: relee en vivo (seller-promotions, NO la tabla local) qué tramos
               tienen una promoción 'started' ahora mismo -- funciona aunque la
               activación se haya hecho por script y no tenga fila en
@@ -108,6 +118,14 @@ def _fmt_pct(v: float) -> str:
     return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
+def _es_error_credibilidad(e: Exception) -> bool:
+    """True si el HTTPError de ml_join_seller_promotion es el rechazo de credibilidad
+    (ERROR_CREDIBILITY_DISCOUNTED_PRICE) -- el único caso en el que Activar reintenta
+    solo con el mínimo que ML acepta en vez de frenar el tramo."""
+    body = getattr(getattr(e, "response", None), "text", None) or ""
+    return "ERROR_CREDIBILITY_DISCOUNTED_PRICE" in body
+
+
 def build_tab_descuentos(container) -> None:
     container.clear()
     user = _require_login()
@@ -127,10 +145,11 @@ def build_tab_descuentos(container) -> None:
                 ui.badge("EXPERIMENTAL").props("rounded").style("background:#f59e0b;color:white")
             ui.label(
                 "Calculadora de precio de lista para simular un % de descuento visible en ML. "
-                "El cálculo de arriba es solo una previsualización -- no escribe nada. Más abajo, "
-                "al elegir un producto, se relee en vivo si sus publicaciones ya tienen un "
-                "descuento real activo y se puede Activar/Desactivar de verdad (uniéndose a una "
-                "campaña de ML, no crea promociones propias)."
+                "El cálculo de arriba es solo una previsualización -- no escribe nada, pero también "
+                "define el precio objetivo que usa Activar más abajo. Al elegir un producto, se relee "
+                "en vivo si sus publicaciones ya tienen un descuento real activo y se puede "
+                "Activar/Desactivar de verdad (uniéndose a una campaña de ML, no crea promociones "
+                "propias). Activar sube el precio de lista por defecto -- no hace falta tildar nada."
             ).classes("text-xs text-gray-500")
 
             body_col = ui.column().classes("w-full gap-2")
@@ -219,6 +238,20 @@ def build_tab_descuentos(container) -> None:
                 cuotas_col = ui.column().classes("w-full gap-1")
                 mayorista_col = ui.column().classes("w-full gap-1")
                 activacion_col = ui.column().classes("w-full gap-2 mt-3")
+
+                # "Tocado": distingue si Diego escribió a mano un precio final deseado
+                # (se usa igual para TODOS los tramos de la familia al Activar) de que el
+                # campo solo tenga el valor que autocompletamos al elegir el producto (en
+                # ese caso cada tramo usa su propio precio real actual como ancla, no el
+                # de contado). _suprimir_marca_tocado evita que la propia autocompletación
+                # se marque a sí misma como "tocado por el usuario".
+                _precio_deseado_tocado = {"v": False}
+                _suprimir_marca_tocado = {"v": False}
+
+                def _set_precio_deseado_auto(value: Optional[float]) -> None:
+                    _suprimir_marca_tocado["v"] = True
+                    precio_deseado_inp.value = value
+                    _precio_deseado_tocado["v"] = False
 
                 def _cuotas_siblings(grupo: List[Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
                     """Mismo criterio de tabs/cuotas.py (_build_row) para elegir, por
@@ -427,6 +460,28 @@ def build_tab_descuentos(container) -> None:
                     costo_usd, tipo_iva = costo
                     return _calc_margen_prod(precio, costo_usd, tipo_iva, _load_params_prod(uid))
 
+                def _objetivo_tramo(f: Dict[str, Any]) -> tuple:
+                    """(precio_final_deseado, precio_lista, pct) para este tramo, según los
+                    campos de arriba "Precio final deseado" / "Descuento deseado (%)": si
+                    Diego escribió a mano un precio final deseado, se usa ESE mismo valor
+                    para todos los tramos de la familia; si no lo tocó (quedó con el
+                    autocompletado al elegir el producto), cada tramo usa su propio precio
+                    real actual como ancla. precio_lista es None si faltan datos válidos."""
+                    try:
+                        pct = float(descuento_inp.value or 0)
+                    except (TypeError, ValueError):
+                        pct = 0.0
+                    if _precio_deseado_tocado["v"]:
+                        try:
+                            final_deseado = float(precio_deseado_inp.value or 0)
+                        except (TypeError, ValueError):
+                            final_deseado = 0.0
+                    else:
+                        final_deseado = f["precio_actual"]
+                    if final_deseado <= 0 or not (0 < pct < 100):
+                        return final_deseado, None, pct
+                    return final_deseado, round(final_deseado / (1 - pct / 100), 2), pct
+
                 async def _resolver_familia_con_promos(item_id: str) -> List[Dict[str, Any]]:
                     """Como _resolver_familia_live, pero además trae en vivo -- mismo GET a
                     seller-promotions/items que ya usábamos para diagnosticar a mano -- si
@@ -568,21 +623,26 @@ def build_tab_descuentos(container) -> None:
                                                     ui.label(
                                                         f"Sin promo -- campaña '{candidatas[0].get('name') or candidatas[0]['id']}' disponible"
                                                     ).classes("text-gray-600")
-                                            max_dp = candidatas[0].get("max_discounted_price")
-                                            margen = _margen(max_dp, costo)
+                                            final_deseado, precio_lista, _pct = _objetivo_tramo(f)
+                                            margen = _margen(final_deseado, costo) if precio_lista else None
                                             with ui.element("td").style("padding:3px 6px"):
-                                                if margen is None or not max_dp:
-                                                    ui.label("sin dato de margen").classes("text-gray-400")
+                                                if not precio_lista or margen is None:
+                                                    ui.label(
+                                                        "cargá 'Precio final deseado' / 'Descuento deseado (%)' arriba"
+                                                    ).classes("text-gray-400")
                                                     _ajustado = False
                                                 else:
-                                                    pct_off = 100 * (f["precio_actual"] - max_dp) / f["precio_actual"] if f["precio_actual"] else 0
-                                                    margen_pct = 100 * margen / max_dp if max_dp else 0
+                                                    pct_off = 100 * (f["precio_actual"] - final_deseado) / f["precio_actual"] if f["precio_actual"] else 0
+                                                    margen_pct = 100 * margen / final_deseado if final_deseado else 0
                                                     _ajustado = margen <= 0 or margen_pct < _MARGEN_AJUSTADO_PCT
                                                     _cls = "text-negative" if margen <= 0 else ("text-warning" if _ajustado else "text-positive")
-                                                    ui.label(f"-{pct_off:.1f}% → {_fmt_moneda(max_dp)}: ${margen:,.0f} ({margen_pct:.1f}%)").classes(_cls)
+                                                    ui.label(
+                                                        f"objetivo -{pct_off:.1f}% → {_fmt_moneda(final_deseado)} "
+                                                        f"(lista: {_fmt_moneda(precio_lista)}): ${margen:,.0f} ({margen_pct:.1f}%)"
+                                                    ).classes(_cls)
                                                     if _ajustado:
-                                                        ui.label("⚠️ margen ajustado, no se incluye por defecto").classes("text-xs text-warning")
-                                            chk.value = not (margen is not None and max_dp and (margen <= 0 or 100 * margen / max_dp < _MARGEN_AJUSTADO_PCT))
+                                                        ui.label("⚠️ margen ajustado al precio objetivo, no se incluye por defecto").classes("text-xs text-warning")
+                                            chk.value = not (margen is not None and final_deseado and (margen <= 0 or 100 * margen / final_deseado < _MARGEN_AJUSTADO_PCT))
                                             f["_accion"] = "activar"
                                         else:
                                             with ui.element("td").style("padding:3px 6px"):
@@ -595,21 +655,14 @@ def build_tab_descuentos(container) -> None:
                         hay_activas = any(f.get("_accion") == "desactivar" for f in familia)
                         hay_candidatas = any(f.get("_accion") == "activar" for f in familia)
 
-                        inflar_chk = riesgo_chk = badge_inp = None
                         if hay_candidatas:
-                            with ui.expansion(
-                                "Opción avanzada: inflar precio para conseguir mayor descuento", icon="warning"
-                            ).classes("w-full mt-2").props("dense") as _exp:
-                                ui.label(
-                                    "⚠️ Sube el precio de lista de verdad ANTES de unirse a la campaña, para "
-                                    "conseguir un badge más alto que el mínimo (ej. 40% en vez del mínimo que da "
-                                    "ML al precio real). Es el mismo mecanismo que causó el incidente de hoy si "
-                                    "algo sale mal: no hay forma de saber el descuento final sin subir el precio "
-                                    "primero. Si la campaña no lo acepta, el precio se revierte solo."
-                                ).classes("text-xs mb-1").style("color:#c62828")
-                                inflar_chk = ui.checkbox("Inflar precio (avanzado)", value=False)
-                                badge_inp = ui.number(label="Badge objetivo (%)", value=40, min=5, max=79, step=1).classes("w-40")
-                                riesgo_chk = ui.checkbox("Entiendo el riesgo y quiero seguir igual", value=False)
+                            ui.label(
+                                "Activar sube el precio de lista de cada publicación seleccionada al precio "
+                                "objetivo (\"Precio final deseado\" / \"Descuento deseado (%)\" de arriba) e "
+                                "intenta ese descuento exacto -- si ML no lo acepta, reintenta solo con el mínimo "
+                                "que permita, sin frenar el lote. El precio de lista mostrado como tachado no es "
+                                "el precio real de siempre -- decisión del vendedor."
+                            ).classes("text-xs mt-2").style("color:#e65100")
 
                         with ui.row().classes("w-full justify-end gap-2 mt-2"):
                             if hay_activas:
@@ -622,7 +675,6 @@ def build_tab_descuentos(container) -> None:
                                     "Activar seleccionadas",
                                     on_click=lambda: _confirmar_activar(
                                         item_id, sku, familia, checks, campania_elegida, costo,
-                                        inflar_chk, badge_inp, riesgo_chk,
                                     ),
                                 ).style("background:#2e7d32;color:white;font-weight:600").props("no-caps")
                             if not hay_activas and not hay_candidatas:
@@ -634,53 +686,51 @@ def build_tab_descuentos(container) -> None:
                 def _confirmar_activar(
                     item_id: str, sku: str, familia: List[Dict[str, Any]], checks: Dict[str, Any],
                     campania_elegida: Dict[str, Dict[str, Any]], costo: Optional[tuple],
-                    inflar_chk, badge_inp, riesgo_chk,
                 ) -> None:
                     seleccion = [f for f in familia if f.get("_accion") == "activar" and checks[f["tramo"]].value]
                     if not seleccion:
                         ui.notify("No hay ningún tramo seleccionado para activar.", color="warning")
                         return
-                    inflar = bool(inflar_chk.value) if inflar_chk else False
-                    if inflar and not (riesgo_chk and riesgo_chk.value):
-                        ui.notify("Tildá 'Entiendo el riesgo' para inflar el precio.", color="negative")
-                        return
-                    try:
-                        badge_objetivo = float(badge_inp.value or 0) if badge_inp else 0.0
-                    except (TypeError, ValueError):
-                        badge_objetivo = 0.0
-                    if inflar and not (5 <= badge_objetivo < 80):
-                        ui.notify("El badge objetivo tiene que estar entre 5% y 79%.", color="negative")
+
+                    objetivos: Dict[str, tuple] = {}
+                    incompletos = []
+                    for f in seleccion:
+                        final_deseado, precio_lista, _pct = _objetivo_tramo(f)
+                        if not precio_lista:
+                            incompletos.append(f["tramo"])
+                            continue
+                        objetivos[f["tramo"]] = (final_deseado, precio_lista)
+                    if incompletos:
+                        ui.notify(
+                            "Completá 'Precio final deseado' y 'Descuento deseado (%)' (entre 0 y 100) arriba "
+                            f"antes de activar -- faltan: {', '.join(incompletos)}.",
+                            color="negative",
+                        )
                         return
 
                     dlg = ui.dialog()
                     with dlg:
-                        with ui.card().classes("p-4 min-w-[600px] max-w-[95vw]"):
+                        with ui.card().classes("p-4 min-w-[680px] max-w-[95vw]"):
                             ui.label(f"Activar descuento real -- {sku}").classes("text-lg font-semibold mb-2")
-                            if inflar:
-                                ui.label(
-                                    f"⚠️ Se va a subir el precio de lista antes de unirse a la campaña (badge "
-                                    f"objetivo {_fmt_pct(badge_objetivo)}%). No hay forma de previsualizar el "
-                                    f"descuento final sin subir el precio primero -- si la campaña no lo acepta, "
-                                    f"se revierte automáticamente."
-                                ).classes("text-xs mb-2").style("color:#c62828")
+                            ui.label(
+                                "Sube el precio de lista de cada publicación e intenta el descuento EXACTO "
+                                "pedido; si ML no lo acepta, reintenta automáticamente con el mínimo que permita "
+                                "-- vas a ver el resultado final en el resumen, no hace falta otra confirmación. "
+                                "El precio de lista mostrado como tachado no es el precio real de siempre -- "
+                                "decisión del vendedor."
+                            ).classes("text-xs mb-2").style("color:#e65100")
                             with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                 with ui.element("thead"):
                                     with ui.element("tr"):
-                                        for h in ["Tramo", "Publicación", "Precio real", "Campaña", "Deal price previsto", "Margen previsto"]:
+                                        for h in ["Tramo", "Publicación", "Precio real", "Campaña", "Precio final deseado", "Precio de lista (nuevo)", "Margen previsto"]:
                                             with ui.element("th").style("text-align:left;padding:4px 6px;background:#1976d2;color:white"):
                                                 ui.label(h)
                                 with ui.element("tbody"):
                                     for f in seleccion:
                                         camp = campania_elegida.get(f["tramo"]) or f["candidatas"][0]
-                                        if inflar:
-                                            precio_lista_preview = f["precio_actual"] / (1 - badge_objetivo / 100)
-                                            deal_txt = f"lista → {_fmt_moneda(precio_lista_preview)} (descuento real recién se sabe al subir)"
-                                            margen_txt = "se calcula después de subir el precio"
-                                        else:
-                                            max_dp = camp.get("max_discounted_price")
-                                            margen = _margen(max_dp, costo)
-                                            deal_txt = _fmt_moneda(max_dp)
-                                            margen_txt = f"${margen:,.0f} ({100*margen/max_dp:.1f}%)" if (margen is not None and max_dp) else "sin dato"
+                                        final_deseado, precio_lista = objetivos[f["tramo"]]
+                                        margen = _margen(final_deseado, costo)
+                                        margen_txt = f"${margen:,.0f} ({100*margen/final_deseado:.1f}%)" if (margen is not None and final_deseado) else "sin dato"
                                         with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
                                             with ui.element("td").style("padding:3px 6px"):
                                                 ui.label(dict(_TRAMOS).get(f["tramo"], f["tramo"]))
@@ -691,20 +741,23 @@ def build_tab_descuentos(container) -> None:
                                             with ui.element("td").style("padding:3px 6px"):
                                                 ui.label(camp.get("name") or camp.get("id"))
                                             with ui.element("td").style("padding:3px 6px"):
-                                                ui.label(deal_txt)
+                                                ui.label(_fmt_moneda(final_deseado))
+                                            with ui.element("td").style("padding:3px 6px"):
+                                                ui.label(_fmt_moneda(precio_lista))
                                             with ui.element("td").style("padding:3px 6px"):
                                                 ui.label(margen_txt)
                             ui.label(
-                                "Se une cada publicación a su campaña pidiendo el mínimo descuento que ML "
-                                "acepta (o el que resulte de inflar el precio, si se activó la opción avanzada). "
-                                "Todo queda auditado en ml_escrituras y registrado para poder Desactivar después."
+                                "Si ML rechaza el precio exacto por ERROR_CREDIBILITY_DISCOUNTED_PRICE, esa "
+                                "publicación queda con el mínimo que ML sí acepte -- se avisa cuál en el resumen "
+                                "final. Todo queda auditado en ml_escrituras y registrado para poder Desactivar "
+                                "después."
                             ).classes("text-xs text-gray-500 mt-2 mb-2")
                             with ui.row().classes("w-full justify-end gap-2"):
                                 ui.button("Cancelar", on_click=dlg.close).props("flat")
                                 ui.button(
                                     "Confirmar y activar",
                                     on_click=lambda: _ejecutar_activar_v2(
-                                        dlg, item_id, sku, seleccion, campania_elegida, costo, inflar, badge_objetivo,
+                                        dlg, item_id, sku, seleccion, campania_elegida, costo, objetivos,
                                     ),
                                 ).style("background:#2e7d32;color:white;font-weight:600").props("no-caps")
                     dlg.open()
@@ -712,7 +765,7 @@ def build_tab_descuentos(container) -> None:
                 def _ejecutar_activar_v2(
                     dlg, item_id: str, sku: str, seleccion: List[Dict[str, Any]],
                     campania_elegida: Dict[str, Dict[str, Any]], costo: Optional[tuple],
-                    inflar: bool, badge_objetivo: float,
+                    objetivos: Dict[str, tuple],
                 ) -> None:
                     dlg.close()
                     cl = context.client
@@ -721,18 +774,17 @@ def build_tab_descuentos(container) -> None:
                             "tramo": f["tramo"], "item_id": f["item_id"], "seller_sku": f["seller_sku"],
                             "mecanismo": "seller_campaign",
                             "precio_real": f["precio_actual"],
-                            "precio_lista": f["precio_actual"],
+                            "precio_final_deseado": objetivos[f["tramo"]][0],
+                            "precio_lista": objetivos[f["tramo"]][1],
                             "campaign_id": (campania_elegida.get(f["tramo"]) or f["candidatas"][0]).get("id"),
                             "campaign_type": _TIPO_CAMPANIA_JOIN,
-                            "deal_price": None, "margen": None, "margen_pct": None,
-                            "estado_price": "ok" if not inflar else "pendiente",
-                            "estado_join": "pendiente",
-                            "detalle_error": None,
+                            "deal_price": None, "alcanzo_exacto": None, "margen": None, "margen_pct": None,
+                            "estado_price": "pendiente", "estado_join": "pendiente", "detalle_error": None,
                         }
                         for f in seleccion
                     ]
                     activacion_id = crear_activacion_descuento(
-                        uid, sku, badge_objetivo if inflar else 0.0, _json.dumps(items_state, ensure_ascii=False),
+                        uid, sku, 0.0, _json.dumps(items_state, ensure_ascii=False),
                     )
 
                     async def _revertir_precio_seguro(item: Dict[str, Any], motivo: str) -> None:
@@ -755,32 +807,31 @@ def build_tab_descuentos(container) -> None:
                         )
 
                     async def _correr() -> None:
+                        no_exactos: List[str] = []
                         for idx, item in enumerate(items_state):
                             iid = item["item_id"]
                             with cl:
                                 ui.notify(f"[{idx+1}/{len(items_state)}] {item['tramo']}: procesando...", color="info")
 
-                            if inflar:
-                                precio_lista = round(item["precio_real"] / (1 - badge_objetivo / 100), 2)
-                                try:
-                                    await run.io_bound(
-                                        ml_update_item_price, access_token, iid, precio_lista,
-                                        uid, item["seller_sku"], "descuentos_activar_v2", item["precio_real"],
+                            precio_lista = round(item["precio_lista"], 2)
+                            try:
+                                await run.io_bound(
+                                    ml_update_item_price, access_token, iid, precio_lista,
+                                    uid, item["seller_sku"], "descuentos_activar_v2", item["precio_real"],
+                                )
+                                item["estado_price"] = "ok"
+                                actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
+                            except Exception as e:
+                                item["estado_price"], item["detalle_error"] = "error", _detalle_error_ml(e)
+                                actualizar_activacion_descuento(
+                                    activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
+                                )
+                                with cl:
+                                    ui.notify(
+                                        f"{item['tramo']} ({iid}): no se pudo subir el precio: {e} -- sigo con las demás.",
+                                        color="negative", timeout=12000, multi_line=True,
                                     )
-                                    item["precio_lista"] = precio_lista
-                                    item["estado_price"] = "ok"
-                                    actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
-                                except Exception as e:
-                                    item["estado_price"], item["detalle_error"] = "error", _detalle_error_ml(e)
-                                    actualizar_activacion_descuento(
-                                        activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
-                                    )
-                                    with cl:
-                                        ui.notify(
-                                            f"{item['tramo']} ({iid}): no se pudo subir el precio: {e} -- sigo con las demás.",
-                                            color="negative", timeout=12000, multi_line=True,
-                                        )
-                                    continue
+                                continue
 
                             try:
                                 promos = await run.io_bound(ml_get_seller_promotions_item, access_token, iid)
@@ -791,8 +842,7 @@ def build_tab_descuentos(container) -> None:
                                 )
                                 with cl:
                                     ui.notify(f"{item['tramo']} ({iid}): no se pudo releer la campaña: {e}", color="negative", timeout=12000, multi_line=True)
-                                if inflar:
-                                    await _revertir_precio_seguro(item, "no se pudo releer la campaña tras subir el precio")
+                                await _revertir_precio_seguro(item, "no se pudo releer la campaña tras subir el precio")
                                 continue
 
                             camp = next(
@@ -807,46 +857,59 @@ def build_tab_descuentos(container) -> None:
                                 )
                                 with cl:
                                     ui.notify(f"{item['tramo']} ({iid}): campaña no disponible a este precio.", color="negative", timeout=12000, multi_line=True)
-                                if inflar:
-                                    await _revertir_precio_seguro(item, "campaña no disponible tras subir el precio")
+                                await _revertir_precio_seguro(item, "campaña no disponible tras subir el precio")
                                 continue
 
-                            deal_price = round(max_dp, 2)
-                            margen = _margen(deal_price, costo)
-                            margen_pct = (100 * margen / deal_price) if (margen is not None and deal_price) else None
-                            item["deal_price"], item["margen"], item["margen_pct"] = deal_price, margen, margen_pct
-
-                            if margen is not None and margen <= 0:
-                                item["estado_join"] = "omitido_perdida"
-                                actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
-                                with cl:
-                                    ui.notify(
-                                        f"{item['tramo']} ({iid}): el descuento mínimo que acepta ML da PÉRDIDA "
-                                        f"(${margen:,.0f}) -- no se activó.",
-                                        color="negative", timeout=15000, multi_line=True,
-                                    )
-                                if inflar:
-                                    await _revertir_precio_seguro(item, "margen negativo al precio mínimo aceptado")
-                                continue
-
+                            # (c) primero el descuento EXACTO pedido; (d) si ML lo rechaza por
+                            # credibilidad, reintenta solo automáticamente con el mínimo que
+                            # acepte (max_dp) -- sin frenar el lote ni pedir otra confirmación.
+                            deal_price_exacto = round(item["precio_final_deseado"], 2)
+                            deal_price_final: Optional[float] = None
+                            alcanzo_exacto: Optional[bool] = None
                             try:
                                 await run.io_bound(
-                                    ml_join_seller_promotion, access_token, iid, item["campaign_id"], _TIPO_CAMPANIA_JOIN, deal_price,
+                                    ml_join_seller_promotion, access_token, iid, item["campaign_id"], _TIPO_CAMPANIA_JOIN, deal_price_exacto,
                                 )
+                                deal_price_final, alcanzo_exacto = deal_price_exacto, True
                             except Exception as e:
-                                item["estado_join"], item["detalle_error"] = "error", _detalle_error_ml(e)
-                                actualizar_activacion_descuento(
-                                    activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
-                                )
-                                with cl:
-                                    ui.notify(f"{item['tramo']} ({iid}): ML rechazó el join: {e}", color="negative", timeout=15000, multi_line=True)
-                                if inflar:
+                                if not _es_error_credibilidad(e):
+                                    item["estado_join"], item["detalle_error"] = "error", _detalle_error_ml(e)
+                                    actualizar_activacion_descuento(
+                                        activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
+                                    )
+                                    with cl:
+                                        ui.notify(f"{item['tramo']} ({iid}): ML rechazó el join: {e}", color="negative", timeout=15000, multi_line=True)
                                     await _revertir_precio_seguro(item, "ML rechazó el join tras subir el precio")
-                                continue
+                                    continue
+                                deal_price_reintento = round(max_dp, 2)
+                                try:
+                                    await run.io_bound(
+                                        ml_join_seller_promotion, access_token, iid, item["campaign_id"], _TIPO_CAMPANIA_JOIN, deal_price_reintento,
+                                    )
+                                    deal_price_final, alcanzo_exacto = deal_price_reintento, False
+                                except Exception as e2:
+                                    item["estado_join"], item["detalle_error"] = "error", _detalle_error_ml(e2)
+                                    actualizar_activacion_descuento(
+                                        activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
+                                    )
+                                    with cl:
+                                        ui.notify(f"{item['tramo']} ({iid}): ML rechazó también el mínimo aceptado: {e2}", color="negative", timeout=15000, multi_line=True)
+                                    await _revertir_precio_seguro(item, "ML rechazó el precio exacto y también el mínimo aceptado")
+                                    continue
+
+                            item["deal_price"], item["alcanzo_exacto"] = deal_price_final, alcanzo_exacto
+                            margen = _margen(deal_price_final, costo)
+                            margen_pct = (100 * margen / deal_price_final) if (margen is not None and deal_price_final) else None
+                            item["margen"], item["margen_pct"] = margen, margen_pct
+                            if not alcanzo_exacto:
+                                no_exactos.append(
+                                    f"{item['tramo']} (pedido {_fmt_moneda(item['precio_final_deseado'])}, "
+                                    f"quedó en {_fmt_moneda(deal_price_final)})"
+                                )
 
                             log_ml_escritura(
                                 uid, item["seller_sku"], iid, "seller_campaign_join",
-                                "sin promo", f"deal_price={deal_price}", "descuentos_activar_v2", "ok", None,
+                                "sin promo", f"deal_price={deal_price_final}", "descuentos_activar_v2", "ok", None,
                             )
 
                             started = False
@@ -862,16 +925,24 @@ def build_tab_descuentos(container) -> None:
                             item["estado_join"] = "ok" if started else "creado_sin_confirmar"
                             actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
                             with cl:
-                                _pct_off = 100 * (item["precio_lista"] - deal_price) / item["precio_lista"] if item["precio_lista"] else 0
+                                _pct_off = 100 * (item["precio_lista"] - deal_price_final) / item["precio_lista"] if item["precio_lista"] else 0
+                                _nota_exacto = "" if alcanzo_exacto else " -- NO se alcanzó el precio exacto pedido, quedó en el mínimo que aceptó ML"
                                 ui.notify(
                                     f"{item['tramo']} ({iid}): {'activado OK' if started else 'unido, esperando confirmación de ML'} -- "
-                                    f"-{_pct_off:.1f}% → {_fmt_moneda(deal_price)}"
-                                    + (f", margen ${margen:,.0f} ({margen_pct:.1f}%)" if margen is not None else ""),
-                                    color="positive", timeout=8000,
+                                    f"-{_pct_off:.1f}% → {_fmt_moneda(deal_price_final)}"
+                                    + (f", margen ${margen:,.0f} ({margen_pct:.1f}%)" if margen is not None else "")
+                                    + _nota_exacto,
+                                    color="positive" if alcanzo_exacto else "warning", timeout=10000, multi_line=True,
                                 )
 
                         actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="activo")
                         with cl:
+                            if no_exactos:
+                                ui.notify(
+                                    "No se alcanzó el precio exacto pedido en: " + "; ".join(no_exactos) +
+                                    " -- quedaron en el mínimo que aceptó ML.",
+                                    color="warning", timeout=0, multi_line=True,
+                                )
                             ui.notify("Proceso de activación terminado -- revisá el detalle de cada tramo arriba.", color="positive", timeout=8000)
                             background_tasks.create(_render_activacion(item_id), name=f"activacion_refresh_{item_id}")
 
@@ -1058,7 +1129,7 @@ def build_tab_descuentos(container) -> None:
                 def _on_producto_change() -> None:
                     item_id = sel.value
                     if not item_id:
-                        precio_deseado_inp.value = None
+                        _set_precio_deseado_auto(None)
                         cuotas_col.clear()
                         mayorista_col.clear()
                         activacion_col.clear()
@@ -1067,12 +1138,17 @@ def build_tab_descuentos(container) -> None:
                     item_id = str(item_id)
                     # Autocompleta con el precio actual de la publicación recién elegida --
                     # se pisa en CADA cambio de selección, no respeta un valor tipeado a
-                    # mano si el usuario vuelve a elegir el mismo producto después.
+                    # mano si el usuario vuelve a elegir el mismo producto después. Queda
+                    # marcado como "no tocado" -- ver _objetivo_tramo -- así Activar usa el
+                    # precio real de CADA tramo como ancla si Diego no escribió un precio
+                    # final deseado propio.
                     it = items_by_id.get(item_id)
                     if it:
                         precio_raw = it.get("price") or 0
                         sale_price = it.get("sale_price")
-                        precio_deseado_inp.value = float(sale_price) if sale_price is not None else float(precio_raw or 0)
+                        _set_precio_deseado_auto(float(sale_price) if sale_price is not None else float(precio_raw or 0))
+                    else:
+                        _set_precio_deseado_auto(None)
                     _recalcular_precio()
                     _render_cuotas(item_id)
                     background_tasks.create(_render_activacion(item_id), name=f"activacion_descuentos_{item_id}")
@@ -1080,8 +1156,15 @@ def build_tab_descuentos(container) -> None:
                         _render_mayorista(item_id), name=f"mayorista_descuentos_{item_id}"
                     )
 
+                def _on_precio_deseado_change() -> None:
+                    if _suprimir_marca_tocado["v"]:
+                        _suprimir_marca_tocado["v"] = False
+                    else:
+                        _precio_deseado_tocado["v"] = True
+                    _recalcular_precio()
+
                 sel.on_value_change(_on_producto_change)
-                precio_deseado_inp.on_value_change(_recalcular_precio)
+                precio_deseado_inp.on_value_change(_on_precio_deseado_change)
                 descuento_inp.on_value_change(_recalcular_precio)
 
             background_tasks.create(_cargar(), name="cargar_descuentos")
