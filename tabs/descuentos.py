@@ -118,6 +118,26 @@ def _fmt_pct(v: float) -> str:
     return f"{v:.2f}".rstrip("0").rstrip(".")
 
 
+def _fmt_miles(v: Any) -> str:
+    """Formatea un número para el TEXTO editable de un input de precio en pesos de esta
+    pantalla: sin decimales, punto como separador de miles (154990 -> "154.990"), sin
+    el "$" -- eso va en el prefix visual del campo, no en el valor editable. "" si v es
+    None o no numérico, para no forzar un "0" en un campo vacío."""
+    if v is None or v == "":
+        return ""
+    try:
+        return f"{int(round(float(v))):,}".replace(",", ".")
+    except (TypeError, ValueError):
+        return ""
+
+
+def _parse_miles(txt: Any) -> float:
+    """Inverso de _fmt_miles -- interpreta lo tipeado en un input de precio (puntos de
+    miles, $, espacios, lo que sea) y devuelve el número, o 0.0 si no hay dígitos."""
+    digitos = "".join(ch for ch in str(txt or "") if ch.isdigit())
+    return float(digitos) if digitos else 0.0
+
+
 def _es_error_credibilidad(e: Exception) -> bool:
     """True si el HTTPError de ml_join_seller_promotion es el rechazo de credibilidad
     (ERROR_CREDIBILITY_DISCOUNTED_PRICE) -- el único caso en el que Activar reintenta
@@ -227,9 +247,9 @@ def build_tab_descuentos(container) -> None:
                         opciones, value=None, with_input=True, clearable=True,
                         label=f"Producto con stock ({len(opciones)}) -- nombre o SKU",
                     ).props("dense outlined").classes("w-[28rem] max-w-full")
-                    precio_deseado_inp = ui.number(
-                        label="Precio final deseado", value=None, min=0.01, step=1,
-                    ).props("dense outlined").classes("w-48")
+                    precio_deseado_inp = ui.input(label="Precio final deseado", value="").props(
+                        'dense outlined prefix="$"'
+                    ).classes("w-48")
                     descuento_inp = ui.number(
                         label="Descuento deseado (%)", value=44, min=0.01, max=99.99, step=1,
                     ).props("dense outlined").classes("w-48")
@@ -250,8 +270,17 @@ def build_tab_descuentos(container) -> None:
 
                 def _set_precio_deseado_auto(value: Optional[float]) -> None:
                     _suprimir_marca_tocado["v"] = True
-                    precio_deseado_inp.value = value
+                    precio_deseado_inp.value = _fmt_miles(value)
                     _precio_deseado_tocado["v"] = False
+
+                def _reformatear_precio_deseado() -> None:
+                    # Al perder foco, reescribe con separador de miles lo que haya tipeado
+                    # (no marca "tocado" de nuevo -- ya se marcó, si corresponde, con el
+                    # keyup real del usuario en _on_precio_deseado_change). Un campo vacío
+                    # se deja vacío, no se convierte en "0".
+                    numero = _parse_miles(precio_deseado_inp.value)
+                    _suprimir_marca_tocado["v"] = True
+                    precio_deseado_inp.value = _fmt_miles(numero) if numero > 0 else ""
 
                 def _cuotas_siblings(grupo: List[Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
                     """Mismo criterio de tabs/cuotas.py (_build_row) para elegir, por
@@ -294,10 +323,7 @@ def build_tab_descuentos(container) -> None:
                         pct = float(descuento_inp.value or 0)
                     except (TypeError, ValueError):
                         pct = 0.0
-                    try:
-                        precio_deseado = float(precio_deseado_inp.value or 0)
-                    except (TypeError, ValueError):
-                        precio_deseado = 0.0
+                    precio_deseado = _parse_miles(precio_deseado_inp.value)
                     with precio_col:
                         if precio_actual <= 0:
                             ui.label("Esta publicación no tiene un precio actual válido.").classes("text-sm text-negative")
@@ -472,10 +498,7 @@ def build_tab_descuentos(container) -> None:
                     except (TypeError, ValueError):
                         pct = 0.0
                     if _precio_deseado_tocado["v"]:
-                        try:
-                            final_deseado = float(precio_deseado_inp.value or 0)
-                        except (TypeError, ValueError):
-                            final_deseado = 0.0
+                        final_deseado = _parse_miles(precio_deseado_inp.value)
                     else:
                         final_deseado = f["precio_actual"]
                     if final_deseado <= 0 or not (0 < pct < 100):
@@ -1009,7 +1032,10 @@ def build_tab_descuentos(container) -> None:
                                         ui.label(dict(_TRAMOS).get(fila["tramo"], fila["tramo"])).classes("w-20")
                                         ui.label(fila["item_id"]).classes("font-mono text-xs w-40")
                                         ui.label(f"vendiendo hoy: {_fmt_moneda(fila['precio_actual_promo'])}").classes("text-xs w-40")
-                                        inp = ui.number(value=fila["precio_real"], label="Precio real a restaurar").classes("w-44")
+                                        inp = ui.input(
+                                            value=_fmt_miles(fila["precio_real"]), label="Precio real a restaurar",
+                                        ).props('dense prefix="$"').classes("w-44")
+                                        inp.on("blur", lambda _i=inp: _i.set_value(_fmt_miles(_parse_miles(_i.value))))
                                         inputs[fila["tramo"]] = inp
                                         _badge_color = {
                                             "registrado": "#2e7d32", "sugerido": "#e65100", "sin_historial": "#c62828",
@@ -1034,10 +1060,7 @@ def build_tab_descuentos(container) -> None:
                     dlg.close()
                     cl = context.client
                     for fila in filas:
-                        try:
-                            fila["precio_real"] = float(inputs[fila["tramo"]].value or 0)
-                        except (TypeError, ValueError):
-                            fila["precio_real"] = 0.0
+                        fila["precio_real"] = _parse_miles(inputs[fila["tramo"]].value)
 
                     items_state = [
                         {
@@ -1165,6 +1188,7 @@ def build_tab_descuentos(container) -> None:
 
                 sel.on_value_change(_on_producto_change)
                 precio_deseado_inp.on_value_change(_on_precio_deseado_change)
+                precio_deseado_inp.on("blur", _reformatear_precio_deseado)
                 descuento_inp.on_value_change(_recalcular_precio)
 
             background_tasks.create(_cargar(), name="cargar_descuentos")
