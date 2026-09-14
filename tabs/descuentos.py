@@ -192,6 +192,9 @@ def build_tab_descuentos(container) -> None:
                         opciones, value=None, with_input=True, clearable=True,
                         label=f"Producto con stock ({len(opciones)}) -- nombre o SKU",
                     ).props("dense outlined").classes("w-[28rem] max-w-full")
+                    precio_deseado_inp = ui.number(
+                        label="Precio final deseado", value=None, min=0.01, step=1,
+                    ).props("dense outlined").classes("w-48")
                     descuento_inp = ui.number(
                         label="Descuento deseado (%)", value=44, min=0.01, max=99.99, step=1,
                     ).props("dense outlined").classes("w-48")
@@ -242,22 +245,34 @@ def build_tab_descuentos(container) -> None:
                         pct = float(descuento_inp.value or 0)
                     except (TypeError, ValueError):
                         pct = 0.0
+                    try:
+                        precio_deseado = float(precio_deseado_inp.value or 0)
+                    except (TypeError, ValueError):
+                        precio_deseado = 0.0
                     with precio_col:
                         if precio_actual <= 0:
                             ui.label("Esta publicación no tiene un precio actual válido.").classes("text-sm text-negative")
                             return
+                        if precio_deseado <= 0:
+                            ui.label("El precio final deseado tiene que ser mayor a $0.").classes("text-sm text-negative")
+                            return
                         if not (0 < pct < 100):
                             ui.label("El descuento tiene que ser mayor a 0% y menor a 100%.").classes("text-sm text-negative")
                             return
-                        precio_lista = precio_actual / (1 - pct / 100)
+                        precio_lista = precio_deseado / (1 - pct / 100)
                         pct_fmt = _fmt_pct(pct)
                         ui.label(f"Precio actual: {_fmt_moneda(precio_actual)} (el que se vende hoy)").classes("text-sm")
+                        if abs(precio_deseado - precio_actual) > 0.01:
+                            ui.label(
+                                f"Calculado sobre el precio final deseado ({_fmt_moneda(precio_deseado)}), "
+                                "no sobre el precio actual de ML."
+                            ).classes("text-xs text-gray-500")
                         ui.label(
                             f"Para que se vea un descuento de {pct_fmt}%, subir el precio a: "
                             f"{_fmt_moneda(precio_lista)}"
                         ).classes("text-sm font-bold")
                         ui.label(
-                            f"Después, bajarlo de nuevo a {_fmt_moneda(precio_actual)} para que se muestre "
+                            f"Después, bajarlo de nuevo a {_fmt_moneda(precio_deseado)} para que se muestre "
                             f"-{pct_fmt}% de descuento."
                         ).classes("text-sm")
                         ui.label(
@@ -870,14 +885,24 @@ def build_tab_descuentos(container) -> None:
                     background_tasks.create(_correr())
 
                 def _on_producto_change() -> None:
-                    _recalcular_precio()
                     item_id = sel.value
                     if not item_id:
+                        precio_deseado_inp.value = None
                         cuotas_col.clear()
                         mayorista_col.clear()
                         activacion_col.clear()
+                        _recalcular_precio()
                         return
                     item_id = str(item_id)
+                    # Autocompleta con el precio actual de la publicación recién elegida --
+                    # se pisa en CADA cambio de selección, no respeta un valor tipeado a
+                    # mano si el usuario vuelve a elegir el mismo producto después.
+                    it = items_by_id.get(item_id)
+                    if it:
+                        precio_raw = it.get("price") or 0
+                        sale_price = it.get("sale_price")
+                        precio_deseado_inp.value = float(sale_price) if sale_price is not None else float(precio_raw or 0)
+                    _recalcular_precio()
                     _render_cuotas(item_id)
                     _render_activacion(item_id)
                     background_tasks.create(
@@ -885,6 +910,7 @@ def build_tab_descuentos(container) -> None:
                     )
 
                 sel.on_value_change(_on_producto_change)
+                precio_deseado_inp.on_value_change(_recalcular_precio)
                 descuento_inp.on_value_change(_recalcular_precio)
 
             background_tasks.create(_cargar(), name="cargar_descuentos")
