@@ -9,7 +9,9 @@ publicación para que, al bajarla después al precio actual, ML muestre ese %
 de descuento.
 
 NO hace ningún PUT/POST a MercadoLibre -- ni price, ni promotions, ni ningún
-otro endpoint de escritura. Solo lee publicaciones vía ml_get_my_items (GET).
+otro endpoint de escritura. Solo lee publicaciones vía ml_get_my_items (GET) y,
+para el bloque de mayorista del producto seleccionado, un GET puntual a
+/items/{id}/prices (mismo endpoint y header show-all-prices que salud_audit.py).
 Diego decide más adelante si y cuándo esto pasa a escribir de verdad.
 """
 from __future__ import annotations
@@ -18,8 +20,9 @@ from typing import Any, Dict, List, Optional
 
 from nicegui import app, background_tasks, run, ui
 
-from ml_api import get_ml_access_token, ml_get_my_items
-from tabs.cuotas import _cuotas_key
+from ml_api import _cuotas_desde_item, get_ml_access_token, get_ml_session, ml_get_my_items
+from salud_audit import _wholesale_from_prices
+from tabs.cuotas import _cuotas_key, _cuotas_score
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -112,6 +115,10 @@ def build_tab_descuentos(container) -> None:
                 # gold_special con más stock; si no hay propia gold_special, gana la de más
                 # stock entre las restantes (típicamente la de catálogo).
                 productos: List[Dict[str, Any]] = []
+                # grupo completo (todos los hermanos de cuotas) por id del principal --
+                # necesario para el bloque de "Cuotas actuales" (3x/6x/9x/12x), que no
+                # se puede armar solo con el principal.
+                grupos_by_id: Dict[str, List[Dict[str, Any]]] = {}
                 for grupo in groups.values():
                     principal = max(
                         grupo,
@@ -123,6 +130,7 @@ def build_tab_descuentos(container) -> None:
                     )
                     if (principal.get("available_quantity") or 0) > 0:
                         productos.append(principal)
+                        grupos_by_id[str(principal.get("id") or "")] = grupo
 
                 if not productos:
                     ui.label("No hay publicaciones con stock para esta cuenta.").classes("text-sm text-gray-400")
@@ -143,10 +151,36 @@ def build_tab_descuentos(container) -> None:
                         label="Descuento deseado (%)", value=44, min=0.01, max=99.99, step=1,
                     ).props("dense outlined").classes("w-48")
 
-                salida = ui.column().classes("w-full gap-1 mt-2")
+                precio_col = ui.column().classes("w-full gap-1 mt-2")
+                cuotas_col = ui.column().classes("w-full gap-1")
+                mayorista_col = ui.column().classes("w-full gap-1")
 
-                def _recalcular() -> None:
-                    salida.clear()
+                def _cuotas_siblings(grupo: List[Dict[str, Any]]) -> Dict[str, Optional[Dict[str, Any]]]:
+                    """Mismo criterio de tabs/cuotas.py (_build_row) para elegir, por
+                    tramo de cuotas, la publicación hermana representativa: clasifica
+                    cada ítem del grupo con _cuotas_desde_item (ml_api) y, si hay más de
+                    un candidato para el mismo tramo, gana el de mejor _cuotas_score."""
+                    best: Dict[str, Optional[Dict[str, Any]]] = {"x3": None, "x6": None, "x9": None, "x12": None}
+                    for it in grupo:
+                        cuotas = _cuotas_desde_item(it)
+                        if cuotas in best:
+                            if best[cuotas] is None or _cuotas_score(it) > _cuotas_score(best[cuotas]):
+                                best[cuotas] = it
+                    return best
+
+                def _fetch_prices_body(token: str, item_id: str) -> dict:
+                    # Mismo endpoint y header que salud_audit.py (show-all-prices: TRUE --
+                    # sin ese header ML oculta los tiers de precio por cantidad B2B).
+                    r = get_ml_session().get(
+                        f"https://api.mercadolibre.com/items/{item_id}/prices",
+                        headers={"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"},
+                        timeout=15,
+                    )
+                    r.raise_for_status()
+                    return r.json()
+
+                def _recalcular_precio() -> None:
+                    precio_col.clear()
                     item_id = sel.value
                     if not item_id:
                         return
@@ -162,7 +196,7 @@ def build_tab_descuentos(container) -> None:
                         pct = float(descuento_inp.value or 0)
                     except (TypeError, ValueError):
                         pct = 0.0
-                    with salida:
+                    with precio_col:
                         if precio_actual <= 0:
                             ui.label("Esta publicación no tiene un precio actual válido.").classes("text-sm text-negative")
                             return
@@ -184,7 +218,71 @@ def build_tab_descuentos(container) -> None:
                             "Esto es solo una previsualización -- todavía no se aplicó ningún cambio en ML."
                         ).classes("text-xs text-gray-400 mt-1")
 
-                sel.on_value_change(_recalcular)
-                descuento_inp.on_value_change(_recalcular)
+                def _render_cuotas(item_id: str) -> None:
+                    cuotas_col.clear()
+                    grupo = grupos_by_id.get(item_id) or []
+                    siblings = _cuotas_siblings(grupo)
+                    with cuotas_col:
+                        ui.label("Cuotas actuales (precio de hoy, sin aplicar el % de descuento)").classes("text-xs font-bold text-gray-500 uppercase mt-2")
+                        with ui.row().classes("gap-6 flex-wrap"):
+                            for gkey, glabel in [("x3", "3 cuotas"), ("x6", "6 cuotas"), ("x9", "9 cuotas"), ("x12", "12 cuotas")]:
+                                sib = siblings.get(gkey)
+                                precio = sib.get("price") if sib else None
+                                precio_txt = _fmt_moneda(precio) if precio is not None else "—"
+                                with ui.column().classes("items-center gap-0"):
+                                    ui.label(glabel).classes("text-xs text-gray-500")
+                                    ui.label(precio_txt).classes("text-sm font-semibold" if precio is not None else "text-sm text-gray-400")
+
+                async def _render_mayorista(item_id: str) -> None:
+                    mayorista_col.clear()
+                    with mayorista_col:
+                        ui.label("Mayorista actual").classes("text-xs font-bold text-gray-500 uppercase mt-2")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.spinner(size="sm")
+                            ui.label("Consultando mayorista...").classes("text-xs text-gray-400")
+                    try:
+                        prices_body = await run.io_bound(_fetch_prices_body, access_token, item_id)
+                    except Exception as e:
+                        if sel.value != item_id:
+                            return  # el usuario ya cambió de selección, no pisar lo nuevo
+                        mayorista_col.clear()
+                        with mayorista_col:
+                            ui.label("Mayorista actual").classes("text-xs font-bold text-gray-500 uppercase mt-2")
+                            ui.label(f"No se pudo consultar mayorista ({e}).").classes("text-xs text-negative")
+                        return
+                    if sel.value != item_id:
+                        return  # el usuario ya cambió de selección, no pisar lo nuevo
+                    w = _wholesale_from_prices(prices_body)
+                    tiers = w.get("tiers") or []
+                    standard = w.get("standard_amount")
+                    mayorista_col.clear()
+                    with mayorista_col:
+                        ui.label("Mayorista actual").classes("text-xs font-bold text-gray-500 uppercase mt-2")
+                        if not tiers:
+                            ui.label("Sin mayorista cargado.").classes("text-sm text-gray-400")
+                            return
+                        with ui.column().classes("gap-0.5"):
+                            for min_qty, amount in tiers:
+                                pct_txt = ""
+                                if standard:
+                                    pct = (standard - amount) / standard * 100
+                                    pct_txt = f" (-{pct:.1f}%)"
+                                ui.label(f"{min_qty}+ unidades: {_fmt_moneda(amount)}{pct_txt}").classes("text-sm")
+
+                def _on_producto_change() -> None:
+                    _recalcular_precio()
+                    item_id = sel.value
+                    if not item_id:
+                        cuotas_col.clear()
+                        mayorista_col.clear()
+                        return
+                    item_id = str(item_id)
+                    _render_cuotas(item_id)
+                    background_tasks.create(
+                        _render_mayorista(item_id), name=f"mayorista_descuentos_{item_id}"
+                    )
+
+                sel.on_value_change(_on_producto_change)
+                descuento_inp.on_value_change(_recalcular_precio)
 
             background_tasks.create(_cargar(), name="cargar_descuentos")
