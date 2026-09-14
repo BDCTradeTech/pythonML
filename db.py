@@ -20,7 +20,7 @@ import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from cryptography.fernet import Fernet
 
@@ -1446,6 +1446,27 @@ def get_producto_tn_descuento(sku: str, user_id: int) -> Optional[float]:
         conn.close()
 
 
+def get_producto_costo(sku: str, user_id: int) -> Optional[Tuple[float, float]]:
+    """(costo_usd, tipo_iva) cargados para este SKU, o None si no hay costo
+    cargado (costo_usd NULL/0) -- mismo criterio case-insensitive que
+    get_producto_tn_descuento. Usado para chequear margen antes de activar un
+    descuento real (tabs/descuentos.py)."""
+    sku_norm = (sku or "").strip()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT costo_usd, tipo_iva FROM productos WHERE lower(sku) = lower(?) AND user_id = ?",
+            (sku_norm, user_id),
+        )
+        row = cur.fetchone()
+        if not row or not row["costo_usd"]:
+            return None
+        return float(row["costo_usd"]), float(row["tipo_iva"] if row["tipo_iva"] is not None else 0.105)
+    finally:
+        conn.close()
+
+
 def set_producto_tn_descuento(sku: str, user_id: int, valor: Optional[float]) -> bool:
     """Guarda (o borra, con valor=None) el override de descuento ML->TN para el SKU.
     Case-insensitive, ver get_producto_tn_descuento. Devuelve False si no hay
@@ -1697,6 +1718,26 @@ def log_ml_escritura(
             ),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+def get_historial_precio(item_id: str, user_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+    """Historial de escrituras de precio (campo='price') para item_id, más reciente
+    primero. Usado por tabs/descuentos.py (Desactivar) para reconstruir el precio
+    real de una publicación cuando el join a una SELLER_CAMPAIGN se hizo por fuera
+    de descuentos_activaciones (ej. por script directo) y no hay fila que lo
+    registre -- SOLO como sugerencia editable, nunca se escribe a ML sin
+    confirmación explícita del valor."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT ts, valor_anterior, valor_nuevo, origen, resultado FROM ml_escrituras "
+            "WHERE item_id = ? AND user_id = ? AND campo = 'price' AND resultado = 'ok' "
+            "ORDER BY id DESC LIMIT ?",
+            (item_id, user_id, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 

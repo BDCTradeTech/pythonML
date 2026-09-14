@@ -564,6 +564,60 @@ def ml_delete_price_discount(access_token: str, item_id: str) -> requests.Respon
     )
 
 
+def ml_join_seller_promotion(
+    access_token: str, item_id: str, promotion_id: str, promotion_type: str,
+    deal_price: float, top_deal_price: Optional[float] = None,
+) -> Dict[str, Any]:
+    """POST /seller-promotions/items/{id} -- suma el ítem a una promoción existente
+    (verificado contra el MCP, 2026-09-14, doc "campanas-del-vendedor"). A diferencia de
+    PRICE_DISCOUNT, acá el vendedor define promotion_id/promotion_type (ej. SELLER_CAMPAIGN)
+    y deal_price se valida contra el mismo rango de credibilidad (min/max_discounted_price
+    de ml_get_seller_promotions_item) -- si no entra en el rango, ML devuelve el mismo
+    ERROR_CREDIBILITY_DISCOUNTED_PRICE que PRICE_DISCOUNT. Body 201 esperado con
+    {'price': deal_price, 'original_price': precio actual}. Igual que en PRICE_DISCOUNT, la
+    activación es asincrónica -- el caller debe releer con ml_get_seller_promotions_item
+    hasta confirmar 'started'."""
+    base = "https://api.mercadolibre.com"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    body: Dict[str, Any] = {
+        "promotion_id": promotion_id,
+        "promotion_type": promotion_type,
+        "deal_price": deal_price,
+    }
+    if top_deal_price is not None:
+        body["top_deal_price"] = top_deal_price
+    resp = get_ml_session().post(
+        f"{base}/seller-promotions/items/{item_id}",
+        headers=headers,
+        params={"app_version": "v2"},
+        json=body,
+        timeout=15,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
+def ml_delete_seller_promotion(
+    access_token: str, item_id: str, promotion_id: str, promotion_type: str,
+) -> requests.Response:
+    """DELETE /seller-promotions/items/{id}?promotion_type=...&promotion_id=... -- saca el
+    ítem de una promoción a la que se sumó con ml_join_seller_promotion (ej. SELLER_CAMPAIGN).
+    200 OK esperado (verificado contra el MCP, 2026-09-14). Devuelve el Response crudo, igual
+    criterio que ml_delete_price_discount."""
+    base = "https://api.mercadolibre.com"
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    return get_ml_session().delete(
+        f"{base}/seller-promotions/items/{item_id}",
+        headers=headers,
+        params={"promotion_type": promotion_type, "promotion_id": promotion_id, "app_version": "v2"},
+        timeout=15,
+    )
+
+
 def ml_get_one_item_full(access_token: str) -> Optional[Dict[str, Any]]:
     """Obtiene el JSON completo de una publicación de ejemplo (la primera) para mostrar qué datos devuelve ML."""
     base = "https://api.mercadolibre.com"
