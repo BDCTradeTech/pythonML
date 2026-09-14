@@ -44,6 +44,7 @@ from db import (
 )
 from ml_api import (
     _cuotas_desde_item,
+    _detalle_error_ml,
     _parse_ml_item_body,
     get_ml_access_token,
     get_ml_session,
@@ -586,7 +587,7 @@ def build_tab_descuentos(container) -> None:
                                 item["estado_price"] = "ok"
                                 actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
                             except Exception as e:
-                                item["estado_price"], item["detalle_error"] = "error", str(e)
+                                item["estado_price"], item["detalle_error"] = "error", _detalle_error_ml(e)
                                 actualizar_activacion_descuento(
                                     activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
                                 )
@@ -615,7 +616,7 @@ def build_tab_descuentos(container) -> None:
                                         raise RuntimeError(err)
                                     item["estado_mayorista"] = "ok"
                                 except Exception as e:
-                                    item["estado_mayorista"], item["detalle_error"] = "error", str(e)
+                                    item["estado_mayorista"], item["detalle_error"] = "error", _detalle_error_ml(e)
                                     actualizar_activacion_descuento(
                                         activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
                                     )
@@ -665,7 +666,7 @@ def build_tab_descuentos(container) -> None:
                                         "bloqueada por un DEAL activo u otra causa; revisar en ML antes de seguir"
                                     )
                             except Exception as e:
-                                _promo_error = str(e)
+                                _promo_error = _detalle_error_ml(e)
 
                             if _promo_error is None:
                                 item["estado_promo"] = "started"
@@ -761,6 +762,22 @@ def build_tab_descuentos(container) -> None:
                                 continue
                             iid = item["item_id"]
 
+                            if item.get("estado_price") != "ok":
+                                # Activar se frenó antes de llegar a subir el precio de esta
+                                # publicación -- nunca se tocó en ML, así que no hay nada que
+                                # revertir. Sin este guard, el PUT de abajo escribía el mismo
+                                # precio que ya tenía (no-op en ML) pero quedaba auditado con
+                                # un valor_anterior FALSO (el precio de lista que nunca llegó
+                                # a aplicarse) -- detectado 2026-09-14 con Tag-Royal-LF12.
+                                item["estado_revertido"] = "ok"
+                                actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
+                                with cl:
+                                    ui.notify(
+                                        f"{item['tramo']} ({iid}) no había llegado a activarse -- nada que revertir.",
+                                        color="info",
+                                    )
+                                continue
+
                             if item.get("estado_promo") in ("creada", "started") and item.get("estado_revertido_promo") != "borrada":
                                 try:
                                     resp = await run.io_bound(ml_delete_price_discount, access_token, iid)
@@ -773,10 +790,10 @@ def build_tab_descuentos(container) -> None:
                                     )
                                     actualizar_activacion_descuento(activacion_id, _json.dumps(items_state, ensure_ascii=False))
                                 except Exception as e:
-                                    item["detalle_error"] = str(e)
+                                    item["detalle_error"] = _detalle_error_ml(e)
                                     log_ml_escritura(
                                         uid, item["seller_sku"], iid, "promo_price_discount",
-                                        "activa", "borrada", "descuentos_revertir", "error", str(e),
+                                        "activa", "borrada", "descuentos_revertir", "error", _detalle_error_ml(e),
                                     )
                                     actualizar_activacion_descuento(
                                         activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
@@ -795,7 +812,7 @@ def build_tab_descuentos(container) -> None:
                                     uid, item["seller_sku"], "descuentos_revertir", item["precio_lista"],
                                 )
                             except Exception as e:
-                                item["detalle_error"] = str(e)
+                                item["detalle_error"] = _detalle_error_ml(e)
                                 actualizar_activacion_descuento(
                                     activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
                                 )
@@ -824,7 +841,7 @@ def build_tab_descuentos(container) -> None:
                                     if err:
                                         raise RuntimeError(err)
                                 except Exception as e:
-                                    item["detalle_error"] = str(e)
+                                    item["detalle_error"] = _detalle_error_ml(e)
                                     actualizar_activacion_descuento(
                                         activacion_id, _json.dumps(items_state, ensure_ascii=False), estado="error_parcial",
                                     )

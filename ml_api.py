@@ -29,6 +29,15 @@ _SESSION: Optional[requests.Session] = None
 _SESSION_LOCK = threading.Lock()
 
 
+def _detalle_error_ml(e: Exception) -> str:
+    """str(e) de un requests.HTTPError (p.ej. tras raise_for_status()) NO incluye el
+    body de la respuesta de ML -- solo "400 Client Error: Bad Request for url: ...".
+    Para no perder el motivo real (error_code/error_message) al auditar en
+    ml_escrituras, agrega el texto crudo de la respuesta cuando está disponible."""
+    body = getattr(getattr(e, "response", None), "text", None)
+    return f"{e} -- body ML: {body[:500]}" if body else str(e)
+
+
 class MLTransientFetchError(Exception):
     """La llamada a la API de ML falló por un problema transitorio (timeout, error de
     conexión, 5xx) — distinto de una respuesta válida que indica ausencia de datos (4xx
@@ -495,7 +504,10 @@ def ml_update_item_price(
         log_ml_escritura(user_id, sku or "", item_id, "price", valor_anterior, valor_nuevo, origen, "ok", None)
         return body
     except Exception as e:
-        log_ml_escritura(user_id, sku or "", item_id, "price", valor_anterior, valor_nuevo, origen, "error", str(e))
+        log_ml_escritura(
+            user_id, sku or "", item_id, "price", valor_anterior, valor_nuevo, origen,
+            "error", _detalle_error_ml(e),
+        )
         raise
 
 
