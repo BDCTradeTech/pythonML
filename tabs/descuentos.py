@@ -113,8 +113,9 @@ def build_tab_descuentos(container) -> None:
             ui.label(
                 "Calculadora de precio de lista para simular un % de descuento visible en ML. "
                 "El cálculo de arriba es solo una previsualización -- no escribe nada. "
-                "El botón 'Activar descuento real' que aparece al elegir un producto SÍ escribe en "
-                "MercadoLibre (precio, mayorista y una promoción real) y hay que confirmarlo a mano."
+                "El botón 'Activar descuento real' está deshabilitado temporalmente (en revisión "
+                "desde 2026-09-14) -- si hay una activación vieja pendiente de revertir para un "
+                "producto, el botón 'Revertir descuento real' sigue disponible."
             ).classes("text-xs text-gray-500")
 
             body_col = ui.column().classes("w-full gap-2")
@@ -429,10 +430,17 @@ def build_tab_descuentos(container) -> None:
                                 on_click=lambda: _abrir_dialogo_revertir(item_id, sku, vigente),
                             ).props("outline").style("color:#c62828;border-color:#c62828")
                         else:
-                            ui.button(
-                                "Activar descuento real (sube precio en ML)",
-                                on_click=lambda: _abrir_dialogo_activar(item_id, sku),
-                            ).props("outline").style("color:#c62828;border-color:#c62828")
+                            # "Activar descuento real" (PRICE_DISCOUNT con precio inflado)
+                            # deshabilitado desde 2026-09-14: causó el incidente de Tag-Royal-LF12
+                            # (precio quedó horas arriba sin vender, ERROR_CREDIBILITY_DISCOUNTED_PRICE
+                            # al crear la promo). El mecanismo que sí funciona es unirse a una
+                            # SELLER_CAMPAIGN existente -- todavía no tiene UI, se hace por script.
+                            # No se borra _abrir_dialogo_activar/_ejecutar_activar a propósito: solo
+                            # se saca el botón que los dispara, hasta rediseñar este flujo.
+                            ui.label(
+                                "⚠️ Activar descuento real: función en revisión, deshabilitada "
+                                "temporalmente."
+                            ).classes("text-xs text-gray-400")
 
                 def _abrir_dialogo_activar(item_id: str, sku: str) -> None:
                     cl = context.client
