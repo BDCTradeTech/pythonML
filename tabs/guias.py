@@ -292,6 +292,117 @@ pa: no viene del documento, se inyecta desde la UI. Devolver null.
 Respondé SOLO con el JSON, sin texto adicional ni backticks.
 """
 
+# Copia de PROMPT_GUIA_LHS -- arranca asumiendo el mismo layout de factura que
+# LHS (2026-09-15, sin muestra real de Transporter todavía). Ajustar las reglas
+# de extracción de campos con el primer documento real de Transporter que se
+# cargue -- por ahora solo difieren las menciones al nombre del courier.
+PROMPT_GUIA_TRANSPORTER = """
+La primera imagen es la factura del courier Transporter (imagen JPG).
+La segunda imagen es el invoice del proveedor de BDC Trade Tech LLC (imagen JPG).
+
+De la primera imagen (factura Transporter) extraer:
+- nro_factura: número de factura argentina formato XXXX-XXXXXXXX
+- hawb: número HAWB en la parte superior
+- kgs: Transporter no incluye peso total en el documento — devolver null.
+- tipo_cambio_3: buscar la línea "Cotización del dólar 1 U$S =" y tomar el valor numérico
+    a la derecha. Asignarlo a tipo_cambio_3.
+- tipo_cambio_1: Transporter tiene un solo tipo de cambio — devolver null.
+La tabla inferior tiene una columna "I.V.A." con DOS filas:
+  Fila 1: porcentaje 10,50% → importe (ej: 449.604,18) → este es iva_aduanero
+  Fila 2: porcentaje 21,00% → importe (ej: 21.649,55) → este es iva_21
+  NUNCA leer "Derechos Bienes de Capital" como iva_aduanero.
+  Ejemplo CORRECTO:   iva_aduanero = 449604.18 (fila 10,50% columna I.V.A.)
+  Ejemplo INCORRECTO: iva_aduanero = [valor de Derechos Bienes de Capital]
+
+- iva_aduanero: CAMPO OBLIGATORIO — nunca devolver 0 ni null.
+    Tomar el importe de la fila con porcentaje 10,50% en la columna "I.V.A.".
+    NUNCA tomar "Derechos Bienes de Capital" ni ningún valor de la columna de derechos.
+    Si no lo encontrás, devolver null (no 0) para indicar error de lectura.
+- derechos_importacion: CAMPO CRITICO. Tomar el importe de la línea EXACTA
+    "Derechos IVA tasa gral." de la factura. NO usar el valor de "Valor A.N.A.
+    Bienes de Capital" para este campo — es un concepto distinto (valor ANA de
+    bienes de capital) y NUNCA corresponde a los derechos de importación, aunque
+    esté en una línea cercana de la factura.
+    Buscarlo en la sección de derechos/tributos, NO en la columna I.V.A.
+    Puede ser 0 si no aplica.
+    Ejemplo CORRECTO:   derechos_importacion = [importe de "Derechos IVA tasa gral."]
+    Ejemplo INCORRECTO: derechos_importacion = [importe de "Valor A.N.A. Bienes de Capital"]
+- iva_21: tomar el importe de la fila con porcentaje 21,00% en la columna "I.V.A.".
+    Si no existe esa fila, devolver null.
+- flete_aereo: flete internacional en ARS
+- almacenaje: almacenaje en ARS
+- entrega_domicilio: etiquetado "ENVIOS A DOMICILIO INTERN." o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- servicios_honorarios: etiquetado "GASTOS OPERATIVOS" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- seguro_internacional: etiquetado "SEGURO" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- resolucion_3244: etiquetado "RES. 3244 SERV.EXTRAORDINARIOS" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- perc_iibb: etiquetado "Perc.IB", "Perc. IB", "Percepción IIBB" o similar. Valor en ARS.
+    Si no aparece en el documento, devolver null.
+- gastos_en_origen: buscar la línea EXACTA "GASTOS EN ORIGEN" en la factura de Transporter.
+    Es un concepto propio de Transporter, distinto de "Gastos Operativos" (servicios_honorarios)
+    y de "Derechos IVA tasa gral." (derechos_importacion) — no confundirlos entre sí.
+    Tomar el importe en ARS de esa línea. Puede ser 0 si no aplica.
+    Devolver null si la línea no aparece en el documento.
+- tasa_estadistica: puede ser 0
+- total_real: valor "TOTAL" en mayúsculas en ARS
+- razon_social: razón social del emisor del documento
+- pais_procedencia: Transporter no incluye este dato en el documento — devolver null.
+- fecha: fecha del documento
+
+De la segunda imagen (invoice de BDC Trade Tech LLC) extraer:
+- nro_invoice: valor después de "Invoice #" o "Invoice No"
+- fob_total: total en USD del invoice
+- productos: array con sku (código del proveedor, "" si no figura), descripcion,
+    cantidad, precio_unitario, precio_total
+
+Campos que Transporter no tiene — dejar SIEMPRE null:
+  gastos_administrativos, honorarios, handling, tipo_cambio_1, tipo_cambio_2,
+  pos_arancelaria, desc_mercaderia, pais_procedencia, kgs
+
+pa: no viene del documento, se inyecta desde la UI. Devolver null.
+
+{
+  "razon_social": null,
+  "nro_invoice": null,
+  "nro_factura": null,
+  "hawb": null,
+  "fecha": null,
+  "pais_procedencia": null,
+  "pos_arancelaria": null,
+  "desc_mercaderia": null,
+  "fob_total": null,
+  "productos": [
+    {"sku": "", "descripcion": "", "cantidad": null, "precio_unitario": null, "precio_total": null}
+  ],
+  "kgs": null,
+  "tipo_cambio_1": null,
+  "tipo_cambio_2": null,
+  "tipo_cambio_3": null,
+  "flete_aereo": null,
+  "entrega_domicilio": null,
+  "resolucion_3244": null,
+  "seguro_internacional": null,
+  "almacenaje": null,
+  "servicios_honorarios": null,
+  "gastos_administrativos": null,
+  "honorarios": null,
+  "handling": null,
+  "iva_aduanero": null,
+  "iva_21": null,
+  "derechos_importacion": null,
+  "tasa_estadistica": null,
+  "perc_iibb": null,
+  "gastos_en_origen": null,
+  "pa": null,
+  "total_real": null
+}
+
+Respondé SOLO con el JSON, sin texto adicional ni backticks.
+"""
+
 PROMPT_GUIA_SIXTAR = """
 Analizá este documento de importación de SIXTAR y extraé los siguientes datos en formato JSON.
 Si el dato no existe en el documento, ponelo como null.
@@ -574,6 +685,8 @@ def _save_guia(user_id: int, data: Dict[str, Any]) -> int:
         data = {**data, "courier": "Sixtar"}
     elif "lhs" in raw_courier.lower():
         data = {**data, "courier": "LHS"}
+    elif "transporter" in raw_courier.lower():
+        data = {**data, "courier": "Transporter"}
     if data.get("fecha"):
         data = {
             **data,
@@ -750,7 +863,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             almacenaje_kg = almacenaje_float / dolar_blue / kgs
         courier_str = (r["courier"] or r["razon_social"] or "").lower()
         is_sixtar = "sixtar" in courier_str
-        is_lhs = "lhs" in courier_str
+        is_lhs = "lhs" in courier_str or "transporter" in courier_str
         if is_sixtar:
             tf_components = [
                 ("flete_aereo",            "Flete Internacional",     _to_float(r["flete_aereo"])),
@@ -1436,7 +1549,7 @@ def _rebuild_tabla(
                     _origen_raw = r["pais_procedencia"]
                     if _origen_raw and ("estados uni" in _origen_raw.lower() or "212" in _origen_raw):
                         _origen_raw = "USA"
-                    _is_lhs = (r.get("courier") or "").upper() == "LHS"
+                    _is_lhs = (r.get("courier") or "").upper() in ("LHS", "TRANSPORTER")
                     if _is_lhs:
                         with ui.element("div").style(
                             f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
@@ -1562,7 +1675,7 @@ def _rebuild_tabla(
                     _r_courier = r.get("courier") or ""
                     _r_fac = r.get("nro_factura") or ""
                     _r_completo = bool(r.get("pdf_completo"))
-                    _r_lhs_pendiente = _r_courier.upper() == "LHS" and not _r_completo and _r_pdf and _r_pdf2
+                    _r_lhs_pendiente = _r_courier.upper() in ("LHS", "TRANSPORTER") and not _r_completo and _r_pdf and _r_pdf2
                     with ui.element("div").style(
                         f"display:flex;align-items:center;justify-content:center;"
                         f"gap:3px;flex-wrap:nowrap;white-space:nowrap;overflow:hidden;{_sep};padding:4px 4px;{_row_bg}"
@@ -1580,8 +1693,8 @@ def _rebuild_tabla(
                             with ui.element("button").on(
                                 "click",
                                 lambda rid=rid, uid=user_id, p=_r_pdf, p2=_r_pdf2, fac=_r_fac,
-                                       inv=r.get("nro_invoice") or "", hawb=r.get("hawb") or "":
-                                    _show_unificar_lhs_dialog(rid, uid, p, p2, fac, inv, hawb, refresh, recien),
+                                       inv=r.get("nro_invoice") or "", hawb=r.get("hawb") or "", cour=_r_courier:
+                                    _show_unificar_lhs_dialog(rid, uid, p, p2, fac, inv, hawb, refresh, recien, courier=cour),
                             ).style(
                                 "background:none;border:0.5px dashed #2A7AC7;"
                                 "cursor:pointer;color:#2A7AC7;"
@@ -1746,14 +1859,14 @@ def _show_del_dialog(
 def _download_pdf_handler(pdf_path: str, pdf_path_2: str, courier: str, nro_factura: str) -> None:
     import zipfile as _zf
     nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
-    is_lhs = courier.upper() == "LHS"
+    is_lhs = courier.upper() in ("LHS", "TRANSPORTER")
     if is_lhs and pdf_path and pdf_path_2 and os.path.exists(pdf_path) and os.path.exists(pdf_path_2):
         buf = io.BytesIO()
         with _zf.ZipFile(buf, "w", _zf.ZIP_DEFLATED) as z:
             z.write(pdf_path, arcname=f"factura_{nro_safe}.pdf")
             z.write(pdf_path_2, arcname=f"invoice_{nro_safe}.pdf")
         buf.seek(0)
-        ui.download(buf.read(), f"LHS_{nro_safe}.zip")
+        ui.download(buf.read(), f"{courier}_{nro_safe}.zip")
     elif pdf_path and os.path.exists(pdf_path):
         ui.download(pdf_path, os.path.basename(pdf_path))
     else:
@@ -1772,7 +1885,7 @@ def _descargar_zip_masivo(user_id: int, filtros: dict) -> None:
             completo = bool(r.get("pdf_completo"))
             pdf_path = r.get("pdf_path") or ""
             pdf_path_2 = r.get("pdf_path_2") or ""
-            pendiente_lhs = courier == "LHS" and not completo and pdf_path and pdf_path_2
+            pendiente_lhs = courier in ("LHS", "TRANSPORTER") and not completo and pdf_path and pdf_path_2
             if pendiente_lhs or not pdf_path or not os.path.exists(pdf_path):
                 salteadas += 1
                 continue
@@ -1796,7 +1909,7 @@ def _show_upload_pdf_dialog(
     recien: set | None = None,
 ) -> None:
     from datetime import datetime as _dt
-    is_lhs = courier.upper() == "LHS"
+    is_lhs = courier.upper() in ("LHS", "TRANSPORTER")
     data1: list = [None]
     mime1: list = ["application/pdf"]
     data2: list = [None]
@@ -1817,7 +1930,7 @@ def _show_upload_pdf_dialog(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
         )
         if is_lhs:
-            ui.label("Factura LHS").style("font-size:11px;color:var(--color-text-secondary)")
+            ui.label(f"Factura {courier}").style("font-size:11px;color:var(--color-text-secondary)")
             ui.upload(on_upload=_on_up1, auto_upload=True, max_files=1).props(
                 'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
             ).style("width:100%")
@@ -1854,7 +1967,7 @@ def _show_upload_pdf_dialog(
                     nro_safe = nro_factura.replace("/", "-").replace("\\", "-")
                     if is_lhs:
                         p1, p2 = _save_pdf_files(
-                            user_id, "LHS", nro_factura,
+                            user_id, courier, nro_factura,
                             data1[0], mime1[0], data2[0], mime2[0],
                         )
                     else:
@@ -1888,6 +2001,7 @@ def _show_unificar_lhs_dialog(
     rid: int, user_id: int, pdf_path: str, pdf_path_2: str, nro_factura: str,
     nro_invoice: str, hawb: str,
     refresh, recien: set | None = None,
+    courier: str = "LHS",
 ) -> None:
     dsi_data: list = [None]
     dsi_mime: list = ["application/pdf"]
@@ -1905,7 +2019,7 @@ def _show_unificar_lhs_dialog(
         ga_mime[0] = e.type or "application/pdf"
 
     with ui.dialog() as d, ui.card().style("padding:24px;min-width:380px"):
-        _titulo_dialog = "Unificar documentos LHS" + (f" — {hawb.strip()}" if (hawb or "").strip() else "")
+        _titulo_dialog = f"Unificar documentos {courier}" + (f" — {hawb.strip()}" if (hawb or "").strip() else "")
         ui.label(_titulo_dialog).style(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
         )
@@ -1923,13 +2037,15 @@ def _show_unificar_lhs_dialog(
         ui.label("Guía Aérea").style(
             "font-size:11px;color:var(--color-text-secondary);margin-top:8px;display:block"
         )
-        ui.html(
-            '<div style="font-size:10px;margin:2px 0 4px">'
-            '<span style="color:var(--color-text-secondary)">Link: </span>'
-            '<a href="http://erp.lhsww.com.ar/dsi/listado.aspx" target="_blank" rel="noopener" '
-            'style="color:#2A7AC7;text-decoration:none">erp.lhsww.com.ar</a>'
-            '</div>'
-        )
+        if courier == "LHS":
+            # Portal propio de LHS -- no aplica a otros transportistas.
+            ui.html(
+                '<div style="font-size:10px;margin:2px 0 4px">'
+                '<span style="color:var(--color-text-secondary)">Link: </span>'
+                '<a href="http://erp.lhsww.com.ar/dsi/listado.aspx" target="_blank" rel="noopener" '
+                'style="color:#2A7AC7;text-decoration:none">erp.lhsww.com.ar</a>'
+                '</div>'
+            )
         ui.upload(on_upload=_on_ga, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
         ).style("width:100%")
@@ -1963,11 +2079,11 @@ def _show_unificar_lhs_dialog(
                     razon_safe = _sanitize_razon_social(get_user_ml_razon_social(user_id)) or "SINRAZONSOCIAL"
                     if factura_safe == "SINFACTURA" or invoice_safe == "SININVOICE" or hawb_safe == "SINGUIA" or razon_safe == "SINRAZONSOCIAL":
                         logging.warning(
-                            "[UNIFICAR-LHS] campo vacio al nombrar PDF (guia_id=%s): factura=%s invoice=%s hawb=%s razon=%s",
-                            rid, factura_safe, invoice_safe, hawb_safe, razon_safe,
+                            "[UNIFICAR-%s] campo vacio al nombrar PDF (guia_id=%s): factura=%s invoice=%s hawb=%s razon=%s",
+                            courier.upper(), rid, factura_safe, invoice_safe, hawb_safe, razon_safe,
                         )
                     merged_path = os.path.join(
-                        base, f"LHS-{razon_safe}_{factura_safe}_{invoice_safe}_{hawb_safe}.pdf"
+                        base, f"{courier}-{razon_safe}_{factura_safe}_{invoice_safe}_{hawb_safe}.pdf"
                     )
                     with open(merged_path, "wb") as f:
                         f.write(merged_bytes)
@@ -1975,7 +2091,7 @@ def _show_unificar_lhs_dialog(
                     for _old in (pdf_path, pdf_path_2):
                         if _old and _old != merged_path and os.path.exists(_old):
                             os.remove(_old)
-                            logging.warning("[UNIFICAR-LHS] PDF original borrado: %s", _old)
+                            logging.warning("[UNIFICAR-%s] PDF original borrado: %s", courier.upper(), _old)
                     d.close()
                     ui.notify("Documentos unificados", color="positive")
                     refresh(recien)
@@ -2750,6 +2866,301 @@ def _build_lhs_panel(
             resultado_ref[0] = resultado_txt
 
 
+# ── Transporter panel (dos uploaders: Factura Transporter + Invoice BDC) ─────
+# Copia de _build_lhs_panel (2026-09-15) -- mismo mecanismo exacto, solo cambia
+# el nombre del courier y el default de PA (u$s 100 en vez de 200). Reutiliza
+# las funciones genéricas de LHS (_extraer_hawb_lhs, _merge_lhs_docs,
+# _marcar_lhs_completo, _lhs_iva_ok, _lhs_total_factura_desde_parsed) porque
+# ninguna depende del string "LHS", solo de la estructura de campos del
+# documento -- que por ahora se asume igual a LHS (ver PROMPT_GUIA_TRANSPORTER).
+
+def _build_transporter_panel(
+    user_id: int,
+    tabla_ref: list,
+    filas_ref: list,
+    parsed_ref: list,
+    sort_state: list,
+    recien: set,
+    refresh,
+) -> None:
+    archivo_data_t1: list = [None]
+    archivo_mime_t1: list = [None]
+    archivo_data_t2: list = [None]
+    archivo_mime_t2: list = [None]
+    uploader_ref1: list = [None]
+    uploader_ref2: list = [None]
+    spin_ref: list = [None]
+    resultado_ref: list = [None]
+    pa_ref: list = [None]
+
+    def _on_upload1(e):
+        try:
+            e.content.seek(0)
+            archivo_data_t1[0] = e.content.read()
+            archivo_mime_t1[0] = e.type
+        except Exception as _ue:
+            logger.error("_on_upload Transporter Factura: %s", _ue)
+
+    def _on_upload2(e):
+        try:
+            e.content.seek(0)
+            archivo_data_t2[0] = e.content.read()
+            archivo_mime_t2[0] = e.type
+        except Exception as _ue:
+            logger.error("_on_upload Transporter Invoice: %s", _ue)
+
+    client = context.client
+
+    async def _analizar_transporter(usar_gemini: bool) -> None:
+        if not archivo_data_t1[0]:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Falta subir la Factura Transporter',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not archivo_data_t2[0]:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Falta subir el Invoice BDC',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        groq_key = get_app_config("groq_api_key")
+        gemini_key = get_app_config("gemini_api_key")
+        if usar_gemini and not gemini_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Gemini en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+        if not usar_gemini and not groq_key:
+            client.run_javascript(
+                "Quasar.Notify.create({message:'Configurá tu API key de Groq en Config \\u2192 IA/Sugerencias',"
+                "color:'warning',position:'bottom'})"
+            )
+            return
+
+        spin_ref[0].set_visibility(True)
+        resultado_ref[0].set_text("")
+        filas_ref[0].clear()
+
+        try:
+            texto_completo = None
+            if not usar_gemini:
+                texto1 = await run.io_bound(_extract_pdf_text, archivo_data_t1[0])
+                texto2 = await run.io_bound(_extract_pdf_text, archivo_data_t2[0])
+                if not texto1.strip():
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'No se pudo extraer texto de la Factura Transporter. Probá con Gemini.',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                if not texto2.strip():
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'No se pudo extraer texto del Invoice BDC. Probá con Gemini.',"
+                        "color:'warning',position:'bottom'})"
+                    )
+                    return
+                texto_completo = texto1 + "\n\n--- DOCUMENTO 2 (Invoice BDC) ---\n\n" + texto2
+
+            try:
+                intento = 0
+                parsed: dict = {}
+                iva_ok = True
+                diff_pct = None
+                while True:
+                    intento += 1
+                    extra_ctx = ""
+                    if intento > 1:
+                        _prev_iva = parsed.get("iva_aduanero")
+                        extra_ctx = (
+                            "\n\nADVERTENCIA — EL INTENTO ANTERIOR NO PASÓ LA VALIDACIÓN CRUZADA:\n"
+                            f"En el intento anterior extrajiste iva_aduanero = {_prev_iva}. Con ese valor, "
+                            f"el Total Factura calculado (suma de todos los componentes) da "
+                            f"{_lhs_total_factura_desde_parsed(parsed):,.2f}, pero el campo \"TOTAL\" "
+                            f"(total_real) de la factura es {parsed.get('total_real')} — una diferencia del "
+                            f"{(diff_pct * 100):.1f}%, demasiado grande para ser normal.\n"
+                            "Es muy probable que el valor de iva_aduanero tenga un dígito de más (ej: leer "
+                            "4.771.262 en vez de 477.126). Releé la fila con porcentaje 10,50% en la columna "
+                            "\"I.V.A.\" con mucho cuidado, dígito por dígito, y devolvé el valor correcto. "
+                            f"NO repitas el mismo valor ({_prev_iva}) salvo que estés absolutamente seguro."
+                        )
+                    if usar_gemini:
+                        raw = await run.io_bound(
+                            _gemini_vision_multi,
+                            gemini_key,
+                            archivo_data_t1[0], archivo_mime_t1[0],
+                            archivo_data_t2[0], archivo_mime_t2[0],
+                            PROMPT_GUIA_TRANSPORTER + extra_ctx,
+                        )
+                    else:
+                        full_prompt = PROMPT_GUIA_TRANSPORTER + extra_ctx + "\n\nCONTENIDO DE LOS DOCUMENTOS:\n" + texto_completo
+                        raw = await run.io_bound(_groq_parse_doc, groq_key, full_prompt)
+                    raw = _clean_json(raw)
+                    parsed = json.loads(raw)
+                    iva_ok, _tf_calc, _total_real, diff_pct = _lhs_iva_ok(parsed)
+                    if iva_ok or intento > _LHS_IVA_MAX_REINTENTOS:
+                        break
+                    logger.warning(
+                        "[DBG] Transporter IVA Aduanero no cuadra (intento %d, dif %.1f%%) — reintentando",
+                        intento, diff_pct * 100,
+                    )
+
+                parsed["pa"] = pa_ref[0].value
+                parsed["courier"] = "Transporter"
+                parsed["ia_usada"] = "Gemini" if usar_gemini else "Groq"
+                parsed["revisar_iva"] = "" if iva_ok else (
+                    f"IVA Aduanero no coincide con Total Real tras {intento} intento(s) "
+                    f"(diferencia {diff_pct * 100:.1f}%). Verificar manualmente."
+                )
+                if not (parsed.get("pais_procedencia") or "").strip():
+                    parsed["pais_procedencia"] = "USA"
+                _hawb_extraido = await run.io_bound(_extraer_hawb_lhs, archivo_data_t1[0])
+                if _hawb_extraido:
+                    parsed["hawb"] = _hawb_extraido
+                parsed_ref[0] = parsed
+                nro_fac = (parsed.get("nro_factura") or "").strip()
+                if nro_fac and _exists_factura(user_id, nro_fac, "Transporter"):
+                    _msg_dup = json.dumps(f"La factura {nro_fac} ya fue ingresada.")
+                    client.run_javascript(
+                        f"Quasar.Notify.create({{message:{_msg_dup},"
+                        "color:'warning',icon:'warning',position:'bottom'})"
+                    )
+                else:
+                    filas_ref[0].clear()
+                    _guia_id = _save_guia(user_id, parsed)
+                    recien.add(_guia_id)
+                    if archivo_data_t1[0] and archivo_data_t2[0]:
+                        try:
+                            _conn_old = get_connection()
+                            _old_row = _conn_old.execute(
+                                "SELECT pdf_path, pdf_path_2 FROM guias_importacion WHERE id=? AND user_id=?",
+                                (_guia_id, user_id),
+                            ).fetchone()
+                            _conn_old.close()
+                            _old_p1 = _old_row["pdf_path"] if _old_row else None
+                            _old_p2 = _old_row["pdf_path_2"] if _old_row else None
+                            _p1, _p2 = _save_pdf_files(
+                                user_id, "Transporter", nro_fac,
+                                archivo_data_t1[0], archivo_mime_t1[0] or "application/pdf",
+                                archivo_data_t2[0], archivo_mime_t2[0] or "application/pdf",
+                            )
+                            _update_pdf_path(_guia_id, user_id, _p1, _p2)
+                            _limpiar_pdfs_huerfanos((_old_p1, _old_p2), (_p1, _p2))
+                        except Exception as _pe:
+                            logger.warning("[DBG] PDF save error Transporter: %s", _pe)
+                    refresh(recien)
+                    client.run_javascript(
+                        "Quasar.Notify.create({message:'Guía agregada automáticamente',"
+                        "color:'positive',position:'bottom'})"
+                    )
+                    archivo_data_t1[0] = None
+                    archivo_mime_t1[0] = None
+                    archivo_data_t2[0] = None
+                    archivo_mime_t2[0] = None
+                    uploader_ref1[0].reset()
+                    uploader_ref2[0].reset()
+            except json.JSONDecodeError as jde:
+                logger.error("JSONDecodeError Transporter: %s\n%s", jde, traceback.format_exc())
+                resultado_ref[0].set_text("Error: JSON inválido")
+        except Exception as exc:
+            logger.error("Error analizando guía Transporter: %s\n%s", exc, traceback.format_exc())
+            _msg_exc = json.dumps(f"Error: {exc}")
+            client.run_javascript(
+                f"Quasar.Notify.create({{message:{_msg_exc},color:'negative',position:'bottom'}})"
+            )
+        finally:
+            spin_ref[0].set_visibility(False)
+
+    def _click_grok():
+        background_tasks.create(_analizar_transporter(False), name="analizar_Transporter_grok")
+
+    def _click_gemini():
+        background_tasks.create(_analizar_transporter(True), name="analizar_Transporter_gemini")
+
+    with ui.element("div").style(
+        "display:flex;flex-direction:column;height:100%;"
+        "border:1.5px solid #B0C4D8;"
+        "border-radius:8px;overflow:hidden;"
+        "background:var(--color-background-primary);"
+        "box-shadow:0 1px 4px rgba(0,0,0,0.06)"
+    ):
+        # HEADER
+        with ui.element("div").style(
+            "background:#EEF6FD;border-bottom:1px solid #D0E8F8;padding:7px 10px"
+        ):
+            ui.label("Transporter").style(
+                "font-size:11px;font-weight:600;color:#185FA5"
+            )
+        # BODY
+        with ui.element("div").style(
+            "flex:1;padding:8px 10px;display:flex;flex-direction:column;gap:5px"
+        ):
+            with ui.element("div").style(
+                "display:grid;grid-template-columns:1fr 1fr;gap:5px;min-height:72px"
+            ):
+                with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+                    ui.label("Factura Transporter").style(
+                        "font-size:9px;color:var(--color-text-tertiary);"
+                        "background:var(--color-background-secondary);"
+                        "border:0.5px solid var(--color-border-tertiary);"
+                        "border-radius:3px;padding:1px 5px;align-self:flex-start"
+                    )
+                    _uploader1 = ui.upload(
+                        on_upload=_on_upload1,
+                        auto_upload=True,
+                        max_files=1,
+                        max_file_size=20_000_000,
+                    ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
+                        "width:100%;--q-primary:#185FA5"
+                    )
+                    uploader_ref1[0] = _uploader1
+                with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
+                    ui.label("Invoice BDC").style(
+                        "font-size:9px;color:var(--color-text-tertiary);"
+                        "background:var(--color-background-secondary);"
+                        "border:0.5px solid var(--color-border-tertiary);"
+                        "border-radius:3px;padding:1px 5px;align-self:flex-start"
+                    )
+                    _uploader2 = ui.upload(
+                        on_upload=_on_upload2,
+                        auto_upload=True,
+                        max_files=1,
+                        max_file_size=20_000_000,
+                    ).props('accept=".pdf,.jpg,.jpeg,.png" flat bordered').style(
+                        "width:100%;--q-primary:#2176AE"
+                    )
+                    uploader_ref2[0] = _uploader2
+            ui.element("div").style("flex:1")
+        # FOOTER
+        with ui.element("div").style(
+            "background:var(--color-background-secondary);"
+            "border-top:0.5px solid var(--color-border-tertiary)"
+        ):
+            with ui.element("div").style(
+                "padding:6px 10px;display:flex;align-items:center;gap:6px"
+            ):
+                ui.label("PA").style("font-size:11px;color:var(--color-text-secondary)")
+                pa_ref[0] = ui.select(
+                    options=[0, 100, 150, 200, 250, 300],
+                    value=100,
+                ).props("dense outlined").style("width:72px;height:34px;font-size:11px")
+                ui.button("Groq", icon="bolt", on_click=_click_grok).props("flat dense").style(
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
+                )
+                ui.button("Gemini", icon="auto_awesome", on_click=_click_gemini).props("flat dense").style(
+                    "height:34px;border:1px solid #85B7EB;color:#185FA5;background:#EEF6FD;"
+                    "font-size:11px;padding:0 10px;border-radius:4px;display:flex;align-items:center;gap:4px"
+                )
+                spin = ui.spinner(size="sm").classes("text-blue-500")
+                spin.set_visibility(False)
+                spin_ref[0] = spin
+            resultado_txt = ui.label("").style(
+                "font-size:11px;color:#dc2626;font-weight:500;text-align:center;padding:0 8px 4px"
+            )
+            resultado_ref[0] = resultado_txt
+
+
 # ── Tab principal ─────────────────────────────────────────────────────────────
 
 def build_tab_guias() -> Optional[Callable[[], None]]:
@@ -2794,13 +3205,13 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
     logger.warning("[DBG] build_tab_guias: construyendo paneles courier user_id=%s", user_id)
 
     with ui.dialog() as nueva_guia_dialog, ui.card().style(
-        "width:min(1150px, 95vw);max-width:95vw;padding:20px"
+        "width:min(1450px, 95vw);max-width:95vw;padding:20px"
     ):
         with ui.row().classes("items-center justify-between").style("width:100%;margin-bottom:12px"):
             ui.label("Nueva guía").style("font-size:15px;font-weight:600;color:#374151")
             ui.button(icon="close", on_click=nueva_guia_dialog.close).props("flat dense round")
         with ui.element("div").style(
-            "display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:stretch;width:100%"
+            "display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:10px;align-items:stretch;width:100%"
         ):
             logger.warning("[DBG] build_tab_guias: panel NC SUPPLIES...")
             _build_courier_panel(
@@ -2819,6 +3230,11 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
                 user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
                 _refresh,
             )
+            logger.warning("[DBG] build_tab_guias: panel TRANSPORTER...")
+            _build_transporter_panel(
+                user_id, tabla_ref, filas_ref, parsed_ref, sort_state, guias_recien,
+                _refresh,
+            )
     logger.warning("[DBG] build_tab_guias: paneles OK")
 
     # ── Barra de filtros ──────────────────────────────────────────────────────
@@ -2828,7 +3244,7 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
         with ui.element("div").style("display:flex;flex-direction:column;gap:3px"):
             ui.label("Courier").style("font-size:11px;color:var(--color-text-secondary)")
             ui.select(
-                options=["Todos", "NC Supplies", "Sixtar", "LHS"],
+                options=["Todos", "NC Supplies", "Sixtar", "LHS", "Transporter"],
                 value="Todos",
                 on_change=lambda e: _filter_change("courier", e.value),
             ).props("dense outlined").style(
