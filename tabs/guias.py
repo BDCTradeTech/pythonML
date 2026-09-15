@@ -318,19 +318,14 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Tomar el importe de la fila con porcentaje 10,50% en la columna "I.V.A.".
     NUNCA tomar "Derechos Bienes de Capital" ni ningún valor de la columna de derechos.
     Si no lo encontrás, devolver null (no 0) para indicar error de lectura.
-- derechos_importacion: CAMPO CRITICO. Tomar el importe de la línea EXACTA
-    "Derechos IVA tasa gral." de la factura. NO usar el valor de "Valor A.N.A.
-    Bienes de Capital" para este campo — es un concepto distinto (valor ANA de
-    bienes de capital) y NUNCA corresponde a los derechos de importación, aunque
-    esté en una línea cercana de la factura.
-    Buscarlo en la sección de derechos/tributos, NO en la columna I.V.A.
-    Puede ser 0 si no aplica.
-    Ejemplo CORRECTO:   derechos_importacion = [importe de "Derechos IVA tasa gral."]
-    Ejemplo INCORRECTO: derechos_importacion = [importe de "Valor A.N.A. Bienes de Capital"]
+- derechos_importacion: Transporter no incluye este concepto en su factura — devolver
+    siempre 0 (no null).
 - iva_21: tomar el importe de la fila con porcentaje 21,00% en la columna "I.V.A.".
     Si no existe esa fila, devolver null.
-- flete_aereo: flete internacional en ARS
-- almacenaje: almacenaje en ARS
+- flete_aereo: buscar la línea EXACTA "Flete Internacional" en la factura de Transporter
+    (a diferencia de LHS, que la etiqueta distinto). Valor en ARS.
+- almacenaje: Transporter no incluye este concepto en su factura — devolver siempre 0
+    (no null).
 - entrega_domicilio: etiquetado "ENVIOS A DOMICILIO INTERN." o similar. Valor en ARS.
     Si no aparece en el documento, devolver null.
 - servicios_honorarios: etiquetado "GASTOS OPERATIVOS" o similar. Valor en ARS.
@@ -343,10 +338,11 @@ La tabla inferior tiene una columna "I.V.A." con DOS filas:
     Si no aparece en el documento, devolver null.
 - gastos_en_origen: buscar la línea EXACTA "GASTOS EN ORIGEN" en la factura de Transporter.
     Es un concepto propio de Transporter, distinto de "Gastos Operativos" (servicios_honorarios)
-    y de "Derechos IVA tasa gral." (derechos_importacion) — no confundirlos entre sí.
+    y de "Flete Internacional" (flete_aereo) — no confundirlos entre sí.
     Tomar el importe en ARS de esa línea. Puede ser 0 si no aplica.
     Devolver null si la línea no aparece en el documento.
-- tasa_estadistica: puede ser 0
+- tasa_estadistica: Transporter no incluye este concepto en su factura — devolver
+    siempre 0 (no null).
 - total_real: valor "TOTAL" en mayúsculas en ARS
 - razon_social: razón social del emisor del documento
 - pais_procedencia: Transporter no incluye este dato en el documento — devolver null.
@@ -385,15 +381,15 @@ pa: no viene del documento, se inyecta desde la UI. Devolver null.
   "entrega_domicilio": null,
   "resolucion_3244": null,
   "seguro_internacional": null,
-  "almacenaje": null,
+  "almacenaje": 0,
   "servicios_honorarios": null,
   "gastos_administrativos": null,
   "honorarios": null,
   "handling": null,
   "iva_aduanero": null,
   "iva_21": null,
-  "derechos_importacion": null,
-  "tasa_estadistica": null,
+  "derechos_importacion": 0,
+  "tasa_estadistica": 0,
   "perc_iibb": null,
   "gastos_en_origen": null,
   "pa": null,
@@ -857,13 +853,18 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             valor_kg = f"{flete / kgs / tc_for_kg:.2f}"
 
         iva21_val = _to_float(r["iva_21"])
-        almacenaje_float = _to_float(r["almacenaje"])
-        almacenaje_kg = None
-        if almacenaje_float and dolar_blue and dolar_blue != 0 and kgs and kgs != 0:
-            almacenaje_kg = almacenaje_float / dolar_blue / kgs
         courier_str = (r["courier"] or r["razon_social"] or "").lower()
         is_sixtar = "sixtar" in courier_str
-        is_lhs = "lhs" in courier_str or "transporter" in courier_str
+        is_transporter = "transporter" in courier_str
+        is_lhs = "lhs" in courier_str or is_transporter
+        almacenaje_float = _to_float(r["almacenaje"])
+        almacenaje_kg = None
+        if is_transporter:
+            # Transporter no tiene almacenaje ni peso total en su factura -- siempre 0,
+            # no se calcula.
+            almacenaje_kg = 0.0
+        elif almacenaje_float and dolar_blue and dolar_blue != 0 and kgs and kgs != 0:
+            almacenaje_kg = almacenaje_float / dolar_blue / kgs
         if is_sixtar:
             tf_components = [
                 ("flete_aereo",            "Flete Internacional",     _to_float(r["flete_aereo"])),
@@ -1140,6 +1141,16 @@ def _update_kgs(guia_id: int, user_id: int, new_kgs: float | None) -> None:
     conn.execute(
         "UPDATE guias_importacion SET kgs=? WHERE id=? AND user_id=?",
         (str(new_kgs) if new_kgs is not None else None, guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _update_tipo_cambio3(guia_id: int, user_id: int, new_val: float | None) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET tipo_cambio_3=? WHERE id=? AND user_id=?",
+        (str(new_val) if new_val is not None else None, guia_id, user_id),
     )
     conn.commit()
     conn.close()
@@ -1550,6 +1561,7 @@ def _rebuild_tabla(
                     if _origen_raw and ("estados uni" in _origen_raw.lower() or "212" in _origen_raw):
                         _origen_raw = "USA"
                     _is_lhs = (r.get("courier") or "").upper() in ("LHS", "TRANSPORTER")
+                    _is_transporter = (r.get("courier") or "").upper() == "TRANSPORTER"
                     if _is_lhs:
                         with ui.element("div").style(
                             f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
@@ -1641,8 +1653,20 @@ def _rebuild_tabla(
                     ui.label(f"u$s {r['valor_kg']}" if r["valor_kg"] else "—").style(
                         f"{_ct};white-space:nowrap;text-align:center;color:#1d4ed8"
                     )
-                    # Dolar
-                    ui.label(_fmt_ars(r["tipo_cambio_3"])).style(f"{_ct};white-space:nowrap;text-align:right")
+                    # Dolar — chip editable para Transporter (no viene en su factura), label estático para el resto
+                    if _is_transporter:
+                        with ui.element("div").style(
+                            f"display:flex;justify-content:flex-end;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
+                        ):
+                            def _dolar_click(rid=rid, hawb=r["hawb"], dolar=r["tipo_cambio_3"]):
+                                _show_edit_dolar_dialog(rid, hawb, dolar, user_id, refresh, recien)
+                            with ui.element("div").classes("pa-chip").style("min-width:55px").on("click", _dolar_click):
+                                ui.label(_fmt_ars(r["tipo_cambio_3"]) if r["tipo_cambio_3"] else "—").style(
+                                    "pointer-events:none;font-size:10px;color:#0C447C;white-space:nowrap"
+                                )
+                                ui.html('<i class="ti ti-pencil" style="pointer-events:none;font-size:9px;opacity:0.7;color:#0C447C"></i>')
+                    else:
+                        ui.label(_fmt_ars(r["tipo_cambio_3"])).style(f"{_ct};white-space:nowrap;text-align:right")
                     # Traída u$ s/IVA — clickeable sin subrayado
                     if r["traida_usd"] is not None:
                         with ui.element("div").style(
@@ -2024,13 +2048,15 @@ def _show_unificar_lhs_dialog(
             "font-size:14px;font-weight:500;color:#374151;margin-bottom:16px;display:block"
         )
         ui.label("DSI").style("font-size:11px;color:var(--color-text-secondary)")
-        ui.html(
-            '<div style="font-size:10px;margin:2px 0 4px">'
-            '<span style="color:var(--color-text-secondary)">Link: </span>'
-            f'<a href="{_cargotrack_url(hawb)}" target="_blank" rel="noopener" '
-            'style="color:#2A7AC7;text-decoration:none">af.cargotrack.net</a>'
-            '</div>'
-        )
+        if courier == "LHS":
+            # Tracker cargotrack -- especifico del flujo de LHS, no aplica a otros transportistas.
+            ui.html(
+                '<div style="font-size:10px;margin:2px 0 4px">'
+                '<span style="color:var(--color-text-secondary)">Link: </span>'
+                f'<a href="{_cargotrack_url(hawb)}" target="_blank" rel="noopener" '
+                'style="color:#2A7AC7;text-decoration:none">af.cargotrack.net</a>'
+                '</div>'
+            )
         ui.upload(on_upload=_on_dsi, auto_upload=True, max_files=1, max_file_size=20_000_000).props(
             'accept=".pdf,.jpg,.jpeg,.png" flat bordered'
         ).style("width:100%")
@@ -2320,6 +2346,43 @@ def _show_edit_kgs_dialog(
                     recien.add(rid)
                 refresh(recien)
             ui.button("Guardar", on_click=_guardar).props("flat").style(
+                "color:#185FA5;font-weight:600"
+            )
+    d.open()
+
+
+def _show_edit_dolar_dialog(
+    rid: int, hawb: str, dolar_current: str, user_id: int,
+    refresh,
+    recien: set | None = None,
+) -> None:
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
+        ui.label(f"Editar Dólar — {hawb}").style(
+            "font-size:14px;font-weight:600;color:#374151;margin-bottom:16px;display:block"
+        )
+        ui.label(
+            "Transporter no incluye la cotización del dólar en su factura -- cargala a mano."
+        ).style("font-size:11px;color:#9ca3af;margin-bottom:8px;display:block")
+        dolar_input = ui.number(
+            value=_to_float(dolar_current), min=0, step=0.01,
+        ).props("dense outlined").style("width:100%")
+        ui.label(
+            "Recalcula: Valor Kg, Traída u$s/IVA, Total Traída % y Costo s/IVA."
+        ).style("font-size:11px;color:#9ca3af;margin-top:6px;display:block")
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+            def _guardar(d=d):
+                new_val = dolar_input.value
+                if new_val is None or new_val < 0:
+                    ui.notify("Ingresá un valor válido >= 0", color="warning")
+                    return
+                _update_tipo_cambio3(rid, user_id, new_val)
+                d.close()
+                ui.notify("Dólar actualizado", color="positive")
+                if recien is not None:
+                    recien.add(rid)
+                refresh(recien)
+            ui.button("Guardar y recalcular", on_click=_guardar).props("flat").style(
                 "color:#185FA5;font-weight:600"
             )
     d.open()
@@ -3008,6 +3071,11 @@ def _build_transporter_panel(
                 parsed["pa"] = pa_ref[0].value
                 parsed["courier"] = "Transporter"
                 parsed["ia_usada"] = "Gemini" if usar_gemini else "Groq"
+                # Almacenaje/Derechos/Estadistica no existen en la factura de Transporter --
+                # siempre 0, nunca null, sin importar lo que haya devuelto la IA.
+                parsed["almacenaje"] = 0
+                parsed["derechos_importacion"] = 0
+                parsed["tasa_estadistica"] = 0
                 parsed["revisar_iva"] = "" if iva_ok else (
                     f"IVA Aduanero no coincide con Total Real tras {intento} intento(s) "
                     f"(diferencia {diff_pct * 100:.1f}%). Verificar manualmente."
