@@ -1323,6 +1323,47 @@ def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
     return m.group(1).strip()
 
 
+def _extraer_hawb_transporter(pdf_bytes: bytes) -> str | None:
+    """Igual que _extraer_hawb_lhs pero busca 'Guia Hija' (fila 'Referencias
+    Comerciales / Guia Madre / Guia-hija-000002680088' de la factura de
+    Transporter) en vez de 'Referencia Guia N°' de LHS, y devuelve el número
+    sin los ceros a la izquierda (ej: '000002680088' -> '2680088')."""
+    import re
+    import fitz
+    try:
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    except Exception:
+        return None
+    try:
+        n_pages = min(doc.page_count, 2)
+        partes = []
+        for i in range(n_pages):
+            t = doc[i].get_text()
+            if len(t.strip()) < 20:
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    import io as _io
+                    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                    t = pytesseract.image_to_string(
+                        Image.open(_io.BytesIO(pix.tobytes("png"))), lang="spa+eng"
+                    )
+                except Exception as e:
+                    logging.warning(f"[HAWB-TRANSPORTER] OCR fallback error pagina {i}: {e}")
+            partes.append(t)
+        texto = "\n".join(partes)
+    finally:
+        doc.close()
+    if not texto or not texto.strip():
+        return None
+    m = re.search(r"Gu[ií]a[\s\-]*Hija[\s\-:]*([0-9]+)", texto, re.IGNORECASE)
+    if not m:
+        return None
+    numero = m.group(1).lstrip("0") or "0"
+    return numero
+
+
 def _clean_json(raw: str) -> str:
     raw = raw.strip()
     if raw.startswith("```"):
@@ -3082,7 +3123,7 @@ def _build_transporter_panel(
                 )
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
-                _hawb_extraido = await run.io_bound(_extraer_hawb_lhs, archivo_data_t1[0])
+                _hawb_extraido = await run.io_bound(_extraer_hawb_transporter, archivo_data_t1[0])
                 if _hawb_extraido:
                     parsed["hawb"] = _hawb_extraido
                 parsed_ref[0] = parsed
