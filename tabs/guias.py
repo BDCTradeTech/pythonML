@@ -302,7 +302,8 @@ La segunda imagen es el invoice del proveedor de BDC Trade Tech LLC (imagen JPG)
 
 De la primera imagen (factura Transporter) extraer:
 - nro_factura: número de factura argentina formato XXXX-XXXXXXXX
-- hawb: número HAWB en la parte superior
+- hawb: Transporter no incluye este dato en la Factura — se completa después
+    con el Air Waybill al unificar documentos. Devolver siempre null acá.
 - kgs: Transporter no incluye peso total en el documento — devolver null.
 - tipo_cambio_3: buscar la línea "Cotización del dólar 1 U$S =" y tomar el valor numérico
     a la derecha. Asignarlo a tipo_cambio_3.
@@ -1156,6 +1157,16 @@ def _update_tipo_cambio3(guia_id: int, user_id: int, new_val: float | None) -> N
     conn.close()
 
 
+def _update_hawb(guia_id: int, user_id: int, new_hawb: str | None) -> None:
+    conn = get_connection()
+    conn.execute(
+        "UPDATE guias_importacion SET hawb=? WHERE id=? AND user_id=?",
+        (new_hawb, guia_id, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _exists_factura(user_id: int, nro_factura: str, courier: str = "") -> bool:
     conn = get_connection()
     if courier:
@@ -1324,10 +1335,10 @@ def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
 
 
 def _extraer_hawb_transporter(pdf_bytes: bytes) -> str | None:
-    """Igual que _extraer_hawb_lhs pero busca 'Guia Hija' (fila 'Referencias
-    Comerciales / Guia Madre / Guia-hija-000002680088' de la factura de
-    Transporter) en vez de 'Referencia Guia N°' de LHS, y devuelve el número
-    sin los ceros a la izquierda (ej: '000002680088' -> '2680088')."""
+    """A diferencia de LHS, Transporter no trae el HAWB en la Factura -- viene
+    en el Air Waybill, que se carga después junto con el DSI en el popup de
+    unificar documentos ('Guía Aérea'). El código aparece arriba de todo de
+    ese documento (ej. 'KLAE-9438') y se guarda tal cual, sin normalizar."""
     import re
     import fitz
     try:
@@ -1335,33 +1346,27 @@ def _extraer_hawb_transporter(pdf_bytes: bytes) -> str | None:
     except Exception:
         return None
     try:
-        n_pages = min(doc.page_count, 2)
-        partes = []
-        for i in range(n_pages):
-            t = doc[i].get_text()
-            if len(t.strip()) < 20:
-                try:
-                    import pytesseract
-                    from PIL import Image
-                    import io as _io
-                    pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-                    pix = doc[i].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
-                    t = pytesseract.image_to_string(
-                        Image.open(_io.BytesIO(pix.tobytes("png"))), lang="spa+eng"
-                    )
-                except Exception as e:
-                    logging.warning(f"[HAWB-TRANSPORTER] OCR fallback error pagina {i}: {e}")
-            partes.append(t)
-        texto = "\n".join(partes)
+        texto = doc[0].get_text() if doc.page_count else ""
+        if len(texto.strip()) < 20:
+            try:
+                import pytesseract
+                from PIL import Image
+                import io as _io
+                pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
+                pix = doc[0].get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72))
+                texto = pytesseract.image_to_string(
+                    Image.open(_io.BytesIO(pix.tobytes("png"))), lang="spa+eng"
+                )
+            except Exception as e:
+                logging.warning(f"[HAWB-TRANSPORTER] OCR fallback error: {e}")
     finally:
         doc.close()
     if not texto or not texto.strip():
         return None
-    m = re.search(r"Gu[ií]a[\s\-]*Hija[\s\-:]*([0-9]+)", texto, re.IGNORECASE)
+    m = re.search(r"\b([A-Za-z]{2,6}-\d{3,8})\b", texto)
     if not m:
         return None
-    numero = m.group(1).lstrip("0") or "0"
-    return numero
+    return m.group(1).strip()
 
 
 def _clean_json(raw: str) -> str:
@@ -2131,6 +2136,19 @@ def _show_unificar_lhs_dialog(
                     return
                 spinner.set_visibility(True)
                 try:
+                    hawb_final = hawb
+                    if courier == "Transporter":
+                        # El HAWB de Transporter no viene en la Factura -- se extrae
+                        # recién acá, del Air Waybill que se acaba de subir.
+                        _hawb_awb = await run.io_bound(_extraer_hawb_transporter, ga_data[0])
+                        if _hawb_awb:
+                            hawb_final = _hawb_awb
+                            _update_hawb(rid, user_id, hawb_final)
+                        else:
+                            logging.warning(
+                                "[UNIFICAR-TRANSPORTER] no se pudo extraer el HAWB del Air Waybill (guia_id=%s)",
+                                rid,
+                            )
                     merged_bytes = await run.io_bound(
                         _merge_lhs_docs,
                         pdf_path, pdf_path_2,
@@ -2142,7 +2160,7 @@ def _show_unificar_lhs_dialog(
                     os.makedirs(base, exist_ok=True)
                     factura_safe = (nro_factura or "").strip().replace("/", "-").replace("\\", "-") or "SINFACTURA"
                     invoice_safe = (nro_invoice or "").strip().replace("/", "-").replace("\\", "-") or "SININVOICE"
-                    hawb_safe = (hawb or "").strip().replace("/", "-").replace("\\", "-") or "SINGUIA"
+                    hawb_safe = (hawb_final or "").strip().replace("/", "-").replace("\\", "-") or "SINGUIA"
                     razon_safe = _sanitize_razon_social(get_user_ml_razon_social(user_id)) or "SINRAZONSOCIAL"
                     if factura_safe == "SINFACTURA" or invoice_safe == "SININVOICE" or hawb_safe == "SINGUIA" or razon_safe == "SINRAZONSOCIAL":
                         logging.warning(
@@ -3123,9 +3141,9 @@ def _build_transporter_panel(
                 )
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
-                _hawb_extraido = await run.io_bound(_extraer_hawb_transporter, archivo_data_t1[0])
-                if _hawb_extraido:
-                    parsed["hawb"] = _hawb_extraido
+                # A diferencia de LHS, el HAWB de Transporter no está en la Factura --
+                # se completa después con el Air Waybill, al unificar documentos
+                # (ver _extraer_hawb_transporter / _show_unificar_lhs_dialog).
                 parsed_ref[0] = parsed
                 nro_fac = (parsed.get("nro_factura") or "").strip()
                 if nro_fac and _exists_factura(user_id, nro_fac, "Transporter"):
