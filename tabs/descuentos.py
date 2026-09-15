@@ -269,6 +269,18 @@ def build_tab_descuentos(container) -> None:
                 _precio_deseado_tocado = {"v": False}
                 _suprimir_marca_tocado = {"v": False}
 
+                # Precio/cuotas releídos EN VIVO (GET fresco) para el producto seleccionado
+                # ahora mismo -- items_by_id/grupos_by_id son un snapshot fijo desde que se
+                # abrió/recargó la pestaña, así que la calculadora de arriba y "Cuotas
+                # actuales" quedaban mostrando precios viejos después de cualquier cambio
+                # real (Activar/Desactivar, o un ajuste manual) hecho sin recargar toda la
+                # pestaña -- bug real 2026-09-15 con la Silla Gamer Black Horse Bhgc-350,
+                # donde encima "Precio final deseado" se autocompleta con ese mismo dato
+                # viejo y define el precio objetivo real de Activar. _refrescar_calculadora_viva
+                # llena esto con la misma fuente que ya usa la tabla "ESTADO REAL EN ML"
+                # (_resolver_familia_live) cada vez que se elige un producto.
+                _calc_viva: Dict[str, Any] = {"item_id": None, "familia": None}
+
                 def _set_precio_deseado_auto(value: Optional[float]) -> None:
                     _suprimir_marca_tocado["v"] = True
                     precio_deseado_inp.value = _fmt_miles(value)
@@ -312,20 +324,37 @@ def build_tab_descuentos(container) -> None:
                     item_id = sel.value
                     if not item_id:
                         return
-                    it = items_by_id.get(str(item_id))
-                    if not it:
-                        return
-                    # Misma lógica que Productos/Salud para el "precio real de hoy":
-                    # sale_price si ML lo trae, si no el price de lista actual.
-                    precio_raw = it.get("price") or 0
-                    sale_price = it.get("sale_price")
-                    precio_actual = float(sale_price) if sale_price is not None else float(precio_raw or 0)
+                    item_id = str(item_id)
+                    dato_vivo = False
+                    precio_actual: Optional[float] = None
+                    if _calc_viva["item_id"] == item_id and _calc_viva["familia"]:
+                        contado = next(
+                            (f for f in _calc_viva["familia"] if f.get("tramo") == "contado" and not f.get("error")),
+                            None,
+                        )
+                        if contado is not None:
+                            precio_actual = contado.get("precio_actual")
+                            dato_vivo = True
+                    if precio_actual is None:
+                        # Fallback: caché de items_by_id (snapshot de cuando se abrió la
+                        # pestaña) -- mismo criterio de siempre, sale_price si ML lo trae.
+                        it = items_by_id.get(item_id)
+                        if not it:
+                            return
+                        precio_raw = it.get("price") or 0
+                        sale_price = it.get("sale_price")
+                        precio_actual = float(sale_price) if sale_price is not None else float(precio_raw or 0)
                     try:
                         pct = float(descuento_inp.value or 0)
                     except (TypeError, ValueError):
                         pct = 0.0
                     precio_deseado = _parse_miles(precio_deseado_inp.value)
                     with precio_col:
+                        if not dato_vivo:
+                            ui.label(
+                                "⚠️ No se pudo confirmar este precio en vivo todavía -- puede estar "
+                                "desactualizado (el de cuando se abrió/actualizó esta pestaña)."
+                            ).classes("text-xs text-warning")
                         if precio_actual <= 0:
                             ui.label("Esta publicación no tiene un precio actual válido.").classes("text-sm text-negative")
                             return
@@ -357,14 +386,29 @@ def build_tab_descuentos(container) -> None:
 
                 def _render_cuotas(item_id: str) -> None:
                     cuotas_col.clear()
-                    grupo = grupos_by_id.get(item_id) or []
-                    siblings = _cuotas_siblings(grupo)
+                    dato_vivo = _calc_viva["item_id"] == item_id and bool(_calc_viva["familia"])
+                    if dato_vivo:
+                        por_tramo = {f["tramo"]: f for f in _calc_viva["familia"]}
+                        precios = {
+                            gkey: (por_tramo[gkey].get("precio_actual") if gkey in por_tramo and not por_tramo[gkey].get("error") else None)
+                            for gkey in ("x3", "x6", "x9", "x12")
+                        }
+                    else:
+                        # Fallback: agrupación cacheada de cuando se abrió la pestaña --
+                        # puede estar desactualizada si hubo un cambio de precio real desde
+                        # entonces (Activar/Desactivar, ajuste manual, etc).
+                        grupo = grupos_by_id.get(item_id) or []
+                        siblings = _cuotas_siblings(grupo)
+                        precios = {gkey: (siblings.get(gkey) or {}).get("price") for gkey in ("x3", "x6", "x9", "x12")}
                     with cuotas_col:
                         ui.label("Cuotas actuales (precio de hoy, sin aplicar el % de descuento)").classes("text-xs font-bold text-gray-500 uppercase mt-2")
+                        if not dato_vivo:
+                            ui.label(
+                                "⚠️ No se pudo confirmar estos precios en vivo todavía -- pueden estar desactualizados."
+                            ).classes("text-xs text-warning")
                         with ui.row().classes("gap-6 flex-wrap"):
                             for gkey, glabel in [("x3", "3 cuotas"), ("x6", "6 cuotas"), ("x9", "9 cuotas"), ("x12", "12 cuotas")]:
-                                sib = siblings.get(gkey)
-                                precio = sib.get("price") if sib else None
+                                precio = precios.get(gkey)
                                 precio_txt = _fmt_moneda(precio) if precio is not None else "—"
                                 with ui.column().classes("items-center gap-0"):
                                     ui.label(glabel).classes("text-xs text-gray-500")
@@ -490,6 +534,32 @@ def build_tab_descuentos(container) -> None:
                         if sib:
                             candidatos.append((gkey, sib))
                     return await run.io_bound(_fetch_familia_sync, access_token, candidatos)
+
+                async def _refrescar_calculadora_viva(item_id: str) -> None:
+                    """Releé en vivo la familia (misma fuente que la tabla 'ESTADO REAL EN
+                    ML' de más abajo) y repinta la calculadora de arriba y 'Cuotas actuales'
+                    con esos precios frescos -- reemplaza el snapshot fijo de items_by_id/
+                    grupos_by_id, que quedaba desactualizado apenas había un cambio de precio
+                    real después de abrir la pestaña (bug real 2026-09-15, Bhgc-350). Si Diego
+                    no tocó "Precio final deseado" a mano, también lo re-autocompleta con el
+                    precio en vivo -- ese campo define el precio objetivo real que usa Activar,
+                    así que no puede quedarse con el valor cacheado si resultó viejo."""
+                    try:
+                        familia = await _resolver_familia_live(item_id)
+                    except Exception:
+                        familia = None
+                    if sel.value != item_id:
+                        return  # el usuario ya cambió de selección, no pisar lo nuevo
+                    _calc_viva["item_id"] = item_id
+                    _calc_viva["familia"] = familia
+                    if familia and not _precio_deseado_tocado["v"]:
+                        contado = next(
+                            (f for f in familia if f.get("tramo") == "contado" and not f.get("error")), None,
+                        )
+                        if contado is not None and contado.get("precio_actual"):
+                            _set_precio_deseado_auto(contado["precio_actual"])
+                    _recalcular_precio()
+                    _render_cuotas(item_id)
 
                 async def _mayorista_recompute(token: str, item_id: str, precio_objetivo: float):
                     """Relee tiers cargados HOY para item_id y le pide a ML (motor oficial,
@@ -1205,15 +1275,18 @@ def build_tab_descuentos(container) -> None:
                         cuotas_col.clear()
                         mayorista_col.clear()
                         activacion_col.clear()
+                        _calc_viva["item_id"] = None
+                        _calc_viva["familia"] = None
                         _recalcular_precio()
                         return
                     item_id = str(item_id)
-                    # Autocompleta con el precio actual de la publicación recién elegida --
-                    # se pisa en CADA cambio de selección, no respeta un valor tipeado a
-                    # mano si el usuario vuelve a elegir el mismo producto después. Queda
-                    # marcado como "no tocado" -- ver _objetivo_tramo -- así Activar usa el
-                    # precio real de CADA tramo como ancla si Diego no escribió un precio
-                    # final deseado propio.
+                    # Autocompleta con el precio cacheado como primer valor visible (se pisa
+                    # en CADA cambio de selección, no respeta un valor tipeado a mano si el
+                    # usuario vuelve a elegir el mismo producto después) -- _refrescar_calculadora_viva
+                    # lo corrige solo apenas confirme el precio en vivo, sin pisar lo que haya
+                    # tipeado el usuario mientras tanto. Queda marcado como "no tocado" -- ver
+                    # _objetivo_tramo -- así Activar usa el precio real de CADA tramo como
+                    # ancla si Diego no escribió un precio final deseado propio.
                     it = items_by_id.get(item_id)
                     if it:
                         precio_raw = it.get("price") or 0
@@ -1221,8 +1294,13 @@ def build_tab_descuentos(container) -> None:
                         _set_precio_deseado_auto(float(sale_price) if sale_price is not None else float(precio_raw or 0))
                     else:
                         _set_precio_deseado_auto(None)
+                    _calc_viva["item_id"] = item_id
+                    _calc_viva["familia"] = None
                     _recalcular_precio()
                     _render_cuotas(item_id)
+                    background_tasks.create(
+                        _refrescar_calculadora_viva(item_id), name=f"calc_viva_descuentos_{item_id}"
+                    )
                     background_tasks.create(_render_activacion(item_id), name=f"activacion_descuentos_{item_id}")
                     background_tasks.create(
                         _render_mayorista(item_id), name=f"mayorista_descuentos_{item_id}"
