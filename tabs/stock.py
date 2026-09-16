@@ -29,19 +29,46 @@ def _get_skus(user_id: int) -> List[Dict[str, Any]]:
 
 
 def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
+    """Un seller_sku puede tener varias publicaciones "hermanas" -- una por plan de cuotas
+    (contado/x1 + x3/x6/x9/x12, ver _cuotas_desde_item en ml_api.py e
+    init_descuentos_activaciones_table en db.py) -- con precios bien distintos entre si (las
+    de cuotas vienen infladas para cubrir el financiamiento). El precio de referencia es
+    siempre el de contado (x1): si el dia tiene una fila tageada cuotas='x1' se usa esa: si
+    no (snapshots de antes del 2026-09-16, cuando el cron empezo a guardar el tag, o un dia
+    sin publicacion x1 activa) cae al maximo entre hermanas, igual que antes de este fix."""
     conn = get_connection()
     rows = conn.execute("""
-        SELECT snapshot_date,
-               MAX(available_qty) as stock,
-               MAX(price)         as price
+        SELECT snapshot_date, available_qty, price, cuotas
         FROM ml_stock_snapshots
         WHERE user_id=? AND seller_sku=?
           AND snapshot_date BETWEEN ? AND ?
-        GROUP BY snapshot_date
         ORDER BY snapshot_date ASC
     """, (user_id, sku, desde, hasta)).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+
+    por_dia: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        r = dict(row)
+        dia = r["snapshot_date"]
+        entry = por_dia.setdefault(
+            dia, {"snapshot_date": dia, "stock": 0, "price_x1": None, "price_max": None}
+        )
+        entry["stock"] = max(entry["stock"], r.get("available_qty") or 0)
+        precio = r.get("price")
+        if precio is not None:
+            if r.get("cuotas") == "x1":
+                entry["price_x1"] = precio
+            if entry["price_max"] is None or float(precio) > float(entry["price_max"]):
+                entry["price_max"] = precio
+
+    return [
+        {
+            "snapshot_date": dia,
+            "stock": e["stock"],
+            "price": e["price_x1"] if e["price_x1"] is not None else e["price_max"],
+        }
+        for dia, e in sorted(por_dia.items())
+    ]
 
 
 def _get_fecha_minima(user_id: int) -> str | None:
@@ -509,7 +536,7 @@ def _render_stock_pdf_html(datos: Dict[str, Any], razon_social: str, chart_b64: 
             f'<td style="padding:1.5px 6px;text-align:right;font-weight:600;color:{vc}">{vt}</td>'
             f'<td style="padding:1.5px 6px;text-align:right;color:#6b7280">'
             f'{f"{va}/d" if va is not None else "—"}</td>'
-            f'<td style="padding:1.5px 6px;text-align:right;color:#374151">{_fmt_precio(r.get("price"))}</td>'
+            f'<td style="padding:1.5px 6px;text-align:right;color:#374151">{_fmt_precio(r.get("ticket"))}</td>'
             "</tr>"
         )
 
@@ -781,7 +808,7 @@ def build_tab_stock() -> None:
             if per_sku_series:
                 ticket_info = _calcular_ticket_ventas(per_sku_series, ventas_reales)
                 for r in rows:
-                    r["price"] = ticket_info["ticket_dia"].get(r["snapshot_date"])
+                    r["ticket"] = ticket_info["ticket_dia"].get(r["snapshot_date"])
                 metricas = {
                     **metricas,
                     "precio_actual": ticket_info["ticket_prom_periodo"],
@@ -986,7 +1013,7 @@ def build_tab_stock() -> None:
                             vend   = r["vend"]
                             repo   = r["repo"]
                             va     = r.get("vel_acum")
-                            precio = _fmt_precio(r.get("price"))
+                            precio = _fmt_precio(r.get("ticket"))
                             bg = "background:#F0FDF4;" if repo > 0 else ""
                             with ui.element("tr").style(bg):
                                 with ui.element("td").style("padding:2px 6px;border-bottom:0.5px solid #f1f5f9;text-align:left;color:#6b7280"):

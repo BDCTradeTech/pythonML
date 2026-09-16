@@ -241,6 +241,25 @@ def init_salud_tables() -> None:
     conn.close()
 
 
+def init_ml_stock_snapshots_schema() -> None:
+    """Migracion idempotente: agrega la columna 'cuotas' (x1/x3/x6/x9/x12, ver
+    _cuotas_desde_item en ml_api.py) a ml_stock_snapshots, grabada por stock_snapshot.py
+    desde el fix del 2026-09-16. La tabla en si no se crea aca -- viene de una migracion
+    manual anterior a este archivo -- por eso solo actua si ya existe. Necesaria porque
+    tabs/stock.py usa el precio de la publicacion x1 (contado) en vez del maximo entre las
+    publicaciones hermanas de un mismo SKU (una por plan de cuotas: contado+3x+6x+9x+12x)."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='ml_stock_snapshots'")
+    if cur.fetchone():
+        cur.execute("PRAGMA table_info(ml_stock_snapshots)")
+        cols = [r[1] for r in cur.fetchall()]
+        if "cuotas" not in cols:
+            cur.execute("ALTER TABLE ml_stock_snapshots ADD COLUMN cuotas TEXT")
+            conn.commit()
+    conn.close()
+
+
 def init_descuentos_activaciones_table() -> None:
     """Estado de las activaciones reales de 'subir precio de lista + PRICE_DISCOUNT'
     de tabs/descuentos.py (Activar/Revertir). A diferencia de ml_escrituras (append-only,
@@ -1420,6 +1439,7 @@ def init_db() -> None:
     init_ads_tables()
     init_salud_tables()
     init_descuentos_activaciones_table()
+    init_ml_stock_snapshots_schema()
 
 
 # ---------------------------------------------------------------------------

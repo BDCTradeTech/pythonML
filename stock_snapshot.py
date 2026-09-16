@@ -25,14 +25,19 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 import requests
-from db import get_connection, init_cron_runs_db, log_cron_run
-from ml_api import get_ml_access_token
+from db import get_connection, init_cron_runs_db, init_ml_stock_snapshots_schema, log_cron_run
+from ml_api import get_ml_access_token, _cuotas_desde_item
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 log = logging.getLogger(__name__)
 
 BATCH_SIZE = 20
-ATTRIBUTES = "id,available_quantity,status,attributes,price"
+# listing_type_id y sale_terms son necesarios para _cuotas_desde_item (clasifica cada
+# publicacion como x1/x3/x6/x9/x12) -- un mismo seller_sku puede tener varias publicaciones
+# hermanas, una por plan de cuotas (ver init_descuentos_activaciones_table en db.py), y
+# tabs/stock.py necesita distinguir la de contado (x1) para no mezclar precios inflados
+# por financiacion.
+ATTRIBUTES = "id,available_quantity,status,attributes,price,listing_type_id,sale_terms"
 MULTIWAREHOUSE_SELLER_IDS = {"1848533798"}  # NORTHTECHNOLOGY (warehouse_management/multiwarehouse)
 
 
@@ -131,6 +136,7 @@ def run_snapshot():
     today = date.today().isoformat()
     log.info("=== Stock snapshot %s ===", today)
     init_cron_runs_db()
+    init_ml_stock_snapshots_schema()
 
     conn = get_connection()
     creds = conn.execute(
@@ -186,8 +192,8 @@ def run_snapshot():
                 try:
                     conn.execute("""
                         INSERT OR IGNORE INTO ml_stock_snapshots
-                            (user_id, seller_id, item_id, seller_sku, available_qty, price, status, is_multiwarehouse, snapshot_date)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            (user_id, seller_id, item_id, seller_sku, available_qty, price, status, is_multiwarehouse, snapshot_date, cuotas)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         user_id,
                         seller_id,
@@ -198,6 +204,7 @@ def run_snapshot():
                         item.get('status'),
                         1 if is_multiwarehouse else 0,
                         today,
+                        _cuotas_desde_item(item),
                     ))
                     saved += 1
                 except Exception as e:
