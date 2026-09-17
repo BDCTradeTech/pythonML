@@ -109,35 +109,63 @@ def _get_marcas(user_id: int) -> List[str]:
 
 def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -> tuple:
     """Igual que _get_stock_history pero sumado entre todos los SKUs de la marca.
-    Colapsa primero por (seller_sku, snapshot_date) con MAX -- un mismo seller_sku puede
-    tener mas de un item_id reportando stock el mismo dia -- y recien despues suma entre
-    SKUs, para no sobrecontar (un SUM directo sobre ml_stock_snapshots llega a sobrecontar
-    7-8x en SKUs con varios item_id). El ticket (precio de venta) NO se pondera aca por
+    Colapsa primero por (seller_sku, snapshot_date), resolviendo el precio con la misma
+    prioridad x1/contado que _get_stock_history -- una publicacion "hermana" de cuotas
+    (x3/x6/x9/x12) no debe inflar el precio de ningun SKU -- y recien despues suma stock
+    entre SKUs, para no sobrecontar (un SUM directo sobre ml_stock_snapshots llega a
+    sobrecontar 7-8x en SKUs con varios item_id).
+    El "Precio" agregado de cada dia es el promedio ponderado por stock disponible ese dia
+    (sum(precio_i*stock_i)/sum(stock_i)) entre los SKUs de la marca con stock Y precio
+    disponibles ese dia -- un SKU sin precio ese dia (sin publicacion activa) se excluye del
+    promedio, no cuenta como 0. El ticket (precio de venta real) sigue sin ponderarse aca por
     stock -- ver _calcular_ticket_ventas, que pondera por unidades vendidas usando
     per_sku_series. Devuelve (rows_stock_sumado, per_sku_series)."""
     conn = get_connection()
     rows = conn.execute("""
-        SELECT s.snapshot_date, s.seller_sku,
-               MAX(s.available_qty) AS stock,
-               MAX(s.price)         AS price
+        SELECT s.snapshot_date, s.seller_sku, s.available_qty, s.price, s.cuotas
         FROM ml_stock_snapshots s
         INNER JOIN productos p ON s.seller_sku = p.sku AND s.user_id = p.user_id
         WHERE p.marca=? AND s.user_id=? AND s.snapshot_date BETWEEN ? AND ?
-        GROUP BY s.snapshot_date, s.seller_sku
         ORDER BY s.seller_sku, s.snapshot_date
     """, (marca, user_id, desde, hasta)).fetchall()
     conn.close()
 
+    # Colapsa (seller_sku, snapshot_date): puede haber mas de un item_id reportando stock el
+    # mismo dia (uno por plan de cuotas) -- stock = max entre hermanas, precio = el de la
+    # publicacion x1/contado si existe ese dia, si no el maximo entre hermanas (snapshots
+    # previos al 2026-09-16 sin tag, o dias sin publicacion x1 activa).
+    por_sku_dia: Dict[tuple, Dict[str, Any]] = {}
+    for row in rows:
+        r = dict(row)
+        key = (r["seller_sku"], r["snapshot_date"])
+        entry = por_sku_dia.setdefault(key, {"stock": 0, "price_x1": None, "price_max": None})
+        entry["stock"] = max(entry["stock"], r.get("available_qty") or 0)
+        precio = r.get("price")
+        if precio is not None:
+            if r.get("cuotas") == "x1":
+                entry["price_x1"] = precio
+            if entry["price_max"] is None or float(precio) > float(entry["price_max"]):
+                entry["price_max"] = precio
+
     per_sku_series: Dict[str, List[Dict]] = defaultdict(list)
     stock_por_dia: Dict[str, int] = defaultdict(int)
-    for r in rows:
-        d = dict(r)
-        per_sku_series[d["seller_sku"]].append(d)
-        stock_por_dia[d["snapshot_date"]] += d["stock"] or 0
+    precio_stock_por_dia: Dict[str, List[tuple]] = defaultdict(list)  # dia -> [(precio, stock), ...]
+    for (sku, dia), e in sorted(por_sku_dia.items()):
+        precio = e["price_x1"] if e["price_x1"] is not None else e["price_max"]
+        per_sku_series[sku].append({"snapshot_date": dia, "stock": e["stock"], "price": precio})
+        stock_por_dia[dia] += e["stock"] or 0
+        if precio is not None and e["stock"]:
+            precio_stock_por_dia[dia].append((float(precio), e["stock"]))
 
-    rows_stock_sumado = [
-        {"snapshot_date": d, "stock": s} for d, s in sorted(stock_por_dia.items())
-    ]
+    rows_stock_sumado = []
+    for d, s in sorted(stock_por_dia.items()):
+        pares = precio_stock_por_dia.get(d)
+        precio_pond = (
+            round(sum(p * q for p, q in pares) / sum(q for _, q in pares), 2)
+            if pares else None
+        )
+        rows_stock_sumado.append({"snapshot_date": d, "stock": s, "price": precio_pond})
+
     return rows_stock_sumado, dict(per_sku_series)
 
 
