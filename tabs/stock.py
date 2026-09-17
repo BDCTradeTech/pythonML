@@ -28,14 +28,24 @@ def _get_skus(user_id: int) -> List[Dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
-def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[Dict[str, Any]]:
+CUOTAS_TAG_DESDE = "2026-09-17"  # primer dia con la columna 'cuotas' poblada por el cron
+
+
+def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> tuple:
     """Un seller_sku puede tener varias publicaciones "hermanas" -- una por plan de cuotas
     (contado/x1 + x3/x6/x9/x12, ver _cuotas_desde_item en ml_api.py e
     init_descuentos_activaciones_table en db.py) -- con precios bien distintos entre si (las
     de cuotas vienen infladas para cubrir el financiamiento). El precio de referencia es
     siempre el de contado (x1): si el dia tiene una fila tageada cuotas='x1' se usa esa: si
-    no (snapshots de antes del 2026-09-16, cuando el cron empezo a guardar el tag, o un dia
-    sin publicacion x1 activa) cae al maximo entre hermanas, igual que antes de este fix."""
+    no (snapshots de antes del CUOTAS_TAG_DESDE, cuando el cron empezo a guardar el tag, o un
+    dia sin publicacion x1 activa) cae al maximo entre hermanas, igual que antes de este fix.
+    Devuelve (rows, riesgo_cuotas) -- riesgo_cuotas indica si en el rango hubo algun dia con
+    mas de un PRECIO distinto entre las publicaciones activas del SKU ese dia (no alcanza con
+    tener mas de un item_id: un SKU puede tener dos publicaciones "hermanas" -- ej. relist tras
+    cerrar la anterior -- con el mismo precio, y ahi no hay riesgo de inflacion). Solo cuando
+    los precios difieren hay chance de que, sin el tag, el fallback tome la publicacion
+    equivocada -- eso es lo que la UI necesita para avisar que el precio antes de
+    CUOTAS_TAG_DESDE puede estar inflado."""
     conn = get_connection()
     rows = conn.execute("""
         SELECT snapshot_date, available_qty, price, cuotas
@@ -51,17 +61,18 @@ def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[D
         r = dict(row)
         dia = r["snapshot_date"]
         entry = por_dia.setdefault(
-            dia, {"snapshot_date": dia, "stock": 0, "price_x1": None, "price_max": None}
+            dia, {"snapshot_date": dia, "stock": 0, "price_x1": None, "price_max": None, "precios": set()}
         )
         entry["stock"] = max(entry["stock"], r.get("available_qty") or 0)
         precio = r.get("price")
         if precio is not None:
+            entry["precios"].add(float(precio))
             if r.get("cuotas") == "x1":
                 entry["price_x1"] = precio
             if entry["price_max"] is None or float(precio) > float(entry["price_max"]):
                 entry["price_max"] = precio
 
-    return [
+    rows_out = [
         {
             "snapshot_date": dia,
             "stock": e["stock"],
@@ -69,6 +80,8 @@ def _get_stock_history(user_id: int, sku: str, desde: str, hasta: str) -> List[D
         }
         for dia, e in sorted(por_dia.items())
     ]
+    riesgo_cuotas = any(len(e["precios"]) > 1 for e in por_dia.values())
+    return rows_out, riesgo_cuotas
 
 
 def _get_fecha_minima(user_id: int) -> str | None:
@@ -119,7 +132,11 @@ def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -
     disponibles ese dia -- un SKU sin precio ese dia (sin publicacion activa) se excluye del
     promedio, no cuenta como 0. El ticket (precio de venta real) sigue sin ponderarse aca por
     stock -- ver _calcular_ticket_ventas, que pondera por unidades vendidas usando
-    per_sku_series. Devuelve (rows_stock_sumado, per_sku_series)."""
+    per_sku_series. riesgo_cuotas indica si en el rango hubo algun dia con mas de un PRECIO
+    distinto entre las publicaciones activas de algun sku de la marca ese dia -- ver
+    _get_stock_history, mismo criterio (no alcanza con mas de un item_id: puede ser un simple
+    relist con el mismo precio) para avisar en la UI que el precio antes de CUOTAS_TAG_DESDE
+    puede estar inflado. Devuelve (rows_stock_sumado, per_sku_series, riesgo_cuotas)."""
     conn = get_connection()
     rows = conn.execute("""
         SELECT s.snapshot_date, s.seller_sku, s.available_qty, s.price, s.cuotas
@@ -133,15 +150,16 @@ def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -
     # Colapsa (seller_sku, snapshot_date): puede haber mas de un item_id reportando stock el
     # mismo dia (uno por plan de cuotas) -- stock = max entre hermanas, precio = el de la
     # publicacion x1/contado si existe ese dia, si no el maximo entre hermanas (snapshots
-    # previos al 2026-09-16 sin tag, o dias sin publicacion x1 activa).
+    # previos a CUOTAS_TAG_DESDE sin tag, o dias sin publicacion x1 activa).
     por_sku_dia: Dict[tuple, Dict[str, Any]] = {}
     for row in rows:
         r = dict(row)
         key = (r["seller_sku"], r["snapshot_date"])
-        entry = por_sku_dia.setdefault(key, {"stock": 0, "price_x1": None, "price_max": None})
+        entry = por_sku_dia.setdefault(key, {"stock": 0, "price_x1": None, "price_max": None, "precios": set()})
         entry["stock"] = max(entry["stock"], r.get("available_qty") or 0)
         precio = r.get("price")
         if precio is not None:
+            entry["precios"].add(float(precio))
             if r.get("cuotas") == "x1":
                 entry["price_x1"] = precio
             if entry["price_max"] is None or float(precio) > float(entry["price_max"]):
@@ -166,7 +184,8 @@ def _get_stock_history_marca(user_id: int, marca: str, desde: str, hasta: str) -
         )
         rows_stock_sumado.append({"snapshot_date": d, "stock": s, "price": precio_pond})
 
-    return rows_stock_sumado, dict(per_sku_series)
+    riesgo_cuotas = any(len(e["precios"]) > 1 for e in por_sku_dia.values())
+    return rows_stock_sumado, dict(per_sku_series), riesgo_cuotas
 
 
 def _get_marca_n_skus(user_id: int, marca: str, desde: str, hasta: str) -> int:
@@ -815,7 +834,8 @@ def build_tab_stock() -> None:
                 per_sku_series: Optional[Dict[str, List[Dict]]] = None,
                 ventas_reales: Optional[Dict[str, Dict[str, List[tuple]]]] = None,
                 recorte: Optional[Dict[str, Any]] = None,
-                desde: Optional[str] = None, hasta: Optional[str] = None):
+                desde: Optional[str] = None, hasta: Optional[str] = None,
+                riesgo_cuotas: bool = False):
         from datetime import datetime as _dt
         contenido_ref[0].clear()
         with contenido_ref[0]:
@@ -858,6 +878,13 @@ def build_tab_stock() -> None:
             _caption_rec = _caption_recorte(desde, hasta, recorte) if desde and hasta else None
             if _caption_rec:
                 ui.label(_caption_rec).style("font-size:11px;color:#185FA5;margin-bottom:6px;display:block")
+
+            if riesgo_cuotas and desde and desde < CUOTAS_TAG_DESDE:
+                ui.label(
+                    f"⚠ El precio antes del {_iso_a_ddmmyyyy(CUOTAS_TAG_DESDE)} puede estar inflado "
+                    "(se mezclaba con el precio de publicaciones en cuotas) — el precio de contado "
+                    "real solo es confiable desde esa fecha."
+                ).style("font-size:11px;color:#B45309;margin-bottom:6px;display:block")
 
             vel    = metricas.get("vel_diaria", 0)
             dias_r = metricas.get("dias_restantes")
@@ -1292,13 +1319,13 @@ def build_tab_stock() -> None:
         sku = estado.get("sku")
         marca = estado.get("marca")
         if marca:
-            rows, per_sku_series = await run.io_bound(_get_stock_history_marca, user_id, marca, desde, hasta)
+            rows, per_sku_series, riesgo_cuotas = await run.io_bound(_get_stock_history_marca, user_id, marca, desde, hasta)
             n_skus = await run.io_bound(_get_marca_n_skus, user_id, marca, desde, hasta)
             ventas_reales = await run.io_bound(_get_ventas_reales_por_sku_dia, user_id, desde, hasta)
             if estado["_load_seq"] != mi_seq:
                 return
             met = _calcular_metricas(rows)
-            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta)
+            _pintar(rows, met, marca=marca, n_skus=n_skus, per_sku_series=per_sku_series, ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta, riesgo_cuotas=riesgo_cuotas)
             return
         if not sku:
             contenido_ref[0].clear()
@@ -1310,12 +1337,12 @@ def build_tab_stock() -> None:
             pdf_state["datos"] = None
             _set_pdf_habilitado(False)
             return
-        rows = await run.io_bound(_get_stock_history, user_id, sku, desde, hasta)
+        rows, riesgo_cuotas = await run.io_bound(_get_stock_history, user_id, sku, desde, hasta)
         ventas_reales = await run.io_bound(_get_ventas_reales_por_sku_dia, user_id, desde, hasta)
         if estado["_load_seq"] != mi_seq:
             return
         met = _calcular_metricas(rows)
-        _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta)
+        _pintar(rows, met, sku=sku, per_sku_series=({sku: rows} if rows else None), ventas_reales=ventas_reales, recorte=recorte, desde=desde, hasta=hasta, riesgo_cuotas=riesgo_cuotas)
 
     # Layout principal
     with ui.element("div").style("padding:10px 20px 0"):
