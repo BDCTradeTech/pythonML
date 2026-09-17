@@ -464,6 +464,32 @@ def build_tab_ventas(container) -> None:
                 ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
 
                 bonif_flex = 0.0
+
+                def _save_popup_pay(_ce: Dict[str, Any]) -> None:
+                    conn = get_connection()
+                    try:
+                        cur = conn.cursor()
+                        cur.execute(
+                            "INSERT OR REPLACE INTO ventas_datos "
+                            "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
+                            "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
+                            "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
+                            "costo_pesos, costo_fijo, fee_origen) "
+                            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
+                             _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
+                             _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
+                             _ce.get("deb_cred"), _ce.get("iibb_ret"), _ce.get("sirtac"),
+                             _ce.get("envio_real"), _ce.get("comprador_envio"),
+                             _ce.get("logistic_type"), _ce.get("net_rcv"),
+                             _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date"),
+                             _ce.get("cuotas"), _ce.get("costo_pesos"), _ce.get("costo_fijo"),
+                             _ce.get("fee_origen")),
+                        )
+                        conn.commit()
+                    finally:
+                        conn.close()
+
                 if _cached and payment_id:
                     item_coro2       = run.io_bound(_get_item,       access_token, _iid)        if _iid        else _noop()
                     ship_coro2       = run.io_bound(_get_ship,        access_token, shipping_id) if shipping_id else _noop()
@@ -515,7 +541,26 @@ def build_tab_ventas(container) -> None:
                         if _vr.get("payment_id") == payment_id:
                             _vr["gan_pesos"] = gan_pesos
                             _vr["gan_vta_pct"] = gan_vta_pct
+                            _vr["gan_cos_pct"] = gan_cos_pct
                             break
+                    _now = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    _ce = {
+                        "payment_id": payment_id, "user_id": user["id"], "order_id": _oid,
+                        "gan_pesos": gan_pesos, "gan_vta_pct": gan_vta_pct, "gan_cos_pct": gan_cos_pct,
+                        "meli_fee": meli_fee, "cuotas_fee": cuotas_fee, "iva_total": iva_total,
+                        "deb_cred": deb_cred, "iibb_ret": iibb_ret, "sirtac": sirtac,
+                        "envio_real": envio_real, "comprador_envio": comprador_envio,
+                        "logistic_type": _lt, "net_rcv": net_rcv,
+                        "fetched_at": _now,
+                        "pay_status": None if estado == "approved" else estado,
+                        "order_date": row["dt"].strftime("%Y-%m-%d") if row.get("dt") else None,
+                        "cuotas": cuotas_val,
+                        "costo_pesos": total_costo if (estado in ("approved", "in_mediation", "pendiente") and has_calc) else None,
+                        "costo_fijo": fixed_fee,
+                        "fee_origen": fee_origen,
+                    }
+                    ventas_cache_ref[payment_id] = _ce
+                    await run.io_bound(_save_popup_pay, _ce)
                 else:
                     _pids_for_fetch = payment_ids_approved or ([payment_id] if payment_id else [])
                     pay_coro        = run.io_bound(ml_merge_payments, access_token, _pids_for_fetch) if _pids_for_fetch else _noop()
@@ -613,31 +658,7 @@ def build_tab_ventas(container) -> None:
                                 _vr["gan_cos_pct"] = gan_cos_pct
                                 break
 
-                        def _save_popup_pay(_ce=_ce):
-                            conn = get_connection()
-                            try:
-                                cur = conn.cursor()
-                                cur.execute(
-                                    "INSERT OR REPLACE INTO ventas_datos "
-                                    "(payment_id, user_id, order_id, gan_pesos, gan_vta_pct, gan_cos_pct, "
-                                    "meli_fee, cuotas_fee, iva_total, deb_cred, iibb_ret, sirtac, "
-                                    "envio_real, comprador_envio, logistic_type, net_rcv, fetched_at, pay_status, order_date, cuotas, "
-                                    "costo_pesos, costo_fijo, fee_origen) "
-                                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                                    (_ce["payment_id"], _ce["user_id"], _ce.get("order_id"),
-                                     _ce.get("gan_pesos"), _ce.get("gan_vta_pct"), _ce.get("gan_cos_pct"),
-                                     _ce.get("meli_fee"), _ce.get("cuotas_fee"), _ce.get("iva_total"),
-                                     _ce.get("deb_cred"), _ce.get("iibb_ret"), _ce.get("sirtac"),
-                                     _ce.get("envio_real"), _ce.get("comprador_envio"),
-                                     _ce.get("logistic_type"), _ce.get("net_rcv"),
-                                     _ce.get("fetched_at"), _ce.get("pay_status"), _ce.get("order_date"),
-                                     _ce.get("cuotas"), _ce.get("costo_pesos"), _ce.get("costo_fijo"),
-                                     _ce.get("fee_origen")),
-                                )
-                                conn.commit()
-                            finally:
-                                conn.close()
-                        await run.io_bound(_save_popup_pay)
+                        await run.io_bound(_save_popup_pay, _ce)
 
                 _pay_type = row.get("payment_type") or ""
                 envio_es_real = _pay_type != "account_money" and _lt in ("cross_docking", "xd_drop_off", "drop_off", "me1", "me2", "self_service", "flex")
@@ -1502,7 +1523,15 @@ def build_tab_ventas(container) -> None:
                      or ventas_cache_ref.get(pid, {}).get("pay_status") in ("in_mediation", "pendiente")
                      or ventas_cache_ref.get(pid, {}).get("fee_origen") not in (None, "api")
                      or (v.get("payment_type") == "account_money"
-                         and float(ventas_cache_ref.get(pid, {}).get("meli_fee") or 0) == 0))
+                         and float(ventas_cache_ref.get(pid, {}).get("meli_fee") or 0) == 0)
+                     or (ventas_cache_ref.get(pid, {}).get("logistic_type") in ("self_service", "flex")
+                         and v.get("dt") is not None
+                         and v["dt"] >= datetime.now() - timedelta(days=3)
+                         and (
+                             not ventas_cache_ref.get(pid, {}).get("fetched_at")
+                             or datetime.strptime(ventas_cache_ref[pid]["fetched_at"], "%Y-%m-%dT%H:%M:%S")
+                                <= datetime.now() - timedelta(hours=6)
+                         )))
             ]
             if not rows_to_enrich:
                 if dlg and lbl_progreso:
@@ -2239,7 +2268,7 @@ def build_tab_ventas(container) -> None:
                     cur = conn.cursor()
                     cur.execute(
                         "SELECT payment_id, gan_pesos, gan_vta_pct, gan_cos_pct, meli_fee, cuotas_fee, "
-                        "iva_total, deb_cred, iibb_ret, sirtac, envio_real, logistic_type, net_rcv, pay_status, fee_origen "
+                        "iva_total, deb_cred, iibb_ret, sirtac, envio_real, logistic_type, net_rcv, pay_status, fee_origen, fetched_at "
                         "FROM ventas_datos WHERE user_id=?",
                         (uid,)
                     )
