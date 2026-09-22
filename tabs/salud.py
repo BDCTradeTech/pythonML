@@ -43,6 +43,7 @@ from salud_audit import (
     _qtys_mayorista_para_stock,
     _standard_amount_de,
     audit_sku,
+    audit_skus_nuevos,
 )
 
 _OK = "#2E7D32"
@@ -113,6 +114,35 @@ def _load_productos(user_id: int) -> Dict[str, Dict[str, Any]]:
             (user_id,),
         ).fetchall()
         return {r["sku"]: dict(r) for r in rows}
+    finally:
+        conn.close()
+
+
+def _skus_nuevos_pendientes(user_id: int) -> List[str]:
+    """SKUs en productos sin NINGUNA fila jamás en salud_item_snapshots (nunca
+    entraron a ningún diagnóstico, ni siquiera la corrida nocturna) -- candidatos
+    para el botón "Auditar SKUs nuevos". Excluye los que resync_sku_catalogos.py
+    ya marcó estado_publicacion='sku_no_encontrado': analizado en vivo el
+    2026-09-22, de 10 candidatos sin este filtro, 9 eran huérfanos viejos (sin
+    ítem real en ML, algunos de mayo/2026) y solo 1 era un SKU nuevo genuino."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT p.sku FROM productos p
+            WHERE p.user_id = ?
+              AND NOT EXISTS (
+                SELECT 1 FROM salud_item_snapshots s
+                WHERE s.user_id = p.user_id AND s.sku = p.sku
+              )
+              AND NOT EXISTS (
+                SELECT 1 FROM sku_catalogos c
+                WHERE c.user_id = p.user_id AND c.sku = p.sku AND c.estado_publicacion = 'sku_no_encontrado'
+              )
+            """,
+            (user_id,),
+        ).fetchall()
+        return [r["sku"] for r in rows]
     finally:
         conn.close()
 
@@ -1522,6 +1552,17 @@ def build_tab_salud(container) -> None:
             with ui.row().classes("items-center gap-3 w-full"):
                 ui.label("Salud").classes("text-xl font-bold")
                 ui.space()
+                estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
+                estado_auditar_nuevos.set_visibility(False)
+                if filas_todas:
+                    # Solo tiene sentido con una tabla base ya cargada -- si el cron
+                    # nocturno nunca corrió para esta cuenta (filas_todas vacío, guard de
+                    # abajo), _render()/table_container todavía no existen y el handler
+                    # de este botón (definido más abajo) no se llegaría a crear.
+                    boton_auditar_nuevos = ui.button(
+                        "Auditar SKUs nuevos", icon="fact_check",
+                        on_click=lambda: _auditar_nuevos_bg(),
+                    ).props("dense outline")
                 if ultima_corrida:
                     ui.label(f"Última corrida completa: {ultima_corrida[:16].replace('T', ' ')}").classes("text-xs text-gray-500")
                 elif snap_date:
@@ -2385,6 +2426,63 @@ def build_tab_salud(container) -> None:
             marca_sel.on_value_change(lambda: _render())
             buscador.on_value_change(lambda: _render())
             _render()
+
+            async def _auditar_nuevos_bg() -> None:
+                """Handler de "Auditar SKUs nuevos" (ver análisis 2026-09-22). Nunca
+                llama audit_sku() en loop -- audit_skus_nuevos() hace UN SOLO
+                fetch_all_own_items() compartido para todos los candidatos, en vez de
+                repetir el scan completo de la cuenta por cada SKU nuevo."""
+                boton_auditar_nuevos.props("loading")
+                estado_auditar_nuevos.set_visibility(True)
+                estado_auditar_nuevos.set_text("Buscando SKUs nuevos...")
+                try:
+                    candidatos = await run.io_bound(_skus_nuevos_pendientes, uid)
+                    if not candidatos:
+                        ui.notify("No hay SKUs nuevos pendientes de auditar", color="positive")
+                        return
+
+                    token = get_ml_access_token(uid)
+                    if not token:
+                        ui.notify("No se pudo obtener el token de MercadoLibre.", color="negative")
+                        return
+
+                    estado_auditar_nuevos.set_text(
+                        f"Escaneando catálogo completo ({len(candidatos)} SKU nuevo(s) a localizar)..."
+                    )
+                    seller_id = await run.io_bound(ml_get_user_id, token)
+
+                    estado_auditar_nuevos.set_text(f"Auditando {len(candidatos)} SKU(s) nuevo(s)...")
+                    try:
+                        resultado = await run.io_bound(audit_skus_nuevos, uid, seller_id or "", candidatos)
+                    except requests.exceptions.RequestException as e:
+                        # fetch_all_own_items()/audit_item() no tienen retry/backoff propio
+                        # (a diferencia de ml_api.get_ml_session()) -- un 429/5xx transitorio
+                        # o un timeout de red llega hasta acá sin reintentar.
+                        ui.notify(f"No se pudo completar la auditoría de SKUs nuevos: {e}", color="negative")
+                        return
+
+                    if resultado.get("error"):
+                        ui.notify(f"No se pudo auditar SKUs nuevos: {resultado['error']}", color="negative")
+                        return
+
+                    auditados = resultado["auditados"]
+                    huerfanos = resultado["huerfanos"]
+                    msg = f"{len(auditados)} SKU(s) auditado(s), {len(huerfanos)} sin ítem real (no auditados)"
+                    if huerfanos:
+                        msg += ": " + ", ".join(huerfanos)
+                    ui.notify(msg, color="positive" if auditados else "warning", multi_line=True)
+
+                    if getattr(container, "_salud_generacion", None) != generacion:
+                        return  # cuenta activa cambió mientras corría -- no pisar la vista actual
+
+                    # Recarga completa desde salud_item_snapshots -- nunca parchear
+                    # filas_todas in-place acá (mismo bug que _aplicar_resultado_a_fila:
+                    # un SKU sin fila previa no se insertaría solo, ver análisis 2026-09-22).
+                    filas_todas[:] = _build_rows(uid)[0]
+                    _render()
+                finally:
+                    estado_auditar_nuevos.set_visibility(False)
+                    boton_auditar_nuevos.props(remove="loading")
 
             async def _refrescar_stock_bg() -> None:
                 """Corre en background apenas se termina de pintar la tabla con el dato

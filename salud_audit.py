@@ -36,6 +36,7 @@ import argparse
 import logging
 import sys
 import time
+from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -851,6 +852,62 @@ def audit_sku(user_id: int, seller_id: str, sku: str, persist: bool = True) -> D
         conn.commit()
     conn.close()
     return {"sku": sku, "items": resultados}
+
+
+def audit_skus_nuevos(user_id: int, seller_id: str, skus: List[str]) -> Dict[str, Any]:
+    """Corrida on-demand para SKUs que TODAVÍA no tienen ningún snapshot (botón
+    "Auditar SKUs nuevos" de tabs/salud.py). A diferencia de audit_sku() -- que
+    siempre cae al escaneo completo (fetch_all_own_items) cuando el SKU no tiene
+    snapshot previo del que partir -- esta función hace UN SOLO fetch_all_own_items()
+    compartido para todos los `skus` de una sola vez, en vez de repetir el scan
+    completo de la cuenta (~1500-7800 publicaciones según la cuenta) una vez por
+    cada SKU nuevo.
+
+    Devuelve {"auditados": [sku,...], "huerfanos": [sku,...], "n_items": int}.
+    huerfanos = SKUs de `skus` sin ningún ítem propio encontrado en el scan (nunca
+    se publicaron, o el resync todavía no los marcó sku_no_encontrado) -- no se
+    auditan porque no hay nada que auditar; el caller los lista aparte.
+
+    Puede levantar requests.exceptions.RequestException (incluido HTTPError de
+    fetch_all_own_items) -- ni esta función ni fetch_all_own_items tienen
+    retry/backoff propio (a diferencia de ml_api.get_ml_session()). El caller
+    (botón de tabs/salud.py) debe capturarla y mostrar un mensaje en vez de
+    romper la UI."""
+    token = get_ml_access_token(user_id)
+    if not token:
+        return {"error": "sin_token"}
+
+    items = fetch_all_own_items(token, seller_id)
+
+    skus_set = set(skus)
+    por_sku: Dict[str, List[dict]] = defaultdict(list)
+    for it in items:
+        sku_it = _get_seller_sku(it)
+        if sku_it in skus_set:
+            por_sku[sku_it].append(it)
+
+    huerfanos = sorted(skus_set - set(por_sku.keys()))
+    a_auditar = [it for grp in por_sku.values() for it in grp]
+
+    init_salud_tables()
+    hoy = date.today().isoformat()
+    cat_attrs_cache: Dict[str, list] = {}
+    conn = get_connection()
+    session = requests.Session()
+    try:
+        for it in a_auditar:
+            data = audit_item(token, it, cat_attrs_cache, seller_id, session)
+            write_snapshot(conn, user_id, it["id"], data, hoy)
+            time.sleep(0.08)
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "auditados": sorted(por_sku.keys()),
+        "huerfanos": huerfanos,
+        "n_items": len(a_auditar),
+    }
 
 
 def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
