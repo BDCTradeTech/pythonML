@@ -64,7 +64,7 @@ def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict
         batch = item_ids[i : i + 20]
         resp = get_ml_session().get(
             "https://api.mercadolibre.com/items",
-            params={"ids": ",".join(batch), "attributes": "id,title,status"},
+            params={"ids": ",".join(batch), "attributes": "id,title,status,attributes"},
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=15,
         )
@@ -72,11 +72,34 @@ def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict
             for entry in resp.json():
                 body = entry.get("body") or {}
                 if body.get("id"):
+                    ficha = []
+                    for attr in body.get("attributes") or []:
+                        nombre = attr.get("name")
+                        valor = attr.get("value_name")
+                        if nombre and valor:
+                            ficha.append(f"{nombre}: {valor}")
                     info[str(body["id"])] = {
                         "title": body.get("title") or str(body["id"]),
                         "status": body.get("status") or "",
+                        "ficha_tecnica": " | ".join(ficha[:25]),
                     }
     return info
+
+
+def _ml_get_description(access_token: str, item_id: str) -> str:
+    try:
+        resp = get_ml_session().get(
+            f"https://api.mercadolibre.com/items/{item_id}/description",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if resp.ok:
+            body = resp.json()
+            texto = (body.get("plain_text") or body.get("text") or "").strip()
+            return texto[:1500]
+    except Exception:
+        pass
+    return ""
 
 
 def _ml_delete_question(access_token: str, question_id: Any) -> Dict[str, Any]:
@@ -362,6 +385,8 @@ def build_tab_preguntas(container) -> None:
 .pq-row:hover > td { background: #f5f5f5 !important; }
 .pq-row.pq-selected > td { background: #e3f2fd !important; }
 .pq-row.pq-selected > td:first-child { border-left: 3px solid #1976d2; }
+.pq-row-mobile:hover { background: #f5f5f5 !important; }
+.pq-row-mobile.pq-selected { background: #e3f2fd !important; border-left: 3px solid #1976d2; }
 </style>
 """)
 
@@ -471,85 +496,144 @@ def build_tab_preguntas(container) -> None:
                 _TD = "padding:5px 8px;font-size:12px;border-bottom:0.5px solid #eeeeee"
 
                 row_elements: List = []
+                _list_is_mobile = is_mobile_ref["val"]
 
-                with ui.element("div").style("width:100%;overflow-x:auto"):
-                    with ui.element("table").style(
-                        "width:100%;border-collapse:collapse;table-layout:fixed"
-                    ):
-                        with ui.element("thead"):
-                            with ui.element("tr"):
-                                for _h, _w, _align in [
-                                    ("Producto",  "28%", "left"),
-                                    ("Pregunta",  "37%", "left"),
-                                    ("Comprador", "17%", "right"),
-                                    ("Hace",       "8%", "right"),
-                                    ("",          "10%", "center"),
-                                ]:
-                                    with ui.element("th").style(
-                                        f"{_TH};width:{_w};text-align:{_align}"
-                                    ):
-                                        ui.label(_h)
+                _STATUS_DOT = {
+                    "active":  "#22c55e",
+                    "paused":  "#f59e0b",
+                    "closed":  "#ef4444",
+                }
 
-                        with ui.element("tbody"):
-                            _STATUS_DOT = {
-                                "active":  "#22c55e",
-                                "paused":  "#f59e0b",
-                                "closed":  "#ef4444",
-                            }
-                            for _i, q in enumerate(questions):
-                                item_id    = str(q.get("item_id") or "")
-                                item_entry = item_info.get(item_id, {})
-                                item_title = item_entry.get("title", item_id)
-                                item_status = item_entry.get("status", "")
-                                text_q     = q.get("text") or ""
-                                from_obj   = q.get("from") or {}
-                                buyer_display = f"#{from_obj.get('id', '—')}"
-                                age        = _time_ago(q.get("date_created") or "")
+                if not _list_is_mobile:
+                    # ── DESKTOP: tabla de columnas ───────────────────────────────
+                    with ui.element("div").style("width:100%;overflow-x:auto"):
+                        with ui.element("table").style(
+                            "width:100%;border-collapse:collapse;table-layout:fixed"
+                        ):
+                            with ui.element("thead"):
+                                with ui.element("tr"):
+                                    for _h, _w, _align in [
+                                        ("Producto",  "28%", "left"),
+                                        ("Pregunta",  "37%", "left"),
+                                        ("Comprador", "17%", "right"),
+                                        ("Hace",       "8%", "right"),
+                                        ("",          "10%", "center"),
+                                    ]:
+                                        with ui.element("th").style(
+                                            f"{_TH};width:{_w};text-align:{_align}"
+                                        ):
+                                            ui.label(_h)
 
-                                tr = ui.element("tr").classes("pq-row")
-                                row_elements.append(tr)
-                                with tr:
-                                    _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
-                                    with ui.element("td").style(
-                                        f"{_TD};overflow:hidden"
-                                    ):
-                                        ui.html(
-                                            f'<div style="display:flex;align-items:center;gap:5px;overflow:hidden">'
-                                            f'<span style="width:7px;height:7px;border-radius:50%;'
-                                            f'background:{_dot_color};flex-shrink:0" '
-                                            f'title="{item_status}"></span>'
-                                            f'<span style="overflow:hidden;text-overflow:ellipsis;'
-                                            f'white-space:nowrap;font-weight:500">{item_title[:55]}</span>'
-                                            f'</div>'
-                                        )
-                                    with ui.element("td").style(
-                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;"
-                                        "white-space:nowrap;color:#374151"
-                                    ):
-                                        ui.label(
-                                            text_q[:80] + ("…" if len(text_q) > 80 else "")
-                                        )
-                                    with ui.element("td").style(
-                                        f"{_TD};text-align:right;overflow:hidden;"
-                                        "text-overflow:ellipsis;white-space:nowrap;"
-                                        "color:#6b7280;font-family:monospace;font-size:11px"
-                                    ):
-                                        ui.label(buyer_display)
-                                    with ui.element("td").style(
-                                        f"{_TD};text-align:right;color:#9ca3af;font-size:11px"
-                                    ):
-                                        ui.label(age)
-                                    with ui.element("td").style(
-                                        f"{_TD};text-align:center"
-                                    ):
-                                        ui.html(
-                                            '<i class="ti ti-chevron-right"'
-                                            ' style="font-size:14px;color:#9ca3af"></i>'
-                                        )
-                                tr.on(
-                                    "click",
-                                    lambda q=q, t=item_title, _tr=tr: _open_detail(q, t, _tr),
+                            with ui.element("tbody"):
+                                for _i, q in enumerate(questions):
+                                    item_id    = str(q.get("item_id") or "")
+                                    item_entry = item_info.get(item_id, {})
+                                    item_title = item_entry.get("title", item_id)
+                                    item_status = item_entry.get("status", "")
+                                    text_q     = q.get("text") or ""
+                                    from_obj   = q.get("from") or {}
+                                    buyer_display = f"#{from_obj.get('id', '—')}"
+                                    age        = _time_ago(q.get("date_created") or "")
+
+                                    tr = ui.element("tr").classes("pq-row")
+                                    row_elements.append(tr)
+                                    with tr:
+                                        _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
+                                        with ui.element("td").style(
+                                            f"{_TD};overflow:hidden"
+                                        ):
+                                            ui.html(
+                                                f'<div style="display:flex;align-items:center;gap:5px;overflow:hidden">'
+                                                f'<span style="width:7px;height:7px;border-radius:50%;'
+                                                f'background:{_dot_color};flex-shrink:0" '
+                                                f'title="{item_status}"></span>'
+                                                f'<span style="overflow:hidden;text-overflow:ellipsis;'
+                                                f'white-space:nowrap;font-weight:500">{item_title[:55]}</span>'
+                                                f'</div>'
+                                            )
+                                        with ui.element("td").style(
+                                            f"{_TD};overflow:hidden;text-overflow:ellipsis;"
+                                            "white-space:nowrap;color:#374151"
+                                        ):
+                                            ui.label(
+                                                text_q[:80] + ("…" if len(text_q) > 80 else "")
+                                            )
+                                        with ui.element("td").style(
+                                            f"{_TD};text-align:right;overflow:hidden;"
+                                            "text-overflow:ellipsis;white-space:nowrap;"
+                                            "color:#6b7280;font-family:monospace;font-size:11px"
+                                        ):
+                                            ui.label(buyer_display)
+                                        with ui.element("td").style(
+                                            f"{_TD};text-align:right;color:#9ca3af;font-size:11px"
+                                        ):
+                                            ui.label(age)
+                                        with ui.element("td").style(
+                                            f"{_TD};text-align:center"
+                                        ):
+                                            ui.html(
+                                                '<i class="ti ti-chevron-right"'
+                                                ' style="font-size:14px;color:#9ca3af"></i>'
+                                            )
+                                    tr.on(
+                                        "click",
+                                        lambda q=q, t=item_title, _tr=tr: _open_detail(q, t, _tr),
+                                    )
+                else:
+                    # ── MOBILE: cards apiladas (producto en su propia línea) ─────
+                    with ui.column().classes("w-full gap-0"):
+                        for _i, q in enumerate(questions):
+                            item_id    = str(q.get("item_id") or "")
+                            item_entry = item_info.get(item_id, {})
+                            item_title = item_entry.get("title", item_id)
+                            item_status = item_entry.get("status", "")
+                            text_q     = q.get("text") or ""
+                            from_obj   = q.get("from") or {}
+                            buyer_display = f"#{from_obj.get('id', '—')}"
+                            age        = _time_ago(q.get("date_created") or "")
+                            _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
+
+                            row = ui.element("div").classes("pq-row-mobile").style(
+                                "display:flex;flex-direction:column;gap:4px;"
+                                "padding:8px 4px;border-bottom:0.5px solid #eeeeee;"
+                                "cursor:pointer"
+                            )
+                            row_elements.append(row)
+                            with row:
+                                ui.html(
+                                    f'<div style="display:flex;align-items:flex-start;gap:6px">'
+                                    f'<span style="width:7px;height:7px;border-radius:50%;'
+                                    f'background:{_dot_color};flex-shrink:0;margin-top:4px" '
+                                    f'title="{item_status}"></span>'
+                                    f'<span style="font-weight:600;font-size:12.5px;color:#111827;'
+                                    f'white-space:normal;word-break:break-word;line-height:1.35">'
+                                    f'{item_title}</span>'
+                                    f'</div>'
                                 )
+                                ui.label(
+                                    text_q[:140] + ("…" if len(text_q) > 140 else "")
+                                ).style(
+                                    "font-size:12px;color:#374151;line-height:1.4;"
+                                    "padding-left:13px"
+                                )
+                                with ui.element("div").style(
+                                    "display:flex;align-items:center;justify-content:flex-end;"
+                                    "gap:8px;margin-top:1px"
+                                ):
+                                    ui.label(buyer_display).style(
+                                        "font-size:10px;color:#9ca3af;font-family:monospace"
+                                    )
+                                    ui.label(age).style(
+                                        "font-size:10px;color:#9ca3af"
+                                    )
+                                    ui.html(
+                                        '<i class="ti ti-chevron-right"'
+                                        ' style="font-size:13px;color:#9ca3af"></i>'
+                                    )
+                            row.on(
+                                "click",
+                                lambda q=q, t=item_title, _tr=row: _open_detail(q, t, _tr),
+                            )
 
                 # ── PANEL DE DETALLE ────────────────────────────────────────────
                 detail_panel = ui.element("div").style(
@@ -572,6 +656,8 @@ def build_tab_preguntas(container) -> None:
                     from_obj    = q.get("from") or {}
                     from_id     = from_obj.get("id")
                     ml_nickname = ml_nickname_holder[0]
+                    item_id_detalle = str(q.get("item_id") or "")
+                    ficha_tecnica   = item_info.get(item_id_detalle, {}).get("ficha_tecnica", "")
 
                     resp_groq_holder   = [None]
                     resp_gemini_holder = [None]
@@ -730,24 +816,45 @@ def build_tab_preguntas(container) -> None:
                         frases = _load_json_config("preguntas_frases_cierre", _DEFAULT_FRASES)
                         frase_aleatoria = random.choice(frases) if frases else ""
 
-                        buyer_nick = ""
-                        if from_id:
+                        async def _fetch_nick() -> str:
+                            if not from_id:
+                                return ""
                             try:
-                                buyer_nick = await run.io_bound(
+                                return await run.io_bound(
                                     _get_user_nickname, access_token, from_id
                                 )
                             except Exception:
-                                pass
+                                return ""
+
+                        async def _fetch_descripcion() -> str:
+                            if not item_id_detalle:
+                                return ""
+                            try:
+                                return await run.io_bound(
+                                    _ml_get_description, access_token, item_id_detalle
+                                )
+                            except Exception:
+                                return ""
+
+                        buyer_nick, descripcion = await asyncio.gather(
+                            _fetch_nick(), _fetch_descripcion()
+                        )
                         if not buyer_nick:
                             buyer_nick = "estimado cliente"
 
                         saludo = _saludo_por_hora()
                         saludo_completo = f"Hola {buyer_nick}, {saludo}."
+                        ficha_txt = f"\nFicha técnica: {ficha_tecnica}" if ficha_tecnica else ""
+                        descripcion_txt = f"\nDescripción: {descripcion}" if descripcion else ""
                         prompt = (
                             f"Sos vendedor en MercadoLibre Argentina.\n"
-                            f"Producto: {title}\n"
+                            f"Producto: {title}{ficha_txt}{descripcion_txt}\n"
                             f"Pregunta: {text}\n\n"
                             f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
+                            f"Si la ficha técnica o la descripción de arriba tienen el dato pedido, "
+                            f"usalo tal cual figura ahí. Si no está disponible, no inventes ni "
+                            f"adivines un dato específico (modelos, códigos, medidas): decí que vas "
+                            f"a confirmarlo.\n"
                             f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
                         )
 
