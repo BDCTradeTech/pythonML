@@ -225,18 +225,19 @@ def _build_frases_card(resp_groq_ref: list, resp_gemini_ref: list, resp_deepseek
     state: dict = {"editing_idx": None, "adding": False}
 
     def _apply_to_all(texto: str) -> None:
-        ta_g = resp_groq_ref[0]
-        ta_m = resp_gemini_ref[0]
-        ta_d = resp_deepseek_ref[0]
-        if ta_g is None and ta_m is None and ta_d is None:
+        # Cada holder puede traer más de una instancia (variante desktop +
+        # variante mobile, ambas renderizadas siempre — ver _open_detail).
+        # Actualizamos todas: solo una es visible para el usuario en un
+        # momento dado, la otra queda igual de sincronizada pero oculta.
+        targets = [
+            ta for ta in (resp_groq_ref + resp_gemini_ref + resp_deepseek_ref)
+            if ta is not None
+        ]
+        if not targets:
             ui.notify("Seleccioná una pregunta primero", type="warning")
             return
-        if ta_g is not None:
-            _replace_closing_phrase(ta_g, texto)
-        if ta_m is not None:
-            _replace_closing_phrase(ta_m, texto)
-        if ta_d is not None:
-            _replace_closing_phrase(ta_d, texto)
+        for ta in targets:
+            _replace_closing_phrase(ta, texto)
 
     with ui.element("div").style(
         "display:flex;flex-direction:column;flex:1;"
@@ -364,14 +365,6 @@ def build_tab_preguntas(container) -> None:
     uid = user["id"]
 
     with container:
-        is_mobile_ref = {"val": False}
-
-        async def _detect_mobile():
-            w = await ui.run_javascript("return window.innerWidth")
-            is_mobile_ref["val"] = int(w or 9999) < 768
-
-        ui.timer(0, _detect_mobile, once=True)
-
         access_token = get_ml_access_token(uid)
         if not access_token:
             ui.label("⚠️ No tienes MercadoLibre vinculado. Ve a Configuración.").classes(
@@ -387,6 +380,15 @@ def build_tab_preguntas(container) -> None:
 .pq-row.pq-selected > td:first-child { border-left: 3px solid #1976d2; }
 .pq-row-mobile:hover { background: #f5f5f5 !important; }
 .pq-row-mobile.pq-selected { background: #e3f2fd !important; border-left: 3px solid #1976d2; }
+/* Layout responsive resuelto 100% por CSS: se renderizan ambas variantes y el
+   navegador elige cuál mostrar al instante, sin depender de un round-trip al
+   servidor (ver ui.run_javascript, que tiene timeout de 1s y no reintenta). */
+.pq-desktop-only { display: block; }
+.pq-mobile-only { display: none; }
+@media (max-width: 767px) {
+  .pq-desktop-only { display: none; }
+  .pq-mobile-only { display: block; }
+}
 </style>
 """)
 
@@ -496,7 +498,14 @@ def build_tab_preguntas(container) -> None:
                 _TD = "padding:5px 8px;font-size:12px;border-bottom:0.5px solid #eeeeee"
 
                 row_elements: List = []
-                _list_is_mobile = is_mobile_ref["val"]
+                # Cada pregunta tiene DOS elementos gemelos en el DOM (fila de
+                # tabla desktop + card mobile), ambos siempre renderizados; CSS
+                # decide cuál se ve. row_pairs[i] = [tr_desktop, div_mobile] se
+                # completa en los dos loops de abajo y se usa para: togglear
+                # "seleccionado" y ocultar AMBOS gemelos al responder/eliminar
+                # (si no, el gemelo oculto seguiría mostrando la pregunta ya
+                # resuelta si el viewport cambia de ancho en la misma sesión).
+                row_pairs: List[list] = [[None, None] for _ in questions]
 
                 _STATUS_DOT = {
                     "active":  "#22c55e",
@@ -504,83 +513,82 @@ def build_tab_preguntas(container) -> None:
                     "closed":  "#ef4444",
                 }
 
-                if not _list_is_mobile:
-                    # ── DESKTOP: tabla de columnas ───────────────────────────────
-                    with ui.element("div").style("width:100%;overflow-x:auto"):
-                        with ui.element("table").style(
-                            "width:100%;border-collapse:collapse;table-layout:fixed"
-                        ):
-                            with ui.element("thead"):
-                                with ui.element("tr"):
-                                    for _h, _w, _align in [
-                                        ("Producto",  "28%", "left"),
-                                        ("Pregunta",  "37%", "left"),
-                                        ("Comprador", "17%", "right"),
-                                        ("Hace",       "8%", "right"),
-                                        ("",          "10%", "center"),
-                                    ]:
-                                        with ui.element("th").style(
-                                            f"{_TH};width:{_w};text-align:{_align}"
-                                        ):
-                                            ui.label(_h)
+                # ── DESKTOP: tabla de columnas ────────────────────────────────────
+                with ui.element("div").classes("pq-desktop-only").style(
+                    "width:100%;overflow-x:auto"
+                ):
+                    with ui.element("table").style(
+                        "width:100%;border-collapse:collapse;table-layout:fixed"
+                    ):
+                        with ui.element("thead"):
+                            with ui.element("tr"):
+                                for _h, _w, _align in [
+                                    ("Producto",  "28%", "left"),
+                                    ("Pregunta",  "37%", "left"),
+                                    ("Comprador", "17%", "right"),
+                                    ("Hace",       "8%", "right"),
+                                    ("",          "10%", "center"),
+                                ]:
+                                    with ui.element("th").style(
+                                        f"{_TH};width:{_w};text-align:{_align}"
+                                    ):
+                                        ui.label(_h)
 
-                            with ui.element("tbody"):
-                                for _i, q in enumerate(questions):
-                                    item_id    = str(q.get("item_id") or "")
-                                    item_entry = item_info.get(item_id, {})
-                                    item_title = item_entry.get("title", item_id)
-                                    item_status = item_entry.get("status", "")
-                                    text_q     = q.get("text") or ""
-                                    from_obj   = q.get("from") or {}
-                                    buyer_display = f"#{from_obj.get('id', '—')}"
-                                    age        = _time_ago(q.get("date_created") or "")
+                        with ui.element("tbody"):
+                            for _i, q in enumerate(questions):
+                                item_id    = str(q.get("item_id") or "")
+                                item_entry = item_info.get(item_id, {})
+                                item_title = item_entry.get("title", item_id)
+                                item_status = item_entry.get("status", "")
+                                text_q     = q.get("text") or ""
+                                from_obj   = q.get("from") or {}
+                                buyer_display = f"#{from_obj.get('id', '—')}"
+                                age        = _time_ago(q.get("date_created") or "")
 
-                                    tr = ui.element("tr").classes("pq-row")
-                                    row_elements.append(tr)
-                                    with tr:
-                                        _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
-                                        with ui.element("td").style(
-                                            f"{_TD};overflow:hidden"
-                                        ):
-                                            ui.html(
-                                                f'<div style="display:flex;align-items:center;gap:5px;overflow:hidden">'
-                                                f'<span style="width:7px;height:7px;border-radius:50%;'
-                                                f'background:{_dot_color};flex-shrink:0" '
-                                                f'title="{item_status}"></span>'
-                                                f'<span style="overflow:hidden;text-overflow:ellipsis;'
-                                                f'white-space:nowrap;font-weight:500">{item_title[:55]}</span>'
-                                                f'</div>'
-                                            )
-                                        with ui.element("td").style(
-                                            f"{_TD};overflow:hidden;text-overflow:ellipsis;"
-                                            "white-space:nowrap;color:#374151"
-                                        ):
-                                            ui.label(
-                                                text_q[:80] + ("…" if len(text_q) > 80 else "")
-                                            )
-                                        with ui.element("td").style(
-                                            f"{_TD};text-align:right;overflow:hidden;"
-                                            "text-overflow:ellipsis;white-space:nowrap;"
-                                            "color:#6b7280;font-family:monospace;font-size:11px"
-                                        ):
-                                            ui.label(buyer_display)
-                                        with ui.element("td").style(
-                                            f"{_TD};text-align:right;color:#9ca3af;font-size:11px"
-                                        ):
-                                            ui.label(age)
-                                        with ui.element("td").style(
-                                            f"{_TD};text-align:center"
-                                        ):
-                                            ui.html(
-                                                '<i class="ti ti-chevron-right"'
-                                                ' style="font-size:14px;color:#9ca3af"></i>'
-                                            )
-                                    tr.on(
-                                        "click",
-                                        lambda q=q, t=item_title, _tr=tr: _open_detail(q, t, _tr),
-                                    )
-                else:
-                    # ── MOBILE: cards apiladas (producto en su propia línea) ─────
+                                tr = ui.element("tr").classes("pq-row")
+                                row_elements.append(tr)
+                                row_pairs[_i][0] = tr
+                                with tr:
+                                    _dot_color = _STATUS_DOT.get(item_status, "#9ca3af")
+                                    with ui.element("td").style(
+                                        f"{_TD};overflow:hidden"
+                                    ):
+                                        ui.html(
+                                            f'<div style="display:flex;align-items:center;gap:5px;overflow:hidden">'
+                                            f'<span style="width:7px;height:7px;border-radius:50%;'
+                                            f'background:{_dot_color};flex-shrink:0" '
+                                            f'title="{item_status}"></span>'
+                                            f'<span style="overflow:hidden;text-overflow:ellipsis;'
+                                            f'white-space:nowrap;font-weight:500">{item_title[:55]}</span>'
+                                            f'</div>'
+                                        )
+                                    with ui.element("td").style(
+                                        f"{_TD};overflow:hidden;text-overflow:ellipsis;"
+                                        "white-space:nowrap;color:#374151"
+                                    ):
+                                        ui.label(
+                                            text_q[:80] + ("…" if len(text_q) > 80 else "")
+                                        )
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:right;overflow:hidden;"
+                                        "text-overflow:ellipsis;white-space:nowrap;"
+                                        "color:#6b7280;font-family:monospace;font-size:11px"
+                                    ):
+                                        ui.label(buyer_display)
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:right;color:#9ca3af;font-size:11px"
+                                    ):
+                                        ui.label(age)
+                                    with ui.element("td").style(
+                                        f"{_TD};text-align:center"
+                                    ):
+                                        ui.html(
+                                            '<i class="ti ti-chevron-right"'
+                                            ' style="font-size:14px;color:#9ca3af"></i>'
+                                        )
+
+                # ── MOBILE: cards apiladas (producto en su propia línea) ──────────
+                with ui.element("div").classes("pq-mobile-only"):
                     with ui.column().classes("w-full gap-0"):
                         for _i, q in enumerate(questions):
                             item_id    = str(q.get("item_id") or "")
@@ -599,6 +607,7 @@ def build_tab_preguntas(container) -> None:
                                 "cursor:pointer"
                             )
                             row_elements.append(row)
+                            row_pairs[_i][1] = row
                             with row:
                                 ui.html(
                                     f'<div style="display:flex;align-items:flex-start;gap:6px">'
@@ -630,10 +639,17 @@ def build_tab_preguntas(container) -> None:
                                         '<i class="ti ti-chevron-right"'
                                         ' style="font-size:13px;color:#9ca3af"></i>'
                                     )
-                            row.on(
-                                "click",
-                                lambda q=q, t=item_title, _tr=row: _open_detail(q, t, _tr),
-                            )
+
+                # ── Click handlers: atados a los DOS gemelos de cada pregunta ─────
+                for _i, q in enumerate(questions):
+                    item_id    = str(q.get("item_id") or "")
+                    item_title = item_info.get(item_id, {}).get("title", item_id)
+                    pair = row_pairs[_i]
+                    for _el in pair:
+                        _el.on(
+                            "click",
+                            lambda q=q, t=item_title, p=pair: _open_detail(q, t, p),
+                        )
 
                 # ── PANEL DE DETALLE ────────────────────────────────────────────
                 detail_panel = ui.element("div").style(
@@ -643,10 +659,11 @@ def build_tab_preguntas(container) -> None:
                 )
                 detail_panel.set_visibility(False)
 
-                def _open_detail(q: dict, title: str, active_tr) -> None:
+                def _open_detail(q: dict, title: str, active_rows) -> None:
                     for r in row_elements:
                         r.classes(remove="pq-selected")
-                    active_tr.classes(add="pq-selected")
+                    for r in active_rows:
+                        r.classes(add="pq-selected")
 
                     detail_panel.clear()
                     detail_panel.set_visibility(True)
@@ -659,15 +676,18 @@ def build_tab_preguntas(container) -> None:
                     item_id_detalle = str(q.get("item_id") or "")
                     ficha_tecnica   = item_info.get(item_id_detalle, {}).get("ficha_tecnica", "")
 
-                    resp_groq_holder   = [None]
-                    resp_gemini_holder = [None]
-                    resp_deepseek_holder = [None]
-                    groq_spin_ref      = [None]
-                    gemini_spin_ref    = [None]
-                    deepseek_spin_ref  = [None]
-                    groq_err_ref       = [None]
-                    gemini_err_ref     = [None]
-                    deepseek_err_ref   = [None]
+                    # Cada holder tiene 2 slots: [0] = instancia desktop,
+                    # [1] = instancia mobile. Las dos variantes se renderizan
+                    # siempre (ver más abajo); _load_ais actualiza ambas.
+                    resp_groq_holder   = [None, None]
+                    resp_gemini_holder = [None, None]
+                    resp_deepseek_holder = [None, None]
+                    groq_spin_ref      = [None, None]
+                    gemini_spin_ref    = [None, None]
+                    deepseek_spin_ref  = [None, None]
+                    groq_err_ref       = [None, None]
+                    gemini_err_ref     = [None, None]
+                    deepseek_err_ref   = [None, None]
 
                     # ── async helpers ───────────────────────────────────────────
 
@@ -695,7 +715,8 @@ def build_tab_preguntas(container) -> None:
                                 _ml_post_answer, access_token, qid, text_resp
                             )
                             if result["status_code"] in (200, 201):
-                                active_tr.set_visibility(False)
+                                for _r in active_rows:
+                                    _r.set_visibility(False)
                                 new_count = counter_ref[0] - 1
                                 counter_ref[0] = new_count
                                 counter_label.set_content(
@@ -769,7 +790,8 @@ def build_tab_preguntas(container) -> None:
                         try:
                             result = await run.io_bound(_ml_delete_question, access_token, qid)
                             if result["status_code"] == 200:
-                                active_tr.set_visibility(False)
+                                for _r in active_rows:
+                                    _r.set_visibility(False)
                                 new_count = counter_ref[0] - 1
                                 counter_ref[0] = new_count
                                 counter_label.set_content(
@@ -871,26 +893,35 @@ def build_tab_preguntas(container) -> None:
                                 partes.append(f"Muchas gracias, {ml_nickname}.")
                             return "\n".join(partes)
 
+                        # Cada *_ref/*_holder tiene 2 slots (desktop + mobile,
+                        # ambas variantes siempre en el DOM) — actualizamos las
+                        # dos por igual en cada paso.
                         if not groq_key:
-                            groq_spin_ref[0].set_visibility(False)
-                            groq_err_ref[0].set_text(
-                                "Configurá tu API key de Groq en Config → IA/Sugerencias"
-                            )
-                            groq_err_ref[0].set_visibility(True)
+                            for w in groq_spin_ref:
+                                w.set_visibility(False)
+                            for w in groq_err_ref:
+                                w.set_text(
+                                    "Configurá tu API key de Groq en Config → IA/Sugerencias"
+                                )
+                                w.set_visibility(True)
 
                         if not gemini_key:
-                            gemini_spin_ref[0].set_visibility(False)
-                            gemini_err_ref[0].set_text(
-                                "Configurá tu API key de Gemini en Config → IA/Sugerencias"
-                            )
-                            gemini_err_ref[0].set_visibility(True)
+                            for w in gemini_spin_ref:
+                                w.set_visibility(False)
+                            for w in gemini_err_ref:
+                                w.set_text(
+                                    "Configurá tu API key de Gemini en Config → IA/Sugerencias"
+                                )
+                                w.set_visibility(True)
 
                         if not deepseek_key:
-                            deepseek_spin_ref[0].set_visibility(False)
-                            deepseek_err_ref[0].set_text(
-                                "Configurá tu API key de DeepSeek en Config → IA/Sugerencias"
-                            )
-                            deepseek_err_ref[0].set_visibility(True)
+                            for w in deepseek_spin_ref:
+                                w.set_visibility(False)
+                            for w in deepseek_err_ref:
+                                w.set_text(
+                                    "Configurá tu API key de DeepSeek en Config → IA/Sugerencias"
+                                )
+                                w.set_visibility(True)
 
                         if not groq_key and not gemini_key and not deepseek_key:
                             return
@@ -900,44 +931,54 @@ def build_tab_preguntas(container) -> None:
                                 return
                             try:
                                 texto = await run.io_bound(_groq_generate, groq_key, prompt)
-                                resp_groq_holder[0].set_value(_build_resp(texto))
+                                resp = _build_resp(texto)
+                                for w in resp_groq_holder:
+                                    w.set_value(resp)
                             except Exception as exc:
-                                groq_err_ref[0].set_text(f"Error Groq: {exc}")
-                                groq_err_ref[0].set_visibility(True)
+                                for w in groq_err_ref:
+                                    w.set_text(f"Error Groq: {exc}")
+                                    w.set_visibility(True)
                             finally:
-                                groq_spin_ref[0].set_visibility(False)
+                                for w in groq_spin_ref:
+                                    w.set_visibility(False)
 
                         async def _run_gemini() -> None:
                             if not gemini_key:
                                 return
                             try:
                                 texto = await run.io_bound(_gemini_generate, gemini_key, prompt)
-                                resp_gemini_holder[0].set_value(_build_resp(texto))
+                                resp = _build_resp(texto)
+                                for w in resp_gemini_holder:
+                                    w.set_value(resp)
                             except Exception as exc:
-                                gemini_err_ref[0].set_text(f"Error Gemini: {exc}")
-                                gemini_err_ref[0].set_visibility(True)
+                                for w in gemini_err_ref:
+                                    w.set_text(f"Error Gemini: {exc}")
+                                    w.set_visibility(True)
                             finally:
-                                gemini_spin_ref[0].set_visibility(False)
+                                for w in gemini_spin_ref:
+                                    w.set_visibility(False)
 
                         async def _run_deepseek() -> None:
                             if not deepseek_key:
                                 return
                             try:
                                 texto = await run.io_bound(_deepseek_generate, deepseek_key, prompt)
-                                resp_deepseek_holder[0].set_value(_build_resp(texto))
+                                resp = _build_resp(texto)
+                                for w in resp_deepseek_holder:
+                                    w.set_value(resp)
                             except Exception as exc:
-                                deepseek_err_ref[0].set_text(f"Error DeepSeek: {exc}")
-                                deepseek_err_ref[0].set_visibility(True)
+                                for w in deepseek_err_ref:
+                                    w.set_text(f"Error DeepSeek: {exc}")
+                                    w.set_visibility(True)
                             finally:
-                                deepseek_spin_ref[0].set_visibility(False)
+                                for w in deepseek_spin_ref:
+                                    w.set_visibility(False)
 
                         await asyncio.gather(_run_groq(), _run_gemini(), _run_deepseek())
 
-                    # ── UI: layout responsive ───────────────────────────────────────
+                    # ── UI: layout responsive (ambas variantes, toggle por CSS) ──────
                     with detail_panel:
-                        is_mobile = is_mobile_ref["val"]
-
-                        if not is_mobile:
+                        with ui.element("div").classes("pq-desktop-only"):
                             # ── DESKTOP: 4 columnas ──────────────────────────────────
                             with ui.element("div").style(
                                 "display:flex;gap:12px;width:100%;align-items:flex-start"
@@ -997,37 +1038,37 @@ def build_tab_preguntas(container) -> None:
                                                 "font-size:10px;color:#e65100;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
-                                        groq_spin = ui.element("div").style(
+                                        groq_spin_desktop = ui.element("div").style(
                                             "display:flex;align-items:center;gap:6px"
                                         )
-                                        groq_spin_ref[0] = groq_spin
-                                        with groq_spin:
+                                        groq_spin_ref[0] = groq_spin_desktop
+                                        with groq_spin_desktop:
                                             ui.spinner(size="sm").style("color:#f57c00")
                                             ui.label("generando...").style(
                                                 "font-size:11px;color:#f57c00"
                                             )
-                                        groq_err = ui.label("").style(
+                                        groq_err_desktop = ui.label("").style(
                                             "font-size:11px;color:#e65100"
                                         )
-                                        groq_err.set_visibility(False)
-                                        groq_err_ref[0] = groq_err
-                                        resp_groq = (
+                                        groq_err_desktop.set_visibility(False)
+                                        groq_err_ref[0] = groq_err_desktop
+                                        resp_groq_desktop = (
                                             ui.textarea(value="", placeholder="")
                                             .classes("w-full")
                                             .props("outlined rows=8")
                                             .style("font-size:12px")
                                         )
-                                        resp_groq_holder[0] = resp_groq
-                                        resp_area_groq_ref[0] = resp_groq
-                                        _c_groq = context.client
-                                        def _btn_enviar_groq_click():
+                                        resp_groq_holder[0] = resp_groq_desktop
+                                        resp_area_groq_ref[0] = resp_groq_desktop
+                                        _c_groq_desktop = context.client
+                                        def _btn_enviar_groq_desktop_click():
                                             background_tasks.create(
-                                                _enviar_respuesta(_c_groq, qid, resp_groq_holder[0]),
-                                                name="enviar_grok",
+                                                _enviar_respuesta(_c_groq_desktop, qid, resp_groq_desktop),
+                                                name="enviar_groq_desktop",
                                             )
                                         ui.button(
                                             "Enviar esta respuesta",
-                                            on_click=_btn_enviar_groq_click,
+                                            on_click=_btn_enviar_groq_desktop_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#f57c00;color:#fff;font-size:12px"
                                         )
@@ -1052,37 +1093,37 @@ def build_tab_preguntas(container) -> None:
                                                 "font-size:10px;color:#1565c0;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
-                                        gemini_spin = ui.element("div").style(
+                                        gemini_spin_desktop = ui.element("div").style(
                                             "display:flex;align-items:center;gap:6px"
                                         )
-                                        gemini_spin_ref[0] = gemini_spin
-                                        with gemini_spin:
+                                        gemini_spin_ref[0] = gemini_spin_desktop
+                                        with gemini_spin_desktop:
                                             ui.spinner(size="sm").style("color:#1565c0")
                                             ui.label("generando...").style(
                                                 "font-size:11px;color:#1565c0"
                                             )
-                                        gemini_err = ui.label("").style(
+                                        gemini_err_desktop = ui.label("").style(
                                             "font-size:11px;color:#1565c0"
                                         )
-                                        gemini_err.set_visibility(False)
-                                        gemini_err_ref[0] = gemini_err
-                                        resp_gemini = (
+                                        gemini_err_desktop.set_visibility(False)
+                                        gemini_err_ref[0] = gemini_err_desktop
+                                        resp_gemini_desktop = (
                                             ui.textarea(value="", placeholder="")
                                             .classes("w-full")
                                             .props("outlined rows=8")
                                             .style("font-size:12px")
                                         )
-                                        resp_gemini_holder[0] = resp_gemini
-                                        resp_area_gemini_ref[0] = resp_gemini
-                                        _c_gemini = context.client
-                                        def _btn_enviar_gemini_click():
+                                        resp_gemini_holder[0] = resp_gemini_desktop
+                                        resp_area_gemini_ref[0] = resp_gemini_desktop
+                                        _c_gemini_desktop = context.client
+                                        def _btn_enviar_gemini_desktop_click():
                                             background_tasks.create(
-                                                _enviar_respuesta(_c_gemini, qid, resp_gemini_holder[0]),
-                                                name="enviar_gemini",
+                                                _enviar_respuesta(_c_gemini_desktop, qid, resp_gemini_desktop),
+                                                name="enviar_gemini_desktop",
                                             )
                                         ui.button(
                                             "Enviar esta respuesta",
-                                            on_click=_btn_enviar_gemini_click,
+                                            on_click=_btn_enviar_gemini_desktop_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#1565c0;color:#fff;font-size:12px"
                                         )
@@ -1107,42 +1148,42 @@ def build_tab_preguntas(container) -> None:
                                                 "font-size:10px;color:#6d28d9;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
-                                        deepseek_spin = ui.element("div").style(
+                                        deepseek_spin_desktop = ui.element("div").style(
                                             "display:flex;align-items:center;gap:6px"
                                         )
-                                        deepseek_spin_ref[0] = deepseek_spin
-                                        with deepseek_spin:
+                                        deepseek_spin_ref[0] = deepseek_spin_desktop
+                                        with deepseek_spin_desktop:
                                             ui.spinner(size="sm").style("color:#6d28d9")
                                             ui.label("generando...").style(
                                                 "font-size:11px;color:#6d28d9"
                                             )
-                                        deepseek_err = ui.label("").style(
+                                        deepseek_err_desktop = ui.label("").style(
                                             "font-size:11px;color:#6d28d9"
                                         )
-                                        deepseek_err.set_visibility(False)
-                                        deepseek_err_ref[0] = deepseek_err
-                                        resp_deepseek = (
+                                        deepseek_err_desktop.set_visibility(False)
+                                        deepseek_err_ref[0] = deepseek_err_desktop
+                                        resp_deepseek_desktop = (
                                             ui.textarea(value="", placeholder="")
                                             .classes("w-full")
                                             .props("outlined rows=8")
                                             .style("font-size:12px")
                                         )
-                                        resp_deepseek_holder[0] = resp_deepseek
-                                        resp_area_deepseek_ref[0] = resp_deepseek
-                                        _c_deepseek = context.client
-                                        def _btn_enviar_deepseek_click():
+                                        resp_deepseek_holder[0] = resp_deepseek_desktop
+                                        resp_area_deepseek_ref[0] = resp_deepseek_desktop
+                                        _c_deepseek_desktop = context.client
+                                        def _btn_enviar_deepseek_desktop_click():
                                             background_tasks.create(
-                                                _enviar_respuesta(_c_deepseek, qid, resp_deepseek_holder[0]),
-                                                name="enviar_deepseek",
+                                                _enviar_respuesta(_c_deepseek_desktop, qid, resp_deepseek_desktop),
+                                                name="enviar_deepseek_desktop",
                                             )
                                         ui.button(
                                             "Enviar esta respuesta",
-                                            on_click=_btn_enviar_deepseek_click,
+                                            on_click=_btn_enviar_deepseek_desktop_click,
                                         ).props("unelevated dense no-caps").style(
                                             "background:#6d28d9;color:#fff;font-size:12px"
                                         )
 
-                        else:
+                        with ui.element("div").classes("pq-mobile-only"):
                             # ── MOBILE: apilado ──────────────────────────────────────
                             with ui.column().classes("w-full gap-3"):
 
@@ -1198,37 +1239,37 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#e65100;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
-                                    groq_spin = ui.element("div").style(
+                                    groq_spin_mobile = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
-                                    groq_spin_ref[0] = groq_spin
-                                    with groq_spin:
+                                    groq_spin_ref[1] = groq_spin_mobile
+                                    with groq_spin_mobile:
                                         ui.spinner(size="sm").style("color:#f57c00")
                                         ui.label("generando...").style(
                                             "font-size:11px;color:#f57c00"
                                         )
-                                    groq_err = ui.label("").style(
+                                    groq_err_mobile = ui.label("").style(
                                         "font-size:11px;color:#e65100"
                                     )
-                                    groq_err.set_visibility(False)
-                                    groq_err_ref[0] = groq_err
-                                    resp_groq = (
+                                    groq_err_mobile.set_visibility(False)
+                                    groq_err_ref[1] = groq_err_mobile
+                                    resp_groq_mobile = (
                                         ui.textarea(value="", placeholder="")
                                         .classes("w-full")
                                         .props("outlined rows=6")
                                         .style("font-size:12px")
                                     )
-                                    resp_groq_holder[0] = resp_groq
-                                    resp_area_groq_ref[0] = resp_groq
-                                    _c_groq = context.client
-                                    def _btn_enviar_groq_click():
+                                    resp_groq_holder[1] = resp_groq_mobile
+                                    resp_area_groq_ref[0] = resp_groq_mobile
+                                    _c_groq_mobile = context.client
+                                    def _btn_enviar_groq_mobile_click():
                                         background_tasks.create(
-                                            _enviar_respuesta(_c_groq, qid, resp_groq_holder[0]),
-                                            name="enviar_grok",
+                                            _enviar_respuesta(_c_groq_mobile, qid, resp_groq_mobile),
+                                            name="enviar_groq_mobile",
                                         )
                                     ui.button(
                                         "Enviar esta respuesta",
-                                        on_click=_btn_enviar_groq_click,
+                                        on_click=_btn_enviar_groq_mobile_click,
                                     ).props("unelevated dense no-caps").style(
                                         "background:#f57c00;color:#fff;font-size:12px"
                                     )
@@ -1253,37 +1294,37 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#1565c0;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
-                                    gemini_spin = ui.element("div").style(
+                                    gemini_spin_mobile = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
-                                    gemini_spin_ref[0] = gemini_spin
-                                    with gemini_spin:
+                                    gemini_spin_ref[1] = gemini_spin_mobile
+                                    with gemini_spin_mobile:
                                         ui.spinner(size="sm").style("color:#1565c0")
                                         ui.label("generando...").style(
                                             "font-size:11px;color:#1565c0"
                                         )
-                                    gemini_err = ui.label("").style(
+                                    gemini_err_mobile = ui.label("").style(
                                         "font-size:11px;color:#1565c0"
                                     )
-                                    gemini_err.set_visibility(False)
-                                    gemini_err_ref[0] = gemini_err
-                                    resp_gemini = (
+                                    gemini_err_mobile.set_visibility(False)
+                                    gemini_err_ref[1] = gemini_err_mobile
+                                    resp_gemini_mobile = (
                                         ui.textarea(value="", placeholder="")
                                         .classes("w-full")
                                         .props("outlined rows=6")
                                         .style("font-size:12px")
                                     )
-                                    resp_gemini_holder[0] = resp_gemini
-                                    resp_area_gemini_ref[0] = resp_gemini
-                                    _c_gemini = context.client
-                                    def _btn_enviar_gemini_click():
+                                    resp_gemini_holder[1] = resp_gemini_mobile
+                                    resp_area_gemini_ref[0] = resp_gemini_mobile
+                                    _c_gemini_mobile = context.client
+                                    def _btn_enviar_gemini_mobile_click():
                                         background_tasks.create(
-                                            _enviar_respuesta(_c_gemini, qid, resp_gemini_holder[0]),
-                                            name="enviar_gemini",
+                                            _enviar_respuesta(_c_gemini_mobile, qid, resp_gemini_mobile),
+                                            name="enviar_gemini_mobile",
                                         )
                                     ui.button(
                                         "Enviar esta respuesta",
-                                        on_click=_btn_enviar_gemini_click,
+                                        on_click=_btn_enviar_gemini_mobile_click,
                                     ).props("unelevated dense no-caps").style(
                                         "background:#1565c0;color:#fff;font-size:12px"
                                     )
@@ -1308,37 +1349,37 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#6d28d9;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
-                                    deepseek_spin = ui.element("div").style(
+                                    deepseek_spin_mobile = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
-                                    deepseek_spin_ref[0] = deepseek_spin
-                                    with deepseek_spin:
+                                    deepseek_spin_ref[1] = deepseek_spin_mobile
+                                    with deepseek_spin_mobile:
                                         ui.spinner(size="sm").style("color:#6d28d9")
                                         ui.label("generando...").style(
                                             "font-size:11px;color:#6d28d9"
                                         )
-                                    deepseek_err = ui.label("").style(
+                                    deepseek_err_mobile = ui.label("").style(
                                         "font-size:11px;color:#6d28d9"
                                     )
-                                    deepseek_err.set_visibility(False)
-                                    deepseek_err_ref[0] = deepseek_err
-                                    resp_deepseek = (
+                                    deepseek_err_mobile.set_visibility(False)
+                                    deepseek_err_ref[1] = deepseek_err_mobile
+                                    resp_deepseek_mobile = (
                                         ui.textarea(value="", placeholder="")
                                         .classes("w-full")
                                         .props("outlined rows=6")
                                         .style("font-size:12px")
                                     )
-                                    resp_deepseek_holder[0] = resp_deepseek
-                                    resp_area_deepseek_ref[0] = resp_deepseek
-                                    _c_deepseek = context.client
-                                    def _btn_enviar_deepseek_click():
+                                    resp_deepseek_holder[1] = resp_deepseek_mobile
+                                    resp_area_deepseek_ref[0] = resp_deepseek_mobile
+                                    _c_deepseek_mobile = context.client
+                                    def _btn_enviar_deepseek_mobile_click():
                                         background_tasks.create(
-                                            _enviar_respuesta(_c_deepseek, qid, resp_deepseek_holder[0]),
-                                            name="enviar_deepseek",
+                                            _enviar_respuesta(_c_deepseek_mobile, qid, resp_deepseek_mobile),
+                                            name="enviar_deepseek_mobile",
                                         )
                                     ui.button(
                                         "Enviar esta respuesta",
-                                        on_click=_btn_enviar_deepseek_click,
+                                        on_click=_btn_enviar_deepseek_mobile_click,
                                     ).props("unelevated dense no-caps").style(
                                         "background:#6d28d9;color:#fff;font-size:12px"
                                     )
