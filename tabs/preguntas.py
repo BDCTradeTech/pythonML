@@ -853,13 +853,18 @@ def build_tab_preguntas(container) -> None:
                             f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
                             f"Si la ficha técnica o la descripción de arriba tienen el dato pedido, "
                             f"usalo tal cual figura ahí. Si no está disponible, no inventes ni "
-                            f"adivines un dato específico (modelos, códigos, medidas): decí que vas "
-                            f"a confirmarlo.\n"
+                            f"adivines un dato específico (modelos, códigos, medidas). En ese caso "
+                            f"SIEMPRE tenés que escribir igual una frase breve confirmando que vas a "
+                            f"averiguarlo, por ejemplo \"Voy a confirmar ese dato y te aviso a la "
+                            f"brevedad.\" — nunca dejes el cuerpo de la respuesta vacío.\n"
                             f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
                         )
 
                         def _build_resp(body: str) -> str:
-                            partes = [saludo_completo, body.strip()]
+                            body = body.strip()
+                            if not body:
+                                return "⚠️ Respuesta vacía, no enviar"
+                            partes = [saludo_completo, body]
                             if frase_aleatoria:
                                 partes.append(frase_aleatoria)
                             if ml_nickname:
