@@ -980,123 +980,13 @@ def _mostrar_tabla_precios(
             _progress_ref["done"] = _progress_ref.get("done", 0) + 1
 
     def _enriquecer_items(items_subset: List[Dict[str, Any]], force: bool = False) -> None:
-        _t_ptw = time.perf_counter()
-        _items_para_ptw = [
-            r for r in items_subset
-            if (r.get("catalog_listing") is True or r.get("catalog_item_id") or bool(r.get("catalog_product_id")))
-            and str(r.get("status") or "").lower() == "active"
-            and str(r.get("catalog_item_id") or r.get("id") or "").strip()
-        ]
-        _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
-        if _cat_ids and access_token:
-            def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
-                _progress_fase("posición en catálogo", len(ids))
-                res: Dict[str, Optional[Dict]] = {}
-                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
-                    futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
-                    for fut in as_completed(futures):
-                        iid = futures[fut]
-                        try:
-                            res[iid] = fut.result()
-                        except Exception:
-                            res[iid] = None
-                        _progress_bump()
-                return res
-            _t_api_ptw = time.perf_counter()
-            _cat_pos_map = _cached_or_refresh_bulk(f"enriq_price_to_win_{_uid}", _cat_ids, _fetch_catalog_pos)
-            logging.warning(
-                f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
-                f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
-            )
-            for r in items_subset:
-                _rid = str(r.get("catalog_item_id") or r.get("id") or "")
-                if _rid in _cat_pos_map:
-                    d = _cat_pos_map[_rid] or {}
-                    r["catalog_status"]       = d.get("status")
-                    r["catalog_price_to_win"] = d.get("price_to_win")
-                    r["catalog_visit_share"]  = d.get("visit_share")
-                    r["catalog_reason"]       = d.get("reason")
-                    r["catalog_competitors"]  = d.get("competitors")
-
-            _our_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
-            for r in items_subset:
-                if r.get("catalog_status") != "competing":
-                    continue
-                _cpid_r = str(r.get("catalog_product_id") or "")
-                if not _cpid_r:
-                    continue
-                _comps_r = get_catalogo_competidores(_cpid_r)
-                if not _comps_r:
-                    continue
-                _sorted_r = sorted(_comps_r, key=lambda c: float(c.get("price") or 0))
-                for _pos_r, _c_r in enumerate(_sorted_r, 1):
-                    if str(_c_r.get("item_id") or "") in _our_ids_set:
-                        r["catalog_position"] = _pos_r
-                        break
-                else:
-                    _our_price = float(r.get("price") or 0)
-                    if _our_price > 0:
-                        r["catalog_position"] = sum(1 for _c in _sorted_r if float(_c.get("price") or 0) < _our_price) + 1
-
-        # catalog_status en None significa "no se pudo consultar a ML esta vuelta" (falla de
-        # red/403/timeout en price_to_win -- ver ml_get_item_price_to_win), no "no compite".
-        # No lo persistimos para no pisar en silencio el último valor bueno conocido.
-        _cs_rows = [
-            (r.get("catalog_status"), r.get("seller_sku"))
-            for r in items_subset
-            if r.get("seller_sku") and r.get("catalog_status") is not None
-        ]
-        if _cs_rows:
-            _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            _conn_cs = get_connection()
-            try:
-                _conn_cs.executemany(
-                    "UPDATE productos SET catalog_status=?, updated_at=? WHERE sku=? AND user_id=?",
-                    [(cs, _now_cs, sku, _uid) for cs, sku in _cs_rows],
-                )
-                _conn_cs.commit()
-            finally:
-                _conn_cs.close()
-
-        logging.warning(
-            f"[PERF-PRODUCTOS] fase='catalog_position_y_db' user_id={_perf_uid} "
-            f"tiempo={time.perf_counter() - _t_ptw:.3f}s items={len(_cat_ids)}"
-        )
-
-        _t_quality = time.perf_counter()
-        _items_para_quality = [
-            r for r in items_subset
-            if str(r.get("status") or "").lower() == "active"
-            and str(r.get("id") or "").strip()
-        ]
-        _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
-        if _quality_ids and access_token:
-            def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
-                _progress_fase("calidad de publicación", len(ids))
-                res: Dict[str, Dict] = {}
-                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
-                    futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
-                    for fut in as_completed(futures):
-                        iid = futures[fut]
-                        try:
-                            res[iid] = fut.result()
-                        except Exception:
-                            res[iid] = {}
-                        _progress_bump()
-                return res
-            _quality_map = _cached_or_refresh_bulk(f"enriq_quality_{_uid}", _quality_ids, _fetch_quality)
-            for r in items_subset:
-                _qid = str(r.get("id") or "")
-                if _qid in _quality_map:
-                    d = _quality_map[_qid] or {}
-                    r["quality_score"] = d.get("score")
-                    r["quality_level"] = d.get("level")
-
-        logging.warning(
-            f"[PERF-PRODUCTOS] fase='api_quality' user_id={_perf_uid} "
-            f"tiempo={time.perf_counter() - _t_quality:.3f}s items={len(_quality_ids)}"
-        )
-
+        # [FIX 2026-09-28 -- ranking "Ganando" comparaba precio de lista, no el real con promo]
+        # Este bloque de promociones (antes corría DESPUÉS del cálculo de catalog_position, más
+        # abajo) se adelanta acá para que r["price_promo"] ya exista cuando comparemos nuestra
+        # posición contra la competencia. Diagnóstico: GoogleTV-GA05662-US mostraba "Perdiendo
+        # #25" comparando el precio de lista ($238.299) contra la competencia, cuando el precio
+        # real con promo activa era $226.384 (confirmado contra GET /items/{id}/sale_price y
+        # contra price_to_win.current_price de ML) y la posición real da ~#2.
         _t_promo = time.perf_counter()
         _sp_item_ids = [str(r["id"]) for r in items_subset if r.get("id")]
         if _sp_item_ids and access_token:
@@ -1222,6 +1112,158 @@ def _mostrar_tabla_precios(
         logging.warning(
             f"[PERF-PRODUCTOS] fase='promo_calculo_y_db' user_id={_perf_uid} "
             f"tiempo={time.perf_counter() - _t_promo:.3f}s items={len(_sp_item_ids)}"
+        )
+
+        _t_ptw = time.perf_counter()
+        _items_para_ptw = [
+            r for r in items_subset
+            if (r.get("catalog_listing") is True or r.get("catalog_item_id") or bool(r.get("catalog_product_id")))
+            and str(r.get("status") or "").lower() == "active"
+            and str(r.get("catalog_item_id") or r.get("id") or "").strip()
+        ]
+        _cat_ids = list({str(r.get("catalog_item_id") or r.get("id") or "") for r in _items_para_ptw})
+        if _cat_ids and access_token:
+            def _fetch_catalog_pos(ids: List[str]) -> Dict[str, Optional[Dict]]:
+                _progress_fase("posición en catálogo", len(ids))
+                res: Dict[str, Optional[Dict]] = {}
+                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
+                    futures = {ex.submit(ml_get_item_price_to_win, access_token, iid): iid for iid in ids}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            res[iid] = fut.result()
+                        except Exception:
+                            res[iid] = None
+                        _progress_bump()
+                return res
+            _t_api_ptw = time.perf_counter()
+            _cat_pos_map = _cached_or_refresh_bulk(f"enriq_price_to_win_{_uid}", _cat_ids, _fetch_catalog_pos)
+            logging.warning(
+                f"[PERF-PRODUCTOS] fase='api_catalog_price_to_win' user_id={_perf_uid} "
+                f"tiempo={time.perf_counter() - _t_api_ptw:.3f}s items={len(_cat_ids)}"
+            )
+            for r in items_subset:
+                _rid = str(r.get("catalog_item_id") or r.get("id") or "")
+                if _rid in _cat_pos_map:
+                    d = _cat_pos_map[_rid] or {}
+                    r["catalog_status"]       = d.get("status")
+                    r["catalog_price_to_win"] = d.get("price_to_win")
+                    r["catalog_visit_share"]  = d.get("visit_share")
+                    r["catalog_reason"]       = d.get("reason")
+                    r["catalog_competitors"]  = d.get("competitors")
+
+            # [FIX 2026-09-28] Refresh oportunista (TTL 15min fresco / 60min stale-while-
+            # revalidate, mismo patrón que price_to_win/quality arriba) de catalogo_competidores
+            # para los catálogos donde estamos "competing" -- antes esta tabla solo se
+            # sincronizaba al detectar el catálogo por primera vez o al abrir a mano el popup
+            # "Ganando", así que podía quedar arbitrariamente vieja y la posición calculada
+            # contra ella no reflejaba precios actuales de la competencia.
+            _cpids_competing = list({
+                str(r.get("catalog_product_id") or "")
+                for r in items_subset
+                if r.get("catalog_status") == "competing" and r.get("catalog_product_id")
+            })
+            if _cpids_competing:
+                def _fetch_catalogo_comp_sync(cpids: List[str]) -> Dict[str, bool]:
+                    _progress_fase("competidores de catálogo", len(cpids))
+                    res: Dict[str, bool] = {}
+                    with ThreadPoolExecutor(max_workers=min(8, len(cpids))) as ex:
+                        futures = {ex.submit(ml_get_catalog_items, access_token, cpid): cpid for cpid in cpids}
+                        for fut in as_completed(futures):
+                            cpid = futures[fut]
+                            try:
+                                _comp_items = fut.result()
+                                if _comp_items:
+                                    upsert_catalogo_competidores(cpid, _comp_items)
+                                res[cpid] = True
+                            except Exception:
+                                res[cpid] = False
+                            _progress_bump()
+                    return res
+                _cached_or_refresh_bulk(f"enriq_catalogo_comp_{_uid}", _cpids_competing, _fetch_catalogo_comp_sync)
+
+            _our_ids_set = {iid for ids in _grp_ids_map.values() for iid in ids if iid}
+            for r in items_subset:
+                if r.get("catalog_status") != "competing":
+                    continue
+                _cpid_r = str(r.get("catalog_product_id") or "")
+                if not _cpid_r:
+                    continue
+                _comps_r = get_catalogo_competidores(_cpid_r)
+                if not _comps_r:
+                    continue
+                # [FIX 2026-09-28] Excluimos nuestros propios item_id (pueden ser publicaciones
+                # "hermanas" -- variantes de cuotas -- opt-in al mismo catálogo, ver diagnóstico
+                # GT11-SMX230) para no autocompetir, y comparamos siempre contra nuestro precio
+                # EFECTIVO (price_promo si hay promo activa, si no price) -- nunca contra el
+                # precio que haya quedado guardado para nuestra propia fila en el snapshot, que
+                # puede estar stale. Antes esto tenía dos ramas (posición directa si nos
+                # encontraba en el snapshot, o conteo con r["price"] de lista si no) -- ahora es
+                # una sola rama, siempre con el precio real.
+                _otros_r = [c for c in _comps_r if str(c.get("item_id") or "") not in _our_ids_set]
+                if not _otros_r:
+                    continue
+                _our_price = float(r.get("price_promo") or r.get("price") or 0)
+                if _our_price > 0:
+                    r["catalog_position"] = sum(1 for _c in _otros_r if float(_c.get("price") or 0) < _our_price) + 1
+
+        # catalog_status en None significa "no se pudo consultar a ML esta vuelta" (falla de
+        # red/403/timeout en price_to_win -- ver ml_get_item_price_to_win), no "no compite".
+        # No lo persistimos para no pisar en silencio el último valor bueno conocido.
+        _cs_rows = [
+            (r.get("catalog_status"), r.get("seller_sku"))
+            for r in items_subset
+            if r.get("seller_sku") and r.get("catalog_status") is not None
+        ]
+        if _cs_rows:
+            _now_cs = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            _conn_cs = get_connection()
+            try:
+                _conn_cs.executemany(
+                    "UPDATE productos SET catalog_status=?, updated_at=? WHERE sku=? AND user_id=?",
+                    [(cs, _now_cs, sku, _uid) for cs, sku in _cs_rows],
+                )
+                _conn_cs.commit()
+            finally:
+                _conn_cs.close()
+
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='catalog_position_y_db' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_ptw:.3f}s items={len(_cat_ids)}"
+        )
+
+        _t_quality = time.perf_counter()
+        _items_para_quality = [
+            r for r in items_subset
+            if str(r.get("status") or "").lower() == "active"
+            and str(r.get("id") or "").strip()
+        ]
+        _quality_ids = list({str(r["id"]) for r in _items_para_quality if r.get("id")})
+        if _quality_ids and access_token:
+            def _fetch_quality(ids: List[str]) -> Dict[str, Dict]:
+                _progress_fase("calidad de publicación", len(ids))
+                res: Dict[str, Dict] = {}
+                with ThreadPoolExecutor(max_workers=min(16, len(ids))) as ex:
+                    futures = {ex.submit(ml_get_item_performance, access_token, iid): iid for iid in ids}
+                    for fut in as_completed(futures):
+                        iid = futures[fut]
+                        try:
+                            res[iid] = fut.result()
+                        except Exception:
+                            res[iid] = {}
+                        _progress_bump()
+                return res
+            _quality_map = _cached_or_refresh_bulk(f"enriq_quality_{_uid}", _quality_ids, _fetch_quality)
+            for r in items_subset:
+                _qid = str(r.get("id") or "")
+                if _qid in _quality_map:
+                    d = _quality_map[_qid] or {}
+                    r["quality_score"] = d.get("score")
+                    r["quality_level"] = d.get("level")
+
+        logging.warning(
+            f"[PERF-PRODUCTOS] fase='api_quality' user_id={_perf_uid} "
+            f"tiempo={time.perf_counter() - _t_quality:.3f}s items={len(_quality_ids)}"
         )
 
         _enriquecidos_ids.update(str(r.get("id")) for r in items_subset if r.get("id"))
