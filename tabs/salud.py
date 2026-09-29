@@ -211,6 +211,20 @@ def _descripcion_dim(items: List[dict]) -> Dict[str, Any]:
     }
 
 
+def _fotos_dim(items: List[dict]) -> Dict[str, Any]:
+    """Mismo split que _gtin_dim: propias (accionable) vs. catálogo (informativo --
+    verificado en vivo 2026-09-29: los pictures[].id de un catalog_listing son idénticos
+    a los de su catalog_product). `orden` = mínimo de propias (sort), -1 si no hay."""
+    def _grupo(cat: bool) -> Dict[str, Any]:
+        det = [(it.get("item_id"), it["fotos_cantidad"]) for it in items
+               if bool(it.get("catalog_listing")) == cat and it.get("fotos_cantidad") is not None]
+        vals = [n for _, n in det]
+        return {"min": min(vals) if vals else None, "max": max(vals) if vals else None, "detalle": det}
+    prop, cat = _grupo(False), _grupo(True)
+    return {"propias": prop, "catalogo": cat,
+            "orden": float(prop["min"]) if prop["min"] is not None else -1.0}
+
+
 def _cat_dim(items: List[dict], val_fn, etiquetas: Dict[str, str], color_fn) -> Dict[str, Any]:
     vals = [val_fn(it) for it in items if val_fn(it) is not None]
     total = len(vals)
@@ -394,7 +408,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         # el popup en cuanto ese gap se resuelva, sin tocar nada de esta dimensión.
         "descripcion": _descripcion_dim(items),
         "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
-        "fotos": _magnitud_dim(items, lambda it: it.get("fotos_cantidad")),
+        "fotos": _fotos_dim(items),
         "mayorista": _mayorista_dim(items, (prod_meta.get(sku) or {}).get("stock")),
         "flex": _bool_dim(items, lambda it: _perf_status_ok(it.get("flex_status"))),
         "retiro_persona": _bool_dim(items, lambda it: bool(it.get("retiro_persona")) if it.get("retiro_persona") is not None else None),
@@ -2262,7 +2276,7 @@ def build_tab_salud(container) -> None:
 
                 contador_lbl.set_text(
                     f"mostrando {len(visibles)} de {len(filas_todas)} · "
-                    "👤 publicación propia · 🏬 publicación catálogo · "
+                    "👤 publicación propia · 🏬 publicación catálogo (en Fotos y GTIN/Descripción es informativo) · "
                     "❗ obligatoria · 🔧 opcional (en Car. faltantes, 🏬 va sin separar "
                     "obligatoria/opcional -- informativo, nunca cuenta)"
                 )
@@ -2412,6 +2426,30 @@ def build_tab_salud(container) -> None:
                                                             with ui.row().classes("items-center gap-0.5") as fila_cat:
                                                                 ui.icon("storefront", size="12px").style(f"color:{color_cat}")
                                                                 ui.label(f"{co}/{ct}").classes("text-xs").style(f"color:{color_cat}")
+                                                            fila_cat.tooltip(tooltip)
+                                            elif name == "fotos":
+                                                d = row["dims"].get("fotos")
+                                                p, c = (d or {}).get("propias"), (d or {}).get("catalogo")
+                                                if not d or (p["min"] is None and c["min"] is None):
+                                                    ui.label("—")
+                                                else:
+                                                    def _rng(g): return str(g["min"]) if g["min"] == g["max"] else f"{g['min']}–{g['max']}"
+                                                    def _det(g): return ", ".join(f"{i} {n}" for i, n in g["detalle"])
+                                                    color_prop = _GREY if p["min"] is None else (_BAD if p["min"] == 0 else _OK)
+                                                    tooltip = (
+                                                        f"Propias: {_rng(p) if p['min'] is not None else '—'} fotos ({_det(p)}) · "
+                                                        f"Catálogo: {_rng(c) if c['min'] is not None else '—'} fotos "
+                                                        f"(informativo, heredadas del producto de catálogo)"
+                                                    )
+                                                    with ui.column().classes("gap-0 items-center"):
+                                                        with ui.row().classes("items-center gap-0.5") as fila_prop:
+                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(_rng(p) if p["min"] is not None else "—").classes("text-xs font-semibold").style(f"color:{color_prop}")
+                                                        fila_prop.tooltip(tooltip)
+                                                        if c["min"] is not None:
+                                                            with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                                ui.icon("storefront", size="12px").style(f"color:{_GREY}")
+                                                                ui.label(_rng(c)).classes("text-xs").style(f"color:{_GREY}")
                                                             fila_cat.tooltip(tooltip)
                                             else:
                                                 d = row["dims"].get(name)
