@@ -2441,7 +2441,9 @@ def build_tab_salud(container) -> None:
                                                                     ui.icon("person", size="10px").style(f"color:{_GREY}")
                                                                     ui.label(str(opc)).classes("text-xs").style(f"color:{_GREY}")
                                                                 fila_opc.tooltip(tooltip)
-                                                            if cat:
+                                                            if cat and not (obl or opc):
+                                                                # catálogo (verde) solo cuando no hay faltantes propias; el tooltip
+                                                                # sigue mostrando el detalle completo, catálogo incluido
                                                                 with ui.row().classes("items-center gap-0.5") as fila_cat:
                                                                     ui.icon("storefront", size="12px").style(f"color:{_OK}")
                                                                     ui.label(str(cat)).classes("text-xs font-semibold").style(f"color:{_OK}")
