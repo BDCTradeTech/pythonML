@@ -757,7 +757,7 @@ def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_i
         "margen_negativo": ev.get("margen_negativo"),
         "tiers_eval": [
             {k: t.get(k) for k in ("quantity", "estado", "extra", "pct_cargado", "pct_calculado", "diff_pp",
-                                   "sin_recomendacion", "sin_rec_motivo", "margen_negativo")
+                                   "sin_recomendacion", "sin_rec_motivo", "margen_negativo", "margen_cargado")
              if t.get(k) is not None}
             for t in ev["tiers"]
         ],
@@ -887,6 +887,13 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             payload = _mayorista_revisar_payload(
                 token, item, prices_body_para_revisar, user_id, data["sku"], auto_corregir=auto_corregir,
                 pendientes=correcciones_pendientes,
+            )
+            # stock de ESTA publicación y si tiene tiers legacy (monto absoluto): los usa el ícono 🔧
+            # de la tabla (tabs/salud_mayorista_fix.py) sin llamar a ML
+            payload.setdefault("stock", item.get("available_quantity") or 0)
+            payload["legacy_abs"] = any(
+                (p.get("conditions") or {}).get("min_purchase_unit") is not None
+                for p in (prices_body_para_revisar or {}).get("prices") or []
             )
             data["mayorista_revisar_json"] = json.dumps(payload, ensure_ascii=False)
         except Exception as e:

@@ -36,6 +36,7 @@ from ml_api import (
     ml_write_price_per_quantity,
 )
 from tabs.salud_reg import REGULATORIOS_SET, abrir_popup_reg
+from tabs.salud_mayorista_fix import abrir_dialogo_mayorista, motivos_mayorista_fix, render_iconos as _render_iconos_mayfix
 from salud_audit import (
     _DESVIO_PP_MIN,
     _DESVIO_RATIO_MIN,
@@ -534,6 +535,8 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "atributos_solo_catalogo_total": total_solo_catalogo,
         "atributos_bloqueados_total": sum(bloqueados_vals) if bloqueados_vals else 0,
         "puntaje_ml": puntaje,
+        # 🔧 Mayorista (condición del ícono, solo snapshot, ver tabs/salud_mayorista_fix.py)
+        "mayfix": motivos_mayorista_fix(items, (prod_meta.get(sku) or {}).get("stock")),
     }
 
 
@@ -1744,6 +1747,24 @@ def build_tab_salud(container) -> None:
 
                 await abrir_popup_reg(uid, sku, row_actual["producto"], snap_date, _tras_cerrar)
 
+            async def _abrir_mayfix(sku: str) -> None:
+                row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
+                if not row_actual:
+                    return
+
+                def _tras_cerrar(resultado_audit: Dict[str, Any]) -> None:
+                    prod_meta_single = {sku: {
+                        "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
+                    }}
+                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                    for idx, f in enumerate(filas_todas):
+                        if f["sku"] == sku:
+                            filas_todas[idx] = nueva_fila
+                            break
+                    _render()
+
+                await abrir_dialogo_mayorista(uid, sku, row_actual["producto"], snap_date, _tras_cerrar)
+
             async def _abrir_popup(sku: str) -> None:
                 row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
                 if not row_actual:
@@ -2625,6 +2646,16 @@ def build_tab_salud(container) -> None:
                                                                 ui.icon("storefront", size="12px").style(f"color:{_GREY}")
                                                                 ui.label(_rng(c)).classes("text-xs").style(f"color:{_GREY}")
                                                             fila_cat.tooltip(tooltip)
+                                            elif name == "mayorista":
+                                                d = row["dims"].get(name)
+                                                with ui.row().classes("items-center justify-center gap-1 no-wrap"):
+                                                    if d:
+                                                        lbl = ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
+                                                        if d.get("tooltip"):
+                                                            lbl.tooltip(d["tooltip"])
+                                                    else:
+                                                        ui.label("—")
+                                                    _render_iconos_mayfix(row.get("mayfix"), lambda s=row["sku"]: _abrir_mayfix(s))
                                             else:
                                                 d = row["dims"].get(name)
                                                 if d:
