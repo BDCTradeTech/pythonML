@@ -35,6 +35,7 @@ from ml_api import (
     ml_write_item_description,
     ml_write_price_per_quantity,
 )
+from tabs.salud_reg import REGULATORIOS_SET, abrir_popup_reg
 from salud_audit import (
     _DESVIO_PP_MIN,
     _DESVIO_RATIO_MIN,
@@ -472,6 +473,11 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     propias_editables_ids: set = set()
     propias_opcionales_ids: set = set()
     catalogo_ids: set = set()
+    # Regulatorios/homologación (lista única en salud_reg.REGULATORIOS_ATTR_IDS): NO cuentan en
+    # Caracterist., viven en la columna Reg. {attr_id: nombre}
+    reg_prop_req: Dict[str, str] = {}
+    reg_prop_opc: Dict[str, str] = {}
+    reg_cat: Dict[str, str] = {}
     tiene_json = False
     for it in items:
         raw = it.get("atributos_faltantes_json")
@@ -485,13 +491,21 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         es_catalogo = bool(it.get("catalog_listing"))
         for entry in (parsed or {}).get("editables") or []:
             aid = entry.get("id")
-            if aid:
+            if aid in REGULATORIOS_SET:
+                (reg_cat if es_catalogo else reg_prop_req)[aid] = entry.get("name") or aid
+            elif aid:
                 (catalogo_ids if es_catalogo else propias_editables_ids).add(aid)
         for entry in (parsed or {}).get("opcionales") or []:
             aid = entry.get("id")
-            if aid:
+            if aid in REGULATORIOS_SET:
+                (reg_cat if es_catalogo else reg_prop_opc)[aid] = entry.get("name") or aid
+            elif aid:
                 (catalogo_ids if es_catalogo else propias_opcionales_ids).add(aid)
     catalogo_ids -= propias_editables_ids | propias_opcionales_ids
+    reg_prop_opc = {k: v for k, v in reg_prop_opc.items() if k not in reg_prop_req}
+    reg_cat = {k: v for k, v in reg_cat.items() if k not in reg_prop_req and k not in reg_prop_opc}
+    regulatoria = ({"propias_req": reg_prop_req, "propias_opc": reg_prop_opc, "solo_catalogo": reg_cat}
+                   if tiene_json else None)
     total_editables = len(propias_editables_ids) if tiene_json else (sum(editables_vals) if editables_vals else None)
     total_opcionales = len(propias_opcionales_ids) if tiene_json else None
     total_solo_catalogo = len(catalogo_ids) if tiene_json else None
@@ -513,7 +527,8 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "n_items": n_items,
         "n_errores": len(errores),
         "dims": dims,
-        "regulatoria_texto": "No determinable",
+        "regulatoria": regulatoria,
+        "regulatoria_propias_total": (len(reg_prop_req) + len(reg_prop_opc)) if regulatoria is not None else None,
         "atributos_editables_total": total_editables,
         "atributos_opcionales_total": total_opcionales,
         "atributos_solo_catalogo_total": total_solo_catalogo,
@@ -627,7 +642,7 @@ _COLUMNS = [
     {"name": "retiro_persona", "label": "Retiro", "tip": "Retiro en persona", "field": "retiro_persona", "align": "center", "w": "60px"},
     {"name": "garantia", "label": "Garantía", "field": "garantia", "align": "center", "w": "75px"},
     {"name": "envio_gratis", "label": "Envío gratis", "field": "envio_gratis", "align": "center", "w": "85px"},
-    {"name": "regulatoria", "label": "Reg.", "tip": "Regulatoria", "field": "regulatoria", "align": "center", "w": "50px", "sortable": False},
+    {"name": "regulatoria", "label": "Reg.", "tip": "Regulatoria", "field": "regulatoria", "align": "center", "w": "55px"},
     {"name": "condicion", "label": "Condición", "field": "condicion", "align": "center", "w": "75px"},
     {"name": "atributos_editables", "label": "Caracterist.", "tip": "Características faltantes", "field": "atributos_editables", "align": "center", "w": "80px"},
     {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "center", "w": "95px"},
@@ -678,7 +693,8 @@ def _sort_key(row: dict, col: str):
         v = row.get("stock")
         return v if v is not None else -1
     if col == "regulatoria":
-        return 0
+        v = row.get("regulatoria_propias_total")
+        return v if v is not None else -1
     d = row.get("dims", {}).get(col)
     return d["orden"] if d else -1.0
 
@@ -790,6 +806,8 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         faltantes = faltantes_raw.get("editables", [])
         for f in faltantes:
             aid, nombre = f.get("id"), f.get("name") or f.get("id")
+            if aid in REGULATORIOS_SET:
+                continue  # viven en la columna/popup Reg. (salud_reg.py)
             if it.get("catalog_listing"):
                 # Mismo bloqueo que la descripción (ver más abajo): ML devuelve 200 en el
                 # PUT de un atributo sobre una publicación de catálogo pero no lo aplica
@@ -816,6 +834,8 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
         if not it.get("catalog_listing"):
             for f in faltantes_raw.get("opcionales", []):
                 aid, nombre = f.get("id"), f.get("name") or f.get("id")
+                if aid in REGULATORIOS_SET:
+                    continue
                 opcionales.append({
                     "campo": nombre, "attr_id": aid, "item_id": iid,
                     "descriptor": desc, "tipo": "atributo",
@@ -829,6 +849,8 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
             # opcional bloqueado por catálogo, no solo GTIN.
             for f in faltantes_raw.get("opcionales", []):
                 aid, nombre = f.get("id"), f.get("name") or f.get("id")
+                if aid in REGULATORIOS_SET:
+                    continue
                 normal_hechos.append({"tipo": "atributo_catalogo", "item_id": iid, "descriptor": desc, "campo": nombre})
 
     # --- descripcion ---
@@ -1704,6 +1726,24 @@ def build_tab_salud(container) -> None:
                     sort_ref["asc"] = True
                 _render()
 
+            async def _abrir_popup_reg_sku(sku: str) -> None:
+                row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
+                if not row_actual:
+                    return
+
+                def _tras_cerrar(resultado_audit: Dict[str, Any]) -> None:
+                    prod_meta_single = {sku: {
+                        "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
+                    }}
+                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                    for idx, f in enumerate(filas_todas):
+                        if f["sku"] == sku:
+                            filas_todas[idx] = nueva_fila
+                            break
+                    _render()
+
+                await abrir_popup_reg(uid, sku, row_actual["producto"], snap_date, _tras_cerrar)
+
             async def _abrir_popup(sku: str) -> None:
                 row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
                 if not row_actual:
@@ -2415,8 +2455,37 @@ def build_tab_salud(container) -> None:
                                             elif name == "variantes":
                                                 ui.label(str(row["n_items"]))
                                             elif name == "regulatoria":
-                                                lbl_reg = ui.label("N/D").style(f"color:{_GREY}")
-                                                lbl_reg.tooltip(row["regulatoria_texto"])
+                                                reg = row.get("regulatoria")
+                                                if reg is None:
+                                                    ui.label("—")
+                                                else:
+                                                    req, opc_r, solo_cat = reg["propias_req"], reg["propias_opc"], reg["solo_catalogo"]
+                                                    tooltip = (
+                                                        f"Faltan en tus publicaciones: {', '.join({**req, **opc_r}.values()) or 'ninguno'} · "
+                                                        f"Solo faltan en catálogo (depende de ML, no accionable): {', '.join(solo_cat.values()) or 'ninguno'} · "
+                                                        "Click para cargar regulaciones y homologaciones"
+                                                    )
+                                                    with ui.column().classes("gap-0 items-center cursor-pointer") as celda_reg:
+                                                        if not (req or opc_r or solo_cat):
+                                                            ui.label("OK").classes("text-xs font-semibold").style(f"color:{_OK}")
+                                                        else:
+                                                            if req:
+                                                                with ui.row().classes("items-center gap-0.5"):
+                                                                    ui.icon("priority_high", size="12px").style(f"color:{_BAD}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_BAD}")
+                                                                    ui.label(str(len(req))).classes("text-xs font-semibold").style(f"color:{_BAD}")
+                                                            if opc_r:
+                                                                # ámbar (mismo amarillo del Puntaje 60-69) para que las faltantes propias de Reg. se destaquen
+                                                                with ui.row().classes("items-center gap-0.5"):
+                                                                    ui.icon("build", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.label(str(len(opc_r))).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                            if solo_cat and not (req or opc_r):
+                                                                with ui.row().classes("items-center gap-0.5"):
+                                                                    ui.icon("storefront", size="12px").style(f"color:{_OK}")
+                                                                    ui.label(str(len(solo_cat))).classes("text-xs font-semibold").style(f"color:{_OK}")
+                                                    celda_reg.tooltip(tooltip)
+                                                    celda_reg.on("click", lambda s=row["sku"]: _abrir_popup_reg_sku(s))
                                             elif name == "atributos_editables":
                                                 obl = row.get("atributos_editables_total")
                                                 opc = row.get("atributos_opcionales_total")
