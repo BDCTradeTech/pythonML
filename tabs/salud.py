@@ -631,23 +631,31 @@ _COLUMNS = [
 ]
 
 
+_PUNTAJE_NARANJA = "#EA7317"
 _PUNTAJE_AMARILLO = "#CA8A04"
-_PUNTAJE_VERDE_CLARO = "#65A30D"
+_PUNTAJE_LIMA = "#65A30D"
+_PUNTAJE_VERDE = "#22A045"
+_PUNTAJE_VERDE_OSCURO = "#14532D"
 _PUNTAJE_AZUL = "#1D4ED8"
 
 
 def _puntaje_nivel(v: float) -> Tuple[str, str]:
     """(color, banda) del puntaje /performance de ML (0-100). Bandas definidas por Diego
-    (2026-09-29): <50 rojo · 50-68 amarillo · 69-72 verde claro · 73-99 verde oscuro ·
-    100 azul. No son los niveles de ML (Básica/Estándar/Profesional): ML no publica cortes."""
+    (2026-09-29): <50 rojo · 50-59 naranja · 60-69 amarillo · 70-79 lima · 80-89 verde ·
+    90-99 verde oscuro · 100 azul. No son los niveles de ML (Básica/Estándar/Profesional):
+    ML no publica cortes numéricos."""
     if v < 50:
         return _BAD, "rojo (<50)"
-    if v < 69:
-        return _PUNTAJE_AMARILLO, "amarillo (50-68)"
-    if v < 73:
-        return _PUNTAJE_VERDE_CLARO, "verde claro (69-72)"
+    if v < 60:
+        return _PUNTAJE_NARANJA, "naranja (50-59)"
+    if v < 70:
+        return _PUNTAJE_AMARILLO, "amarillo (60-69)"
+    if v < 80:
+        return _PUNTAJE_LIMA, "lima (70-79)"
+    if v < 90:
+        return _PUNTAJE_VERDE, "verde (80-89)"
     if v < 100:
-        return _OK, "verde oscuro (73-99)"
+        return _PUNTAJE_VERDE_OSCURO, "verde oscuro (90-99)"
     return _PUNTAJE_AZUL, "azul (100)"
 
 
@@ -2341,7 +2349,8 @@ def build_tab_salud(container) -> None:
                         "Propia = tus publicaciones (accionable). Catálogo = copias de catálogo: "
                         "en Fotos, GTIN y Descripción es informativo, ML no permite editarlo. "
                         "En Caracterist., el catálogo va sin separar obligatoria/opcional y nunca cuenta. "
-                        "Puntaje ML: rojo <50 · amarillo 50-68 · verde claro 69-72 · verde oscuro 73-99 · azul 100."
+                        "Puntaje ML: rojo <50 · naranja 50-59 · amarillo 60-69 · lima 70-79 · verde 80-89 · verde oscuro 90-99 · azul 100. "
+                        "Caracterist.: el conteo de catálogo va en verde (depende de ML, no accionable)."
                     )
 
                 header_div.clear()
@@ -2413,7 +2422,7 @@ def build_tab_salud(container) -> None:
                                                     tooltip = (
                                                         f"{obl or 0} obligatoria(s) faltante(s) en tus publicaciones (accionable, cuenta para el score) · "
                                                         f"{opc or 0} opcional(es) sin completar en tus publicaciones (informativo, no cuenta) · "
-                                                        f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (informativo, ML no permite editarlo, no cuenta)"
+                                                        f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (depende de ML, no accionable, no cuenta)"
                                                     )
                                                     if not (obl or 0) and not (opc or 0) and not (cat or 0):
                                                         ok_lbl = ui.label("OK").classes("text-xs font-semibold").style(f"color:{_OK}")
@@ -2434,8 +2443,8 @@ def build_tab_salud(container) -> None:
                                                                 fila_opc.tooltip(tooltip)
                                                             if cat:
                                                                 with ui.row().classes("items-center gap-0.5") as fila_cat:
-                                                                    ui.icon("storefront", size="12px").style(f"color:{_GREY}")
-                                                                    ui.label(str(cat)).classes("text-xs").style(f"color:{_GREY}")
+                                                                    ui.icon("storefront", size="12px").style(f"color:{_OK}")
+                                                                    ui.label(str(cat)).classes("text-xs font-semibold").style(f"color:{_OK}")
                                                                 fila_cat.tooltip(tooltip)
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
