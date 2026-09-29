@@ -23,12 +23,13 @@ Dos partes:
 """
 from __future__ import annotations
 
+import html
 import json
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
-from nicegui import run, ui
+from nicegui import background_tasks, run, ui
 
 from db import get_producto_costo
 from margen import _calc_margen_prod, _load_params_prod
@@ -436,7 +437,7 @@ _OPCIONES = {"aplicar": "Aplicar propuesta", "quitar": "Quitar mayorista", "no_t
 
 
 def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
-                 on_opcion: Optional[Callable[[], Any]] = None) -> None:
+                 on_opcion: Optional[Callable[[], Any]] = None, bloqueado: bool = False) -> None:
     tipo_txt = "cuotas" if plan["tipo"] == "cuotas" else "contado"
     prop_txt = "catálogo" if plan["catalogo"] else "propia"
     with ui.card().classes("w-full gap-1 p-2").props("flat bordered"):
@@ -463,6 +464,8 @@ def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
                 ui.icon("trending_down", size="16px").style(f"color:{_BAD}")
                 ui.label("Algún tier nuevo da margen negativo (informativo, no bloquea):").classes("text-xs").style(f"color:{_BAD}")
                 sel = ui.toggle(_OPCIONES, value=plan["opcion"]).props("dense size=sm no-caps")
+                if bloqueado:
+                    sel.props("disable")
 
                 def _cambio(e, plan=plan):
                     plan["opcion"] = e.value
@@ -501,6 +504,41 @@ def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
         ui.table(columns=cols, rows=rows, row_key="q").props("dense flat hide-bottom").classes("w-full text-xs")
 
 
+def _etiqueta_plan(plan: Dict[str, Any]) -> str:
+    return f"{plan['item_id']} · {'catálogo' if plan['catalogo'] else 'propia'} · {'cuotas' if plan['tipo'] == 'cuotas' else 'contado'}"
+
+
+def armar_notificacion(planes: List[Dict[str, Any]], resultados: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """Arma la notificación final del diálogo. Devuelve los kwargs de ui.notify:
+    todo OK -> verde, se cierra sola (~6 s); cualquier error o publicación salteada por
+    'cambió mientras mirabas' -> rojo, con el detalle de cada una, NO se cierra sola."""
+    ok = [p for p in planes if resultados.get(p["item_id"], {}).get("ok")]
+    fallas = [(p, resultados[p["item_id"]]) for p in planes if p["item_id"] in resultados and not resultados[p["item_id"]]["ok"]]
+    sin_cambios = [p for p in planes if p["item_id"] not in resultados and not p["error"]]
+    no_evaluables = [p for p in planes if p["item_id"] not in resultados and p["error"]]
+    extra = []
+    if sin_cambios:
+        extra.append(f"{len(sin_cambios)} sin cambios o sin mayorista")
+    if no_evaluables:
+        extra.append(f"{len(no_evaluables)} no evaluable(s) (" + "; ".join(f"{_etiqueta_plan(p)}: {p['error']}" for p in no_evaluables) + ")")
+
+    def plural(n: int) -> str:
+        return f"{n} publicaci{'ón' if n == 1 else 'ones'}"
+
+    if not fallas:
+        msg = f"Mayorista actualizado en {plural(len(ok))}" + (" — " + " · ".join(extra) if extra else "")
+        return {"message": msg, "type": "positive", "position": "bottom", "timeout": 6000}
+    lineas = [f"Mayorista: {plural(len(fallas))} con problemas, {len(ok)} salieron bien."]
+    for p, r in fallas:
+        motivo = ("Salteada: " + r["msg"]) if r.get("cambio") else r["msg"]
+        lineas.append(f"• {_etiqueta_plan(p)} — {motivo}")
+    if extra:
+        lineas.append(" · ".join(extra))
+    cuerpo = "<br>".join(html.escape(l) for l in lineas)
+    return {"message": cuerpo, "type": "negative", "position": "bottom", "timeout": 0, "close_button": "Cerrar",
+            "multi_line": True, "html": True}
+
+
 async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha: Optional[str],
                                   al_cerrar: Callable[[Dict[str, Any]], None]) -> None:
     """Abre el diálogo del 🔧 para `sku`. `al_cerrar(resultado_audit)` se llama con el diálogo ya
@@ -508,7 +546,8 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
     from tabs.salud_reg import _items_del_sku  # import diferido, mismo patrón que abrir_popup_reg
     from salud_audit import audit_sku
 
-    estado: Dict[str, Any] = {"escribio": False, "planes": [], "resultados": {}}
+    estado: Dict[str, Any] = {"escribio": False, "planes": [], "resultados": {}, "aplicando": False,
+                              "progreso": (0, 0), "cuotas_abierto": False}
     with ui.dialog().props("persistent") as dlg, ui.card().classes("w-[980px] max-w-full gap-2"):
         dlg.open()
         with ui.row().classes("items-center gap-2 w-full"):
@@ -544,15 +583,34 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
                 ui.label("Este SKU no tiene publicaciones activas gold_special / gold_pro.").classes("text-sm text-gray-500")
             elif not any(p["hay_cambios"] for p in planes) and not any(p["error"] for p in planes):
                 ui.label("✅ Ya está correcto: no hay nada que cambiar.").classes("text-sm font-semibold").style(f"color:{_OK}")
-            for p in planes:
-                _render_plan(p, estado["resultados"].get(p["item_id"]), _pintar)
+            bloq = estado["aplicando"]
+            for p in [p for p in planes if p["tipo"] != "cuotas"]:
+                _render_plan(p, estado["resultados"].get(p["item_id"]), _pintar, bloq)
+            cuotas = [p for p in planes if p["tipo"] == "cuotas"]
+            if cuotas:
+                # colapsado por default; NO cambia qué se aplica (efectivo() mira todos los planes)
+                m = sum(1 for p in cuotas if efectivo(p) is not None or estado["resultados"].get(p["item_id"], {}).get("ok"))
+                resumen = f"se quita mayorista en {m}" if m else "sin cambios"
+                if any(p["error"] for p in cuotas):
+                    resumen += f" · {sum(1 for p in cuotas if p['error'])} con error"
+                with ui.expansion(f"Cuotas ({len(cuotas)} publicaci{'ón' if len(cuotas) == 1 else 'ones'}) — {resumen}",
+                                  icon="credit_card", value=estado["cuotas_abierto"]).classes("w-full border rounded") as exp:
+                    exp.on_value_change(lambda e: estado.__setitem__("cuotas_abierto", e.value))
+                    for p in cuotas:
+                        _render_plan(p, estado["resultados"].get(p["item_id"]), _pintar, bloq)
+        if estado["aplicando"]:
+            hechas, total = estado["progreso"]
+            with info:
+                with ui.row().classes("items-center gap-2"):
+                    ui.spinner(size="sm")
+                    ui.label(f"Aplicando… ({hechas} de {total}) — no cierres esta ventana").classes("text-sm font-semibold")
         pendientes = [p for p in planes if efectivo(p) is not None and p["item_id"] not in estado["resultados"]]
         con_selector = [p for p in planes if p["hay_cambios"] and not p["error"]]
         if con_selector:
             cnt = {k: sum(1 for p in con_selector if p["opcion"] == k) for k in _OPCIONES}
             with info:
                 ui.label("Resumen: " + " · ".join(f"{cnt[k]} {_OPCIONES[k].lower()}" for k in _OPCIONES)).classes("text-sm font-semibold")
-        btn_aplicar.set_visibility(bool(pendientes))
+        btn_aplicar.set_visibility(bool(pendientes) or estado["aplicando"])
         btn_aplicar.set_text(f"Aplicar a {len(pendientes)} publicaci{'ón' if len(pendientes) == 1 else 'ones'}")
         btn_cerrar.set_text("Cancelar" if pendientes else "Cerrar")
 
@@ -569,33 +627,52 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
         estado["resultados"] = {}
         _pintar()
 
+    def _refrescar_en_segundo_plano() -> None:
+        """audit_sku + refresco de la fila, sin demorar la notificación ni el cierre del diálogo."""
+        async def _tarea() -> None:
+            try:
+                seller_id = await run.io_bound(ml_get_user_id, token)
+                resultado = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+                if not resultado.get("error"):
+                    al_cerrar(resultado)
+            except Exception as e:  # noqa: BLE001 -- el refresco es cosmético, no debe romper nada
+                ui.notify(f"No se pudo refrescar la fila de {sku}: {e}", type="warning", position="bottom")
+        background_tasks.create(_tarea())
+
     async def _aplicar() -> None:
+        if estado["aplicando"]:
+            return  # ya está escribiendo: ignorar un segundo click
+        pendientes = [p for p in estado["planes"] if efectivo(p) is not None and p["item_id"] not in estado["resultados"]]
+        if not pendientes:
+            return
+        estado["aplicando"] = True
+        estado["progreso"] = (0, len(pendientes))
         btn_aplicar.props("loading disable")
         btn_cerrar.props("disable")
+        _pintar()
         try:
-            for p in estado["planes"]:
-                if efectivo(p) is None or p["item_id"] in estado["resultados"]:
-                    continue
+            for n, p in enumerate(pendientes):
                 res = await run.io_bound(aplicar_publicacion, token, uid, sku, p)
                 estado["resultados"][p["item_id"]] = res
                 if res["ok"]:
                     estado["escribio"] = True
+                estado["progreso"] = (n + 1, len(pendientes))
                 _pintar()
+        except Exception as e:  # noqa: BLE001 -- una excepción inesperada no puede dejar la ventana colgada
+            for p in pendientes:
+                estado["resultados"].setdefault(p["item_id"], {"ok": False, "cambio": False, "msg": f"error inesperado: {e}"})
         finally:
-            btn_aplicar.props(remove="loading disable")
-            btn_cerrar.props(remove="disable")
-            _pintar()
+            estado["aplicando"] = False
+        notif = armar_notificacion(estado["planes"], estado["resultados"])
+        dlg.close()
+        ui.notify(**notif)
+        if estado["escribio"]:
+            _refrescar_en_segundo_plano()
 
     async def _cerrar() -> None:
-        if not estado["escribio"]:
-            dlg.close()
-            return
-        btn_cerrar.props("loading disable")
-        seller_id = await run.io_bound(ml_get_user_id, token)
-        resultado = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
         dlg.close()
-        if not resultado.get("error"):
-            al_cerrar(resultado)
+        if estado["escribio"]:
+            _refrescar_en_segundo_plano()
 
     btn_aplicar.on_click(_aplicar)
     btn_cerrar.on_click(_cerrar)
