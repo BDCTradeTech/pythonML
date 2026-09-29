@@ -446,6 +446,13 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
     return {"texto": texto, "color": color, "orden": n / total, "tooltip": tooltip}
 
 
+def _puntaje_de_items(items: List[dict]) -> Optional[int]:
+    """Puntaje ML del SKU = promedio (redondeado) del performance_score de sus publicaciones que
+    lo tienen. Es el valor de la columna Puntaje ML y la base del bloque de puntaje del encabezado."""
+    scores = [it.get("performance_score") for it in items if it.get("performance_score") is not None]
+    return round(sum(scores) / len(scores)) if scores else None
+
+
 def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict[str, Any]:
     n_items = len(items)
 
@@ -532,8 +539,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     total_opcionales = len(propias_opcionales_ids) if tiene_json else None
     total_solo_catalogo = len(catalogo_ids) if tiene_json else None
 
-    scores = [it.get("performance_score") for it in items if it.get("performance_score") is not None]
-    puntaje = round(sum(scores) / len(scores)) if scores else None
+    puntaje = _puntaje_de_items(items)
 
     errores = [it for it in items if it.get("error")]
 
@@ -722,26 +728,25 @@ _PUNTAJE_BANDAS = (
 )
 
 
-def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
-    """Distribución del Puntaje ML por PUBLICACIÓN activa con puntaje (el score es por item en
-    salud_item_snapshots). Toda la cuenta: no depende de los filtros de la tabla."""
+def _puntaje_distribucion(filas: List[dict]) -> Dict[str, Any]:
+    """Distribución del Puntaje ML por SKU, con el MISMO valor de la columna Puntaje ML
+    (row["puntaje_ml"]). Toda la cuenta: recibe todas las filas, no las filtradas de la tabla."""
     cuentas = [0] * len(_PUNTAJE_BANDAS)
     total = 0
     suma = 0.0
     sin_puntaje = 0
-    for it in items:
-        if it.get("status") != "active":
-            continue
+    for f in filas:
+        v = f.get("puntaje_ml")
         try:
-            v = float(it["performance_score"]) if it.get("performance_score") is not None else None
+            v = float(v) if v is not None else None
         except (TypeError, ValueError):
             v = None
         if v is None or v != v:
             sin_puntaje += 1
             continue
-        for i, (_, _, lo) in enumerate(_PUNTAJE_BANDAS):
+        for k, (_, _, lo) in enumerate(_PUNTAJE_BANDAS):
             if v >= lo:
-                cuentas[i] += 1
+                cuentas[k] += 1
                 break
         total += 1
         suma += v
@@ -750,7 +755,7 @@ def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
 
 
 def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str]) -> tuple:
-    """(promedio, fecha) del Puntaje ML de las publicaciones activas con puntaje en el snapshot más
+    """(promedio por SKU, fecha) del Puntaje ML en el snapshot más
     cercano a 7 días antes de `snap_date` (entre 6 y 8 días atrás), o (None, None) si no hay uno
     completo (>= 50% de filas del mayor de la ventana, mismo criterio que _latest_snapshot_date)."""
     if not snap_date:
@@ -773,12 +778,15 @@ def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str]) -> tuple:
         objetivo = base - timedelta(days=7)
         validas = [c["d"] for c in cand if c["n"] >= max_n * 0.5]
         fecha = min(validas, key=lambda d: abs((datetime.strptime(d, "%Y-%m-%d").date() - objetivo).days))
-        r = conn.execute(
-            "SELECT AVG(performance_score) AS prom FROM salud_item_snapshots "
-            "WHERE user_id=? AND snapshot_date=? AND status='active' AND performance_score IS NOT NULL",
+        rows = conn.execute(
+            "SELECT sku, performance_score FROM salud_item_snapshots WHERE user_id=? AND snapshot_date=?",
             (user_id, fecha),
-        ).fetchone()
-        return (r["prom"], fecha) if r and r["prom"] is not None else (None, None)
+        ).fetchall()
+        por_sku: Dict[Any, List[dict]] = defaultdict(list)
+        for r in rows:
+            por_sku[r["sku"]].append({"performance_score": r["performance_score"]})
+        puntajes = [v for v in (_puntaje_de_items(g) for g in por_sku.values()) if v is not None]
+        return (sum(puntajes) / len(puntajes), fecha) if puntajes else (None, None)
     finally:
         conn.close()
 
@@ -815,7 +823,7 @@ def _recuadro_puntaje_general(dist: Dict[str, Any], previo: tuple) -> None:
         prev_prom, prev_fecha = previo
         if prev_prom is not None:
             delta = round(prom_r - round(prev_prom, 1), 1)
-            tip = f"vs semana pasada · comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})"
+            tip = f"vs semana pasada · comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio por sku {_dec_es(prev_prom)})"
             if delta == 0:
                 ui.label(f"= vs {_fecha_corta(prev_fecha)}").classes("text-xs").style(
                     f"color:{_GREY};white-space:nowrap;line-height:1.2").tooltip(tip)
@@ -825,17 +833,17 @@ def _recuadro_puntaje_general(dist: Dict[str, Any], previo: tuple) -> None:
                     "text-xs font-semibold").style(f"color:{col};white-space:nowrap;line-height:1.2").tooltip(tip)
 
 
-# ancho mínimo por segmento: que entren "90–99" y "284 (38%)" en 10-11 px aunque el ancho
+# ancho mínimo por segmento: que entren "90–99 ptos" y "289 skus (39%)" en 10-11 px aunque el ancho
 # deje de ser exactamente proporcional (flex-grow = cantidad)
-_SEG_MIN_PX = 64
+_SEG_MIN_PX = 100
 
 
 def _barra_puntaje(dist: Dict[str, Any]) -> None:
-    """Barra apilada del Puntaje ML (publicaciones activas de la cuenta); cada segmento lleva
-    el nombre de la banda y 'cantidad (porcentaje)'. Las bandas en 0 no se dibujan."""
+    """Barra apilada del Puntaje ML (SKUs de la cuenta con puntaje); cada segmento lleva
+    'banda ptos' y 'N skus (porcentaje)'. Las bandas en 0 no se dibujan."""
     total = dist["total"]
     if not total:
-        ui.label("Puntaje ML: sin publicaciones activas con puntaje").classes("text-xs").style(f"color:{_MID}")
+        ui.label("Puntaje ML: sin skus con puntaje").classes("text-xs").style(f"color:{_MID}")
         return
     with ui.element("div").style(
             "display:flex;width:100%;height:30px;border-radius:6px;overflow:hidden;background:#E5E7EB"):
@@ -848,13 +856,13 @@ def _barra_puntaje(dist: Dict[str, Any]) -> None:
                 "align-items:center;justify-content:center;color:#fff;font-size:10.5px;font-weight:600;"
                 "line-height:1.15;white-space:nowrap;overflow:hidden")
             with seg:
-                ui.label(etiqueta)
-                ui.label(f"{n} ({pct:.0f}%)")
-            seg.tooltip(f"{etiqueta}: {n} ({pct:.0f}%)")
+                ui.label(f"{etiqueta} ptos")
+                ui.label(f"{n} {'sku' if n == 1 else 'skus'} ({pct:.0f}%)")
+            seg.tooltip(f"{etiqueta} ptos: {n} {'sku' if n == 1 else 'skus'} ({pct:.0f}%)")
 
 
 def _resumen_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> str:
-    txt = f"{dist['total']} con puntaje · {dist.get('sin_puntaje', 0)} sin puntaje"
+    txt = f"{dist['total']} skus con puntaje · {dist.get('sin_puntaje', 0)} skus sin puntaje"
     if snap_date:
         txt += f" · snapshot {_fecha_corta(snap_date)}"
     return txt
@@ -1827,15 +1835,14 @@ def build_tab_salud(container) -> None:
     generacion = getattr(container, "_salud_generacion", 0) + 1
     container._salud_generacion = generacion
 
-    items_cuenta, snap_date = _items_vigentes(uid)
-    filas_todas, _ = _build_rows(uid)
+    filas_todas, snap_date = _build_rows(uid)
     ultima_corrida = _ultima_corrida_completa(uid)
 
     sort_ref: Dict[str, Any] = {"col": "sku", "asc": True}
 
     with container:
         with ui.column().classes("w-full gap-1 px-2 pb-2 pt-0"):
-            dist_puntaje = _puntaje_distribucion(items_cuenta)
+            dist_puntaje = _puntaje_distribucion(filas_todas)
             marcas_disponibles = sorted({f["marca"] for f in filas_todas if f["marca"]})
             # Bloque principal (alto de dos filas): recuadro | barra + filtros | botón + última corrida
             with ui.row().classes("w-full no-wrap items-stretch gap-3"):
@@ -1855,8 +1862,6 @@ def build_tab_salud(container) -> None:
                             buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
                                 "dense outlined clearable debounce=300"
                             ).style("flex:none;width:max(220px, calc((100% - 470px) / 3))")
-                            ui.space()
-                            contador_mostrando = ui.label("").classes("text-xs text-gray-500").style("white-space:nowrap")
                 with ui.column().classes("items-end justify-center gap-0").style("flex:none"):
                     estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
                     estado_auditar_nuevos.set_visibility(False)
@@ -1886,7 +1891,8 @@ def build_tab_salud(container) -> None:
             # Una línea chica: resumen del puntaje (izq.) + leyenda de íconos (der.)
             with ui.row().classes("w-full items-center justify-between no-wrap text-xs text-gray-500"):
                 ui.label(_resumen_puntaje(dist_puntaje, snap_date)).tooltip(
-                    "sin puntaje = publicaciones activas para las que ML no devuelve puntaje")
+                    "El puntaje de cada sku es el de la columna Puntaje ML (promedio de sus publicaciones). "
+                    "Sin puntaje = skus sin valor en esa columna: ML no devuelve puntaje para ninguna de sus publicaciones")
                 leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
             indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
             indicador_stock.set_visibility(False)
@@ -2592,7 +2598,6 @@ def build_tab_salud(container) -> None:
                 visibles = sorted(visibles, key=lambda r: _sort_key(r, sort_ref["col"]), reverse=not sort_ref["asc"])
 
                 leyenda_row.clear()
-                contador_mostrando.set_text(f"Mostrando {len(visibles)} de {len(filas_todas)}")
                 with leyenda_row:
                     for _ic, _sz, _col, _txt in (
                         ("person", "12px", _GREY, "Propia"),
