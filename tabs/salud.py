@@ -18,7 +18,7 @@ import re
 import time
 import unicodedata
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
@@ -727,6 +727,7 @@ def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
     salud_item_snapshots). Toda la cuenta: no depende de los filtros de la tabla."""
     cuentas = [0] * len(_PUNTAJE_BANDAS)
     total = 0
+    suma = 0.0
     sin_puntaje = 0
     for it in items:
         if it.get("status") != "active":
@@ -743,7 +744,43 @@ def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
                 cuentas[i] += 1
                 break
         total += 1
-    return {"total": total, "sin_puntaje": sin_puntaje, "bandas": [(b[0], b[1], n) for b, n in zip(_PUNTAJE_BANDAS, cuentas)]}
+        suma += v
+    return {"total": total, "promedio": (suma / total) if total else None,
+            "sin_puntaje": sin_puntaje, "bandas": [(b[0], b[1], n) for b, n in zip(_PUNTAJE_BANDAS, cuentas)]}
+
+
+def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str]) -> tuple:
+    """(promedio, fecha) del Puntaje ML de las publicaciones activas con puntaje en el snapshot más
+    cercano a 7 días antes de `snap_date` (entre 6 y 8 días atrás), o (None, None) si no hay uno
+    completo (>= 50% de filas del mayor de la ventana, mismo criterio que _latest_snapshot_date)."""
+    if not snap_date:
+        return None, None
+    try:
+        base = datetime.strptime(snap_date[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None, None
+    conn = get_connection()
+    try:
+        desde, hasta = (base - timedelta(days=8)).isoformat(), (base - timedelta(days=6)).isoformat()
+        cand = conn.execute(
+            "SELECT snapshot_date AS d, COUNT(*) AS n FROM salud_item_snapshots "
+            "WHERE user_id=? AND snapshot_date BETWEEN ? AND ? GROUP BY snapshot_date",
+            (user_id, desde, hasta),
+        ).fetchall()
+        if not cand:
+            return None, None
+        max_n = max(c["n"] for c in cand)
+        objetivo = base - timedelta(days=7)
+        validas = [c["d"] for c in cand if c["n"] >= max_n * 0.5]
+        fecha = min(validas, key=lambda d: abs((datetime.strptime(d, "%Y-%m-%d").date() - objetivo).days))
+        r = conn.execute(
+            "SELECT AVG(performance_score) AS prom FROM salud_item_snapshots "
+            "WHERE user_id=? AND snapshot_date=? AND status='active' AND performance_score IS NOT NULL",
+            (user_id, fecha),
+        ).fetchone()
+        return (r["prom"], fecha) if r and r["prom"] is not None else (None, None)
+    finally:
+        conn.close()
 
 
 def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
@@ -757,6 +794,41 @@ def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
 # umbrales del texto dentro de cada segmento (% del total): <6 nada · 6-15 cantidad · >=15 "cantidad · %"
 _SEG_MIN_CANTIDAD = 6.0
 _SEG_MIN_COMPLETO = 15.0
+
+
+def _dec_es(v: float, signo: bool = False) -> str:
+    """1 decimal con coma; signo explícito (+/−) si se pide."""
+    txt = f"{abs(v):.1f}".replace(".", ",")
+    if signo:
+        return ("+" if v >= 0 else "−") + txt
+    return txt
+
+
+def _recuadro_puntaje_general(dist: Dict[str, Any], previo: tuple) -> None:
+    """Promedio del Puntaje ML (mismas publicaciones que la barra) + variación vs. ~7 días atrás."""
+    prom = dist.get("promedio")
+    with ui.column().classes("items-center justify-center gap-0 border rounded px-3").style(
+            "flex:none;width:170px;align-self:stretch"):
+        if prom is None:
+            ui.label("—").classes("text-lg font-bold")
+            return
+        prom_r = round(prom, 1)
+        color, _ = _puntaje_nivel(prom_r)
+        with ui.row().classes("items-baseline gap-1 no-wrap"):
+            ui.label(_dec_es(prom_r)).style(f"color:{color};font-size:26px;font-weight:700;line-height:1")
+            prev_prom, prev_fecha = previo
+            if prev_prom is not None:
+                delta = round(prom_r - round(prev_prom, 1), 1)
+                if delta == 0:
+                    ui.label("= vs semana pasada").classes("text-xs").style(f"color:{_GREY};white-space:nowrap") \
+                        .tooltip(f"Comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})")
+                else:
+                    flecha, col = ("▲", _OK) if delta > 0 else ("▼", _BAD)
+                    ui.label(f"{flecha} {_dec_es(delta, True)}").classes("text-xs font-semibold").style(
+                        f"color:{col};white-space:nowrap").tooltip(
+                        f"vs semana pasada · comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})")
+        ui.label(f"promedio de {dist['total']} publicaciones").classes("text-xs").style(
+            f"color:{_GREY};white-space:nowrap;line-height:1.2")
 
 
 def _barra_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
@@ -773,7 +845,7 @@ def _barra_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
                     continue
                 pct = n * 100 / total
                 if pct >= _SEG_MIN_COMPLETO:
-                    txt = f"{n} · {pct:.0f}%"
+                    txt = f"{n} ({pct:.0f}%)"
                 elif pct >= _SEG_MIN_CANTIDAD:
                     txt = str(n)
                 else:
@@ -1774,8 +1846,11 @@ def build_tab_salud(container) -> None:
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
             with ui.row().classes("items-start gap-4 w-full no-wrap"):
-                with ui.column().classes("grow").style("min-width:0"):
-                    _barra_puntaje(_puntaje_distribucion(items_cuenta), snap_date)
+                dist_puntaje = _puntaje_distribucion(items_cuenta)
+                with ui.row().classes("grow no-wrap items-stretch gap-3").style("min-width:0"):
+                    with ui.column().classes("grow").style("min-width:0"):
+                        _barra_puntaje(dist_puntaje, snap_date)
+                    _recuadro_puntaje_general(dist_puntaje, _puntaje_semana_pasada(uid, snap_date))
                 with ui.column().classes("items-end gap-0").style("flex:none"):
                     estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
                     estado_auditar_nuevos.set_visibility(False)
@@ -1815,7 +1890,8 @@ def build_tab_salud(container) -> None:
                 ).props("dense outlined").classes("w-44")
                 buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
                     "dense outlined clearable debounce=300"
-                ).classes("grow")
+                ).style("flex:none;width:max(220px, calc((100% - 470px) / 3))")
+                ui.space()
                 contador_mostrando = ui.label("").classes("text-xs text-gray-500").style("white-space:nowrap")
 
             leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
