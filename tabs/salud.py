@@ -70,15 +70,28 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 
 def _latest_snapshot_date(user_id: int) -> Optional[str]:
+    """Fecha del último snapshot COMPLETO (no simplemente la última fecha). Guardar desde el
+    popup llama audit_sku(), que persiste snapshot de SOLO ese SKU con la fecha de hoy: si el
+    cron nocturno de hoy falló (ej. 500 de ML, 2026-09-29), MAX(snapshot_date) apuntaba a esas
+    ~30 filas y la tabla mostraba 3 SKUs de 394. Se elige la fecha más reciente (de las últimas
+    7) cuyo conteo de filas sea >= 50% del máximo diario; _build_rows superpone encima lo más
+    nuevo (los refrescos del popup)."""
     conn = get_connection()
     try:
-        row = conn.execute(
-            "SELECT MAX(snapshot_date) AS d FROM salud_item_snapshots WHERE user_id=?",
+        rows = conn.execute(
+            "SELECT snapshot_date AS d, COUNT(*) AS n FROM salud_item_snapshots WHERE user_id=? "
+            "GROUP BY snapshot_date ORDER BY snapshot_date DESC LIMIT 7",
             (user_id,),
-        ).fetchone()
-        return row["d"] if row else None
+        ).fetchall()
     finally:
         conn.close()
+    if not rows:
+        return None
+    max_n = max(r["n"] for r in rows)
+    for r in rows:
+        if r["n"] >= max_n * 0.5:
+            return r["d"]
+    return rows[0]["d"]
 
 
 def _ultima_corrida_completa(user_id: int) -> Optional[str]:
@@ -90,6 +103,21 @@ def _ultima_corrida_completa(user_id: int) -> Optional[str]:
             (user_id,),
         ).fetchone()
         return row["run_datetime"] if row else None
+    finally:
+        conn.close()
+
+
+def _load_items_mas_nuevos(user_id: int, desde_fecha: str) -> List[Dict[str, Any]]:
+    """Snapshots posteriores a `desde_fecha` (refrescos parciales del popup), del más viejo
+    al más nuevo -- el caller deja el más reciente por item_id."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM salud_item_snapshots WHERE user_id=? AND snapshot_date>? "
+            "ORDER BY snapshot_date ASC",
+            (user_id, desde_fecha),
+        ).fetchall()
+        return [dict(r) for r in rows]
     finally:
         conn.close()
 
@@ -496,7 +524,10 @@ def _build_rows(user_id: int) -> tuple:
     snap_date = _latest_snapshot_date(user_id)
     if not snap_date:
         return [], None
-    items = _load_items(user_id, snap_date)
+    items_por_id = {it["item_id"]: it for it in _load_items(user_id, snap_date)}
+    for it in _load_items_mas_nuevos(user_id, snap_date):
+        items_por_id[it["item_id"]] = it
+    items = list(items_por_id.values())
     prod_meta = _load_productos(user_id)
 
     por_sku: Dict[str, List[dict]] = defaultdict(list)
@@ -600,15 +631,24 @@ _COLUMNS = [
 ]
 
 
+_PUNTAJE_AMARILLO = "#CA8A04"
+_PUNTAJE_VERDE_CLARO = "#65A30D"
+_PUNTAJE_AZUL = "#1D4ED8"
+
+
 def _puntaje_nivel(v: float) -> Tuple[str, str]:
-    """(color, nivel) del puntaje /performance de ML. Umbrales INFERIDOS de 27 consultas en
-    vivo (2026-09-29, level_wording vs score): Profesional 67-93, Estándar 52-65, Básica 49.
-    La doc de ML no publica los cortes numéricos -- ajustar si ML los cambia."""
-    if v >= 66:
-        return _OK, "Profesional"
-    if v >= 50:
-        return _MID, "Estándar"
-    return _BAD, "Básica"
+    """(color, banda) del puntaje /performance de ML (0-100). Bandas definidas por Diego
+    (2026-09-29): <50 rojo · 50-68 amarillo · 69-72 verde claro · 73-99 verde oscuro ·
+    100 azul. No son los niveles de ML (Básica/Estándar/Profesional): ML no publica cortes."""
+    if v < 50:
+        return _BAD, "rojo (<50)"
+    if v < 69:
+        return _PUNTAJE_AMARILLO, "amarillo (50-68)"
+    if v < 73:
+        return _PUNTAJE_VERDE_CLARO, "verde claro (69-72)"
+    if v < 100:
+        return _OK, "verde oscuro (73-99)"
+    return _PUNTAJE_AZUL, "azul (100)"
 
 
 def _sort_key(row: dict, col: str):
@@ -2301,7 +2341,7 @@ def build_tab_salud(container) -> None:
                         "Propia = tus publicaciones (accionable). Catálogo = copias de catálogo: "
                         "en Fotos, GTIN y Descripción es informativo, ML no permite editarlo. "
                         "En Caracterist., el catálogo va sin separar obligatoria/opcional y nunca cuenta. "
-                        "Puntaje ML: verde = Profesional (≥66), ámbar = Estándar (50-65), rojo = Básica (<50)."
+                        "Puntaje ML: rojo <50 · amarillo 50-68 · verde claro 69-72 · verde oscuro 73-99 · azul 100."
                     )
 
                 header_div.clear()
@@ -2399,17 +2439,23 @@ def build_tab_salud(container) -> None:
                                                                 fila_cat.tooltip(tooltip)
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
+                                                try:
+                                                    v = float(v)
+                                                    if v != v:
+                                                        v = None
+                                                except (TypeError, ValueError):
+                                                    v = None
                                                 if v is None:
                                                     ui.label("—")
                                                 else:
                                                     color_p, nivel_p = _puntaje_nivel(v)
                                                     with ui.row().classes("items-center justify-center gap-1 no-wrap") as fila_p:
-                                                        ui.label(str(v)).classes("text-xs font-semibold").style(f"color:{color_p}")
+                                                        ui.label(f"{v:.0f}").classes("text-xs font-semibold").style(f"color:{color_p}")
                                                         with ui.element("div").style(
                                                                 "width:34px;height:5px;background:#E5E7EB;border-radius:3px;overflow:hidden"):
                                                             ui.element("div").style(
                                                                 f"width:{max(0, min(100, v))}%;height:100%;background:{color_p}")
-                                                    fila_p.tooltip(f"{nivel_p} · {v}/100")
+                                                    fila_p.tooltip(f"{v:.0f}/100 · {nivel_p}")
                                             elif name == "gtin":
                                                 d = row["dims"].get("gtin")
                                                 if not d or (d["propias_total"] == 0 and d["catalogo_total"] == 0):
