@@ -385,6 +385,7 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
     vistas_tier: set = set()
     stocks_bajo_vistos: set = set()
     invertido_visto = False
+    inco_q: set = set()  # cantidades que ML no admite hoy (las guarda el cron): no cuentan en el denominador
     for it in gold_special:
         raw = it.get("mayorista_revisar_json")
         if not raw:
@@ -397,6 +398,7 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
             continue
         if info.get("motivo") in ("no_activa", "sin_stock"):
             continue  # pausada/cerrada o sin stock: el cron no la evalúa contra ML, sin ⚠️
+        inco_q |= {int(q) for q in info.get("incoherentes") or []}
         if info.get("motivo") == "stock_bajo":  # snapshots anteriores al 2026-09-29
             # Dedupe por VALOR de stock, no por un flag "ya vi uno" -- dos
             # publicaciones del mismo SKU podrían en teoría tener
@@ -421,6 +423,14 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
             invertido_visto = True
             advertencias.append("Invertido: hay tiers cargados en orden invertido — revisar manualmente")
 
+    # las incoherentes ya cargadas y ok siguen contando (n las incluye); el resto sale del denominador
+    excluidas = sorted((inco_q & set(qtys_objetivo)) - ok_qtys)
+    qtys_objetivo = tuple(q for q in qtys_objetivo if q not in excluidas)
+    total = len(qtys_objetivo)
+    nota_inco = (f"ML no admite hoy: {_fmt_lista_es(excluidas)} unidades (no cuentan)" if excluidas else None)
+    if total == 0:
+        return {"texto": "—", "color": _GREY, "orden": -1.0, "tooltip": nota_inco}
+
     n = len(ok_qtys)
     color = _OK if n == total else (_BAD if n == 0 else _MID)
     texto = f"{n}/{total}"
@@ -443,6 +453,8 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
     else:
         tooltip = "Cargado con cantidades no estándar"
 
+    if nota_inco:
+        tooltip = "\n".join([tooltip, nota_inco])
     if advertencias:
         tooltip = "\n".join([tooltip] + advertencias)
 

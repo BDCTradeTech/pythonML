@@ -290,6 +290,38 @@ def _calcular_mayorista_recomendado(token: str, item_id: str, precio_base: float
     return {"precio_base": precio_base, "propuesta": propuesta, "sin_recomendacion": sin_rec}
 
 
+# Coherencia en lote (la usan el cron/popup y el botón 🔧 de tabs/salud_mayorista_fix.py)
+_RONDAS_LOTE = 3
+_NOTA_INCOHERENTE = "ML no admite esta cantidad hoy (incoherente con las demás)"
+
+
+def _validar_coherencia_lote(token: str, item_id: str, base: float, qtys: Tuple[int, ...]) -> Tuple[Tuple[int, ...], List[int], Optional[str]]:
+    """ML calcula is_incoherent_quantity contra las OTRAS cantidades de la misma consulta (de a una
+    cantidad casi nunca se activa, y el POST después rechaza con 5598). Consulta el set candidato
+    completo en UNA llamada (máx. 5), descarta las marcadas (también las ya cargadas) y reconsulta
+    el resto hasta que ninguna quede marcada (máx. _RONDAS_LOTE rondas).
+    Devuelve (set validado, descartadas, error). Con error el set NO está validado: no se escribe."""
+    cand = tuple(sorted(qtys))
+    descartadas: List[int] = []
+    for _ in range(_RONDAS_LOTE):
+        if not cand:
+            return (), descartadas, None
+        rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
+        if rec is None:  # error de red / 5xx: 1 reintento con backoff corto
+            time.sleep(1.0)
+            rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
+        if rec is None:
+            return cand, descartadas, "ML no respondió la validación de coherencia en lote (error de consulta) — no se escribe, reintentá"
+        marcadas = {x.get("quantity") for x in rec.get("recommendations") or [] if x.get("is_incoherent_quantity")} & set(cand)
+        if not marcadas:
+            return cand, descartadas, None
+        descartadas += sorted(marcadas)
+        cand = tuple(q for q in cand if q not in marcadas)
+    if not cand:
+        return (), descartadas, None
+    return cand, descartadas, f"ML sigue marcando cantidades incoherentes tras {_RONDAS_LOTE} rondas — no se escribe"
+
+
 # ---------------------------------------------------------------------------
 # Evaluación unificada de mayorista para publicaciones gold_special (contado) --
 # un solo motor: para cada cantidad objetivo (según el stock de la publicación,
@@ -460,25 +492,36 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
     calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
     sin_rec: Dict[int, str] = dict(prop["sin_recomendacion"]) if prop else {}
 
+    # Cantidades objetivo que ML no admite hoy: marcadas incoherentes de a una, o al validar el set
+    # candidato EN LOTE (ML las calcula contra las otras cantidades de la misma consulta; sin esto el
+    # POST rechaza con 5598). No cuentan como "faltan" ni "crear" y la auto-corrección nunca las manda.
+    incoherentes = {q for q in qtys_objetivo if sin_rec.get(q) == "incoherente"}
+    cand = tuple(q for q in qtys_objetivo if q not in incoherentes)
+    if len(cand) >= 2:  # con una sola cantidad el lote es la misma consulta de arriba
+        _v, descartadas, _err = _validar_coherencia_lote(token, iid, precio_base, cand)
+        incoherentes |= set(descartadas)  # si el lote falla, queda lo detectado hasta ahí (se reevalúa cada noche)
+
     tiers: List[Dict[str, Any]] = []
     for q in qtys_a_evaluar:
         es_extra = q not in qtys_objetivo
         if q not in cargado:
+            if q in incoherentes:
+                continue  # ML no admite esta cantidad hoy: no se ofrece crearla
             if q in calculado:
                 tiers.append({"quantity": q, "estado": "crear", "extra": es_extra,
                               "pct_calculado": calculado_pct[q], "monto_calculado": calculado[q]})
             continue  # sin tier cargado y sin cálculo posible -- no se puede ofrecer nada
         pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
-        pct_calc = calculado_pct.get(q)
+        pct_calc = None if q in incoherentes else calculado_pct.get(q)  # cargada pero incoherente: no se corrige
         if pct_calc is None:
             # Sin recomendación (204 / incoherente / error / fuera de rango): no se evalúa por
             # precio, solo presencia. TODO(mayorista-revisar-popup, 2026-09-04): un tier con
             # pct_cargado<=0 (roto) cae acá y queda "ok" -- "roto" necesita pct_calculado para
             # que el popup sugiera la corrección; evaluar aparte.
             t = {"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]}
-            if q in sin_rec:
+            if q in sin_rec or q in incoherentes:
                 t["sin_recomendacion"] = True
-                t["sin_rec_motivo"] = sin_rec[q]
+                t["sin_rec_motivo"] = sin_rec.get(q, "incoherente")
             tiers.append(t)
             continue
         base_t = {"quantity": q, "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
@@ -496,7 +539,7 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
         return None  # todo está ok (o no evaluable) y no hay inversión -- nada para mostrar (popup)
 
     return {"precio_base": precio_base, "precio_vigente": _precio_vigente_de(prices_body, precio_base),
-            "tiers": tiers, "invertido": invertido}
+            "tiers": tiers, "invertido": invertido, "incoherentes": sorted(incoherentes)}
 
 
 # ---------------------------------------------------------------------------
@@ -755,6 +798,7 @@ def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_i
         "evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar,
         "precio_vigente": ev["precio_vigente"], "umbral_pp": UMBRAL_PP_MAYORISTA,
         "margen_negativo": ev.get("margen_negativo"),
+        "incoherentes": ev.get("incoherentes") or [],
         "tiers_eval": [
             {k: t.get(k) for k in ("quantity", "estado", "extra", "pct_cargado", "pct_calculado", "diff_pp",
                                    "sin_recomendacion", "sin_rec_motivo", "margen_negativo", "margen_cargado")

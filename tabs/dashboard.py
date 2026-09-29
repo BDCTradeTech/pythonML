@@ -276,8 +276,14 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
                 info = _json.loads(r[1]) if r[1] else {}
             except (TypeError, ValueError):
                 info = {}
-            if info.get("evaluable") and info.get("margen_negativo"):
-                n_margen_neg += 1  # informativo: NO es categoría, se cruza con las de abajo
+            if info.get("evaluable"):
+                # mismo criterio que el ícono 📉 de la tabla (motivos_mayorista_fix): solo el margen de lo
+                # CARGADO hoy en algún tier, no el del % recomendado. Informativo: NO es categoría, se cruza con las de abajo.
+                for t in (info["tiers_eval"] if info.get("tiers_eval") is not None else info.get("tiers_revisar")) or []:
+                    mc = t.get("margen_cargado")
+                    if (mc is not None and mc < 0) or (mc is None and t.get("margen_negativo") and t.get("pct_cargado") is not None):
+                        n_margen_neg += 1
+                        break
             if r[0] == "roto":
                 n_roto += 1
             elif info.get("evaluable") and info.get("tiers_revisar"):
@@ -292,7 +298,7 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
         out.append(f"Mayorista ({total} con mayorista): "
                    f"{n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_inactivo} no activa/sin stock · {n_sin_eval} sin evaluar")
         if n_margen_neg:
-            out.append(f"Con margen negativo en algún tier (informativo, se cruza con lo anterior): {n_margen_neg}")
+            out.append(f"Con margen negativo en algún tier cargado hoy (informativo, se cruza con lo anterior): {n_margen_neg}")
         if n_fuera:
             out.append(f"Fuera del total (mayorista invertido / sin precio estándar): {n_fuera}")
     else:

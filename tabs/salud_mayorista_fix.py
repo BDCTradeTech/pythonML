@@ -35,11 +35,13 @@ from db import get_producto_costo
 from margen import _calc_margen_prod, _load_params_prod
 from ml_api import ml_get_prices_with_version, get_ml_access_token, ml_get_pxq_recommendations, ml_get_user_id
 from salud_audit import (
+    _NOTA_INCOHERENTE,
     _calcular_mayorista_recomendado,
     _firma_tiers,
     _precio_vigente_de,
     _qtys_mayorista_para_stock,
     _standard_amount_de,
+    _validar_coherencia_lote,
     UMBRAL_PP_MAYORISTA,
 )
 
@@ -101,6 +103,8 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
     sin_rec_alto: set = set()
     cuotas = 0
     tope = False
+    inco_all: set = set()
+    cargadas_all: set = set()
 
     for it in items:
         if it.get("status") != "active":
@@ -118,12 +122,16 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
             continue  # /prices sin precio estándar de marketplace (solo nodos por canal): el motor no lo puede evaluar
         info = _json_o_vacio(it.get("mayorista_revisar_json"))
         stock = info.get("stock") if info.get("stock") is not None else stock_sku
+        # cantidades que ML no admite hoy (incoherentes con las demás, las guarda el cron): no son "faltan"
+        inco = {int(q) for q in info.get("incoherentes") or []}
+        cargadas_all |= cargadas
         if stock is not None:
             objetivo = set(_qtys_mayorista_para_stock(stock))
-            if not cargadas and objetivo:
+            inco_all |= (inco & objetivo) - cargadas
+            if not cargadas and (objetivo - inco):
                 sin_mayorista += 1
             else:
-                faltan_all |= objetivo - cargadas
+                faltan_all |= objetivo - cargadas - inco
                 sobran_all |= cargadas - objetivo
         if len(cargadas) > _MAX_TIERS:
             tope = True
@@ -139,7 +147,7 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
                 rev.add(q)
             elif t.get("estado") == "roto":
                 roto.add(q)
-            if t.get("sin_recomendacion") and (t.get("pct_cargado") or 0) > _SIN_REC_MAX_OK:
+            if t.get("sin_recomendacion") and q not in inco and (t.get("pct_cargado") or 0) > _SIN_REC_MAX_OK:
                 sin_rec_alto.add(q)
             mc = t.get("margen_cargado")
             if (mc is not None and mc < 0) or (mc is None and t.get("margen_negativo") and t.get("pct_cargado") is not None):
@@ -166,7 +174,8 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
         motivos.append(f"Sin recomendación de ML y % > 1 en {_lista_es(sorted(q for q in sin_rec_alto if q is not None))}")
     if cuotas:
         motivos.append("Cuotas con mayorista")
-    return {"motivos": motivos, "margen_neg": sorted(set(neg))}
+    # incoherentes: solo las que ninguna publicación del SKU tiene cargadas (si alguna la tiene, no falta nada)
+    return {"motivos": motivos, "margen_neg": sorted(set(neg)), "incoherentes": sorted(inco_all - cargadas_all)}
 
 
 def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any], en_curso: bool = False,
@@ -176,10 +185,17 @@ def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any],
     `refs` recibe {"icono", "spinner"} para poder alternarlos sin re-renderizar la tabla (marcar_en_curso)."""
     if not mayfix:
         return
-    if mayfix.get("motivos"):
-        b = ui.icon("build", size="16px").classes("cursor-pointer").style(f"color:{_MID}")
+    inco = mayfix.get("incoherentes") or []
+    if mayfix.get("motivos") or inco:
+        if mayfix.get("motivos"):
+            color, tip = _MID, "Arreglar mayorista automáticamente\n" + " · ".join(mayfix["motivos"])
+        else:  # lo único pendiente son cantidades que ML no admite hoy: 🔧 verde
+            color = _OK
+            tip = (f"Correcto dentro de lo que ML permite hoy. ML no admite: {_lista_es(inco)} "
+                   f"{'unidad' if inco == [1] else 'unidades'}. Se reevalúa cada noche.")
+        b = ui.icon("build", size="16px").classes("cursor-pointer").style(f"color:{color}")
         with b:
-            ui.tooltip("Arreglar mayorista automáticamente\n" + " · ".join(mayfix["motivos"])).style("white-space: pre-line")
+            ui.tooltip(tip).style("white-space: pre-line")
         b.on("click", lambda: on_click())
         sp = ui.spinner(size="16px", color="orange")
         b.set_visibility(not en_curso)
@@ -268,37 +284,6 @@ def _margen(precio: float, q: int, costo: Optional[Tuple[float, float]], params:
         return None
     m = _calc_margen_prod(precio, costo[0], costo[1], params, cantidad=q)
     return None if m is None else round(m, 2)
-
-
-_RONDAS_LOTE = 3
-_NOTA_INCOHERENTE = "ML no admite esta cantidad hoy (incoherente con las demás)"
-
-
-def _validar_coherencia_lote(token: str, item_id: str, base: float, qtys: Tuple[int, ...]) -> Tuple[Tuple[int, ...], List[int], Optional[str]]:
-    """ML calcula is_incoherent_quantity contra las OTRAS cantidades de la misma consulta (de a una
-    cantidad casi nunca se activa, y el POST después rechaza con 5598). Consulta el set candidato
-    completo en UNA llamada (máx. 5), descarta las marcadas (también las ya cargadas) y reconsulta
-    el resto hasta que ninguna quede marcada (máx. _RONDAS_LOTE rondas).
-    Devuelve (set validado, descartadas, error). Con error el set NO está validado: no se escribe."""
-    cand = tuple(sorted(qtys))
-    descartadas: List[int] = []
-    for _ in range(_RONDAS_LOTE):
-        if not cand:
-            return (), descartadas, None
-        rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
-        if rec is None:  # error de red / 5xx: 1 reintento con backoff corto
-            time.sleep(1.0)
-            rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
-        if rec is None:
-            return cand, descartadas, "ML no respondió la validación de coherencia en lote (error de consulta) — no se escribe, reintentá"
-        marcadas = {x.get("quantity") for x in rec.get("recommendations") or [] if x.get("is_incoherent_quantity")} & set(cand)
-        if not marcadas:
-            return cand, descartadas, None
-        descartadas += sorted(marcadas)
-        cand = tuple(q for q in cand if q not in marcadas)
-    if not cand:
-        return (), descartadas, None
-    return cand, descartadas, f"ML sigue marcando cantidades incoherentes tras {_RONDAS_LOTE} rondas — no se escribe"
 
 
 def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[str, Any]:
