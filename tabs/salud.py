@@ -913,8 +913,7 @@ def _item_descriptor(item: dict) -> str:
 
 _NORMAL_POR_DISENO_INTRO = (
     "ML no aplica cambios en publicaciones de catálogo -- atributos y descripción se "
-    "heredan del producto de catálogo (el PUT puede devolver 200 igual, sin aplicarse) -- "
-    "y el mayorista solo se carga en la publicación de contado, nunca en cuotas/Nx."
+    "heredan del producto de catálogo (el PUT puede devolver 200 igual, sin aplicarse)."
 )
 
 
@@ -948,13 +947,6 @@ def _agrupar_normal_por_diseno(hechos: List[Dict[str, Any]]) -> List[str]:
         lineas.append(
             f"Descripción no editable en {n_desc} publicaci{'ón' if n_desc == 1 else 'ones'} de catálogo "
             "— se gestiona en el producto de catálogo"
-        )
-
-    n_mayor = sum(1 for h in hechos if h["tipo"] == "mayorista_no_aplica")
-    if n_mayor:
-        lineas.append(
-            f"Mayorista no aplica en {n_mayor} publicaci{'ón' if n_mayor == 1 else 'ones'} (cuotas/Nx) "
-            "— regla de negocio: solo aplica a la publicación de contado"
         )
 
     return lineas
@@ -1102,15 +1094,8 @@ def _clasificar_hallazgos(token: str, resultados: List[dict]) -> Dict[str, list]
                 "tipo": "descripcion", "valor_sugerido": "",
             })
 
-    # --- mayorista: solo la nota informativa de "no aplica en cuotas" queda acá.
-    # La evaluación real (crear/ok/roto/revisar) de las publicaciones gold_special
-    # vive en _evaluar_mayorista_gold_special, ver más abajo.
-    for r in resultados:
-        it, audit = r["item"], r["audit"]
-        iid = it["id"]
-        desc = _item_descriptor(it)
-        if audit.get("mayorista_estado") == "sin_mayorista" and it.get("listing_type_id") != "gold_special":
-            normal_hechos.append({"tipo": "mayorista_no_aplica", "item_id": iid, "descriptor": desc})
+    # Mayorista: no se informa en el popup (se gestiona desde el botón 🔧 de la tabla); la
+    # evaluación real vive en _evaluar_mayorista_gold_special / salud_mayorista_fix.
 
     normal = {"count": len(normal_hechos), "lineas": _agrupar_normal_por_diseno(normal_hechos)}
     return {"normal": normal, "sugeridos": sugeridos, "decision": decision, "opcionales": opcionales}
@@ -2040,27 +2025,7 @@ def build_tab_salud(container) -> None:
                     decision_editable = clasif["decision"]
                     grupos_dec = _consolidar(decision_editable)
 
-                    mayorista_eval: Dict[str, Dict[str, Any]] = {}
-                    for it_body in items_crudos:
-                        if it_body.get("listing_type_id") != "gold_special":
-                            continue
-                        ev = await run.io_bound(_evaluar_mayorista_gold_special, token, it_body)
-                        if ev:
-                            mayorista_eval[it_body["id"]] = {"descriptor": _item_descriptor(it_body), **ev}
-
                     inputs: Dict[str, tuple] = {}
-                    mayorista_tildes: Dict[str, Dict[int, bool]] = {}
-                    # Cantidades tildadas para SACAR del array de price-per-quantity, para
-                    # hacer lugar bajo el tope real de ML (5 -- ver FIX A, 2026-09-07). Un
-                    # tier tildado acá queda mutuamente excluyente con mayorista_tildes: si
-                    # el usuario tilda "eliminar" en uno que también tenía "corregir"
-                    # tildado, el toggle de eliminar lo destilda (ver _on_toggle_eliminar).
-                    mayorista_eliminar: Dict[str, set] = {}
-                    # Recalculado en cada _render_item() -- True si el estado actual de
-                    # tildes/eliminar de ese ítem superaría el tope de 5; _guardar() lo usa
-                    # para no mandar nada de ese ítem a ML (ver banner ⛔ en el render).
-                    mayorista_sobre_tope: Dict[str, bool] = {}
-
                     def _render_campo(g: Dict[str, Any], seccion: str) -> _CampoWidget:
                         attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
                         tipo_campo = _tipo_campo(attr_def) if g["tipo"] == "atributo" else "free"
@@ -2324,152 +2289,21 @@ def build_tab_salud(container) -> None:
                                 campo = _render_campo(g, "decision")
                                 inputs[f"dec_{i}"] = (g, campo)
 
-                        # Opcionales (tags.required != true) -- sección propia, colapsada por
+                        # Opcionales (tags.required != true) -- sección propia, expandida por
                         # default: mejora de SEO/ficha técnica, nunca un problema. No entran a
                         # grupos_sug/grupos_dec ni al chequeo de "Sin hallazgos accionables" de
                         # abajo -- completarlos es a discreción, no algo que el SKU necesite.
                         grupos_opc = _consolidar(clasif["opcionales"])
                         if grupos_opc:
-                            with ui.expansion(f"🔧 Opcionales — SEO / calidad, no obligatorios ({len(grupos_opc)})", value=False).classes("w-full text-sm mt-2"):
+                            with ui.expansion(f"🔧 Opcionales — SEO / calidad, no obligatorios ({len(grupos_opc)})", value=True).classes("w-full text-sm mt-2"):
                                 for i, g in enumerate(grupos_opc):
                                     seccion = "sugerido" if g["valor_sugerido"] else "decision"
                                     campo = _render_campo(g, seccion)
                                     inputs[f"opc_{i}"] = (g, campo)
 
-                        _ESTADO_COLOR = {"crear": _OK, "roto": _BAD, "revisar": _MID, "ok": _GREY, "bloqueada": _MID}
-                        if mayorista_eval:
-                            ui.label(f"💰 Mayorista (contado) — {len(mayorista_eval)} publicación(es)").classes("font-semibold text-sm mt-2")
-                            for item_id, ev in mayorista_eval.items():
-                                mayorista_tildes[item_id] = {
-                                    t["quantity"]: t["estado"] in ("crear", "roto")
-                                    for t in ev["tiers"] if t["estado"] in ("crear", "roto", "revisar")
-                                }
-                                mayorista_eliminar[item_id] = set()
-                                item_box = ui.column().classes("w-full gap-0 border rounded p-2")
+                        ui.label("Mayorista: se gestiona desde el botón 🔧 de la tabla").classes("text-xs mt-2").style(f"color:{_GREY}")
 
-                                def _render_item(item_id=item_id, ev=ev, item_box=item_box):
-                                    tildes = mayorista_tildes[item_id]
-                                    elim = mayorista_eliminar[item_id]
-                                    incluir = {q for q, v in tildes.items() if v and q not in elim}
-                                    cambios, bloqueadas, conflictos = _tiers_plan(ev, incluir, elim)
-                                    conflicto_por_qty = {c["quantity"]: c for c in conflictos}
-                                    # Cantidades que hoy tienen ALGO cargado (legacy o % nuevo) --
-                                    # exactamente lo que _construir_payload_mayorista preserva vía
-                                    # `vistos` si no se elimina. Cualquier `cambios[q]` que no esté
-                                    # acá es un tier "crear" nuevo: suma una entrada más al array.
-                                    cargado_qtys = {t["quantity"] for t in ev["tiers"] if t.get("pct_cargado") is not None}
-                                    nuevas_qtys = {q for q in cambios if q not in cargado_qtys}
-                                    total_resultante = len(cargado_qtys - elim) + len(nuevas_qtys)
-                                    sobre_tope = total_resultante > _ML_MAX_TIERS_PXQ
-                                    mayorista_sobre_tope[item_id] = sobre_tope
-                                    item_box.clear()
-                                    with item_box:
-                                        ui.label(f"{item_id} ({ev['descriptor']}) — precio contado ${_fmt_moneda(ev['precio_base'])}").classes("text-xs font-medium")
-                                        if ev["invertido"]:
-                                            ui.label(
-                                                "⚠️ tiers cargados en orden invertido (una cantidad mayor cuesta más "
-                                                "por unidad que una menor) — revisar manualmente, sin corrección automática"
-                                            ).classes("text-xs pl-3").style(f"color:{_BAD}")
-                                        if sobre_tope:
-                                            ui.label(
-                                                f"⛔ ML permite máximo {_ML_MAX_TIERS_PXQ} precios por cantidad — hoy tenés "
-                                                f"{len(cargado_qtys)} cargados, esto sumaría {total_resultante}. Tildá "
-                                                f"\"eliminar\" en alguno de los tiers de abajo para hacer lugar antes de guardar "
-                                                f"(no se guarda nada de este ítem hasta que baje de {_ML_MAX_TIERS_PXQ})."
-                                            ).classes("text-xs pl-3 font-semibold").style(f"color:{_BAD}")
-
-                                        def _chk_eliminar(q: int):
-                                            # Fila propia (no sibling del checkbox de "corregir") -- con los 4
-                                            # elementos en una sola fila, un texto largo de tier hacía wrappear
-                                            # el layout y el checkbox de "corregir" terminaba visualmente
-                                            # separado de su propio texto (confirmado en vivo 2026-09-07,
-                                            # MLA3684456394, tier 10+). Separando en dos filas queda inequívoco
-                                            # cuál checkbox es cuál sin importar el largo del texto.
-                                            with ui.row().classes("items-center gap-1 pl-6"):
-                                                chk_e = ui.checkbox(value=q in elim).props("dense size=sm")
-                                                ui.label("eliminar").classes("text-xs").style(f"color:{_BAD}")
-
-                                                def _on_toggle_elim(e, item_id=item_id, q=q):
-                                                    if e.value:
-                                                        mayorista_eliminar[item_id].add(q)
-                                                        mayorista_tildes[item_id][q] = False  # mutuamente excluyente con "corregir"
-                                                    else:
-                                                        mayorista_eliminar[item_id].discard(q)
-                                                    _render_item()
-                                                chk_e.on_value_change(_on_toggle_elim)
-
-                                        for t in ev["tiers"]:
-                                            q = t["quantity"]
-                                            estado = t["estado"]
-                                            sufijo_qty = f"{q}+" + (" (cantidad no estándar)" if t.get("extra") else "")
-
-                                            if q in elim:
-                                                txt = f"{sufijo_qty} unidades: tildado para ELIMINAR — hoy ${_fmt_moneda(t.get('monto_cargado'))} ({t.get('pct_cargado')}% off)"
-                                                with ui.row().classes("items-center gap-1 pl-3"):
-                                                    chk_e = ui.checkbox(value=True).props("dense size=sm")
-                                                    ui.label(txt).classes("text-xs").style(f"color:{_BAD}")
-
-                                                def _on_toggle_elim(e, item_id=item_id, q=q):
-                                                    if not e.value:
-                                                        mayorista_eliminar[item_id].discard(q)
-                                                    _render_item()
-                                                chk_e.on_value_change(_on_toggle_elim)
-                                                continue
-                                            if q in conflicto_por_qty:
-                                                c = conflicto_por_qty[q]
-                                                txt = (
-                                                    f"{sufijo_qty} unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
-                                                    f"incoherente con el tier de {c['conflicto_con']}+ ({c['techo_pct']}% off), que no está tildado — "
-                                                    f"tildá también {c['conflicto_con']}+ para poder guardar juntos"
-                                                )
-                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
-                                                continue
-                                            if q in bloqueadas:
-                                                txt = (
-                                                    f"{sufijo_qty} unidades: no se puede {('corregir' if estado == 'roto' else 'crear')} sin quedar "
-                                                    f"incoherente con un tier existente en una cantidad menor (ML exige % no decreciente) — revisar a mano"
-                                                )
-                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['bloqueada']}")
-                                                continue
-                                            if estado == "ok":
-                                                txt = f"{sufijo_qty} unidades: ok — ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}% off)"
-                                                ui.label(txt).classes("text-xs pl-3").style(f"color:{_ESTADO_COLOR['ok']}")
-                                                _chk_eliminar(q)
-                                                continue
-                                            if estado not in ("crear", "roto", "revisar"):
-                                                continue
-                                            marcado = tildes.get(q, False)
-                                            aplica = marcado and q in cambios
-                                            monto_sugerido = round(ev["precio_base"] * (1 - t["pct_calculado"] / 100), 2)
-                                            if aplica:
-                                                pct_final = cambios[q]
-                                                monto_final = round(ev["precio_base"] * (1 - pct_final / 100), 2)
-                                                ajuste = "" if pct_final == t["pct_calculado"] else f" (ajustado de {t['pct_calculado']}% para no quedar por debajo de un tier existente)"
-                                            if estado == "crear":
-                                                txt = (f"{sufijo_qty} unidades: crear → ${_fmt_moneda(monto_final)} ({pct_final}% off){ajuste}" if aplica
-                                                       else f"{sufijo_qty} unidades: sugerido crear ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
-                                            elif estado == "roto":
-                                                txt = (f"{sufijo_qty} unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%){ajuste}" if aplica
-                                                       else f"{sufijo_qty} unidades: ROTO — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%), sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%), sin tildar")
-                                            else:  # revisar
-                                                txt = (f"{sufijo_qty} unidades: revisar → corregir a ${_fmt_moneda(monto_final)} ({pct_final}%) (cargado ${_fmt_moneda(t['monto_cargado'])}, {t['pct_cargado']}%){ajuste}" if aplica
-                                                       else f"{sufijo_qty} unidades: revisar — cargado ${_fmt_moneda(t['monto_cargado'])} ({t['pct_cargado']}%) vs. sugerido ${_fmt_moneda(monto_sugerido)} ({t['pct_calculado']}%)")
-                                            with ui.row().classes("items-center gap-1 pl-3"):
-                                                chk = ui.checkbox(value=marcado)
-                                                ui.label(txt).classes("text-xs").style(f"color:{_ESTADO_COLOR[estado]}")
-                                            if estado in ("roto", "revisar"):  # ya cargado -- también se puede eliminar en vez de corregir
-                                                _chk_eliminar(q)
-
-                                            def _on_toggle(e, item_id=item_id, q=q):
-                                                mayorista_tildes[item_id][q] = e.value
-                                                if e.value:
-                                                    mayorista_eliminar[item_id].discard(q)  # mutuamente excluyente con "eliminar"
-                                                _render_item()
-                                            chk.on_value_change(_on_toggle)
-
-                                _render_item()
-
-                        if not clasif["sugeridos"] and not decision_editable and not mayorista_eval:
+                        if not clasif["sugeridos"] and not decision_editable:
                             ui.label("Sin hallazgos accionables -- este SKU está al día.").classes("text-sm").style(f"color:{_OK}")
 
                         resumen_area = ui.column().classes("w-full gap-1")
@@ -2511,32 +2345,6 @@ def build_tab_salud(container) -> None:
                                     errores.append(err)
                                 else:
                                     aplicados += 1
-
-                        for item_id, ev in mayorista_eval.items():
-                            if mayorista_sobre_tope.get(item_id):
-                                # Backstop: el banner ⛔ del render ya explica por qué -- acá
-                                # solo nos aseguramos de no mandar nada de este ítem a ML
-                                # mientras siga por encima del tope de 5 (ver FIX A).
-                                errores.append(
-                                    f"Mayorista ({item_id}): sin guardar -- por encima del tope de "
-                                    f"{_ML_MAX_TIERS_PXQ} precios por cantidad, tildá \"eliminar\" en algún tier primero"
-                                )
-                                continue
-                            elim = mayorista_eliminar.get(item_id) or set()
-                            incluir = {q for q, v in mayorista_tildes.get(item_id, {}).items() if v and q not in elim}
-                            if not incluir and not elim:
-                                continue
-                            cambios, _bloqueadas, _conflictos = _tiers_plan(ev, incluir, elim)
-                            if not cambios and not elim:
-                                continue
-                            err, adv = await run.io_bound(
-                                _escribir_mayorista_pxq, token, uid, sku, item_id, cambios, elim,
-                            )
-                            advertencias.extend(adv)
-                            if err:
-                                errores.append(err)
-                            else:
-                                aplicados += 1
 
                         resumen_area.clear()
                         with resumen_area:
@@ -2715,38 +2523,41 @@ def build_tab_salud(container) -> None:
                                                 obl = row.get("atributos_editables_total")
                                                 opc = row.get("atributos_opcionales_total")
                                                 cat = row.get("atributos_solo_catalogo_total")
-                                                if obl is None and opc is None and cat is None:
-                                                    ui.label("—")
-                                                else:
-                                                    tooltip = (
-                                                        f"{obl or 0} obligatoria(s) faltante(s) en tus publicaciones (accionable, cuenta para el score) · "
-                                                        f"{opc or 0} opcional(es) sin completar en tus publicaciones (informativo, no cuenta) · "
-                                                        f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (depende de ML, no accionable, no cuenta)"
-                                                    )
-                                                    if not (obl or 0) and not (opc or 0) and not (cat or 0):
-                                                        ok_lbl = ui.label("OK").classes("text-xs font-semibold").style(f"color:{_OK}")
-                                                        ok_lbl.tooltip(tooltip)
+                                                # celda clickeable: abre el mismo popup que el nombre del producto
+                                                with ui.column().classes("gap-0 items-center cursor-pointer w-full") as celda_car:
+                                                    if obl is None and opc is None and cat is None:
+                                                        ui.label("—")
                                                     else:
-                                                        with ui.column().classes("gap-0 items-center"):
-                                                            if obl:
-                                                                with ui.row().classes("items-center gap-0.5") as fila_obl:
-                                                                    ui.icon("priority_high", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                    ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                    ui.label(str(obl)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                fila_obl.tooltip(tooltip)
-                                                            if opc:
-                                                                with ui.row().classes("items-center gap-0.5") as fila_opc:
-                                                                    ui.icon("build", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                    ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                    ui.label(str(opc)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
-                                                                fila_opc.tooltip(tooltip)
-                                                            if cat and not (obl or opc):
-                                                                # catálogo (verde) solo cuando no hay faltantes propias; el tooltip
-                                                                # sigue mostrando el detalle completo, catálogo incluido
-                                                                with ui.row().classes("items-center gap-0.5") as fila_cat:
-                                                                    ui.icon("storefront", size="12px").style(f"color:{_OK}")
-                                                                    ui.label(str(cat)).classes("text-xs font-semibold").style(f"color:{_OK}")
-                                                                fila_cat.tooltip(tooltip)
+                                                        tooltip = (
+                                                            f"{obl or 0} obligatoria(s) faltante(s) en tus publicaciones (accionable, cuenta para el score) · "
+                                                            f"{opc or 0} opcional(es) sin completar en tus publicaciones (informativo, no cuenta) · "
+                                                            f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (depende de ML, no accionable, no cuenta)"
+                                                        )
+                                                        if not (obl or 0) and not (opc or 0) and not (cat or 0):
+                                                            ok_lbl = ui.label("OK").classes("text-xs font-semibold").style(f"color:{_OK}")
+                                                            ok_lbl.tooltip(tooltip)
+                                                        else:
+                                                            with ui.column().classes("gap-0 items-center"):
+                                                                if obl:
+                                                                    with ui.row().classes("items-center gap-0.5") as fila_obl:
+                                                                        ui.icon("priority_high", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                        ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                        ui.label(str(obl)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    fila_obl.tooltip(tooltip)
+                                                                if opc:
+                                                                    with ui.row().classes("items-center gap-0.5") as fila_opc:
+                                                                        ui.icon("build", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                        ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                        ui.label(str(opc)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    fila_opc.tooltip(tooltip)
+                                                                if cat and not (obl or opc):
+                                                                    # catálogo (verde) solo cuando no hay faltantes propias; el tooltip
+                                                                    # sigue mostrando el detalle completo, catálogo incluido
+                                                                    with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                                        ui.icon("storefront", size="12px").style(f"color:{_OK}")
+                                                                        ui.label(str(cat)).classes("text-xs font-semibold").style(f"color:{_OK}")
+                                                                    fila_cat.tooltip(tooltip)
+                                                celda_car.on("click", lambda s=row["sku"]: _abrir_popup(s))
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
                                                 try:
