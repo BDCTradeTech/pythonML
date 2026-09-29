@@ -1981,10 +1981,10 @@ def build_tab_salud(container) -> None:
                     with header_row:
                         ui.label(f"{sku} — {row_actual['producto'] or ''}").classes("text-lg font-bold")
 
-                    if resultado.get("error"):
+                    if not resultado or resultado.get("error"):
                         body.clear()
                         with body:
-                            ui.label(f"No se pudo auditar este SKU: {resultado['error']}").classes("text-negative text-sm")
+                            ui.label(f"No se pudo auditar este SKU: {(resultado or {}).get('error') or 'sin respuesta'}").classes("text-negative text-sm")
                         with header_row:
                             ui.space()
                             ui.button("Cerrar", on_click=dlg.close).props("flat")
@@ -2362,9 +2362,15 @@ def build_tab_salud(container) -> None:
                             # Acá SÍ hace falta releer ML -- el audit de la apertura del popup
                             # (resultado) quedó desactualizado por la escritura que se acaba de
                             # hacer.
-                            resultado2 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
-                            if not resultado2.get("error"):
+                            try:
+                                resultado2 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+                            except Exception:  # noqa: BLE001 -- lo escrito en ML ya quedó; el refresco es cosmético
+                                resultado2 = None
+                            if resultado2 and not resultado2.get("error"):
                                 cierre_ref["resultado"] = resultado2
+                            else:
+                                # audit_sku devolvió None (p. ej. reinicio del servicio a mitad de camino) o falló
+                                ui.notify("Se guardó en ML, pero no se pudo refrescar la fila. Recargá la página.", type="warning")
                         guardar_btn.props(remove="loading")
 
                         if aplicados and not errores:
@@ -2720,8 +2726,8 @@ def build_tab_salud(container) -> None:
                         ui.notify(f"No se pudo completar la auditoría de SKUs nuevos: {e}", color="negative")
                         return
 
-                    if resultado.get("error"):
-                        ui.notify(f"No se pudo auditar SKUs nuevos: {resultado['error']}", color="negative")
+                    if not resultado or resultado.get("error"):
+                        ui.notify(f"No se pudo auditar SKUs nuevos: {(resultado or {}).get('error') or 'sin respuesta'}", color="negative")
                         return
 
                     auditados = resultado["auditados"]
