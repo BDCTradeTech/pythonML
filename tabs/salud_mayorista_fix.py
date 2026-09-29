@@ -33,7 +33,7 @@ from nicegui import background_tasks, run, ui
 
 from db import get_producto_costo
 from margen import _calc_margen_prod, _load_params_prod
-from ml_api import ml_get_prices_with_version, get_ml_access_token, ml_get_user_id
+from ml_api import ml_get_prices_with_version, get_ml_access_token, ml_get_pxq_recommendations, ml_get_user_id
 from salud_audit import (
     _calcular_mayorista_recomendado,
     _firma_tiers,
@@ -250,6 +250,37 @@ def _margen(precio: float, q: int, costo: Optional[Tuple[float, float]], params:
     return None if m is None else round(m, 2)
 
 
+_RONDAS_LOTE = 3
+_NOTA_INCOHERENTE = "ML no admite esta cantidad hoy (incoherente con las demás)"
+
+
+def _validar_coherencia_lote(token: str, item_id: str, base: float, qtys: Tuple[int, ...]) -> Tuple[Tuple[int, ...], List[int], Optional[str]]:
+    """ML calcula is_incoherent_quantity contra las OTRAS cantidades de la misma consulta (de a una
+    cantidad casi nunca se activa, y el POST después rechaza con 5598). Consulta el set candidato
+    completo en UNA llamada (máx. 5), descarta las marcadas (también las ya cargadas) y reconsulta
+    el resto hasta que ninguna quede marcada (máx. _RONDAS_LOTE rondas).
+    Devuelve (set validado, descartadas, error). Con error el set NO está validado: no se escribe."""
+    cand = tuple(sorted(qtys))
+    descartadas: List[int] = []
+    for _ in range(_RONDAS_LOTE):
+        if not cand:
+            return (), descartadas, None
+        rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
+        if rec is None:  # error de red / 5xx: 1 reintento con backoff corto
+            time.sleep(1.0)
+            rec = ml_get_pxq_recommendations(token, item_id, base, list(cand))
+        if rec is None:
+            return cand, descartadas, "ML no respondió la validación de coherencia en lote (error de consulta) — no se escribe, reintentá"
+        marcadas = {x.get("quantity") for x in rec.get("recommendations") or [] if x.get("is_incoherent_quantity")} & set(cand)
+        if not marcadas:
+            return cand, descartadas, None
+        descartadas += sorted(marcadas)
+        cand = tuple(q for q in cand if q not in marcadas)
+    if not cand:
+        return (), descartadas, None
+    return cand, descartadas, f"ML sigue marcando cantidades incoherentes tras {_RONDAS_LOTE} rondas — no se escribe"
+
+
 def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[str, Any]:
     """Plan para UNA publicación activa. `pub`: {item_id, catalog_listing, listing_type_id, stock,
     body (prices con version)}. Solo GET + recommendations. Devuelve el plan con las filas
@@ -264,6 +295,7 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
         "precio_vigente": None, "promo": False, "filas": [], "cambios": {}, "eliminar": set(),
         "hay_cambios": False, "error": None, "firma": _firma_tiers(body),
         "incoherentes": [], "opcion": "aplicar", "hay_margen_neg": False, "qtys_actuales": [],
+        "aviso": None, "no_tocar_incoherente": False,
     }
     if not base:
         plan["error"] = "sin precio estándar en /prices"
@@ -292,8 +324,18 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
             plan["error"] = "ML no respondió la recomendación de " + _lista_es([q for q, m in sin_rec.items() if m == "error"]) + " (error de consulta) — reintentá"
             return plan
         incoherentes = {q for q, m in sin_rec.items() if m == "incoherente"}
-        plan["incoherentes"] = sorted(incoherentes)
         target = tuple(q for q in target if q not in incoherentes)  # ML no admite esas cantidades hoy (5598): se omiten
+        if target:
+            target, descartadas, err_lote = _validar_coherencia_lote(token, iid, base, target)
+            if err_lote:
+                plan["incoherentes"] = sorted(incoherentes | set(descartadas))
+                plan["error"] = err_lote
+                return plan
+            incoherentes |= set(descartadas)
+        plan["incoherentes"] = sorted(incoherentes)
+        if incoherentes and not target:
+            plan["no_tocar_incoherente"] = True
+            plan["aviso"] = "ML no admite ninguna de las cantidades objetivo hoy (incoherentes) — no se toca esta publicación"
         nuevos = calcular_pcts_objetivo(target, rec, sin_rec, actuales) if target else {}
         if any(p >= _PCT_TECHO for p, _o in nuevos.values()):
             plan["error"] = "el set calculado supera el techo de sanidad (90 %) — no se escribe"
@@ -313,7 +355,7 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
                                 "margen_neg": None, "accion": None, "nota": None}
         if nuevo is None:  # cargado pero fuera del objetivo (o cantidad que ML no admite hoy)
             if q in plan["incoherentes"]:
-                fila["nota"] = "ML no admite esta cantidad hoy"
+                fila["nota"] = _NOTA_INCOHERENTE
                 if act is None:
                     fila["accion"] = "omite"
                     filas.append(fila)
@@ -347,6 +389,13 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
                 fila["accion"] = "cambia"
                 cambios[q] = pct
         filas.append(fila)
+    if plan["no_tocar_incoherente"]:
+        # set vacío solo por incoherencias: no se borra ni se escribe nada
+        for f in filas:
+            if f["accion"] == "borra":
+                f["accion"] = "omite"
+                f["nota"] = (f["nota"] + " · " if f["nota"] else "") + "no se toca"
+        cambios, eliminar, plan["hay_margen_neg"] = {}, set(), False
     plan["filas"] = filas
     plan["cambios"] = cambios
     plan["eliminar"] = eliminar
@@ -456,6 +505,10 @@ def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
         if plan["error"]:
             ui.label(f"⚠ {plan['error']}").classes("text-xs").style(f"color:{_BAD}")
             return
+        if plan.get("incoherentes"):
+            ui.label("Cantidades descartadas: " + _lista_es(plan["incoherentes"]) + " — " + _NOTA_INCOHERENTE).classes("text-xs").style(f"color:{_MID}")
+        if plan.get("aviso"):
+            ui.label(f"⚠ {plan['aviso']}").classes("text-xs font-semibold").style(f"color:{_MID}")
         if not plan["hay_cambios"]:
             ui.label("Sin cambios, no se escribe").classes("text-xs text-gray-500")
             return
@@ -546,7 +599,7 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
     from tabs.salud_reg import _items_del_sku  # import diferido, mismo patrón que abrir_popup_reg
     from salud_audit import audit_sku
 
-    estado: Dict[str, Any] = {"escribio": False, "planes": [], "resultados": {}, "aplicando": False,
+    estado: Dict[str, Any] = {"escribio": False, "leyo_ok": False, "planes": [], "resultados": {}, "aplicando": False,
                               "progreso": (0, 0), "cuotas_abierto": False}
     with ui.dialog().props("persistent") as dlg, ui.card().classes("w-[980px] max-w-full gap-2"):
         dlg.open()
@@ -581,7 +634,7 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
         with body:
             if not planes:
                 ui.label("Este SKU no tiene publicaciones activas gold_special / gold_pro.").classes("text-sm text-gray-500")
-            elif not any(p["hay_cambios"] for p in planes) and not any(p["error"] for p in planes):
+            elif not any(p["hay_cambios"] for p in planes) and not any(p["error"] or p.get("aviso") for p in planes):
                 ui.label("✅ Ya está correcto: no hay nada que cambiar.").classes("text-sm font-semibold").style(f"color:{_OK}")
             bloq = estado["aplicando"]
             for p in [p for p in planes if p["tipo"] != "cuotas"]:
@@ -622,6 +675,7 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
             with body:
                 ui.label(lectura["error"]).classes("text-negative text-sm")
             return
+        estado["leyo_ok"] = True  # lectura exitosa: al cerrar se refresca el snapshot del SKU aunque no se escriba
         estado["planes"] = lectura["planes"]
         estado["ignoradas"] = lectura.get("ignoradas", 0)
         estado["resultados"] = {}
@@ -666,12 +720,12 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
         notif = armar_notificacion(estado["planes"], estado["resultados"])
         dlg.close()
         ui.notify(**notif)
-        if estado["escribio"]:
+        if estado["escribio"] or estado["leyo_ok"]:
             _refrescar_en_segundo_plano()
 
     async def _cerrar() -> None:
         dlg.close()
-        if estado["escribio"]:
+        if estado["escribio"] or estado["leyo_ok"]:
             _refrescar_en_segundo_plano()
 
     btn_aplicar.on_click(_aplicar)
