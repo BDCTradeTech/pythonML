@@ -297,22 +297,26 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
         conn.close()
     if snaps:
         out.append(f"Snapshots guardados ese día: {_fmt_miles(len(snaps))}")
-        n_ok = sum(1 for r in snaps if r[0] == "ok")
-        n_roto = sum(1 for r in snaps if r[0] == "roto")
-        n_rev = n_stock = 0
+        n_ok = n_roto = n_rev = n_stock = 0
         for r in snaps:
+            if r[0] not in ("ok", "roto"):
+                continue  # sin_mayorista / NULL: fuera del total
+            if r[0] == "roto":
+                n_roto += 1
+                continue
             # espejo de tabs/salud.py:303-330, mantener alineado
             try:
                 info = _json.loads(r[1]) if r[1] else {}
             except (TypeError, ValueError):
-                continue
-            if not info.get("evaluable"):
-                continue
-            if info.get("motivo") == "stock_bajo":
-                n_stock += 1
-            elif info.get("tiers_revisar"):
+                info = {}
+            if info.get("evaluable") and info.get("tiers_revisar"):
                 n_rev += 1
-        out.append(f"Mayorista: {n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_stock} stock bajo")
+            elif info.get("evaluable") and info.get("motivo") == "stock_bajo":
+                n_stock += 1
+            else:
+                n_ok += 1
+        out.append(f"Mayorista ({n_ok + n_rev + n_roto + n_stock} con mayorista): "
+                   f"{n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_stock} stock bajo")
     else:
         out.append("Mayorista: sin snapshots de este día.")
     if corr:
