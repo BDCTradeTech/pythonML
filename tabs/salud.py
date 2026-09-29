@@ -256,6 +256,27 @@ def _fotos_dim(items: List[dict]) -> Dict[str, Any]:
             "orden": float(prop["min"]) if prop["min"] is not None else -1.0}
 
 
+_VARIANTES_ESPERADAS = 10  # 5 versiones (contado + 4 de cuotas) x (propia + catálogo)
+
+
+def _variantes_dim(items: List[dict]) -> Dict[str, Any]:
+    """Cuántas publicaciones tiene el SKU vs. las 10 esperadas. Contado = gold_special; el resto
+    (gold_pro, con o sin tag Nx_campaign) cuenta como cuotas, igual que _item_descriptor."""
+    def _grupo(cat: bool) -> Dict[str, int]:
+        g = [it for it in items if bool(it.get("catalog_listing")) == cat]
+        contado = sum(1 for it in g if it.get("listing_type_id") == "gold_special")
+        return {"total": len(g), "contado": contado, "cuotas": len(g) - contado}
+    return {"total": len(items), "propias": _grupo(False), "catalogo": _grupo(True)}
+
+
+def _variantes_color(n: int) -> str:
+    if n == _VARIANTES_ESPERADAS:
+        return _OK
+    if 5 <= n < _VARIANTES_ESPERADAS:
+        return _PUNTAJE_LIMA
+    return _PUNTAJE_AMARILLO  # 1-4 faltan; >10 sobra o está duplicado
+
+
 def _cat_dim(items: List[dict], val_fn, etiquetas: Dict[str, str], color_fn) -> Dict[str, Any]:
     vals = [val_fn(it) for it in items if val_fn(it) is not None]
     total = len(vals)
@@ -526,6 +547,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         "stock": (prod_meta.get(sku) or {}).get("stock"),
         "precio_min": precio_min,
         "n_items": n_items,
+        "variantes": _variantes_dim(items),
         "n_errores": len(errores),
         "dims": dims,
         "regulatoria": regulatoria,
@@ -540,15 +562,22 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
     }
 
 
-def _build_rows(user_id: int) -> tuple:
-    """Devuelve (filas, snapshot_date) -- filas ya agrupadas por SKU."""
+def _items_vigentes(user_id: int) -> tuple:
+    """(items, snapshot_date): el último snapshot completo con lo más nuevo por item encima."""
     snap_date = _latest_snapshot_date(user_id)
     if not snap_date:
         return [], None
     items_por_id = {it["item_id"]: it for it in _load_items(user_id, snap_date)}
     for it in _load_items_mas_nuevos(user_id, snap_date):
         items_por_id[it["item_id"]] = it
-    items = list(items_por_id.values())
+    return list(items_por_id.values()), snap_date
+
+
+def _build_rows(user_id: int) -> tuple:
+    """Devuelve (filas, snapshot_date) -- filas ya agrupadas por SKU."""
+    items, snap_date = _items_vigentes(user_id)
+    if not snap_date:
+        return [], None
     prod_meta = _load_productos(user_id)
 
     por_sku: Dict[str, List[dict]] = defaultdict(list)
@@ -635,7 +664,9 @@ _COLUMNS = [
     {"name": "marca", "label": "Marca", "field": "marca", "align": "center", "w": "90px"},
     {"name": "precio", "label": "Precio", "field": "precio", "align": "right", "w": "85px"},
     {"name": "stock", "label": "Stock", "field": "stock", "align": "center", "w": "70px"},
-    {"name": "variantes", "label": "Publicaciones", "field": "variantes", "align": "center", "w": "75px", "sortable": False},
+    {"name": "variantes", "label": "Variantes", "field": "variantes", "align": "center", "w": "75px",
+     "tip": "Publicaciones del SKU sobre las 10 esperadas (5 versiones: contado + 4 de cuotas, × propia y catálogo). "
+            "Verde 10 · verde claro 5-9 · amarillo 1-4 o más de 10 (algo sobra o está duplicado)."},
     {"name": "gtin", "label": "GTIN", "field": "gtin", "align": "center", "w": "65px"},
     {"name": "descripcion", "label": "Descripción", "field": "descripcion", "align": "center", "w": "85px"},
     {"name": "short", "label": "Short", "field": "short", "align": "center", "w": "65px"},
@@ -680,6 +711,65 @@ def _puntaje_nivel(v: float) -> Tuple[str, str]:
     return _PUNTAJE_AZUL, "azul (100)"
 
 
+# (etiqueta, color, límite inferior inclusive) de mayor a menor; misma paleta que _puntaje_nivel
+_PUNTAJE_BANDAS = (
+    ("100", _PUNTAJE_AZUL, 100),
+    ("90–99", _PUNTAJE_VERDE_OSCURO, 90),
+    ("80–89", _PUNTAJE_VERDE, 80),
+    ("70–79", _PUNTAJE_LIMA, 70),
+    ("60–69", _PUNTAJE_AMARILLO, 60),
+    ("<60", _BAD, float("-inf")),
+)
+
+
+def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
+    """Distribución del Puntaje ML por PUBLICACIÓN activa con puntaje (el score es por item en
+    salud_item_snapshots). Toda la cuenta: no depende de los filtros de la tabla."""
+    cuentas = [0] * len(_PUNTAJE_BANDAS)
+    total = 0
+    sin_puntaje = 0
+    for it in items:
+        if it.get("status") != "active":
+            continue
+        try:
+            v = float(it["performance_score"]) if it.get("performance_score") is not None else None
+        except (TypeError, ValueError):
+            v = None
+        if v is None or v != v:
+            sin_puntaje += 1
+            continue
+        for i, (_, _, lo) in enumerate(_PUNTAJE_BANDAS):
+            if v >= lo:
+                cuentas[i] += 1
+                break
+        total += 1
+    return {"total": total, "sin_puntaje": sin_puntaje, "bandas": [(b[0], b[1], n) for b, n in zip(_PUNTAJE_BANDAS, cuentas)]}
+
+
+def _tarjeta_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
+    """Tarjeta compacta: barra apilada + una línea con cantidad y % por banda."""
+    total = dist["total"]
+    with ui.column().classes("gap-1 border rounded px-3 py-1").style("min-width:460px;max-width:640px"):
+        if not total:
+            ui.label("Puntaje ML: sin publicaciones activas con puntaje").classes("text-xs").style(f"color:{_MID}")
+            return
+        with ui.element("div").style("display:flex;width:100%;height:8px;border-radius:4px;overflow:hidden;background:#E5E7EB"):
+            for etiqueta, color, n in dist["bandas"]:
+                if n:
+                    ui.element("div").style(f"flex:{n} 1 0;background:{color};min-width:3px").tooltip(
+                        f"{etiqueta}: {n} ({n * 100 / total:.0f}%)")
+        with ui.row().classes("items-center gap-3 no-wrap text-xs"):
+            ui.label(f"{total} publicaciones con puntaje" + (f" · snapshot {snap_date}" if snap_date else "")).classes(
+                "font-semibold").style("white-space:nowrap")
+            for etiqueta, color, n in dist["bandas"]:
+                with ui.row().classes("items-center gap-0.5 no-wrap"):
+                    ui.element("div").style(f"width:8px;height:8px;border-radius:2px;background:{color}")
+                    ui.label(f"{etiqueta}: {n} ({n * 100 / total:.0f}%)").style("white-space:nowrap")
+            if dist.get("sin_puntaje"):
+                ui.label(f"sin puntaje: {dist['sin_puntaje']}").style(f"white-space:nowrap;color:{_GREY}").tooltip(
+                    "publicaciones activas para las que ML no devuelve puntaje")
+
+
 def _sort_key(row: dict, col: str):
     if col in ("sku", "producto", "marca"):
         return str(row.get(col) or "").lower()
@@ -695,6 +785,8 @@ def _sort_key(row: dict, col: str):
     if col == "stock":
         v = row.get("stock")
         return v if v is not None else -1
+    if col == "variantes":
+        return row.get("n_items") or 0
     if col == "regulatoria":
         v = row.get("regulatoria_propias_total")
         return v if v is not None else -1
@@ -1645,7 +1737,8 @@ def build_tab_salud(container) -> None:
     generacion = getattr(container, "_salud_generacion", 0) + 1
     container._salud_generacion = generacion
 
-    filas_todas, snap_date = _build_rows(uid)
+    items_cuenta, snap_date = _items_vigentes(uid)
+    filas_todas, _ = _build_rows(uid)
     ultima_corrida = _ultima_corrida_completa(uid)
 
     sort_ref: Dict[str, Any] = {"col": "sku", "asc": True}
@@ -1653,7 +1746,7 @@ def build_tab_salud(container) -> None:
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
             with ui.row().classes("items-center gap-3 w-full"):
-                ui.label("Salud").classes("text-xl font-bold")
+                _tarjeta_puntaje(_puntaje_distribucion(items_cuenta), snap_date)
                 ui.space()
                 estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
                 estado_auditar_nuevos.set_visibility(False)
@@ -2405,8 +2498,8 @@ def build_tab_salud(container) -> None:
                     for _ic, _sz, _col, _txt in (
                         ("person", "12px", _GREY, "Propia"),
                         ("storefront", "12px", _GREY, "Catálogo (informativo)"),
-                        ("priority_high", "12px", _BAD, "Obligatoria"),
-                        ("build", "12px", _GREY, "Opcional"),
+                        ("priority_high", "12px", _PUNTAJE_AMARILLO, "Obligatoria"),
+                        ("build", "12px", _PUNTAJE_AMARILLO, "Opcional"),
                     ):
                         with ui.row().classes("items-center gap-0.5"):
                             ui.icon(_ic, size=_sz).style(f"color:{_col}")
@@ -2474,7 +2567,14 @@ def build_tab_salud(container) -> None:
                                                 v = row.get("stock")
                                                 ui.label(str(v) if v is not None else "—")
                                             elif name == "variantes":
-                                                ui.label(str(row["n_items"]))
+                                                vd = row["variantes"]
+                                                vp, vc = vd["propias"], vd["catalogo"]
+                                                lbl_v = ui.label(f"{vd['total']}/{_VARIANTES_ESPERADAS}").classes("font-semibold").style(
+                                                    f"color:{_variantes_color(vd['total'])}")
+                                                lbl_v.tooltip(
+                                                    f"{vd['total']} de {_VARIANTES_ESPERADAS} esperadas · "
+                                                    f"Propias: {vp['total']} ({vp['contado']} contado, {vp['cuotas']} cuotas) · "
+                                                    f"Catálogo: {vc['total']} ({vc['contado']} contado, {vc['cuotas']} cuotas)")
                                             elif name == "regulatoria":
                                                 reg = row.get("regulatoria")
                                                 if reg is None:
@@ -2526,15 +2626,15 @@ def build_tab_salud(container) -> None:
                                                         with ui.column().classes("gap-0 items-center"):
                                                             if obl:
                                                                 with ui.row().classes("items-center gap-0.5") as fila_obl:
-                                                                    ui.icon("priority_high", size="12px").style(f"color:{_BAD}")
-                                                                    ui.icon("person", size="10px").style(f"color:{_BAD}")
-                                                                    ui.label(str(obl)).classes("text-xs font-semibold").style(f"color:{_BAD}")
+                                                                    ui.icon("priority_high", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.label(str(obl)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
                                                                 fila_obl.tooltip(tooltip)
                                                             if opc:
                                                                 with ui.row().classes("items-center gap-0.5") as fila_opc:
-                                                                    ui.icon("build", size="12px").style(f"color:{_GREY}")
-                                                                    ui.icon("person", size="10px").style(f"color:{_GREY}")
-                                                                    ui.label(str(opc)).classes("text-xs").style(f"color:{_GREY}")
+                                                                    ui.icon("build", size="12px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_PUNTAJE_AMARILLO}")
+                                                                    ui.label(str(opc)).classes("text-xs font-semibold").style(f"color:{_PUNTAJE_AMARILLO}")
                                                                 fila_opc.tooltip(tooltip)
                                                             if cat and not (obl or opc):
                                                                 # catálogo (verde) solo cuando no hay faltantes propias; el tooltip
@@ -2630,9 +2730,10 @@ def build_tab_salud(container) -> None:
                                                 else:
                                                     def _rng(g): return str(g["min"]) if g["min"] == g["max"] else f"{g['min']}–{g['max']}"
                                                     def _det(g): return ", ".join(f"{i} {n}" for i, n in g["detalle"])
-                                                    color_prop = _GREY if p["min"] is None else (_BAD if p["min"] == 0 else _OK)
+                                                    color_prop = _GREY if p["min"] is None else (_BAD if p["min"] < 4 else (_PUNTAJE_AMARILLO if p["min"] == 4 else _OK))
                                                     tooltip = (
-                                                        f"Propias: {_rng(p) if p['min'] is not None else '—'} fotos ({_det(p)}) · "
+                                                        f"Propias: {_rng(p) if p['min'] is not None else '—'} fotos ({_det(p)}) -- "
+                                                        f"color por el mínimo: <4 rojo, 4 amarillo, >4 verde · "
                                                         f"Catálogo: {_rng(c) if c['min'] is not None else '—'} fotos "
                                                         f"(informativo, heredadas del producto de catálogo)"
                                                     )
