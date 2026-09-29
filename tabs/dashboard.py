@@ -188,7 +188,7 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
         conn.close()
 
 
-_CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores")]
+_CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores"), ("salud_audit", "Salud")]
 _DIAS_LETRA = ["L", "M", "X", "J", "V", "S", "D"]  # datetime.weekday(): 0=lunes ... 6=domingo
 
 
@@ -199,7 +199,7 @@ def _query_cron_runs(user_id: int) -> Dict[str, Dict[str, Dict[str, Any]]]:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT job, run_date, status, count, run_datetime, error FROM cron_runs"
+            "SELECT job, run_date, status, count, run_datetime, error, duration_seconds FROM cron_runs"
             " WHERE user_id=? AND run_date>=?",
             (user_id, desde))
         rows = [dict(r) for r in cur.fetchall()]
@@ -267,6 +267,63 @@ def _read_cron_log_block(job: str, date_iso: str, user_id: int, max_lines: int =
     return "".join(block)
 
 
+def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
+    """Detalle de un día del cron de Salud, armado desde la DB (scoped a user_id):
+    cron_runs (row) + salud_item_snapshots + mayorista_correcciones_automaticas."""
+    import json as _json
+    if not row:
+        return "No corrió: no hay registro de salud_audit para este día."
+    st = {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(row["status"], row["status"])
+    out = [f"Estado: {st}"]
+    if row.get("error"):
+        out.append(f"Error: {row['error']}")
+    out.append(f"Publicaciones auditadas: {_fmt_miles(row['count'])}")
+    m = re.match(r"(\d+) items con error", row.get("error") or "")
+    if m:
+        out.append(f"Ítems con error: {m.group(1)}")
+    dur = row.get("duration_seconds")
+    if dur is not None:
+        out.append(f"Duración: {int(dur // 60)} min {int(dur % 60)} s")
+    conn = get_connection()
+    try:
+        snaps = conn.execute(
+            "SELECT mayorista_estado, mayorista_revisar_json FROM salud_item_snapshots"
+            " WHERE user_id=? AND snapshot_date=?", (user_id, date_iso)).fetchall()
+        # ts se guarda en UTC (utcnow); el cron corre 05:30 hora local, mismo día UTC.
+        corr = conn.execute(
+            "SELECT resultado, COUNT(*) FROM mayorista_correcciones_automaticas"
+            " WHERE user_id=? AND date(ts)=? GROUP BY resultado", (user_id, date_iso)).fetchall()
+    finally:
+        conn.close()
+    if snaps:
+        out.append(f"Snapshots guardados ese día: {_fmt_miles(len(snaps))}")
+        n_ok = sum(1 for r in snaps if r[0] == "ok")
+        n_roto = sum(1 for r in snaps if r[0] == "roto")
+        n_rev = n_stock = 0
+        for r in snaps:
+            # espejo de tabs/salud.py:303-330, mantener alineado
+            try:
+                info = _json.loads(r[1]) if r[1] else {}
+            except (TypeError, ValueError):
+                continue
+            if not info.get("evaluable"):
+                continue
+            if info.get("motivo") == "stock_bajo":
+                n_stock += 1
+            elif info.get("tiers_revisar"):
+                n_rev += 1
+        out.append(f"Mayorista: {n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_stock} stock bajo")
+    else:
+        out.append("Mayorista: sin snapshots de este día.")
+    if corr:
+        out.append("Auto-correcciones: " + ", ".join(f"{n} {res}" for res, n in corr))
+    else:
+        out.append("Auto-correcciones: 0")
+    if row["status"] == "fail":
+        out.append("La corrida se abortó; puede no haber snapshots de este día.")
+    return "\n".join(out)
+
+
 def _open_cron_log_dialog(job_label: str, job_key: str, date_iso: str, row: Optional[Dict], user_id: int) -> None:
     with ui.dialog() as d, ui.card().classes("w-full").style("max-width:800px"):
         ui.label(f"{job_label} — {date_iso}").classes("font-bold text-base")
@@ -278,7 +335,8 @@ def _open_cron_log_dialog(job_label: str, job_key: str, date_iso: str, row: Opti
             meta = "Sin registro en cron_runs para esta fecha (no corrió)."
         ui.label(meta).classes("text-xs text-gray-600")
         with ui.scroll_area().classes("w-full").style("height:400px;background:#111;border-radius:4px"):
-            ui.label(_read_cron_log_block(job_key, date_iso, user_id)).classes(
+            ui.label(_salud_detalle_dia(user_id, date_iso, row) if job_key == "salud_audit"
+                     else _read_cron_log_block(job_key, date_iso, user_id)).classes(
                 "text-xs whitespace-pre-wrap font-mono").style("color:#d1d5db;padding:8px")
         ui.button("Cerrar", on_click=d.close)
     d.open()
