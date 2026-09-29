@@ -331,10 +331,16 @@ async def abrir_popup_reg(uid: int, sku: str, producto: str, desde_fecha: Option
             return
         btn_cerrar.props("loading disable")
         seller_id = await run.io_bound(ml_get_user_id, token)
-        resultado = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+        try:
+            resultado = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+        except Exception:  # noqa: BLE001 -- lo escrito en ML ya quedó; el refresco es cosmético
+            resultado = None
         dlg.close()
-        if not resultado.get("error"):
+        if resultado and not resultado.get("error"):
             al_cerrar(resultado)
+        else:
+            # audit_sku devolvió None (p. ej. reinicio del servicio a mitad de camino) o falló
+            ui.notify("Se guardó en ML, pero no se pudo refrescar la fila. Recargá la página.", type="warning")
 
     btn_releer.on_click(_cargar)
     btn_cerrar.on_click(_cerrar)

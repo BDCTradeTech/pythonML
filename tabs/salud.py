@@ -1198,6 +1198,53 @@ def _fetch_category_attrs(cat_id: str) -> List[dict]:
         return []
 
 
+# --- unidades (inicio) -- bloque autocontenido, se prueba offline extrayéndolo de este archivo
+# familia -> {unidad en minúscula: factor a la unidad base}. Solo familias donde la conversión es
+# inequívoca; una unidad fuera de estas (o de familias distintas) no se normaliza.
+_FAMILIAS_UNIDAD: Dict[str, Dict[str, float]] = {
+    "longitud": {"mm": 0.001, "cm": 0.01, "m": 1.0, "km": 1000.0, "in": 0.0254, "ft": 0.3048},
+    "masa": {"mg": 1e-6, "g": 0.001, "kg": 1.0, "oz": 0.028349523125, "lb": 0.45359237},
+    "volumen": {"ml": 0.001, "cl": 0.01, "l": 1.0},
+    "capacidad": {"mah": 0.001, "ah": 1.0},
+    "potencia": {"w": 1.0, "kw": 1000.0},
+    "frecuencia": {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9},
+    "tension": {"mv": 0.001, "v": 1.0},
+    "tiempo": {"s": 1.0, "min": 60.0, "h": 3600.0},
+}
+_UNIDAD_A_FAMILIA: Dict[str, Tuple[str, float]] = {u: (f, k) for f, d in _FAMILIAS_UNIDAD.items() for u, k in d.items()}
+_RE_NUM_UNIDAD = re.compile(r"^\s*(-?\d+(?:[.,]\d+)?)\s*([A-Za-z]+)\s*$")
+
+
+def _num_unidad(v: Any) -> Optional[Tuple[float, int, str, float]]:
+    """'14.4 cm' -> (14.4, 1 decimal, 'longitud', 0.01) o None si no es número+unidad conocida."""
+    m = _RE_NUM_UNIDAD.match(str(v)) if v is not None else None
+    if not m:
+        return None
+    fam = _UNIDAD_A_FAMILIA.get(m.group(2).lower())
+    if not fam:
+        return None
+    txt = m.group(1).replace(",", ".")
+    dec = len(txt.split(".")[1]) if "." in txt else 0
+    return float(txt), dec, fam[0], fam[1]
+
+
+def _valores_con_unidad_equivalentes(a: Any, b: Any) -> bool:
+    """True si a y b son el MISMO valor expresado en unidades distintas de la misma familia
+    (144 mm == 14.4 cm, 7.73 g == 0.00773 kg). ML normaliza la unidad al guardar y el
+    verificador lo contaba como 'no coincide'. Convierte ambos a la unidad base y compara
+    con la tolerancia de redondeo del valor MÁS preciso (la mitad
+    del último decimal escrito), así 144 mm no iguala a 14 cm ni a 15 cm.
+    Si no se puede normalizar (no es número+unidad, unidad desconocida o familias distintas)
+    devuelve False y el llamador compara como antes."""
+    x, y = _num_unidad(a), _num_unidad(b)
+    if not x or not y or x[2] != y[2]:
+        return False
+    vx, vy = x[0] * x[3], y[0] * y[3]
+    tol = min(0.5 * 10 ** -x[1] * x[3], 0.5 * 10 ** -y[1] * y[3])
+    return abs(vx - vy) <= tol + 1e-12 * max(abs(vx), abs(vy), 1.0)
+# --- unidades (fin)
+
+
 def _norm(s: Optional[str]) -> str:
     """Normaliza para matchear contra values[]/allowed_units sin que tilde/mayúscula/
     espaciado de más rompan el match (caso confirmado: 'días' vs 'dias', '64mb' vs
@@ -1589,7 +1636,11 @@ def _escribir_atributo(token: str, uid: int, sku: str, item_id: str, attr_id: st
     if attr_payload.get("value_id") not in (None, ""):
         ok = actual_attr is not None and str(actual_attr.get("value_id") or "") == str(attr_payload["value_id"])
     else:
-        ok = actual_attr is not None and _norm(actual_attr.get("value_name")) == _norm(attr_payload.get("value_name"))
+        ok = actual_attr is not None and (
+            _norm(actual_attr.get("value_name")) == _norm(attr_payload.get("value_name"))
+            # ML normaliza la unidad al guardar (144 mm -> 14.4 cm): mismo valor, otra unidad
+            or _valores_con_unidad_equivalentes(actual_attr.get("value_name"), attr_payload.get("value_name"))
+        )
     if ok:
         log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, "salud_popup", "ok", None)
         return None
