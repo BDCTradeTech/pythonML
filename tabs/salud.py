@@ -746,28 +746,56 @@ def _puntaje_distribucion(items: List[dict]) -> Dict[str, Any]:
     return {"total": total, "sin_puntaje": sin_puntaje, "bandas": [(b[0], b[1], n) for b, n in zip(_PUNTAJE_BANDAS, cuentas)]}
 
 
-def _tarjeta_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
-    """Tarjeta compacta: barra apilada + una línea con cantidad y % por banda."""
+def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
+    """'2026-09-28T06:13:..' -> '28/09' (o '28/09 06:13')."""
+    if not iso or len(iso) < 10:
+        return ""
+    txt = f"{iso[8:10]}/{iso[5:7]}"
+    return f"{txt} {iso[11:16]}" if con_hora and len(iso) >= 16 else txt
+
+
+# umbrales del texto dentro de cada segmento (% del total): <6 nada · 6-15 cantidad · >=15 "cantidad · %"
+_SEG_MIN_CANTIDAD = 6.0
+_SEG_MIN_COMPLETO = 15.0
+
+
+def _barra_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
+    """Barra apilada gruesa del Puntaje ML (publicaciones activas de la cuenta) + leyenda."""
     total = dist["total"]
-    with ui.column().classes("gap-1 border rounded px-3 py-1").style("min-width:460px;max-width:640px"):
+    with ui.column().classes("gap-1 w-full").style("min-width:0"):
         if not total:
             ui.label("Puntaje ML: sin publicaciones activas con puntaje").classes("text-xs").style(f"color:{_MID}")
             return
-        with ui.element("div").style("display:flex;width:100%;height:8px;border-radius:4px;overflow:hidden;background:#E5E7EB"):
+        with ui.element("div").style(
+                "display:flex;width:100%;height:26px;border-radius:6px;overflow:hidden;background:#E5E7EB"):
             for etiqueta, color, n in dist["bandas"]:
-                if n:
-                    ui.element("div").style(f"flex:{n} 1 0;background:{color};min-width:3px").tooltip(
-                        f"{etiqueta}: {n} ({n * 100 / total:.0f}%)")
-        with ui.row().classes("items-center gap-3 no-wrap text-xs"):
-            ui.label(f"{total} publicaciones con puntaje" + (f" · snapshot {snap_date}" if snap_date else "")).classes(
-                "font-semibold").style("white-space:nowrap")
+                if not n:
+                    continue
+                pct = n * 100 / total
+                if pct >= _SEG_MIN_COMPLETO:
+                    txt = f"{n} · {pct:.0f}%"
+                elif pct >= _SEG_MIN_CANTIDAD:
+                    txt = str(n)
+                else:
+                    txt = ""
+                seg = ui.element("div").style(
+                    f"flex:{n} 1 0;background:{color};min-width:2px;display:flex;align-items:center;"
+                    "justify-content:center;color:#fff;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden")
+                with seg:
+                    if txt:
+                        ui.label(txt)
+                seg.tooltip(f"{etiqueta}: {n} ({pct:.0f}%)")
+        with ui.row().classes("items-center gap-3 no-wrap text-xs").style("white-space:nowrap;overflow:hidden"):
             for etiqueta, color, n in dist["bandas"]:
-                with ui.row().classes("items-center gap-0.5 no-wrap"):
-                    ui.element("div").style(f"width:8px;height:8px;border-radius:2px;background:{color}")
-                    ui.label(f"{etiqueta}: {n} ({n * 100 / total:.0f}%)").style("white-space:nowrap")
-            if dist.get("sin_puntaje"):
-                ui.label(f"sin puntaje: {dist['sin_puntaje']}").style(f"white-space:nowrap;color:{_GREY}").tooltip(
-                    "publicaciones activas para las que ML no devuelve puntaje")
+                with ui.row().classes("items-center gap-1 no-wrap"):
+                    ui.element("div").style(f"width:9px;height:9px;border-radius:2px;background:{color}")
+                    sin_texto = (n * 100 / total) < _SEG_MIN_CANTIDAD
+                    ui.label(f"{etiqueta}: {n}" if sin_texto else etiqueta)
+            resumen = f"{total} con puntaje · {dist.get('sin_puntaje', 0)} sin puntaje"
+            if snap_date:
+                resumen += f" · snapshot {_fecha_corta(snap_date)}"
+            ui.label(resumen).style(f"color:{_GREY}").tooltip(
+                "sin puntaje = publicaciones activas para las que ML no devuelve puntaje")
 
 
 def _sort_key(row: dict, col: str):
@@ -1745,26 +1773,27 @@ def build_tab_salud(container) -> None:
 
     with container:
         with ui.column().classes("w-full gap-2 p-2"):
-            with ui.row().classes("items-center gap-3 w-full"):
-                _tarjeta_puntaje(_puntaje_distribucion(items_cuenta), snap_date)
-                ui.space()
-                estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
-                estado_auditar_nuevos.set_visibility(False)
-                if filas_todas:
-                    # Solo tiene sentido con una tabla base ya cargada -- si el cron
-                    # nocturno nunca corrió para esta cuenta (filas_todas vacío, guard de
-                    # abajo), _render()/table_container todavía no existen y el handler
-                    # de este botón (definido más abajo) no se llegaría a crear.
-                    boton_auditar_nuevos = ui.button(
-                        "Auditar SKUs nuevos", icon="fact_check",
-                        on_click=lambda: _auditar_nuevos_bg(),
-                    ).props("dense outline")
-                if ultima_corrida:
-                    ui.label(f"Última corrida completa: {ultima_corrida[:16].replace('T', ' ')}").classes("text-xs text-gray-500")
-                elif snap_date:
-                    ui.label(f"Último snapshot: {snap_date} (corrida manual, no vía cron)").classes("text-xs text-gray-500")
-                else:
-                    ui.label("Todavía no corrió la auditoría nocturna para esta cuenta.").classes("text-xs text-warning")
+            with ui.row().classes("items-start gap-4 w-full no-wrap"):
+                with ui.column().classes("grow").style("min-width:0"):
+                    _barra_puntaje(_puntaje_distribucion(items_cuenta), snap_date)
+                with ui.column().classes("items-end gap-0").style("flex:none"):
+                    estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
+                    estado_auditar_nuevos.set_visibility(False)
+                    if filas_todas:
+                        # Solo tiene sentido con una tabla base ya cargada -- si el cron
+                        # nocturno nunca corrió para esta cuenta (filas_todas vacío, guard de
+                        # abajo), _render()/table_container todavía no existen y el handler
+                        # de este botón (definido más abajo) no se llegaría a crear.
+                        boton_auditar_nuevos = ui.button(
+                            "Auditar SKUs nuevos", icon="fact_check",
+                            on_click=lambda: _auditar_nuevos_bg(),
+                        ).props("dense outline")
+                    if ultima_corrida:
+                        ui.label(f"Última corrida completa: {_fecha_corta(ultima_corrida, con_hora=True)}").classes("text-xs text-gray-500")
+                    elif snap_date:
+                        ui.label(f"Último snapshot: {_fecha_corta(snap_date)} (corrida manual, no vía cron)").classes("text-xs text-gray-500")
+                    else:
+                        ui.label("Todavía no corrió la auditoría nocturna para esta cuenta.").classes("text-xs text-warning")
 
             if not filas_todas:
                 ui.label(
@@ -1775,7 +1804,7 @@ def build_tab_salud(container) -> None:
 
             marcas_disponibles = sorted({f["marca"] for f in filas_todas if f["marca"]})
 
-            with ui.row().classes("items-center gap-3 flex-wrap w-full"):
+            with ui.row().classes("items-center gap-3 no-wrap w-full"):
                 stock_sel = ui.select(
                     {"con_stock": "Con stock", "sin_stock": "Sin stock", "ambas": "Ambas"},
                     value="con_stock", label="Stock",
@@ -1786,7 +1815,8 @@ def build_tab_salud(container) -> None:
                 ).props("dense outlined").classes("w-44")
                 buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
                     "dense outlined clearable debounce=300"
-                ).classes("w-64")
+                ).classes("grow")
+                contador_mostrando = ui.label("").classes("text-xs text-gray-500").style("white-space:nowrap")
 
             leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
             indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
@@ -2493,8 +2523,8 @@ def build_tab_salud(container) -> None:
                 visibles = sorted(visibles, key=lambda r: _sort_key(r, sort_ref["col"]), reverse=not sort_ref["asc"])
 
                 leyenda_row.clear()
+                contador_mostrando.set_text(f"Mostrando {len(visibles)} de {len(filas_todas)}")
                 with leyenda_row:
-                    ui.label(f"Mostrando {len(visibles)} de {len(filas_todas)}")
                     for _ic, _sz, _col, _txt in (
                         ("person", "12px", _GREY, "Propia"),
                         ("storefront", "12px", _GREY, "Catálogo (informativo)"),
