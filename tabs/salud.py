@@ -791,11 +791,6 @@ def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
     return f"{txt} {iso[11:16]}" if con_hora and len(iso) >= 16 else txt
 
 
-# umbrales del texto dentro de cada segmento (% del total): <6 nada · 6-15 cantidad · >=15 "cantidad · %"
-_SEG_MIN_CANTIDAD = 6.0
-_SEG_MIN_COMPLETO = 15.0
-
-
 def _dec_es(v: float, signo: bool = False) -> str:
     """1 decimal con coma; signo explícito (+/−) si se pide."""
     txt = f"{abs(v):.1f}".replace(".", ",")
@@ -805,69 +800,64 @@ def _dec_es(v: float, signo: bool = False) -> str:
 
 
 def _recuadro_puntaje_general(dist: Dict[str, Any], previo: tuple) -> None:
-    """Promedio del Puntaje ML (mismas publicaciones que la barra) + variación vs. ~7 días atrás."""
+    """Promedio del Puntaje ML (mismas publicaciones que la barra) + variación vs. ~7 días atrás.
+    Alto = el del bloque de dos filas (align-self:stretch)."""
     prom = dist.get("promedio")
     with ui.column().classes("items-center justify-center gap-0 border rounded px-3").style(
-            "flex:none;width:170px;align-self:stretch"):
+            "flex:none;width:150px;align-self:stretch"):
+        ui.label("Puntaje general").classes("text-xs").style(f"color:{_GREY};white-space:nowrap;line-height:1.2")
         if prom is None:
             ui.label("—").classes("text-lg font-bold")
             return
         prom_r = round(prom, 1)
         color, _ = _puntaje_nivel(prom_r)
-        with ui.row().classes("items-baseline gap-1 no-wrap"):
-            ui.label(_dec_es(prom_r)).style(f"color:{color};font-size:26px;font-weight:700;line-height:1")
-            prev_prom, prev_fecha = previo
-            if prev_prom is not None:
-                delta = round(prom_r - round(prev_prom, 1), 1)
-                if delta == 0:
-                    ui.label("= vs semana pasada").classes("text-xs").style(f"color:{_GREY};white-space:nowrap") \
-                        .tooltip(f"Comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})")
-                else:
-                    flecha, col = ("▲", _OK) if delta > 0 else ("▼", _BAD)
-                    ui.label(f"{flecha} {_dec_es(delta, True)}").classes("text-xs font-semibold").style(
-                        f"color:{col};white-space:nowrap").tooltip(
-                        f"vs semana pasada · comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})")
-        ui.label(f"promedio de {dist['total']} publicaciones").classes("text-xs").style(
-            f"color:{_GREY};white-space:nowrap;line-height:1.2")
+        ui.label(_dec_es(prom_r)).style(f"color:{color};font-size:28px;font-weight:700;line-height:1.1")
+        prev_prom, prev_fecha = previo
+        if prev_prom is not None:
+            delta = round(prom_r - round(prev_prom, 1), 1)
+            tip = f"vs semana pasada · comparado con el snapshot del {_fecha_corta(prev_fecha)} (promedio {_dec_es(prev_prom)})"
+            if delta == 0:
+                ui.label(f"= vs {_fecha_corta(prev_fecha)}").classes("text-xs").style(
+                    f"color:{_GREY};white-space:nowrap;line-height:1.2").tooltip(tip)
+            else:
+                flecha, col = ("▲", _OK) if delta > 0 else ("▼", _BAD)
+                ui.label(f"{flecha} {_dec_es(delta, True)} vs {_fecha_corta(prev_fecha)}").classes(
+                    "text-xs font-semibold").style(f"color:{col};white-space:nowrap;line-height:1.2").tooltip(tip)
 
 
-def _barra_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> None:
-    """Barra apilada gruesa del Puntaje ML (publicaciones activas de la cuenta) + leyenda."""
+# ancho mínimo por segmento: que entren "90–99" y "284 (38%)" en 10-11 px aunque el ancho
+# deje de ser exactamente proporcional (flex-grow = cantidad)
+_SEG_MIN_PX = 64
+
+
+def _barra_puntaje(dist: Dict[str, Any]) -> None:
+    """Barra apilada del Puntaje ML (publicaciones activas de la cuenta); cada segmento lleva
+    el nombre de la banda y 'cantidad (porcentaje)'. Las bandas en 0 no se dibujan."""
     total = dist["total"]
-    with ui.column().classes("gap-1 w-full").style("min-width:0"):
-        if not total:
-            ui.label("Puntaje ML: sin publicaciones activas con puntaje").classes("text-xs").style(f"color:{_MID}")
-            return
-        with ui.element("div").style(
-                "display:flex;width:100%;height:26px;border-radius:6px;overflow:hidden;background:#E5E7EB"):
-            for etiqueta, color, n in dist["bandas"]:
-                if not n:
-                    continue
-                pct = n * 100 / total
-                if pct >= _SEG_MIN_COMPLETO:
-                    txt = f"{n} ({pct:.0f}%)"
-                elif pct >= _SEG_MIN_CANTIDAD:
-                    txt = str(n)
-                else:
-                    txt = ""
-                seg = ui.element("div").style(
-                    f"flex:{n} 1 0;background:{color};min-width:2px;display:flex;align-items:center;"
-                    "justify-content:center;color:#fff;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden")
-                with seg:
-                    if txt:
-                        ui.label(txt)
-                seg.tooltip(f"{etiqueta}: {n} ({pct:.0f}%)")
-        with ui.row().classes("items-center gap-3 no-wrap text-xs").style("white-space:nowrap;overflow:hidden"):
-            for etiqueta, color, n in dist["bandas"]:
-                with ui.row().classes("items-center gap-1 no-wrap"):
-                    ui.element("div").style(f"width:9px;height:9px;border-radius:2px;background:{color}")
-                    sin_texto = (n * 100 / total) < _SEG_MIN_CANTIDAD
-                    ui.label(f"{etiqueta}: {n}" if sin_texto else etiqueta)
-            resumen = f"{total} con puntaje · {dist.get('sin_puntaje', 0)} sin puntaje"
-            if snap_date:
-                resumen += f" · snapshot {_fecha_corta(snap_date)}"
-            ui.label(resumen).style(f"color:{_GREY}").tooltip(
-                "sin puntaje = publicaciones activas para las que ML no devuelve puntaje")
+    if not total:
+        ui.label("Puntaje ML: sin publicaciones activas con puntaje").classes("text-xs").style(f"color:{_MID}")
+        return
+    with ui.element("div").style(
+            "display:flex;width:100%;height:30px;border-radius:6px;overflow:hidden;background:#E5E7EB"):
+        for etiqueta, color, n in dist["bandas"]:
+            if not n:
+                continue
+            pct = n * 100 / total
+            seg = ui.element("div").style(
+                f"flex:{n} 1 0;min-width:{_SEG_MIN_PX}px;background:{color};display:flex;flex-direction:column;"
+                "align-items:center;justify-content:center;color:#fff;font-size:10.5px;font-weight:600;"
+                "line-height:1.15;white-space:nowrap;overflow:hidden")
+            with seg:
+                ui.label(etiqueta)
+                ui.label(f"{n} ({pct:.0f}%)")
+            seg.tooltip(f"{etiqueta}: {n} ({pct:.0f}%)")
+
+
+def _resumen_puntaje(dist: Dict[str, Any], snap_date: Optional[str]) -> str:
+    txt = f"{dist['total']} con puntaje · {dist.get('sin_puntaje', 0)} sin puntaje"
+    if snap_date:
+        txt += f" · snapshot {_fecha_corta(snap_date)}"
+    return txt
 
 
 def _sort_key(row: dict, col: str):
@@ -1844,14 +1834,30 @@ def build_tab_salud(container) -> None:
     sort_ref: Dict[str, Any] = {"col": "sku", "asc": True}
 
     with container:
-        with ui.column().classes("w-full gap-2 p-2"):
-            with ui.row().classes("items-start gap-4 w-full no-wrap"):
-                dist_puntaje = _puntaje_distribucion(items_cuenta)
-                with ui.row().classes("grow no-wrap items-stretch gap-3").style("min-width:0"):
-                    with ui.column().classes("grow").style("min-width:0"):
-                        _barra_puntaje(dist_puntaje, snap_date)
-                    _recuadro_puntaje_general(dist_puntaje, _puntaje_semana_pasada(uid, snap_date))
-                with ui.column().classes("items-end gap-0").style("flex:none"):
+        with ui.column().classes("w-full gap-1 px-2 pb-2 pt-0"):
+            dist_puntaje = _puntaje_distribucion(items_cuenta)
+            marcas_disponibles = sorted({f["marca"] for f in filas_todas if f["marca"]})
+            # Bloque principal (alto de dos filas): recuadro | barra + filtros | botón + última corrida
+            with ui.row().classes("w-full no-wrap items-stretch gap-3"):
+                _recuadro_puntaje_general(dist_puntaje, _puntaje_semana_pasada(uid, snap_date))
+                with ui.column().classes("grow gap-2").style("min-width:0"):
+                    _barra_puntaje(dist_puntaje)
+                    if filas_todas:
+                        with ui.row().classes("items-center gap-3 no-wrap w-full"):
+                            stock_sel = ui.select(
+                                {"con_stock": "Con stock", "sin_stock": "Sin stock", "ambas": "Ambas"},
+                                value="con_stock", label="Stock",
+                            ).props("dense outlined").classes("w-36")
+                            marca_sel = ui.select(
+                                {"": "Todas", **{m: m for m in marcas_disponibles}},
+                                value="", label="Marca",
+                            ).props("dense outlined").classes("w-44")
+                            buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
+                                "dense outlined clearable debounce=300"
+                            ).style("flex:none;width:max(220px, calc((100% - 470px) / 3))")
+                            ui.space()
+                            contador_mostrando = ui.label("").classes("text-xs text-gray-500").style("white-space:nowrap")
+                with ui.column().classes("items-end justify-center gap-0").style("flex:none"):
                     estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
                     estado_auditar_nuevos.set_visibility(False)
                     if filas_todas:
@@ -1877,24 +1883,11 @@ def build_tab_salud(container) -> None:
                 ).classes("text-sm text-gray-400")
                 return
 
-            marcas_disponibles = sorted({f["marca"] for f in filas_todas if f["marca"]})
-
-            with ui.row().classes("items-center gap-3 no-wrap w-full"):
-                stock_sel = ui.select(
-                    {"con_stock": "Con stock", "sin_stock": "Sin stock", "ambas": "Ambas"},
-                    value="con_stock", label="Stock",
-                ).props("dense outlined").classes("w-36")
-                marca_sel = ui.select(
-                    {"": "Todas", **{m: m for m in marcas_disponibles}},
-                    value="", label="Marca",
-                ).props("dense outlined").classes("w-44")
-                buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
-                    "dense outlined clearable debounce=300"
-                ).style("flex:none;width:max(220px, calc((100% - 470px) / 3))")
-                ui.space()
-                contador_mostrando = ui.label("").classes("text-xs text-gray-500").style("white-space:nowrap")
-
-            leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
+            # Una línea chica: resumen del puntaje (izq.) + leyenda de íconos (der.)
+            with ui.row().classes("w-full items-center justify-between no-wrap text-xs text-gray-500"):
+                ui.label(_resumen_puntaje(dist_puntaje, snap_date)).tooltip(
+                    "sin puntaje = publicaciones activas para las que ML no devuelve puntaje")
+                leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
             indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
             indicador_stock.set_visibility(False)
 
