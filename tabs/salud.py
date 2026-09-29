@@ -580,24 +580,35 @@ def _stock_fresco_sync(uid: int, snap_date: str) -> Dict[str, int]:
 _COLUMNS = [
     {"name": "sku", "label": "SKU", "field": "sku", "align": "left", "w": "130px"},
     {"name": "producto", "label": "Producto", "field": "producto", "align": "left", "w": "320px"},
-    {"name": "marca", "label": "Marca", "field": "marca", "align": "left", "w": "90px"},
+    {"name": "marca", "label": "Marca", "field": "marca", "align": "center", "w": "90px"},
     {"name": "precio", "label": "Precio", "field": "precio", "align": "right", "w": "85px"},
-    {"name": "stock", "label": "Stock", "field": "stock", "align": "right", "w": "70px"},
-    {"name": "variantes", "label": "Publicaciones", "field": "variantes", "align": "right", "w": "75px", "sortable": False},
+    {"name": "stock", "label": "Stock", "field": "stock", "align": "center", "w": "70px"},
+    {"name": "variantes", "label": "Publicaciones", "field": "variantes", "align": "center", "w": "75px", "sortable": False},
     {"name": "gtin", "label": "GTIN", "field": "gtin", "align": "center", "w": "65px"},
     {"name": "descripcion", "label": "Descripción", "field": "descripcion", "align": "center", "w": "85px"},
     {"name": "short", "label": "Short", "field": "short", "align": "center", "w": "65px"},
     {"name": "fotos", "label": "Fotos", "field": "fotos", "align": "center", "w": "65px"},
     {"name": "mayorista", "label": "Mayorista", "field": "mayorista", "align": "center", "w": "100px"},
     {"name": "flex", "label": "Flex", "field": "flex", "align": "center", "w": "65px"},
-    {"name": "retiro_persona", "label": "Retiro en persona", "field": "retiro_persona", "align": "center", "w": "95px"},
+    {"name": "retiro_persona", "label": "Retiro", "tip": "Retiro en persona", "field": "retiro_persona", "align": "center", "w": "60px"},
     {"name": "garantia", "label": "Garantía", "field": "garantia", "align": "center", "w": "75px"},
     {"name": "envio_gratis", "label": "Envío gratis", "field": "envio_gratis", "align": "center", "w": "85px"},
-    {"name": "regulatoria", "label": "Regulatoria", "field": "regulatoria", "align": "center", "w": "45px", "sortable": False},
+    {"name": "regulatoria", "label": "Reg.", "tip": "Regulatoria", "field": "regulatoria", "align": "center", "w": "50px", "sortable": False},
     {"name": "condicion", "label": "Condición", "field": "condicion", "align": "center", "w": "75px"},
-    {"name": "atributos_editables", "label": "Car. faltantes", "field": "atributos_editables", "align": "right", "w": "70px"},
-    {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "right", "w": "80px"},
+    {"name": "atributos_editables", "label": "Caracterist.", "tip": "Características faltantes", "field": "atributos_editables", "align": "center", "w": "80px"},
+    {"name": "puntaje_ml", "label": "Puntaje ML", "field": "puntaje_ml", "align": "center", "w": "95px"},
 ]
+
+
+def _puntaje_nivel(v: float) -> Tuple[str, str]:
+    """(color, nivel) del puntaje /performance de ML. Umbrales INFERIDOS de 27 consultas en
+    vivo (2026-09-29, level_wording vs score): Profesional 67-93, Estándar 52-65, Básica 49.
+    La doc de ML no publica los cortes numéricos -- ajustar si ML los cambia."""
+    if v >= 66:
+        return _OK, "Profesional"
+    if v >= 50:
+        return _MID, "Estándar"
+    return _BAD, "Básica"
 
 
 def _sort_key(row: dict, col: str):
@@ -1606,7 +1617,7 @@ def build_tab_salud(container) -> None:
                     "dense outlined clearable debounce=300"
                 ).classes("w-64")
 
-            contador_lbl = ui.label("").classes("text-xs text-gray-500")
+            leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
             indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
             indicador_stock.set_visibility(False)
 
@@ -2274,12 +2285,24 @@ def build_tab_salud(container) -> None:
 
                 visibles = sorted(visibles, key=lambda r: _sort_key(r, sort_ref["col"]), reverse=not sort_ref["asc"])
 
-                contador_lbl.set_text(
-                    f"mostrando {len(visibles)} de {len(filas_todas)} · "
-                    "👤 publicación propia · 🏬 publicación catálogo (en Fotos y GTIN/Descripción es informativo) · "
-                    "❗ obligatoria · 🔧 opcional (en Car. faltantes, 🏬 va sin separar "
-                    "obligatoria/opcional -- informativo, nunca cuenta)"
-                )
+                leyenda_row.clear()
+                with leyenda_row:
+                    ui.label(f"Mostrando {len(visibles)} de {len(filas_todas)}")
+                    for _ic, _sz, _col, _txt in (
+                        ("person", "12px", _GREY, "Propia"),
+                        ("storefront", "12px", _GREY, "Catálogo (informativo)"),
+                        ("priority_high", "12px", _BAD, "Obligatoria"),
+                        ("build", "12px", _GREY, "Opcional"),
+                    ):
+                        with ui.row().classes("items-center gap-0.5"):
+                            ui.icon(_ic, size=_sz).style(f"color:{_col}")
+                            ui.label(_txt)
+                    ui.icon("info", size="14px").style(f"color:{_GREY}").tooltip(
+                        "Propia = tus publicaciones (accionable). Catálogo = copias de catálogo: "
+                        "en Fotos, GTIN y Descripción es informativo, ML no permite editarlo. "
+                        "En Caracterist., el catálogo va sin separar obligatoria/opcional y nunca cuenta. "
+                        "Puntaje ML: verde = Profesional (≥66), ámbar = Estándar (50-65), rojo = Básica (<50)."
+                    )
 
                 header_div.clear()
                 table_container.clear()
@@ -2296,7 +2319,7 @@ def build_tab_salud(container) -> None:
                                 for col in _COLUMNS:
                                     with ui.element("th").classes("px-2 py-1 border text-center").style("line-height:1.1"):
                                         if col.get("sortable", True):
-                                            ui.button(
+                                            _hb = ui.button(
                                                 col["label"], on_click=lambda c=col["name"]: _on_sort(c)
                                             ).props("flat dense no-caps").classes(
                                                 "text-white hover:bg-white/20 cursor-pointer font-semibold"
@@ -2304,8 +2327,12 @@ def build_tab_salud(container) -> None:
                                                 "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
                                                 "max-width:100%;min-height:0;padding:2px 6px;line-height:1.1;font-size:11px"
                                             )
+                                            if col.get("tip"):
+                                                _hb.tooltip(col["tip"])
                                         else:
-                                            ui.label(col["label"]).classes("font-semibold").style("line-height:1.1")
+                                            _hl = ui.label(col["label"]).classes("font-semibold").style("line-height:1.1")
+                                            if col.get("tip"):
+                                                _hl.tooltip(col["tip"])
 
                 with table_container:
                     with ui.element("table").style("table-layout:fixed;width:100%;border-collapse:separate;border-spacing:0;font-size:11px"):
@@ -2348,25 +2375,41 @@ def build_tab_salud(container) -> None:
                                                         f"{opc or 0} opcional(es) sin completar en tus publicaciones (informativo, no cuenta) · "
                                                         f"{cat or 0} atributo(s) que solo faltan en copias de catálogo (informativo, ML no permite editarlo, no cuenta)"
                                                     )
-                                                    color_obl = _BAD if (obl or 0) > 0 else _GREY
-                                                    with ui.column().classes("gap-0 items-end"):
-                                                        with ui.row().classes("items-center gap-0.5") as fila_obl:
-                                                            ui.icon("priority_high", size="12px").style(f"color:{color_obl}")
-                                                            ui.icon("person", size="10px").style(f"color:{color_obl}")
-                                                            ui.label(str(obl) if obl is not None else "—").classes("text-xs font-semibold").style(f"color:{color_obl}")
-                                                        fila_obl.tooltip(tooltip)
-                                                        with ui.row().classes("items-center gap-0.5") as fila_opc:
-                                                            ui.icon("build", size="12px").style(f"color:{_GREY}")
-                                                            ui.icon("person", size="10px").style(f"color:{_GREY}")
-                                                            ui.label(str(opc) if opc is not None else "—").classes("text-xs").style(f"color:{_GREY}")
-                                                        fila_opc.tooltip(tooltip)
-                                                        with ui.row().classes("items-center gap-0.5") as fila_cat:
-                                                            ui.icon("storefront", size="12px").style(f"color:{_GREY}")
-                                                            ui.label(str(cat) if cat is not None else "—").classes("text-xs").style(f"color:{_GREY}")
-                                                        fila_cat.tooltip(tooltip)
+                                                    if not (obl or 0) and not (opc or 0) and not (cat or 0):
+                                                        ok_lbl = ui.label("OK").classes("text-xs font-semibold").style(f"color:{_OK}")
+                                                        ok_lbl.tooltip(tooltip)
+                                                    else:
+                                                        with ui.column().classes("gap-0 items-center"):
+                                                            if obl:
+                                                                with ui.row().classes("items-center gap-0.5") as fila_obl:
+                                                                    ui.icon("priority_high", size="12px").style(f"color:{_BAD}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_BAD}")
+                                                                    ui.label(str(obl)).classes("text-xs font-semibold").style(f"color:{_BAD}")
+                                                                fila_obl.tooltip(tooltip)
+                                                            if opc:
+                                                                with ui.row().classes("items-center gap-0.5") as fila_opc:
+                                                                    ui.icon("build", size="12px").style(f"color:{_GREY}")
+                                                                    ui.icon("person", size="10px").style(f"color:{_GREY}")
+                                                                    ui.label(str(opc)).classes("text-xs").style(f"color:{_GREY}")
+                                                                fila_opc.tooltip(tooltip)
+                                                            if cat:
+                                                                with ui.row().classes("items-center gap-0.5") as fila_cat:
+                                                                    ui.icon("storefront", size="12px").style(f"color:{_GREY}")
+                                                                    ui.label(str(cat)).classes("text-xs").style(f"color:{_GREY}")
+                                                                fila_cat.tooltip(tooltip)
                                             elif name == "puntaje_ml":
                                                 v = row["puntaje_ml"]
-                                                ui.label(str(v) if v is not None else "—")
+                                                if v is None:
+                                                    ui.label("—")
+                                                else:
+                                                    color_p, nivel_p = _puntaje_nivel(v)
+                                                    with ui.row().classes("items-center justify-center gap-1 no-wrap") as fila_p:
+                                                        ui.label(str(v)).classes("text-xs font-semibold").style(f"color:{color_p}")
+                                                        with ui.element("div").style(
+                                                                "width:34px;height:5px;background:#E5E7EB;border-radius:3px;overflow:hidden"):
+                                                            ui.element("div").style(
+                                                                f"width:{max(0, min(100, v))}%;height:100%;background:{color_p}")
+                                                    fila_p.tooltip(f"{nivel_p} · {v}/100")
                                             elif name == "gtin":
                                                 d = row["dims"].get("gtin")
                                                 if not d or (d["propias_total"] == 0 and d["catalogo_total"] == 0):
