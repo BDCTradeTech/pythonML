@@ -36,7 +36,10 @@ from ml_api import (
     ml_write_price_per_quantity,
 )
 from tabs.salud_reg import REGULATORIOS_SET, abrir_popup_reg
-from tabs.salud_mayorista_fix import abrir_dialogo_mayorista, motivos_mayorista_fix, render_iconos as _render_iconos_mayfix
+from tabs.salud_mayorista_fix import (
+    abrir_dialogo_mayorista, ejecutar_mayorista_directo, marcar_en_curso as _marcar_en_curso_mayfix,
+    motivos_mayorista_fix, render_iconos as _render_iconos_mayfix,
+)
 from salud_audit import (
     _DESVIO_PP_MIN,
     _DESVIO_RATIO_MIN,
@@ -1981,23 +1984,42 @@ def build_tab_salud(container) -> None:
 
                 await abrir_popup_reg(uid, sku, row_actual["producto"], snap_date, _tras_cerrar)
 
+            def _tras_mayfix(sku: str, row_actual: Dict[str, Any], resultado_audit: Dict[str, Any]) -> None:
+                prod_meta_single = {sku: {
+                    "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
+                }}
+                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                for idx, f in enumerate(filas_todas):
+                    if f["sku"] == sku:
+                        filas_todas[idx] = nueva_fila
+                        break
+                _render()
+
             async def _abrir_mayfix(sku: str) -> None:
+                """Click en el NÚMERO de la celda Mayorista: diálogo con el detalle para decidir."""
                 row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
                 if not row_actual:
                     return
+                await abrir_dialogo_mayorista(uid, sku, row_actual["producto"], snap_date,
+                                              lambda r: _tras_mayfix(sku, row_actual, r))
 
-                def _tras_cerrar(resultado_audit: Dict[str, Any]) -> None:
-                    prod_meta_single = {sku: {
-                        "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
-                    }}
-                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
-                    for idx, f in enumerate(filas_todas):
-                        if f["sku"] == sku:
-                            filas_todas[idx] = nueva_fila
-                            break
-                    _render()
+            mayfix_en_curso: set = set()  # SKUs con el modo directo corriendo (su 🔧 es un spinner y no admite otro click)
+            mayfix_refs: Dict[str, Dict[str, Any]] = {}
 
-                await abrir_dialogo_mayorista(uid, sku, row_actual["producto"], snap_date, _tras_cerrar)
+            async def _mayfix_directo(sku: str) -> None:
+                """Click en la 🔧: aplica la propuesta sin diálogo (ver ejecutar_mayorista_directo)."""
+                if sku in mayfix_en_curso:
+                    return
+                row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
+                if not row_actual:
+                    return
+                mayfix_en_curso.add(sku)
+                _marcar_en_curso_mayfix(mayfix_refs.get(sku), True)
+                try:
+                    await ejecutar_mayorista_directo(uid, sku, snap_date, lambda r: _tras_mayfix(sku, row_actual, r))
+                finally:
+                    mayfix_en_curso.discard(sku)
+                    _marcar_en_curso_mayfix(mayfix_refs.get(sku), False)
 
             async def _abrir_popup(sku: str) -> None:
                 row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
@@ -2724,11 +2746,16 @@ def build_tab_salud(container) -> None:
                                                 with ui.row().classes("items-center justify-center gap-1 no-wrap"):
                                                     if d:
                                                         lbl = ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
-                                                        if d.get("tooltip"):
-                                                            lbl.tooltip(d["tooltip"])
                                                     else:
-                                                        ui.label("—")
-                                                    _render_iconos_mayfix(row.get("mayfix"), lambda s=row["sku"]: _abrir_mayfix(s))
+                                                        lbl = ui.label("—")
+                                                    # el NÚMERO abre el diálogo (aunque no haya 🔧); la 🔧 arregla directo
+                                                    lbl.classes("cursor-pointer")
+                                                    lbl.on("click", lambda s=row["sku"]: _abrir_mayfix(s))
+                                                    with lbl:
+                                                        ui.tooltip("Ver detalle y decidir" + (("\n" + d["tooltip"]) if d and d.get("tooltip") else "")).style("white-space: pre-line")
+                                                    mayfix_refs[row["sku"]] = refs_mayfix = {}
+                                                    _render_iconos_mayfix(row.get("mayfix"), lambda s=row["sku"]: _mayfix_directo(s),
+                                                                          row["sku"] in mayfix_en_curso, refs_mayfix)
                                             else:
                                                 d = row["dims"].get(name)
                                                 if d:

@@ -45,6 +45,7 @@ from salud_audit import (
 
 _ML_API = "https://api.mercadolibre.com"
 ORIGEN = "salud_boton_mayorista"
+ORIGEN_DIRECTO = "salud_boton_mayorista_directo"  # 🔧 sin diálogo
 _MAX_TIERS = 5
 _PCT_TECHO = 90.0
 
@@ -168,17 +169,36 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
     return {"motivos": motivos, "margen_neg": sorted(set(neg))}
 
 
-def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any]) -> None:
-    """Íconos de la celda Mayorista (se llama dentro del contenedor de la celda)."""
+def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any], en_curso: bool = False,
+                  refs: Optional[Dict[str, Any]] = None) -> None:
+    """Íconos de la celda Mayorista (se llama dentro del contenedor de la celda). La 🔧 dispara el modo
+    DIRECTO (`on_click`); mientras corre se reemplaza por un spinner (`en_curso`) y no admite otro click.
+    `refs` recibe {"icono", "spinner"} para poder alternarlos sin re-renderizar la tabla (marcar_en_curso)."""
     if not mayfix:
         return
     if mayfix.get("motivos"):
         b = ui.icon("build", size="16px").classes("cursor-pointer").style(f"color:{_MID}")
-        b.tooltip(" · ".join(mayfix["motivos"]) + " — click para corregir")
+        with b:
+            ui.tooltip("Arreglar mayorista automáticamente\n" + " · ".join(mayfix["motivos"])).style("white-space: pre-line")
         b.on("click", lambda: on_click())
+        sp = ui.spinner(size="16px", color="orange")
+        b.set_visibility(not en_curso)
+        sp.set_visibility(en_curso)
+        if refs is not None:
+            refs["icono"], refs["spinner"] = b, sp
     if mayfix.get("margen_neg"):
         m = ui.icon("trending_down", size="16px").style(f"color:{_BAD}")
         m.tooltip("Margen negativo en: " + ", ".join(mayfix["margen_neg"]) + " (informativo)")
+
+
+def marcar_en_curso(refs: Optional[Dict[str, Any]], activo: bool) -> None:
+    """Alterna 🔧 <-> spinner de una fila (si la tabla se re-renderizó y el elemento ya no existe, no hace nada)."""
+    try:
+        if refs and refs.get("icono") is not None:
+            refs["icono"].set_visibility(not activo)
+            refs["spinner"].set_visibility(activo)
+    except Exception:  # noqa: BLE001 -- cosmético
+        pass
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +477,7 @@ def leer_y_planificar(token: str, uid: int, sku: str, item_ids: List[str]) -> Di
 # 3) Escritura (al confirmar) -- una publicación a la vez, independientes
 # ---------------------------------------------------------------------------
 
-def aplicar_publicacion(token: str, uid: int, sku: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+def aplicar_publicacion(token: str, uid: int, sku: str, plan: Dict[str, Any], origen: str = ORIGEN) -> Dict[str, Any]:
     """Relee /prices; si difiere de lo que se mostró (precio, promo o tiers) NO escribe. Si no,
     _escribir_mayorista_pxq hace: lectura de versión, UN POST con el set completo, GET de
     verificación y el log en ml_escrituras (origen salud_boton_mayorista, valor_anterior = set
@@ -472,10 +492,103 @@ def aplicar_publicacion(token: str, uid: int, sku: str, plan: Dict[str, Any]) ->
         return {"ok": False, "cambio": False, "msg": "no se pudo releer /prices antes de escribir — no se escribió"}
     if _firma_tiers(fresco) != plan["firma"]:
         return {"ok": False, "cambio": True, "msg": "Cambió mientras mirabas (precio, promo o tiers): no se escribió, volvé a abrir."}
-    err, adv = _escribir_mayorista_pxq(token, uid, sku, iid, ef[0], ef[1], origen=ORIGEN)
+    err, adv = _escribir_mayorista_pxq(token, uid, sku, iid, ef[0], ef[1], origen=origen)
     if err:
         return {"ok": False, "cambio": False, "msg": err}
     return {"ok": True, "cambio": False, "msg": "; ".join(adv) if adv else "Escrito y verificado"}
+
+
+# ---------------------------------------------------------------------------
+# 3b) Modo DIRECTO (🔧 sin diálogo): mismo motor y mismas protecciones que el diálogo
+# ---------------------------------------------------------------------------
+
+def margen_neg_nuevos(plan: Dict[str, Any]) -> bool:
+    """True si algún tier que el plan CREA / CAMBIA / MIGRA daría margen negativo (los tiers que ya
+    están cargados y quedan 'igual' no cuentan: no se van a escribir)."""
+    return any(f.get("margen_neg") and f["accion"] in ("crea", "cambia", "migra") for f in plan.get("filas") or [])
+
+
+def preparar_directo(planes: List[Dict[str, Any]]) -> None:
+    """Marca 'No tocar' las publicaciones con algún tier NUEVO de margen negativo (se reportan aparte)."""
+    for p in planes:
+        p["salteada_margen"] = False
+        if not p["error"] and margen_neg_nuevos(p):
+            p["opcion"] = "no_tocar"
+            p["salteada_margen"] = True
+
+
+_AMBAR_SOBRE_ROJO = "#FFD54F"
+
+
+def armar_notificacion_directo(planes: List[Dict[str, Any]], resultados: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+    """kwargs de ui.notify del modo directo. Hubo errores -> rojo fija con el detalle (más una línea ámbar si
+    hubo salteadas por margen). Sin errores pero con salteadas por margen -> ÁMBAR fija con botón cerrar.
+    Todo bien -> verde que se cierra sola (~6 s)."""
+    salt = [p for p in planes if p.get("salteada_margen")]
+    base = armar_notificacion([p for p in planes if not p.get("salteada_margen")], resultados)
+    if not salt:
+        if base["type"] == "positive" and not any(r["ok"] for r in resultados.values()):
+            base["message"] = base["message"].replace("Mayorista actualizado en 0 publicaciones", "Mayorista: nada que cambiar")
+        return base
+    n = len(salt)
+    linea = f"{n} publicaci{'ón no se tocó' if n == 1 else 'ones no se tocaron'} por margen negativo — tocá el número para decidir"
+    detalle = [f"• {_etiqueta_plan(p)}" for p in salt]
+    if base["type"] == "negative":
+        base["message"] += "<br>" + f'<span style="color:{_AMBAR_SOBRE_ROJO};font-weight:600">' + "<br>".join(html.escape(t) for t in [linea] + detalle) + "</span>"
+        return base
+    hechas = sum(1 for r in resultados.values() if r["ok"])
+    if hechas:
+        cab = base["message"]
+    else:
+        cab = "Mayorista: no se escribió nada"
+    return {"message": html.escape(cab) + "<br>" + "<br>".join(html.escape(t) for t in [linea] + detalle),
+            "type": "warning", "position": "bottom", "timeout": 0, "close_button": "Cerrar", "multi_line": True, "html": True}
+
+
+async def _refrescar_fila(uid: int, sku: str, token: str, al_cerrar: Callable[[Dict[str, Any]], None]) -> None:
+    """audit_sku + refresco de la fila, en segundo plano (mismo contrato que el diálogo)."""
+    from salud_audit import audit_sku
+    try:
+        seller_id = await run.io_bound(ml_get_user_id, token)
+        resultado = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+        if resultado and not resultado.get("error"):
+            al_cerrar(resultado)
+    except Exception as e:  # noqa: BLE001 -- el refresco es cosmético, no debe romper nada
+        ui.notify(f"No se pudo refrescar la fila de {sku}: {e}", type="warning", position="bottom")
+
+
+async def ejecutar_mayorista_directo(uid: int, sku: str, desde_fecha: Optional[str],
+                                     al_cerrar: Callable[[Dict[str, Any]], None]) -> None:
+    """🔧 en modo directo: lectura en vivo + validación de incoherentes en lote (leer_y_planificar), aplica la
+    propuesta completa a cada publicación (relectura de /prices y salteo si cambió, un POST, verificación,
+    ml_escrituras con origen 'salud_boton_mayorista_directo') EXCEPTO las que tendrían un tier nuevo con margen
+    negativo, que no se tocan y se reportan aparte. Al terminar: notificación y refresco en segundo plano."""
+    from tabs.salud_reg import _items_del_sku
+    token = get_ml_access_token(uid)
+    if not token:
+        ui.notify("Mayorista: no hay token de ML para esta cuenta.", type="negative", position="bottom")
+        return
+    try:
+        items = await run.io_bound(_items_del_sku, uid, sku, desde_fecha)
+        lectura = await run.io_bound(leer_y_planificar, token, uid, sku, [i["item_id"] for i in items])
+    except Exception as e:  # noqa: BLE001
+        ui.notify(f"Mayorista {sku}: no se pudo leer ML ({e}). No se escribió nada.", type="negative", position="bottom", timeout=0, close_button="Cerrar")
+        return
+    if lectura.get("error"):
+        ui.notify(f"Mayorista {sku}: {lectura['error']}. No se escribió nada.", type="negative", position="bottom", timeout=0, close_button="Cerrar")
+        return
+    planes = lectura["planes"]
+    preparar_directo(planes)
+    resultados: Dict[str, Dict[str, Any]] = {}
+    pendientes = [p for p in planes if efectivo(p) is not None]
+    try:
+        for p in pendientes:
+            resultados[p["item_id"]] = await run.io_bound(aplicar_publicacion, token, uid, sku, p, ORIGEN_DIRECTO)
+    except Exception as e:  # noqa: BLE001 -- una excepción inesperada no puede dejar la fila colgada
+        for p in pendientes:
+            resultados.setdefault(p["item_id"], {"ok": False, "cambio": False, "msg": f"error inesperado: {e}"})
+    ui.notify(**armar_notificacion_directo(planes, resultados))
+    background_tasks.create(_refrescar_fila(uid, sku, token, al_cerrar))
 
 
 # ---------------------------------------------------------------------------
