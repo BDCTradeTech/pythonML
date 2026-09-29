@@ -44,44 +44,9 @@ def _to_float(val, default=0.0):
         return default
 
 
-def _pr(s: Any, d: float = 0.0) -> float:
-    if s is None or str(s).strip() == "":
-        return d
-    try:
-        v = float(str(s).strip().replace(",", "."))
-        return v if v <= 1.5 else v / 100.0
-    except (ValueError, TypeError):
-        return d
-
-def _load_params_prod(user_id: int) -> dict:
-    ev = float(str(get_cotizador_param("ml_envios", user_id) or 5823).replace(",", "."))
-    if ev <= 100:
-        ev = 5823.0
-    do = float(str(get_cotizador_param("dolar_oficial", user_id) or "1475").replace(",", ".")) or 1475.0
-    if do <= 0:
-        do = 1475.0
-    return {
-        "ml_comision":         _pr(get_cotizador_param("ml_comision",          user_id), 0.15),
-        "ml_debcre":           _pr(get_cotizador_param("ml_debcre",            user_id), 0.006),
-        "ml_iibb_per":         _pr(get_cotizador_param("ml_iibb_per",          user_id), 0.055),
-        "ml_envios_gratuitos": float(str(get_cotizador_param("ml_envios_gratuitos", user_id) or 33000).replace(",", ".")),
-        "ml_envios_val":       ev,
-        "dolar_oficial":       do,
-    }
-
-def _calc_margen_prod(precio: float, costo_usd: float, tipo_iva: float, p: dict) -> Optional[float]:
-    if precio <= 0 or costo_usd <= 0:
-        return None
-    comision    = precio * p["ml_comision"]
-    cobrado     = precio - comision
-    deb_cred    = precio * p["ml_debcre"]
-    iibb        = precio * p["ml_iibb_per"]
-    iva_meli    = comision * 0.21 / 1.21
-    iva_impor   = 0.09 * costo_usd * p["dolar_oficial"]
-    iva_total   = precio * tipo_iva / (1 + tipo_iva) - iva_meli - iva_impor
-    envio       = 0.0 if precio < p["ml_envios_gratuitos"] else p["ml_envios_val"]
-    costo_pesos = costo_usd * p["dolar_oficial"]
-    return cobrado - costo_pesos - iva_total - iibb - deb_cred - envio
+# Movidos a margen.py (el cron de Salud los usa sin importar desde tabs/); se
+# re-exportan acá para no romper los imports existentes.
+from margen import _pr, _load_params_prod, _calc_margen_prod  # noqa: E402,F401
 
 
 # ── Color helpers ─────────────────────────────────────────────────────────────
@@ -297,26 +262,39 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
         conn.close()
     if snaps:
         out.append(f"Snapshots guardados ese día: {_fmt_miles(len(snaps))}")
-        n_ok = n_roto = n_rev = n_stock = 0
+        # Categorías EXCLUYENTES, prioridad roto > revisar > no activa/stock bajo > sin evaluar > ok;
+        # suman el total (ok+roto en mayorista_estado -- invertido/error_sin_standard quedan afuera
+        # y se informan aparte). Espejo de tabs/salud.py::_mayorista_dim, mantener alineado.
+        # Motivos del cron: "no_activa"/"sin_stock" (desde 2026-09-29) y "stock_bajo" (snapshots viejos).
+        n_ok = n_roto = n_rev = n_inactivo = n_sin_eval = n_margen_neg = n_fuera = 0
         for r in snaps:
             if r[0] not in ("ok", "roto"):
+                if r[0] in ("invertido", "error_sin_standard"):
+                    n_fuera += 1
                 continue  # sin_mayorista / NULL: fuera del total
-            if r[0] == "roto":
-                n_roto += 1
-                continue
-            # espejo de tabs/salud.py:303-330, mantener alineado
             try:
                 info = _json.loads(r[1]) if r[1] else {}
             except (TypeError, ValueError):
                 info = {}
-            if info.get("evaluable") and info.get("tiers_revisar"):
+            if info.get("evaluable") and info.get("margen_negativo"):
+                n_margen_neg += 1  # informativo: NO es categoría, se cruza con las de abajo
+            if r[0] == "roto":
+                n_roto += 1
+            elif info.get("evaluable") and info.get("tiers_revisar"):
                 n_rev += 1
-            elif info.get("evaluable") and info.get("motivo") == "stock_bajo":
-                n_stock += 1
+            elif info.get("evaluable") and info.get("motivo") in ("no_activa", "sin_stock", "stock_bajo"):
+                n_inactivo += 1
+            elif not info.get("evaluable"):
+                n_sin_eval += 1  # sin revisar_json (ej. gold_pro) o {"evaluable": false}
             else:
                 n_ok += 1
-        out.append(f"Mayorista ({n_ok + n_rev + n_roto + n_stock} con mayorista): "
-                   f"{n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_stock} stock bajo")
+        total = n_ok + n_rev + n_roto + n_inactivo + n_sin_eval
+        out.append(f"Mayorista ({total} con mayorista): "
+                   f"{n_ok} ok · {n_rev} revisar · {n_roto} roto · {n_inactivo} no activa/sin stock · {n_sin_eval} sin evaluar")
+        if n_margen_neg:
+            out.append(f"Con margen negativo en algún tier (informativo, se cruza con lo anterior): {n_margen_neg}")
+        if n_fuera:
+            out.append(f"Fuera del total (mayorista invertido / sin precio estándar): {n_fuera}")
     else:
         out.append("Mayorista: sin snapshots de este día.")
     if corr:

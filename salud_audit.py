@@ -33,7 +33,9 @@ Uso manual:
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import os
 import sys
 import time
 from collections import defaultdict
@@ -49,6 +51,8 @@ load_dotenv(BASE_DIR / ".env")
 
 import requests
 from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run, log_correccion_automatica_mayorista
+from db import get_producto_costo
+from margen import _calc_margen_prod, _load_params_prod
 from ml_api import get_ml_access_token, ml_get_pxq_recommendations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -79,36 +83,84 @@ def _get_seller_sku(item: dict) -> str:
     return ""
 
 
+_REINTENTOS_ML = 3
+_BACKOFF_S = (1.0, 3.0, 8.0)
+_MAX_REINICIOS_SCAN = 2
+
+
+class _ScrollInvalido(Exception):
+    """El scroll_id de un scan expiró/quedó inválido a mitad de camino."""
+
+
+def _get_con_reintentos(url: str, headers: dict, params: Optional[dict] = None, timeout: int = 15) -> requests.Response:
+    """GET con hasta _REINTENTOS_ML reintentos (backoff 1/3/8 s) ante 5xx, 429,
+    timeout o error de conexión. Cualquier otro status se devuelve tal cual para
+    que el caller decida (ej. 400/404 = scroll_id inválido). Si se agotan los
+    reintentos levanta RequestException."""
+    ultimo = None
+    for intento in range(_REINTENTOS_ML + 1):
+        try:
+            r = requests.get(url, headers=headers, params=params, timeout=timeout)
+            if r.status_code < 500 and r.status_code != 429:
+                return r
+            ultimo = f"HTTP {r.status_code}"
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            ultimo = repr(e)
+        if intento < _REINTENTOS_ML:
+            log.warning("GET %s fallo (%s), reintento %d/%d", url, ultimo, intento + 1, _REINTENTOS_ML)
+            time.sleep(_BACKOFF_S[intento])
+    raise requests.exceptions.RequestException(f"GET {url} fallo tras {_REINTENTOS_ML} reintentos ({ultimo})")
+
+
+def _scan_ids_status(token: str, seller_id: str, extra: dict) -> List[str]:
+    ids: List[str] = []
+    scroll_id = None
+    while True:
+        params = {"search_type": "scan", "limit": 100, **extra}
+        if scroll_id:
+            params["scroll_id"] = scroll_id
+        r = _get_con_reintentos(
+            f"{ML_API}/users/{seller_id}/items/search",
+            {"Authorization": f"Bearer {token}"}, params=params, timeout=15,
+        )
+        if scroll_id and r.status_code in (400, 404):
+            raise _ScrollInvalido(f"scroll_id invalido (HTTP {r.status_code}) en {extra}")
+        r.raise_for_status()
+        data = r.json()
+        chunk = data.get("results", [])
+        if not chunk:
+            break
+        ids.extend(chunk)
+        scroll_id = data.get("scroll_id")
+        if not scroll_id:
+            break
+        time.sleep(0.05)
+    return ids
+
+
 def fetch_all_own_items(token: str, seller_id: str) -> List[dict]:
-    """Scan completo (mismos 5 grupos de status que resync_sku_catalogos.py) + multiget."""
+    """Scan completo (mismos 5 grupos de status que resync_sku_catalogos.py) + multiget.
+    Cada GET reintenta ante 5xx/timeout (ver _get_con_reintentos); si el scroll_id de
+    un status queda inválido se reinicia el scan de ESE status (hasta
+    _MAX_REINICIOS_SCAN veces, descartando lo parcial de ese status). Si igual falla
+    levanta la excepción -- run() la registra en cron_runs y sigue con los otros usuarios."""
     all_ids: List[str] = []
     for extra in PARAM_SETS:
-        scroll_id = None
-        while True:
-            params = {"search_type": "scan", "limit": 100, **extra}
-            if scroll_id:
-                params["scroll_id"] = scroll_id
-            r = requests.get(
-                f"{ML_API}/users/{seller_id}/items/search",
-                headers={"Authorization": f"Bearer {token}"}, params=params, timeout=15,
-            )
-            r.raise_for_status()
-            data = r.json()
-            chunk = data.get("results", [])
-            if not chunk:
+        for intento in range(_MAX_REINICIOS_SCAN + 1):
+            try:
+                all_ids.extend(_scan_ids_status(token, seller_id, extra))
                 break
-            all_ids.extend(chunk)
-            scroll_id = data.get("scroll_id")
-            if not scroll_id:
-                break
-            time.sleep(0.05)
+            except _ScrollInvalido as e:
+                if intento >= _MAX_REINICIOS_SCAN:
+                    raise
+                log.warning("%s -- reiniciando scan de ese status (%d/%d)", e, intento + 1, _MAX_REINICIOS_SCAN)
     all_ids = list(dict.fromkeys(all_ids))
 
     items: List[dict] = []
     for i in range(0, len(all_ids), 20):
         batch = all_ids[i:i + 20]
-        r = requests.get(f"{ML_API}/items", params={"ids": ",".join(batch)},
-                          headers={"Authorization": f"Bearer {token}"}, timeout=30)
+        r = _get_con_reintentos(f"{ML_API}/items", {"Authorization": f"Bearer {token}"},
+                                params={"ids": ",".join(batch)}, timeout=30)
         r.raise_for_status()
         for entry in r.json():
             if entry.get("code") == 200:
@@ -189,32 +241,53 @@ _PCT_TECHO_SANIDAD = 90.0
 
 
 def _calcular_mayorista_recomendado(token: str, item_id: str, precio_base: float,
-                                     cantidades: Tuple[int, ...]) -> Optional[Dict[str, Any]]:
-    """Pide a ML el % mínimo aceptado (el más caro que ML permite, nunca regalar
-    margen de más) para cada cantidad de `cantidades`, vía el endpoint oficial de
-    recomendaciones de precio por cantidad. Cantidad=1 se pide igual que
-    cualquier otra -- confirmado en vivo el 2026-09-08 que ML la maneja bien,
-    sola o mezclada con otras cantidades en el mismo batch (mismo % en los tres
-    casos probados contra MLA1568099745). Ignora cantidades que ML marca
-    is_incoherent_quantity=True (no se puede registrar un precio ahí ahora
-    mismo, sin importar el %) o que caen por el piso/techo de sanidad."""
+                                     cantidades: Tuple[int, ...],
+                                     incluir_cero: bool = False) -> Optional[Dict[str, Any]]:
+    """Pide a ML el % mínimo aceptado para cada cantidad de `cantidades`, vía el
+    endpoint oficial de recomendaciones -- UNA cantidad por llamada (desde
+    2026-09-29; antes iban en batch). Se usa el % que devuelve ML tal cual, nunca
+    se convierte un monto a % sobre otra base. Devuelve None solo si no hay
+    cantidades o precio base; si no, un dict con:
+      propuesta: [{quantity, amount, percentage}] -- cantidades con recomendación válida
+      sin_recomendacion: {quantity: motivo} -- ML devolvió 204 ("204"), marcó
+        is_incoherent_quantity ("incoherente"), % fuera del piso/techo de sanidad
+        ("fuera_de_rango") o la consulta falló ("error")
+    incluir_cero=False (descuentos.py): un % recomendado de 0 se descarta como antes
+    (cae en sin_recomendacion "fuera_de_rango"). incluir_cero=True (evaluador de cron
+    y popup): se devuelve con percentage=0.0 para clasificar el tier; quien escriba
+    tiene que aplicar el piso de coherencia (ver
+    _construir_correccion_automatica_mayorista y tabs/salud.py::_tiers_plan),
+    nunca mandar 0."""
     if not cantidades or not precio_base:
         return None
-    rec = ml_get_pxq_recommendations(token, item_id, precio_base, list(cantidades))
-    if not rec or not rec.get("recommendations"):
-        return None
     propuesta: List[Dict[str, Any]] = []
-    for r in rec["recommendations"]:
+    sin_rec: Dict[int, str] = {}
+    for q in cantidades:
+        rec = ml_get_pxq_recommendations(token, item_id, precio_base, [q])
+        if rec is None:
+            # error/5xx/timeout (ml_get_pxq_recommendations devuelve None): 1 reintento con
+            # backoff corto. Un 204 ({"recommendations": []}) y is_incoherent_quantity NO se reintentan.
+            time.sleep(1.0)
+            rec = ml_get_pxq_recommendations(token, item_id, precio_base, [q])
+        time.sleep(0.05)
+        if rec is None:
+            sin_rec[q] = "error"
+            continue
+        recs = rec.get("recommendations") or []
+        if not recs:
+            sin_rec[q] = "204"
+            continue
+        r = next((x for x in recs if x.get("quantity") == q), recs[0])
         if r.get("is_incoherent_quantity"):
+            sin_rec[q] = "incoherente"
             continue
         pct = (r.get("discount") or {}).get("percentage")
         monto = r.get("amount")
-        if pct is None or monto is None or pct <= 0 or pct >= _PCT_TECHO_SANIDAD:
+        if pct is None or monto is None or pct < 0 or pct >= _PCT_TECHO_SANIDAD or (pct == 0 and not incluir_cero):
+            sin_rec[q] = "fuera_de_rango"
             continue
-        propuesta.append({"quantity": r["quantity"], "amount": monto, "percentage": round(pct, 2)})
-    if not propuesta:
-        return None
-    return {"precio_base": precio_base, "propuesta": propuesta}
+        propuesta.append({"quantity": q, "amount": monto, "percentage": round(pct, 2)})
+    return {"precio_base": precio_base, "propuesta": propuesta, "sin_recomendacion": sin_rec}
 
 
 # ---------------------------------------------------------------------------
@@ -229,8 +302,9 @@ def _calcular_mayorista_recomendado(token: str, item_id: str, precio_base: float
 #   - "revisar": el tier cargado difiere de lo recomendado más allá del umbral,
 #     pero no es "roto" -- se muestra como referencia (cargado vs. recomendado)
 #     pero NUNCA se ofrece aplicar automático desde el popup.
-# El umbral (4pp absolutos Y 1.75x relativo) se mantiene igual que antes de este
-# cambio (2026-09-08).
+# El umbral es UMBRAL_PP_MAYORISTA (1 pp por defecto) en % cargado vs. % recomendado,
+# igual para cron y popup desde 2026-09-29. Los _DESVIO_* (4pp y 1.75x) ya no
+# clasifican: solo los usa tabs/salud.py::_tiers_plan para bloquear ajustes manuales.
 #
 # Cantidades "extra" (cualquier tier ya cargado fuera del objetivo para el stock
 # actual -- una cantidad no estándar como 7/15/20, O una cantidad que el stock
@@ -252,22 +326,20 @@ _DESVIO_RATIO_MIN = 1.75
 
 def _qtys_mayorista_para_stock(stock: Optional[int]) -> Tuple[int, ...]:
     """Cantidades objetivo de mayorista según el stock disponible de la
-    publicación (Diego, 2026-09-08) -- reemplaza el set fijo (2,3,5,10) que se
-    usaba para cualquier stock. stock=0 o 1: sin mayorista posible (no hay
-    "comprá más, pagá menos" real con 0 o 1 unidad en stock)."""
-    if not stock or stock <= 1:
+    publicación (Diego, 2026-09-29; reemplaza la regla del 2026-09-08):
+      stock >= 10 -> (2, 3, 5, 10) | 5-9 -> (2, 3, 5) | 3-4 -> (2, 3)
+      stock 2 -> (2,) | stock 1 -> (1,) (único caso con tier de 1 unidad) | 0 -> ()"""
+    if not stock or stock < 1:
         return ()
+    if stock >= 10:
+        return (2, 3, 5, 10)
+    if stock >= 5:
+        return (2, 3, 5)
+    if stock >= 3:
+        return (2, 3)
     if stock == 2:
-        return (1, 2)
-    if stock == 3:
-        return (1, 2, 3)
-    if stock == 4:
-        return (1, 2, 3, 4)
-    if stock == 5:
-        return (1, 2, 3, 5)
-    if stock < 10:
-        return (2, 3, 5, stock)
-    return (2, 3, 5, 10)
+        return (2,)
+    return (1,)
 
 
 def _standard_amount_de(prices_body: dict) -> Optional[float]:
@@ -303,9 +375,31 @@ def _tiers_cargados_todos(prices_body: dict, precio_base: float) -> Dict[int, fl
     return cargado
 
 
+# Umbral (en puntos porcentuales) para clasificar un tier cargado como "mal" en el
+# cron: |% cargado - % recomendado por ML| > umbral. Configurable por env
+# (SALUD_MAYORISTA_UMBRAL_PP), default 1 pp (Diego, 2026-09-29). El popup NO lo
+# usa (umbral_pp=None = regla legacy 4pp y 1.75x de arriba).
+UMBRAL_PP_MAYORISTA = float(os.environ.get("SALUD_MAYORISTA_UMBRAL_PP", "1.0"))
+
+
+def _precio_vigente_de(prices_body: dict, precio_base: float) -> float:
+    """Precio vigente de la publicación (lo que paga hoy un comprador de 1 unidad):
+    el menor entre el precio de lista y cualquier nodo type=promotion de /prices.
+    Verificado 2026-09-29 contra GET /items/{id}/sale_price en 10 publicaciones
+    (SELLER_CAMPAIGN, SMART, DEAL, DEAL+SMART -> gana la promo más baja) -- sin
+    llamada extra. El % de mayorista se aplica sobre ESTE precio, no sobre la lista."""
+    montos = []
+    for p in prices_body.get("prices") or []:
+        if p.get("type") == "promotion" and p.get("amount") is not None:
+            if (p.get("conditions") or {}).get("min_purchase_unit") is None:
+                montos.append(float(p["amount"]))
+    return min([precio_base] + montos)
+
+
 def _evaluar_mayorista_gold_special(token: str, item: dict,
                                      prices_body: Optional[dict] = None,
-                                     siempre_devolver: bool = False) -> Optional[Dict[str, Any]]:
+                                     siempre_devolver: bool = False,
+                                     umbral_pp: Optional[float] = None) -> Optional[Dict[str, Any]]:  # None = UMBRAL_PP_MAYORISTA
     """Evalúa las cantidades objetivo (según el stock actual de la publicación,
     ver _qtys_mayorista_para_stock) para UNA publicación gold_special. Devuelve
     None si no se puede evaluar (sin precio base) o -- si siempre_devolver=False,
@@ -314,37 +408,33 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
     sanos).
 
     prices_body: si se pasa (el cron ya hizo su propio GET /prices para
-    _wholesale_from_prices), se reusa en vez de pedirlo de nuevo -- ahorra una
-    llamada por ítem. El popup (tabs/salud.py) NO lo pasa: siempre quiere el GET
-    en vivo propio, porque el snapshot de la auditoría puede estar desactualizado
-    frente a escrituras recientes.
+    _wholesale_from_prices), se reusa en vez de pedirlo de nuevo. El popup NO lo
+    pasa: siempre quiere el GET en vivo propio.
 
-    siempre_devolver: el cron (audit_item) lo pasa en True -- necesita distinguir
-    "no se pudo evaluar" (None real: sin precio base) de "se evaluó y todo está
-    sano" (con este flag, devuelve el dict igual en vez del atajo de arriba) para
-    no confundir ambos casos en mayorista_revisar_json.
+    siempre_devolver: el cron (audit_item) lo pasa en True -- distingue "no se pudo
+    evaluar" (None real: sin precio base) de "se evaluó y todo está sano".
 
-    El stock sale de item.get("available_quantity") -- ya viene en el body que
-    el caller siempre tiene (multiget/GET item), cero llamadas extra. El PxQ se
-    configura por publicación (item_id) en ML, no por SKU, así que es el stock
-    de ESTA publicación el que decide, no un agregado de productos.stock.
+    umbral_pp: REGLA ÚNICA para cron y popup (Diego, 2026-09-29): "revisar" si
+    |% cargado - % recomendado| > umbral_pp, en % y en ambos sentidos. Default
+    UMBRAL_PP_MAYORISTA (env SALUD_MAYORISTA_UMBRAL_PP, 1 pp). El bloqueo de ajustes
+    manuales exagerados de _tiers_plan (4 pp y 1,75x, _DESVIO_*) es aparte y no cambia.
+    Los % recomendados de 0 se conservan (pct_calculado=0.0; quien escriba aplica el
+    piso de coherencia, ver _tiers_plan). Cada tier trae diff_pp = cargado - recomendado
+    (positivo = descuento más profundo que el mínimo de ML = precio más bajo).
 
-    Tiers "extra" (cualquier cantidad cargada fuera del objetivo para el stock
-    actual -- una cantidad no estándar como 7/15/20, O una cantidad que el stock
-    actual ya no admite, ej. un tier de 10 cargado con stock=4): se evalúan con
-    el MISMO criterio ok/roto/revisar que las del objetivo (marcados con
-    "extra": True), pero nunca se ofrecen para "crear" -- por definición ya están
-    cargados. Se cotizan aparte (llamada propia a _calcular_mayorista_recomendado,
-    no mezclada con la del objetivo) para que si ML no puede evaluar esa cantidad
-    puntual, no tire abajo el cálculo de las demás. Confirmado en vivo 2026-09-04
-    (MLA1944479697/MLA1944467261): un tier de 15+ al 6.23%, invisible para este
-    motor hasta ahora, quedaba silenciosamente re-enviado sin tocar por
-    _construir_payload_mayorista y volvía incoherente al POST cuando se subían
-    otros tiers -- "Price per quantity invalid coherence order" -- porque ML
-    exige % no decreciente con la cantidad y nadie evaluaba ese 15+ contra la
-    corrección. El popup ya ofrece "eliminar" para cualquier tier cargado sea
-    cual sea su estado, así que un tier "extra" por stock bajo queda candidato a
-    eliminar con el mismo mecanismo, sin código nuevo ahí."""
+    Las recomendaciones se piden de a UNA cantidad y el % de ML se usa directo
+    (nunca se convierte un monto). Un tier cargado sin recomendación (204, cantidad
+    incoherente o error de consulta) NO se evalúa por precio: queda estado "ok" con
+    sin_recomendacion=True y sin_rec_motivo.
+
+    El stock sale de item.get("available_quantity") -- el PxQ se configura por
+    publicación (item_id), así que decide el stock de ESTA publicación.
+
+    Tiers "extra" (cualquier cantidad cargada fuera del objetivo para el stock actual)
+    se evalúan con el mismo criterio (marcados "extra": True) pero nunca se ofrecen
+    para "crear". El popup ofrece "eliminar" para cualquier tier cargado.
+
+    Devuelve además precio_vigente (base real sobre la que ML aplica el %)."""
     iid = item["id"]
     if prices_body is None:
         try:
@@ -361,18 +451,14 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
     qtys_objetivo = _qtys_mayorista_para_stock(stock)
     cargado = _tiers_cargados_todos(prices_body, precio_base)
     extra_qtys = tuple(sorted(q for q in cargado if q not in qtys_objetivo))
+    qtys_a_evaluar = sorted(set(qtys_objetivo) | set(extra_qtys))
+    if umbral_pp is None:
+        umbral_pp = UMBRAL_PP_MAYORISTA
 
-    prop = _calcular_mayorista_recomendado(token, iid, precio_base, qtys_objetivo)
+    prop = _calcular_mayorista_recomendado(token, iid, precio_base, tuple(qtys_a_evaluar), incluir_cero=True)
     calculado = {p["quantity"]: p["amount"] for p in prop["propuesta"]} if prop else {}
     calculado_pct = {p["quantity"]: p["percentage"] for p in prop["propuesta"]} if prop else {}
-
-    if extra_qtys:
-        prop_extra = _calcular_mayorista_recomendado(token, iid, precio_base, extra_qtys)
-        if prop_extra:
-            calculado.update({p["quantity"]: p["amount"] for p in prop_extra["propuesta"]})
-            calculado_pct.update({p["quantity"]: p["percentage"] for p in prop_extra["propuesta"]})
-
-    qtys_a_evaluar = sorted(set(qtys_objetivo) | set(extra_qtys))
+    sin_rec: Dict[int, str] = dict(prop["sin_recomendacion"]) if prop else {}
 
     tiers: List[Dict[str, Any]] = []
     for q in qtys_a_evaluar:
@@ -385,26 +471,23 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
         pct_cargado = round((precio_base - cargado[q]) / precio_base * 100, 2)
         pct_calc = calculado_pct.get(q)
         if pct_calc is None:
-            # TODO(mayorista-revisar-popup, 2026-09-04): si no hay cálculo posible (ML
-            # no respondió, la cuenta no tiene el tag "business", o ML marcó esta
-            # cantidad puntual is_incoherent_quantity=True), un tier con pct_cargado<=0
-            # (roto) cae acá y queda "ok" en vez de "roto" -- no es un reorden trivial:
-            # "roto" siempre trae pct_calculado/monto_calculado (los usa el popup para
-            # sugerir la corrección); sin cálculo haría falta un estado nuevo y tocar
-            # el render. Evaluar aparte, no mezclado con el fix de checkboxes por tier.
-            tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+            # Sin recomendación (204 / incoherente / error / fuera de rango): no se evalúa por
+            # precio, solo presencia. TODO(mayorista-revisar-popup, 2026-09-04): un tier con
+            # pct_cargado<=0 (roto) cae acá y queda "ok" -- "roto" necesita pct_calculado para
+            # que el popup sugiera la corrección; evaluar aparte.
+            t = {"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]}
+            if q in sin_rec:
+                t["sin_recomendacion"] = True
+                t["sin_rec_motivo"] = sin_rec[q]
+            tiers.append(t)
             continue
+        base_t = {"quantity": q, "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
+                  "pct_calculado": pct_calc, "monto_calculado": calculado[q],
+                  "diff_pp": round(pct_cargado - pct_calc, 2)}
         if pct_cargado <= 0:
-            tiers.append({"quantity": q, "estado": "roto", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
-                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
+            tiers.append({**base_t, "estado": "roto"})
             continue
-        diff_pp = abs(pct_cargado - pct_calc)
-        ratio = max(pct_cargado, pct_calc) / max(min(pct_cargado, pct_calc), 0.01)
-        if diff_pp >= _DESVIO_PP_MIN and ratio >= _DESVIO_RATIO_MIN:
-            tiers.append({"quantity": q, "estado": "revisar", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q],
-                          "pct_calculado": pct_calc, "monto_calculado": calculado[q]})
-        else:
-            tiers.append({"quantity": q, "estado": "ok", "extra": es_extra, "pct_cargado": pct_cargado, "monto_cargado": cargado[q]})
+        tiers.append({**base_t, "estado": "revisar" if abs(base_t["diff_pp"]) > umbral_pp else "ok"})
 
     presentes = sorted(cargado.keys())
     invertido = any(cargado[presentes[i]] < cargado[presentes[i + 1]] for i in range(len(presentes) - 1))
@@ -412,87 +495,139 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
     if not siempre_devolver and not any(t["estado"] != "ok" for t in tiers) and not invertido:
         return None  # todo está ok (o no evaluable) y no hay inversión -- nada para mostrar (popup)
 
-    return {"precio_base": precio_base, "tiers": tiers, "invertido": invertido}
+    return {"precio_base": precio_base, "precio_vigente": _precio_vigente_de(prices_body, precio_base),
+            "tiers": tiers, "invertido": invertido}
 
 
 # ---------------------------------------------------------------------------
-# Auto-corrección nocturna de mayorista (Diego, 2026-09-09) -- el cron ya no
-# solo flaguea "revisar", corrige solo cuando hay pérdida real inequívoca.
+# Margen por tier (Diego, 2026-09-29) -- SOLO informativo: nunca bloquea ni cambia
+# una escritura. Precio de cada tier = precio_vigente x (1 - %), margen con
+# margen._calc_margen_prod (misma función que el Dashboard; contado, no resta
+# financiación de cuotas ni envío por múltiples unidades).
+# ---------------------------------------------------------------------------
+
+_MARGEN_PARAMS_CACHE: Dict[int, dict] = {}
+
+
+def _margen_params(user_id: int) -> dict:
+    if user_id not in _MARGEN_PARAMS_CACHE:
+        _MARGEN_PARAMS_CACHE[user_id] = _load_params_prod(user_id)
+    return _MARGEN_PARAMS_CACHE[user_id]
+
+
+def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int) -> None:
+    """Agrega a cada tier de `ev` margen_cargado / margen_recomendado (ARS por unidad
+    al precio del tier), precio_cargado / precio_recomendado y margen_negativo
+    (True si alguno de los dos es < 0; None si no hay costo del SKU). Deja
+    ev["margen_negativo"] = True/False/None a nivel publicación."""
+    costo = get_producto_costo(sku, user_id) if sku else None
+    if not costo:
+        ev["margen_negativo"] = None
+        return
+    costo_usd, tipo_iva = costo
+    params = _margen_params(user_id)
+    vigente = ev["precio_vigente"]
+    hay_negativo = False
+    hay_dato = False
+    for t in ev["tiers"]:
+        negativos: List[Optional[bool]] = []
+        for clave, pct in (("cargado", t.get("pct_cargado")), ("recomendado", t.get("pct_calculado"))):
+            if pct is None:
+                continue
+            precio = round(vigente * (1 - pct / 100), 2)
+            m = _calc_margen_prod(precio, costo_usd, tipo_iva, params, cantidad=t["quantity"])
+            t[f"precio_{clave}"] = precio
+            t[f"margen_{clave}"] = None if m is None else round(m, 2)
+            if m is not None:
+                negativos.append(m < 0)
+        if negativos:
+            t["margen_negativo"] = any(negativos)
+            hay_dato = True
+            hay_negativo = hay_negativo or t["margen_negativo"]
+        else:
+            t["margen_negativo"] = None
+    ev["margen_negativo"] = hay_negativo if hay_dato else None
+
+
+# ---------------------------------------------------------------------------
+# Auto-corrección nocturna de mayorista (Diego, 2026-09-09; reescrita 2026-09-29).
 # Reglas de seguridad (no son opcionales):
-#   1) SOLO corrige tiers roto/revisar donde monto_cargado < monto_calculado
-#      (el precio de hoy está POR DEBAJO del piso que ML calcula ahora). Si
-#      monto_cargado >= monto_calculado -- el patrón de falso positivo
-#      confirmado el 2026-09-09 en Awei-H18/Awei-T56anc-negro/Spen-ZFold5-EJPF946,
-#      donde el % que devuelve ML viene calculado contra una base implícita
-#      DISTINTA a precio_base y por eso no es comparable en % -- NO se toca,
-#      sin importar el %. Esto filtra el artefacto de batching solo, sin
-#      necesidad de arreglarlo primero: si no hay pérdida real en $, no hay
-#      nada que corregir.
-#   2) El % objetivo de un tier corregido se calcula contra precio_base (el
-#      REAL de la publicación), nunca con el pct_calculado que devuelve ML --
-#      mismo motivo que (1), confirmado en vivo en Awei-H35 10+ (2026-09-09):
-#      pct_calculado=15.57% pero eso era contra una base ~$36.629, no contra
-#      el precio_base real (~$42.699); el % correcto contra la base real daba
-#      27.57%, coherente con el resto de los tiers.
-#   3) Todos los tiers de la publicación (menos "crear") se evalúan y
-#      escriben juntos en un solo POST (ver _escribir_mayorista_pxq, que ya
-#      preserva por id cualquier tier no incluido en `cambios`) -- nunca solo
-#      el tier flageado, para no repetir "invalid coherence order" (cause_id
-#      5512, visto en la primera pasada de la corrección manual de hoy).
-#   4) Si corregir el/los tier(s) con pérdida real deja el conjunto completo
-#      de tiers (corregidos + los que NO se pueden tocar por regla 1)
-#      incoherente -- % no estrictamente creciente con la cantidad -- NO se
-#      autocorrige NADA de ese ítem: queda todo flageado como "revisar" para
-#      el popup, igual que hoy. Es una extensión directa de la misma cautela
-#      que pidió Diego para el tope de 5 (punto siguiente): ante conflicto,
-#      no actuar solo.
-#   5) Si el resultado final (mismos tiers ya cargados hoy, ninguno nuevo)
-#      superara el tope de 5 entradas de ML, tampoco se autocorrige --
-#      _escribir_mayorista_pxq ya tiene este backstop (ver _ML_MAX_TIERS_PXQ
-#      en tabs/salud.py) y no manda el POST; acá además se chequea antes de
-#      intentar, para poder reportarlo con un motivo claro en vez de un error
-#      genérico.
+#   1) SOLO corrige tiers "revisar" con descuento MÁS PROFUNDO que el mínimo de ML
+#      (diff_pp = % cargado - % recomendado > umbral): subirlos al % recomendado
+#      siempre SUBE el precio. Nunca baja un precio ni toca tiers más caros que la
+#      recomendación (esos solo se flaguean). Se usa el % que devuelve ML DIRECTO --
+#      nunca se convierte un monto a % sobre la lista (ese cálculo daba % de hasta
+#      41 % en publicaciones con promo, ver diagnóstico 2026-09-29).
+#   2) Un % recomendado de 0 no se manda: se usa el piso de coherencia (% del tier
+#      anterior + 0.01, o 0.01) igual que tabs/salud.py::_tiers_plan.
+#   3) Todos los tiers de la publicación se evalúan y escriben juntos en un solo POST
+#      (_escribir_mayorista_pxq preserva por id los no incluidos en `cambios`).
+#   4) Si el conjunto final queda incoherente (% no estrictamente creciente con la
+#      cantidad) NO se autocorrige NADA de ese ítem.
+#   5) Si el resultado supera el tope de 5 entradas de ML, tampoco.
+#   6) Antes de escribir se guarda el set COMPLETO de tiers anterior (ml_escrituras.
+#      valor_anterior y mayorista_correcciones_automaticas.tiers_anteriores_json).
+#   El margen negativo es solo informativo: nunca bloquea ni cambia una escritura.
 # ---------------------------------------------------------------------------
 
 _ML_MAX_TIERS_PXQ_MAYORISTA = 5  # debe reflejar tabs.salud._ML_MAX_TIERS_PXQ
 
 
-def _construir_correccion_automatica_mayorista(ev: Dict[str, Any]) -> Dict[str, Any]:
-    """A partir del resultado de _evaluar_mayorista_gold_special (motor
-    completo, TODOS los tiers de la publicación), decide qué corresponde
-    auto-corregir esta noche. Ver el bloque de comentario de arriba para las
-    reglas de seguridad -- no tocar sin releerlas.
+def _construir_correccion_automatica_mayorista(ev: Dict[str, Any], umbral_pp: float = UMBRAL_PP_MAYORISTA) -> Dict[str, Any]:
+    """A partir del resultado de _evaluar_mayorista_gold_special (modo cron,
+    TODOS los tiers de la publicación), decide qué corresponde auto-corregir esta
+    noche. Ver el bloque de comentario de arriba -- no tocar sin releerlo.
 
     Devuelve {"cambios": {cantidad: pct_nuevo}, "detalle": [...], "motivo_skip": None|str}.
-    "cambios" vacío + motivo_skip=None: nada que corregir (todo ok, o todo lo
-    revisar/roto es falso positivo). motivo_skip != None: había >=1 tier con
-    pérdida real pero no se puede autocorregir con seguridad (coherencia con
-    un tier no tocable, o tope de 5) -- "cambios" queda vacío también en ese
-    caso, no se corrige nada parcial."""
-    precio_base = ev["precio_base"]
-    tiers = [t for t in ev["tiers"] if t.get("estado") != "crear"]
+    "cambios" vacío + motivo_skip=None: nada que corregir. motivo_skip != None: había
+    >=1 tier corregible pero no se puede con seguridad (coherencia o tope de 5) --
+    "cambios" queda vacío también, no se corrige nada parcial."""
+    precio_vig = ev.get("precio_vigente") or ev["precio_base"]
+    tiers = sorted((t for t in ev["tiers"] if t.get("estado") != "crear"), key=lambda t: t["quantity"])
 
-    candidatos: Dict[int, float] = {}
+    cand: set = set()
     detalle: List[Dict[str, Any]] = []
     for t in tiers:
+        if t["estado"] not in ("revisar", "roto"):
+            continue
+        diff = t.get("diff_pp")
+        if t["estado"] == "revisar" and diff is not None and diff > umbral_pp:
+            cand.add(t["quantity"])
+        else:
+            detalle.append({
+                "quantity": t["quantity"], "accion": "no_tocar",
+                "motivo": "mas_caro_que_recomendado" if (diff is not None and diff < 0) else "roto_sin_perdida",
+                "pct_anterior": t.get("pct_cargado"), "pct_calculado_ml": t.get("pct_calculado"),
+            })
+
+    piso = 0.0
+    target: Dict[int, float] = {}
+    candidatos: Dict[int, float] = {}
+    for t in tiers:
         q = t["quantity"]
-        if t["estado"] in ("revisar", "roto"):
-            monto_cargado = t.get("monto_cargado")
-            monto_calculado = t.get("monto_calculado")
-            if monto_cargado is not None and monto_calculado is not None and monto_cargado < monto_calculado:
-                pct_nuevo = round((precio_base - monto_calculado) / precio_base * 100, 2)
-                candidatos[q] = pct_nuevo
-                detalle.append({
-                    "quantity": q, "accion": "corregir_perdida_real",
-                    "pct_anterior": t.get("pct_cargado"), "monto_anterior": monto_cargado,
-                    "pct_nuevo": pct_nuevo, "monto_nuevo_estimado": monto_calculado,
-                })
-            else:
-                detalle.append({
-                    "quantity": q, "accion": "no_tocar_falso_positivo",
-                    "pct_anterior": t.get("pct_cargado"), "monto_anterior": monto_cargado,
-                    "pct_calculado_ml": t.get("pct_calculado"), "monto_calculado_ml": monto_calculado,
-                })
+        pc = t.get("pct_cargado")
+        if q in cand:
+            pct_calc = t["pct_calculado"]
+            usa_piso = not (pct_calc > piso)
+            nuevo = round(piso + 0.01 if usa_piso else pct_calc, 2)
+            if nuevo >= pc:
+                detalle.append({"quantity": q, "accion": "no_tocar", "motivo": "sin_mejora_por_coherencia",
+                                "pct_anterior": pc, "pct_calculado_ml": pct_calc})
+                target[q] = pc
+                piso = max(piso, pc)
+                continue
+            candidatos[q] = nuevo
+            target[q] = nuevo
+            piso = nuevo
+            detalle.append({
+                "quantity": q, "accion": "corregir_perdida_real", "pct_anterior": pc,
+                "monto_anterior": round(precio_vig * (1 - pc / 100), 2),
+                "pct_nuevo": nuevo, "monto_nuevo_estimado": round(precio_vig * (1 - nuevo / 100), 2),
+                "pct_calculado_ml": pct_calc, "usa_piso_coherencia": usa_piso,
+            })
+        elif pc is not None:
+            target[q] = pc
+            piso = max(piso, pc)
 
     if not candidatos:
         return {"cambios": {}, "detalle": detalle, "motivo_skip": None}
@@ -500,12 +635,6 @@ def _construir_correccion_automatica_mayorista(ev: Dict[str, Any]) -> Dict[str, 
     if len(tiers) > _ML_MAX_TIERS_PXQ_MAYORISTA:
         return {"cambios": {}, "detalle": detalle, "motivo_skip": "tope_5_tiers"}
 
-    # Target final = candidatos corregidos + el resto EXACTAMENTE como está
-    # hoy (nunca se mueve un tier no tocable solo para acomodar coherencia).
-    # Si el conjunto completo no queda estrictamente creciente en % con la
-    # cantidad, no se escribe nada de este ítem (regla 4 de arriba).
-    target = {t["quantity"]: t.get("pct_cargado") for t in tiers if t.get("pct_cargado") is not None}
-    target.update(candidatos)
     qtys_desc = sorted(target.keys(), reverse=True)
     for i in range(1, len(qtys_desc)):
         if target[qtys_desc[i]] >= target[qtys_desc[i - 1]]:
@@ -514,19 +643,156 @@ def _construir_correccion_automatica_mayorista(ev: Dict[str, Any]) -> Dict[str, 
     return {"cambios": candidatos, "detalle": detalle, "motivo_skip": None}
 
 
+_DRY_RUN_ACTIVO = False  # lo prende dry_run_mayorista(); con esto prendido NINGUNA escritura a ML sale
+
+
+def _tiers_previos_json(prices_body: Optional[dict]) -> str:
+    """Set COMPLETO de tiers de mayorista cargados hoy (sistema % nuevo y absoluto
+    legacy) serializado a JSON, para dejar en valor_anterior de ml_escrituras y en
+    mayorista_correcciones_automaticas.tiers_anteriores_json antes de escribir."""
+    tiers: List[Dict[str, Any]] = []
+    for p in (prices_body or {}).get("price_per_quantity") or []:
+        if p.get("type") != "discount_percentage":
+            continue
+        c = p.get("conditions") or {}
+        tiers.append({"sistema": "pct", "quantity": c.get("min_purchase_unit"), "percentage": p.get("percentage"),
+                      "id": p.get("id"), "eligible": c.get("eligible")})
+    for p in (prices_body or {}).get("prices") or []:
+        c = p.get("conditions") or {}
+        if c.get("min_purchase_unit") is not None:
+            tiers.append({"sistema": "absoluto", "quantity": c.get("min_purchase_unit"), "amount": p.get("amount"),
+                          "id": p.get("id")})
+    tiers.sort(key=lambda t: (t.get("quantity") is None, t.get("quantity") or 0))
+    return json.dumps(tiers, ensure_ascii=False)
+
+
 def _ejecutar_correccion_automatica_mayorista(token: str, user_id: int, sku: str, item_id: str,
                                                cambios: Dict[int, float]) -> Tuple[Optional[str], List[str]]:
     """Import perezoso de _escribir_mayorista_pxq (tabs/salud.py importa DE este
     módulo a nivel de archivo -- un import a nivel de módulo acá crearía un
     ciclo; funciona bien adentro de la función porque para cuando se llama ya
     están ambos módulos completamente cargados)."""
+    if _DRY_RUN_ACTIVO:
+        raise RuntimeError("dry-run activo: escritura a ML bloqueada")
     from tabs.salud import _escribir_mayorista_pxq
     return _escribir_mayorista_pxq(token, user_id, sku, item_id, cambios, origen="cron_auto_mayorista")
 
 
+def _firma_tiers(prices_body: Optional[dict]) -> list:
+    """Firma comparable del estado que se evaluó: precio de lista, precio vigente y TODOS los
+    tiers cargados (sistema % y absoluto). Se guarda al evaluar y se compara con un GET /prices
+    fresco justo antes de escribir (ver _aplicar_correcciones_pendientes): si difiere, alguien
+    cambió tiers o precio entre medio y la recomendación quedó vieja."""
+    body = prices_body or {}
+    base = _standard_amount_de(body)
+    firma: list = [("base", None, base, None)]
+    if base:
+        firma.append(("vigente", None, _precio_vigente_de(body, base), None))
+    for p in body.get("price_per_quantity") or []:
+        if p.get("type") != "discount_percentage":
+            continue
+        c = p.get("conditions") or {}
+        firma.append(("pct", c.get("min_purchase_unit"), p.get("percentage"), c.get("eligible")))
+    for p in body.get("prices") or []:
+        c = p.get("conditions") or {}
+        if c.get("min_purchase_unit") is not None:
+            firma.append(("abs", c.get("min_purchase_unit"), p.get("amount"), None))
+    return sorted(firma, key=lambda x: (x[0], x[1] is None, x[1] or 0))
+
+
+def _ejecutar_y_registrar_correccion(token: str, user_id: int, sku: str, item_id: str, prices_body: Optional[dict],
+                                      correccion: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    """Escribe la corrección a ML (un POST con el set completo), registra una fila por tier en
+    mayorista_correcciones_automaticas (con el set anterior completo) y deja el resultado en
+    `payload` (tiers_corregidos_automaticamente; si salió ok, saca esos tiers de tiers_revisar)."""
+    err, _advertencias = _ejecutar_correccion_automatica_mayorista(token, user_id, sku, item_id, correccion["cambios"])
+    corregidos = [d for d in correccion["detalle"] if d["accion"] == "corregir_perdida_real"]
+    resultado_tier = "ok" if err is None else "error"
+    tiers_prev = _tiers_previos_json(prices_body)
+    for d in corregidos:
+        d["resultado"] = resultado_tier
+        d["detalle_error"] = err
+        log_correccion_automatica_mayorista(
+            user_id, sku, item_id, d["quantity"],
+            d["pct_anterior"], d["monto_anterior"],
+            d["pct_nuevo"], d["monto_nuevo_estimado"],
+            resultado_tier, err, tiers_anteriores=tiers_prev,
+        )
+    payload["tiers_corregidos_automaticamente"] = corregidos
+    payload.pop("correccion_pendiente", None)
+    if resultado_tier == "ok":
+        # los tiers recién corregidos ya no son una alerta pendiente para HOY
+        qtys_corregidos = {d["quantity"] for d in corregidos}
+        payload["tiers_revisar"] = [t for t in payload.get("tiers_revisar", []) if t["quantity"] not in qtys_corregidos]
+
+
+def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_id: Optional[int], sku: str,
+                                auto_corregir: bool = False, dry_run: bool = False,
+                                pendientes: Optional[list] = None) -> Dict[str, Any]:
+    """Arma el dict que se persiste en salud_item_snapshots.mayorista_revisar_json
+    para UNA publicación gold_special con tiers cargados.
+      - status != active -> {"evaluable": True, "motivo": "no_activa"} (sin llamadas a ML)
+      - active con stock 0 -> motivo "sin_stock"
+      - active con stock >= 1 -> evaluación completa (recomendaciones de a una cantidad)
+    dry_run=True: no escribe nada (ni a ML ni a mayorista_correcciones_automaticas);
+    deja lo que HABRÍA corregido en payload["dry_run_correccion"] y los tiers
+    completos en payload["_ev_tiers"] (solo para el harness, no se persiste)."""
+    status = item.get("status")
+    stock = item.get("available_quantity") or 0
+    if status != "active":
+        return {"evaluable": True, "motivo": "no_activa", "status": status, "stock": stock}
+    if stock < 1:
+        return {"evaluable": True, "motivo": "sin_stock", "stock": stock}
+    ev = _evaluar_mayorista_gold_special(token, item, prices_body=prices_body, siempre_devolver=True,
+                                         umbral_pp=UMBRAL_PP_MAYORISTA)
+    if ev is None:
+        # con siempre_devolver=True, None es inequívoco: no se pudo evaluar (sin precio base)
+        return {"evaluable": False}
+    if user_id is not None:
+        _agregar_margen(ev, sku, user_id)
+    tiers_revisar = [t for t in ev["tiers"] if t["estado"] in ("revisar", "roto")]
+    payload: Dict[str, Any] = {
+        "evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar,
+        "precio_vigente": ev["precio_vigente"], "umbral_pp": UMBRAL_PP_MAYORISTA,
+        "margen_negativo": ev.get("margen_negativo"),
+        "tiers_eval": [
+            {k: t.get(k) for k in ("quantity", "estado", "extra", "pct_cargado", "pct_calculado", "diff_pp",
+                                   "sin_recomendacion", "sin_rec_motivo", "margen_negativo")
+             if t.get(k) is not None}
+            for t in ev["tiers"]
+        ],
+    }
+    sin_rec = {str(t["quantity"]): t.get("sin_rec_motivo") for t in ev["tiers"] if t.get("sin_recomendacion")}
+    if sin_rec:
+        payload["tiers_sin_recomendacion"] = sin_rec
+    if dry_run:
+        payload["_ev_tiers"] = ev["tiers"]
+    # Auto-corrección nocturna -- solo cuando el caller la pide explícitamente
+    # (auto_corregir=True, desde _run_user/el cron real). audit_sku (popup a demanda)
+    # NUNCA la pide. Ver el bloque de reglas de seguridad arriba.
+    if auto_corregir and user_id is not None and tiers_revisar:
+        correccion = _construir_correccion_automatica_mayorista(ev, UMBRAL_PP_MAYORISTA)
+        if correccion["cambios"]:
+            if dry_run:
+                payload["dry_run_correccion"] = {"cambios": correccion["cambios"], "detalle": correccion["detalle"]}
+            elif pendientes is not None:
+                # Modo diferido (cron real): NO se escribe todavía. _run_user junta las correcciones
+                # de todo el usuario y, si superan SALUD_MAYORISTA_MAX_AUTOCORR, no escribe ninguna
+                # (freno de emergencia); si no, las aplica al final con _aplicar_correcciones_pendientes.
+                pendientes.append({"item_id": item["id"], "sku": sku, "correccion": correccion,
+                                   "firma": _firma_tiers(prices_body)})
+                payload["correccion_pendiente"] = True
+            else:
+                _ejecutar_y_registrar_correccion(token, user_id, sku, item["id"], prices_body, correccion, payload)
+        elif correccion["motivo_skip"]:
+            payload["motivo_no_autocorregido"] = correccion["motivo_skip"]
+    return payload
+
+
 def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
                 seller_id: str = "", session: Optional[requests.Session] = None,
-                user_id: Optional[int] = None, auto_corregir: bool = False) -> Dict[str, Any]:
+                user_id: Optional[int] = None, auto_corregir: bool = False,
+                correcciones_pendientes: Optional[list] = None) -> Dict[str, Any]:
     """Audita UN ítem propio ya traído (item = body completo de /items/{id} o del
     multiget). Devuelve el dict de columnas crudas para salud_item_snapshots.
     Nunca levanta excepción: cualquier llamada que falle deja su campo en None
@@ -608,76 +874,21 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
     except requests.exceptions.RequestException as e:
         errores.append(f"prices error={e}")
 
-    # Mayorista "revisar"/"invertido" -- solo gold_special con >=1 tier cargado
-    # (sin nada cargado no hay contra qué comparar). A diferencia del popup (que
-    # siempre recalcula en vivo al abrir, tabs/salud.py, para CUALQUIER stock),
-    # el cron nocturno solo hace la evaluación completa (Cambio 1 + Cambio 2:
-    # endpoint oficial + cantidades por stock) cuando stock>=10 -- Diego,
-    # 2026-09-08, para no disparar de una sola corrida las advertencias de
-    # detalle en los ~274 SKUs de CAMINIZA con stock<10 que tienen mayorista
-    # cargado (medido en vivo ese día: 362 SKUs con mayorista, 274 con stock<10).
-    # Para stock<10 el cron solo marca un ⚠️ genérico "stock bajo" -- sin tiers
-    # ni % calculado -- para que se revise a mano abriendo el popup, que ahí sí
-    # hace la evaluación completa en vivo. Se PERSISTE en el snapshot -- así la
-    # tabla resumen muestra el ⚠️ sin recalcular en cada render (ver _mayorista_dim).
-    # "evaluable": false = se intentó pero no se pudo evaluar -- no cuenta como
-    # sano ni como revisar, queda "sin evaluar".
+    # Mayorista "revisar"/"invertido" -- solo gold_special con >=1 tier cargado (sin
+    # nada cargado no hay contra qué comparar). Desde 2026-09-29 el cron evalúa
+    # COMPLETO (recomendaciones de ML de a una cantidad) toda publicación ACTIVA con
+    # stock >= 1; las pausadas/cerradas no se consultan a ML y quedan con motivo
+    # "no_activa" (activas con stock 0: "sin_stock"). Ver _mayorista_revisar_payload.
+    # Se PERSISTE en el snapshot -- así la tabla resumen muestra el ⚠️ sin recalcular
+    # en cada render (ver _mayorista_dim). "evaluable": false = se intentó pero no se
+    # pudo evaluar -- no cuenta como sano ni como revisar, queda "sin evaluar".
     if item.get("listing_type_id") == "gold_special" and seller_id and tiene_tiers_cargados:
         try:
-            import json as _json
-            stock_item = item.get("available_quantity") or 0
-            if stock_item >= 10:
-                ev = _evaluar_mayorista_gold_special(
-                    token, item, prices_body=prices_body_para_revisar, siempre_devolver=True,
-                )
-                if ev is None:
-                    # con siempre_devolver=True, None es inequívoco: no se pudo leer/evaluar
-                    # (sin precio base) -- no "todo ok".
-                    data["mayorista_revisar_json"] = _json.dumps({"evaluable": False}, ensure_ascii=False)
-                else:
-                    tiers_revisar = [t for t in ev["tiers"] if t["estado"] in ("revisar", "roto")]
-                    revisar_payload: Dict[str, Any] = {
-                        "evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar,
-                    }
-                    # Auto-corrección nocturna (Diego, 2026-09-09) -- solo cuando el caller la
-                    # pide explícitamente (auto_corregir=True, desde _run_user/el cron real).
-                    # audit_sku (popup a demanda) NUNCA la pide -- abrir el popup a mirar un SKU
-                    # no debe disparar una escritura a ML por su cuenta. Ver el bloque de reglas
-                    # de seguridad arriba de _construir_correccion_automatica_mayorista.
-                    if auto_corregir and user_id is not None and tiers_revisar:
-                        correccion = _construir_correccion_automatica_mayorista(ev)
-                        if correccion["cambios"]:
-                            sku_item = data["sku"]
-                            err, _advertencias = _ejecutar_correccion_automatica_mayorista(
-                                token, user_id, sku_item, iid, correccion["cambios"],
-                            )
-                            corregidos = [d for d in correccion["detalle"] if d["accion"] == "corregir_perdida_real"]
-                            resultado_tier = "ok" if err is None else "error"
-                            for d in corregidos:
-                                d["resultado"] = resultado_tier
-                                d["detalle_error"] = err
-                                log_correccion_automatica_mayorista(
-                                    user_id, sku_item, iid, d["quantity"],
-                                    d["pct_anterior"], d["monto_anterior"],
-                                    d["pct_nuevo"], d["monto_nuevo_estimado"],
-                                    resultado_tier, err,
-                                )
-                            revisar_payload["tiers_corregidos_automaticamente"] = corregidos
-                            if resultado_tier == "ok":
-                                # los tiers recién corregidos ya no son una alerta pendiente para
-                                # HOY (mañana el cron los va a re-evaluar solos y deberían salir
-                                # "ok") -- se sacan de tiers_revisar para no duplicar la señal.
-                                qtys_corregidos = {d["quantity"] for d in corregidos}
-                                revisar_payload["tiers_revisar"] = [
-                                    t for t in tiers_revisar if t["quantity"] not in qtys_corregidos
-                                ]
-                        elif correccion["motivo_skip"]:
-                            revisar_payload["motivo_no_autocorregido"] = correccion["motivo_skip"]
-                    data["mayorista_revisar_json"] = _json.dumps(revisar_payload, ensure_ascii=False)
-            else:
-                data["mayorista_revisar_json"] = _json.dumps(
-                    {"evaluable": True, "motivo": "stock_bajo", "stock": stock_item}, ensure_ascii=False,
-                )
+            payload = _mayorista_revisar_payload(
+                token, item, prices_body_para_revisar, user_id, data["sku"], auto_corregir=auto_corregir,
+                pendientes=correcciones_pendientes,
+            )
+            data["mayorista_revisar_json"] = json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             errores.append(f"mayorista_revisar error={e}")
 
@@ -910,6 +1121,63 @@ def audit_skus_nuevos(user_id: int, seller_id: str, skus: List[str]) -> Dict[str
     }
 
 
+MAX_AUTOCORR_POR_CORRIDA = int(os.environ.get("SALUD_MAYORISTA_MAX_AUTOCORR", "150"))
+
+
+def _aplicar_correcciones_pendientes(token: str, user_id: int, hoy: str, pendientes: List[Dict[str, Any]], conn) -> Tuple[int, int]:
+    """Aplica las correcciones diferidas (ya verificado que no superan el freno). Para cada
+    publicación: GET /prices fresco (set anterior real para el log) que se COMPARA con lo que se
+    evaluó en la auditoría (_firma_tiers): si difiere (alguien cambió tiers o precio entre
+    medio) o no se pudo leer, NO se escribe esa publicación y queda
+    motivo_no_autocorregido='cambio_concurrente' / 'no_verificable'; se sigue con las demás.
+    Después escribe y actualiza el mayorista_revisar_json del snapshot de hoy.
+    Devuelve (ok, error, concurrentes)."""
+    n_ok = n_err = n_conc = 0
+    for p in pendientes:
+        row = conn.execute(
+            "SELECT mayorista_revisar_json FROM salud_item_snapshots WHERE user_id=? AND item_id=? AND snapshot_date=?",
+            (user_id, p["item_id"], hoy),
+        ).fetchone()
+        try:
+            payload = json.loads(row["mayorista_revisar_json"]) if row and row["mayorista_revisar_json"] else {}
+        except (TypeError, ValueError):
+            payload = {}
+        try:
+            r = _get_con_reintentos(f"{ML_API}/items/{p['item_id']}/prices",
+                                    {"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
+            body = r.json() if r.status_code == 200 else None
+            if body is None:
+                payload["motivo_no_autocorregido"] = "no_verificable"
+                payload.pop("correccion_pendiente", None)
+                n_err += 1
+                ok = None
+            elif _firma_tiers(body) != p["firma"]:
+                payload["motivo_no_autocorregido"] = "cambio_concurrente"
+                payload.pop("correccion_pendiente", None)
+                log.warning("user_id=%s item=%s: tiers/precio cambiaron desde la auditoria -- no se auto-corrige", user_id, p["item_id"])
+                n_conc += 1
+                ok = None
+            else:
+                _ejecutar_y_registrar_correccion(token, user_id, p["sku"], p["item_id"], body, p["correccion"], payload)
+                ok = all(d.get("resultado") == "ok" for d in payload.get("tiers_corregidos_automaticamente", []))
+        except Exception as e:
+            log.exception("auto-correccion %s fallo", p["item_id"])
+            payload["motivo_no_autocorregido"] = f"error: {e}"
+            payload.pop("correccion_pendiente", None)
+            ok = False
+        if ok is True:
+            n_ok += 1
+        elif ok is False:
+            n_err += 1
+        conn.execute(
+            "UPDATE salud_item_snapshots SET mayorista_revisar_json=? WHERE user_id=? AND item_id=? AND snapshot_date=?",
+            (json.dumps(payload, ensure_ascii=False), user_id, p["item_id"], hoy),
+        )
+        conn.commit()
+        time.sleep(0.4)
+    return n_ok, n_err, n_conc
+
+
 def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     token = get_ml_access_token(user_id)
     if not token:
@@ -922,8 +1190,10 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     conn = get_connection()
     session = requests.Session()
     n_errores = 0
+    pendientes: List[Dict[str, Any]] = []
     for idx, it in enumerate(items):
-        data = audit_item(token, it, cat_attrs_cache, seller_id, session, user_id=user_id, auto_corregir=True)
+        data = audit_item(token, it, cat_attrs_cache, seller_id, session, user_id=user_id, auto_corregir=True,
+                          correcciones_pendientes=pendientes)
         if data.get("error"):
             n_errores += 1
         write_snapshot(conn, user_id, it["id"], data, hoy)
@@ -932,8 +1202,36 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
             log.info("user_id=%s progreso: %d/%d", user_id, idx, len(items))
         time.sleep(0.08)
     conn.commit()
+
+    nota = None
+    if pendientes:
+        if len(pendientes) > MAX_AUTOCORR_POR_CORRIDA:
+            # FRENO DE EMERGENCIA: no se escribe ninguna; la auditoría ya quedó guardada.
+            nota = (f"freno auto-correccion mayorista: {len(pendientes)} publicaciones a corregir > "
+                    f"{MAX_AUTOCORR_POR_CORRIDA} (SALUD_MAYORISTA_MAX_AUTOCORR), no se escribio ninguna")
+            log.warning("user_id=%s: %s", user_id, nota)
+            for p in pendientes:
+                row = conn.execute(
+                    "SELECT mayorista_revisar_json FROM salud_item_snapshots WHERE user_id=? AND item_id=? AND snapshot_date=?",
+                    (user_id, p["item_id"], hoy),
+                ).fetchone()
+                try:
+                    payload = json.loads(row["mayorista_revisar_json"]) if row and row["mayorista_revisar_json"] else {}
+                except (TypeError, ValueError):
+                    payload = {}
+                payload.pop("correccion_pendiente", None)
+                payload["motivo_no_autocorregido"] = "freno_emergencia"
+                conn.execute(
+                    "UPDATE salud_item_snapshots SET mayorista_revisar_json=? WHERE user_id=? AND item_id=? AND snapshot_date=?",
+                    (json.dumps(payload, ensure_ascii=False), user_id, p["item_id"], hoy),
+                )
+            conn.commit()
+        else:
+            n_ok, n_err, n_conc = _aplicar_correcciones_pendientes(token, user_id, hoy, pendientes, conn)
+            log.info("user_id=%s: auto-correccion mayorista: %d ok, %d con error/no verificable, %d omitidas por cambio concurrente",
+                     user_id, n_ok, n_err, n_conc)
     conn.close()
-    return {"items_procesados": len(items), "errores": n_errores}
+    return {"items_procesados": len(items), "errores": n_errores, "nota": nota}
 
 
 def run() -> None:
@@ -966,10 +1264,12 @@ def run() -> None:
         if "error" in result:
             log_cron_run("salud_audit", user_id, "fail", 0, time.time() - t0, result["error"])
             continue
-        status = "ok" if result["errores"] == 0 else "partial"
+        nota = result.get("nota")
+        status = "ok" if (result["errores"] == 0 and not nota) else "partial"
         log.info("user_id=%s: %s", user_id, result)
-        log_cron_run("salud_audit", user_id, status, result["items_procesados"],
-                     time.time() - t0, f"{result['errores']} items con error" if result["errores"] else None)
+        # el dashboard parsea "N items con error" al INICIO del texto: la nota del freno va después
+        msg = "; ".join(x for x in (f"{result['errores']} items con error" if result["errores"] else None, nota) if x) or None
+        log_cron_run("salud_audit", user_id, status, result["items_procesados"], time.time() - t0, msg)
         time.sleep(1)
 
     _reportar_resumen_correcciones_automaticas(date.today().isoformat())
@@ -1033,7 +1333,10 @@ def _reportar_resumen_flags_pendientes(fecha: str) -> None:
         motivo = rj.get("motivo_no_autocorregido")
         for t in rj["tiers_revisar"]:
             mc, mcalc = t.get("monto_cargado"), t.get("monto_calculado")
-            if mc is not None and mcalc is not None and mc < mcalc:
+            diff = t.get("diff_pp")
+            # desde 2026-09-29 "pérdida real" = descuento más profundo que el mínimo de ML
+            # (diff_pp > 0, en %); snapshots viejos no traen diff_pp: comparación en $ como antes.
+            if (diff is not None and diff > 0) or (diff is None and mc is not None and mcalc is not None and mc < mcalc):
                 pendientes_perdida_real.append({
                     "user_id": f["user_id"], "item_id": f["item_id"], "sku": f["sku"],
                     "quantity": t.get("quantity"), "motivo": motivo or "sin_evaluar_aun",
@@ -1049,13 +1352,91 @@ def _reportar_resumen_flags_pendientes(fecha: str) -> None:
     log.info("Tiers flageados SIN tocar por falso positivo (no es perdida real, no requiere accion): %d", n_falsos_positivos)
 
 
+def _access_token_sin_refresh(user_id: int) -> Tuple[Optional[str], str]:
+    """Access token vigente TAL CUAL está en la base. NUNCA refresca (el refresh token
+    de ML es de un solo uso y el servicio en producción podría estar renovándolo a la
+    vez). Devuelve (token, motivo): token=None si falta o está vencido / vence en <5 min."""
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT access_token, expires_at FROM ml_credentials WHERE user_id=? ORDER BY id DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row or not row["access_token"]:
+        return None, "sin_token"
+    exp = row["expires_at"]
+    try:
+        exp_dt = datetime.strptime(str(exp)[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return None, f"expires_at ilegible ({exp!r})"
+    ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+    if (exp_dt - ahora).total_seconds() < 300:
+        return None, f"vencido (expires_at={exp}, ahora UTC={ahora.isoformat(timespec='seconds')})"
+    return row["access_token"], f"vigente hasta {exp}"
+
+
+def dry_run_mayorista(user_ids: Optional[List[int]], out_path: str, extra_hook=None) -> None:
+    """DRY-RUN del motor de mayorista del cron: recorre las gold_special con tiers de
+    los usuarios pedidos, evalúa exactamente igual que el cron real (auto_corregir=True)
+    pero SIN escribir a ML, SIN tocar mayorista_correcciones_automaticas/ml_escrituras y
+    SIN escribir snapshots (solo GETs + POST de consulta /recommendations). Una línea
+    JSON por publicación en out_path. _DRY_RUN_ACTIVO bloquea además cualquier escritura."""
+    global _DRY_RUN_ACTIVO
+    _DRY_RUN_ACTIVO = True
+    conn = get_connection()
+    creds = conn.execute("SELECT DISTINCT user_id, raw_data FROM ml_credentials").fetchall()
+    conn.close()
+    with open(out_path, "w", encoding="utf-8") as fh:
+        for user_id, raw_data in creds:
+            if user_ids and user_id not in user_ids:
+                continue
+            seller_id = str(json.loads(raw_data or "{}").get("user_id") or "")
+            token, motivo_token = _access_token_sin_refresh(user_id)
+            if not token or not seller_id:
+                log.error("dry-run user_id=%s ABORTADO: token %s / seller_id=%r", user_id, motivo_token, seller_id)
+                fh.write(json.dumps({"user_id": user_id, "abortado": motivo_token}, ensure_ascii=False) + "\n")
+                continue
+            log.info("dry-run user_id=%s: token %s", user_id, motivo_token)
+            items = fetch_all_own_items(token, seller_id)
+            log.info("dry-run user_id=%s: %d publicaciones", user_id, len(items))
+            for it in items:
+                if it.get("listing_type_id") != "gold_special":
+                    continue
+                r = _get_con_reintentos(f"{ML_API}/items/{it['id']}/prices",
+                                        {"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
+                if r.status_code != 200:
+                    continue
+                body = r.json()
+                w = _wholesale_from_prices(body)
+                if not w["tiers"]:
+                    continue
+                sku = _get_seller_sku(it)
+                payload = _mayorista_revisar_payload(token, it, body, user_id, sku, auto_corregir=True, dry_run=True)
+                linea = {
+                    "user_id": user_id, "item_id": it["id"], "sku": sku, "status": it.get("status"),
+                    "stock": it.get("available_quantity"), "mayorista_estado": w["estado"], "payload": payload,
+                }
+                if extra_hook:
+                    linea["extra"] = extra_hook(user_id, it, body, sku, token)
+                fh.write(json.dumps(linea, ensure_ascii=False) + "\n")
+                fh.flush()
+                time.sleep(0.08)
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sku", help="Corre solo esta familia (on-demand), no la corrida completa")
     parser.add_argument("--user-id", type=int, default=1)
+    parser.add_argument("--dry-run-mayorista", metavar="OUT.jsonl",
+                        help="Dry-run del motor de mayorista (sin escribir a ML ni a la DB); JSONL a OUT")
+    parser.add_argument("--users", help="Con --dry-run-mayorista: lista de user_id separada por comas (default: todos)")
     args = parser.parse_args()
 
-    if args.sku:
+    if args.dry_run_mayorista:
+        dry_run_mayorista([int(x) for x in args.users.split(",")] if args.users else None, args.dry_run_mayorista)
+    elif args.sku:
         init_salud_tables()
         conn = get_connection()
         row = conn.execute("SELECT raw_data FROM ml_credentials WHERE user_id=?", (args.user_id,)).fetchone()

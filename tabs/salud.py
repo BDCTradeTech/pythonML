@@ -41,6 +41,7 @@ from salud_audit import (
     _PCT_TECHO_SANIDAD,
     _evaluar_mayorista_gold_special,
     _qtys_mayorista_para_stock,
+    _tiers_previos_json,
     _standard_amount_de,
     audit_sku,
     audit_skus_nuevos,
@@ -368,7 +369,9 @@ def _mayorista_dim(items: List[dict], stock: Optional[int]) -> Dict[str, Any]:
             continue
         if not info.get("evaluable"):
             continue
-        if info.get("motivo") == "stock_bajo":
+        if info.get("motivo") in ("no_activa", "sin_stock"):
+            continue  # pausada/cerrada o sin stock: el cron no la evalúa contra ML, sin ⚠️
+        if info.get("motivo") == "stock_bajo":  # snapshots anteriores al 2026-09-29
             # Dedupe por VALOR de stock, no por un flag "ya vi uno" -- dos
             # publicaciones del mismo SKU podrían en teoría tener
             # available_quantity distinto entre si (aunque en la practica casi
@@ -1552,6 +1555,8 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
         return f"Mayorista ({item_id}): {msg}", []
     version = prices_info["version"]
+    # set COMPLETO de tiers antes de escribir (2026-09-29; antes valor_anterior quedaba None)
+    tiers_previos = _tiers_previos_json(prices_info)
     body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios, eliminar)
     if len(body_items) > _ML_MAX_TIERS_PXQ:
         # Backstop server-side: el popup ya bloquea el guardado antes de llegar acá
@@ -1564,7 +1569,7 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         # auto-corrección (origen="cron_auto_mayorista") también depende de este
         # mismo backstop para su regla de "no auto-corregir si se pasa el tope de 5".
         msg = f"quedarían {len(body_items)} precios por cantidad, ML permite máximo {_ML_MAX_TIERS_PXQ} -- no se envió"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
         return f"Mayorista ({item_id}): {msg}", []
     advertencias = [
         f"Mayorista ({item_id}) {d['quantity']}+: % pedido inválido ({d['pct_pedido']}) descartado, no se envió a ML"
@@ -1592,10 +1597,10 @@ def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
         for mpu, pct in cambios_efectivos.items()
     )
     if ok:
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, origen, "ok", None)
+        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, valor_nuevo, origen, "ok", None)
         return None, advertencias
     detalle = post_detalle or f"GET de verificación no coincide (quedó {verify_pct!r})"
-    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, valor_nuevo, origen, "error", detalle)
+    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, valor_nuevo, origen, "error", detalle)
     return f"Mayorista ({item_id}): {detalle}", advertencias
 
 

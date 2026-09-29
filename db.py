@@ -213,6 +213,12 @@ def init_salud_tables() -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mayorista_correcciones_ts ON mayorista_correcciones_automaticas(ts)"
     )
+    # Set COMPLETO de tiers cargados justo antes de la corrección (2026-09-29), para poder
+    # reconstruir/revertir -- pct_anterior/monto_anterior solo describen el tier corregido.
+    try:
+        conn.execute("ALTER TABLE mayorista_correcciones_automaticas ADD COLUMN tiers_anteriores_json TEXT")
+    except sqlite3.OperationalError:
+        pass  # la columna ya existe
     # Escrituras hacia ML disparadas desde el popup de Salud (GTIN, descripción,
     # atributos de ficha, tiers de mayorista). APPEND-ONLY, mismo patrón que
     # tn_escrituras -- nunca UPDATE ni DELETE, se loguea siempre (ok o error).
@@ -1691,6 +1697,7 @@ def log_correccion_automatica_mayorista(
     pct_anterior: Optional[float], monto_anterior: Optional[float],
     pct_nuevo: Optional[float], monto_nuevo: Optional[float],
     resultado: str, detalle: Optional[str] = None,
+    tiers_anteriores: Optional[str] = None,
 ) -> None:
     """Registra UN tier corregido automáticamente por el cron nocturno de
     mayorista (ver _construir_correccion_automatica_mayorista en
@@ -1702,11 +1709,11 @@ def log_correccion_automatica_mayorista(
     try:
         conn.execute(
             "INSERT INTO mayorista_correcciones_automaticas "
-            "(ts, user_id, sku, item_id, quantity, pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "(ts, user_id, sku, item_id, quantity, pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle, tiers_anteriores_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 _dt.utcnow().isoformat(), user_id, sku, item_id, quantity,
-                pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle,
+                pct_anterior, monto_anterior, pct_nuevo, monto_nuevo, resultado, detalle, tiers_anteriores,
             ),
         )
         conn.commit()
