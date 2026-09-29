@@ -296,7 +296,7 @@ async def abrir_popup_reg(uid: int, sku: str, producto: str, desde_fecha: Option
             ui.spinner(size="md")
         with ui.row().classes("justify-end gap-2 w-full") as pie:
             btn_releer = ui.button("Releer", icon="refresh").props("flat dense")
-            btn_cerrar = ui.button("Cerrar").props("flat")
+            btn_cerrar = ui.button("Cerrar").props("color=primary dense")
 
     token = get_ml_access_token(uid)
     if not token:
