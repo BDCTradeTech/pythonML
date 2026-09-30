@@ -1310,7 +1310,7 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     return {"items_procesados": len(items), "errores": n_errores, "nota": nota}
 
 
-def run() -> None:
+def run(only_user: Optional[int] = None) -> None:
     init_cron_runs_db()
     init_salud_tables()
     log.info("=== Salud audit %s ===", date.today().isoformat())
@@ -1319,6 +1319,8 @@ def run() -> None:
     conn.close()
 
     for user_id, raw_data in creds:
+        if only_user is not None and user_id != only_user:
+            continue
         import json as _json
         try:
             seller_id = str(_json.loads(raw_data or "{}").get("user_id") or "")
@@ -1505,6 +1507,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--sku", help="Corre solo esta familia (on-demand), no la corrida completa")
     parser.add_argument("--user-id", type=int, default=1)
+    parser.add_argument("--only-user", type=int, help="Corrida completa (auditoria + auto-correccion) solo para este user_id")
     parser.add_argument("--dry-run-mayorista", metavar="OUT.jsonl",
                         help="Dry-run del motor de mayorista (sin escribir a ML ni a la DB); JSONL a OUT")
     parser.add_argument("--users", help="Con --dry-run-mayorista: lista de user_id separada por comas (default: todos)")
@@ -1521,4 +1524,4 @@ if __name__ == "__main__":
         seller_id = str(_json.loads((row["raw_data"] if row else "") or "{}").get("user_id") or "")
         print(audit_sku(args.user_id, seller_id, args.sku))
     else:
-        run()
+        run(only_user=args.only_user)
