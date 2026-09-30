@@ -2770,8 +2770,9 @@ def build_tab_salud(container) -> None:
                                                     )
                                                     with ui.column().classes("gap-0 items-center"):
                                                         with ui.row().classes("items-center gap-0.5") as fila_prop:
-                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
-                                                            ui.label(f"{po}/{pt}" if pt else "sin propias").classes("text-xs font-semibold" if pt else "text-xs").style(f"color:{color_prop}")
+                                                            if pt:
+                                                                ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(f"{po}/{pt}" if pt else "sin propias").classes("text-xs font-semibold" if pt else "text-xs whitespace-nowrap").style(f"color:{color_prop}")
                                                         fila_prop.tooltip(tooltip if pt else _TT_SIN_PROPIAS)
                                                         if ct:
                                                             color_cat = _GREY if co == ct else _MID
@@ -2800,8 +2801,9 @@ def build_tab_salud(container) -> None:
                                                     )
                                                     with ui.column().classes("gap-0 items-center"):
                                                         with ui.row().classes("items-center gap-0.5") as fila_prop:
-                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
-                                                            ui.label(f"{po}/{pt}" if pt else "sin propias").classes("text-xs font-semibold" if pt else "text-xs").style(f"color:{color_prop}")
+                                                            if pt:
+                                                                ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(f"{po}/{pt}" if pt else "sin propias").classes("text-xs font-semibold" if pt else "text-xs whitespace-nowrap").style(f"color:{color_prop}")
                                                         fila_prop.tooltip(tooltip if pt else _TT_SIN_PROPIAS)
                                                         if ct:
                                                             color_cat = _GREY if co == ct else _MID
@@ -2826,8 +2828,9 @@ def build_tab_salud(container) -> None:
                                                     )
                                                     with ui.column().classes("gap-0 items-center"):
                                                         with ui.row().classes("items-center gap-0.5") as fila_prop:
-                                                            ui.icon("person", size="12px").style(f"color:{color_prop}")
-                                                            ui.label(_rng(p) if p["min"] is not None else "sin propias").classes("text-xs font-semibold" if p["min"] is not None else "text-xs").style(f"color:{color_prop}")
+                                                            if p["min"] is not None:
+                                                                ui.icon("person", size="12px").style(f"color:{color_prop}")
+                                                            ui.label(_rng(p) if p["min"] is not None else "sin propias").classes("text-xs font-semibold" if p["min"] is not None else "text-xs whitespace-nowrap").style(f"color:{color_prop}")
                                                         fila_prop.tooltip(tooltip if p["min"] is not None else _TT_SIN_PROPIAS)
                                                         if c["min"] is not None:
                                                             with ui.row().classes("items-center gap-0.5") as fila_cat:
