@@ -2847,7 +2847,8 @@ def build_tab_salud(container) -> None:
                                                         ui.tooltip("Ver detalle y decidir" + (("\n" + d["tooltip"]) if d and d.get("tooltip") else "")).style("white-space: pre-line")
                                                     mayfix_refs[row["sku"]] = refs_mayfix = {}
                                                     _render_iconos_mayfix(row.get("mayfix"), lambda s=row["sku"]: _mayfix_directo(s),
-                                                                          row["sku"] in mayfix_en_curso, refs_mayfix)
+                                                                          row["sku"] in mayfix_en_curso, refs_mayfix,
+                                                                          lambda s=row["sku"]: _abrir_mayfix(s))
                                             else:
                                                 d = row["dims"].get(name)
                                                 if d:

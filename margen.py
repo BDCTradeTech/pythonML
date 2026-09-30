@@ -45,8 +45,10 @@ def _calc_margen_prod(precio: float, costo_usd: float, tipo_iva: float, p: dict,
     """Margen por unidad al precio unitario `precio`. `cantidad` (default 1) prorratea el
     envío: el envío es POR ENVÍO, no por unidad, así que un tier de N unidades lo reparte
     (envío / N por unidad). Con cantidad=1 el resultado es idéntico al de siempre, por eso
-    dashboard.py y descuentos.py, que no lo pasan, no cambian. El umbral de envío gratis
-    sigue evaluándose sobre el precio unitario."""
+    dashboard.py y descuentos.py, que no lo pasan, no cambian. El umbral de envío
+    se evalúa sobre el TOTAL de la orden (precio × cantidad): ML da envío gratis cuando la compra
+    supera el umbral, no cuando lo supera cada unidad (verificado con GET /items/{id}/shipping_options
+    ?quantity=N, 2026-09-30)."""
     if precio <= 0 or costo_usd <= 0:
         return None
     cantidad = max(int(cantidad or 1), 1)
@@ -57,6 +59,6 @@ def _calc_margen_prod(precio: float, costo_usd: float, tipo_iva: float, p: dict,
     iva_meli    = comision * 0.21 / 1.21
     iva_impor   = 0.09 * costo_usd * p["dolar_oficial"]
     iva_total   = precio * tipo_iva / (1 + tipo_iva) - iva_meli - iva_impor
-    envio       = 0.0 if precio < p["ml_envios_gratuitos"] else p["ml_envios_val"] / cantidad
+    envio       = 0.0 if precio * cantidad < p["ml_envios_gratuitos"] else p["ml_envios_val"] / cantidad
     costo_pesos = costo_usd * p["dolar_oficial"]
     return cobrado - costo_pesos - iva_total - iibb - deb_cred - envio

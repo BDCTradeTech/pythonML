@@ -179,7 +179,7 @@ def motivos_mayorista_fix(items: List[dict], stock_sku: Optional[int]) -> Dict[s
 
 
 def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any], en_curso: bool = False,
-                  refs: Optional[Dict[str, Any]] = None) -> None:
+                  refs: Optional[Dict[str, Any]] = None, on_abrir: Optional[Callable[[], Any]] = None) -> None:
     """Íconos de la celda Mayorista (se llama dentro del contenedor de la celda). La 🔧 dispara el modo
     DIRECTO (`on_click`); mientras corre se reemplaza por un spinner (`en_curso`) y no admite otro click.
     `refs` recibe {"icono", "spinner"} para poder alternarlos sin re-renderizar la tabla (marcar_en_curso)."""
@@ -205,6 +205,9 @@ def render_iconos(mayfix: Optional[Dict[str, Any]], on_click: Callable[[], Any],
     if mayfix.get("margen_neg"):
         m = ui.icon("trending_down", size="16px").style(f"color:{_BAD}")
         m.tooltip("Margen negativo en: " + ", ".join(mayfix["margen_neg"]) + " (informativo)")
+        if on_abrir:  # 📉 sin 🔧: también abre el diálogo (mismo que el número)
+            m.classes("cursor-pointer")
+            m.on("click", lambda: on_abrir())
 
 
 def marcar_en_curso(refs: Optional[Dict[str, Any]], activo: bool) -> None:
@@ -309,6 +312,7 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
     plan["precio_vigente"] = vigente
     plan["promo"] = vigente < base - 0.005
     actuales = _tiers_actuales(body, base)
+    plan["qtys_actuales"] = sorted(actuales)  # antes que cualquier return: "Quitar mayorista" tiene que estar siempre
 
     if pub["listing_type_id"] == "gold_pro":
         target: Tuple[int, ...] = ()
@@ -405,6 +409,8 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
     plan["cambios"] = cambios
     plan["eliminar"] = eliminar
     plan["hay_cambios"] = bool(cambios or eliminar)
+    if not plan["hay_cambios"]:
+        plan["opcion"] = "no_tocar"  # nada que aplicar; el usuario puede elegir "Quitar mayorista"
     return plan
 
 
@@ -607,14 +613,16 @@ def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
             ui.label("Cantidades descartadas: " + _lista_es(plan["incoherentes"]) + " — " + _NOTA_INCOHERENTE).classes("text-xs").style(f"color:{_MID}")
         if plan.get("aviso"):
             ui.label(f"⚠ {plan['aviso']}").classes("text-xs font-semibold").style(f"color:{_MID}")
+        puede_quitar = plan["tipo"] != "cuotas" and bool(plan.get("qtys_actuales")) and resultado is None
         if not plan["hay_cambios"]:
             ui.label("Sin cambios, no se escribe").classes("text-xs text-gray-500")
-            return
-        if plan["hay_margen_neg"] and resultado is None:
+        if (plan["hay_cambios"] and plan["hay_margen_neg"] and resultado is None) or puede_quitar:
             with ui.row().classes("items-center gap-2"):
-                ui.icon("trending_down", size="16px").style(f"color:{_BAD}")
-                ui.label("Algún tier nuevo da margen negativo (informativo, no bloquea):").classes("text-xs").style(f"color:{_BAD}")
-                sel = ui.toggle(_OPCIONES, value=plan["opcion"]).props("dense size=sm no-caps")
+                if plan["hay_cambios"] and plan["hay_margen_neg"]:
+                    ui.icon("trending_down", size="16px").style(f"color:{_BAD}")
+                    ui.label("Algún tier nuevo da margen negativo (informativo, no bloquea):").classes("text-xs").style(f"color:{_BAD}")
+                opciones = _OPCIONES if plan["hay_cambios"] else {k: v for k, v in _OPCIONES.items() if k != "aplicar"}
+                sel = ui.toggle(opciones, value=plan["opcion"]).props("dense size=sm no-caps")
                 if bloqueado:
                     sel.props("disable")
 
@@ -629,6 +637,8 @@ def _render_plan(plan: Dict[str, Any], resultado: Optional[Dict[str, Any]],
             if plan["opcion"] == "no_tocar":
                 ui.label("No se toca esta publicación").classes("text-xs text-gray-500")
                 return
+        if not plan["hay_cambios"]:
+            return
         if not plan["filas"] or all(f["accion"] == "borra" for f in plan["filas"]):
             ui.label("Se borran TODOS los tiers (set vacío)" + (" — cuotas no lleva mayorista" if plan["tipo"] == "cuotas" else " — sin stock")).classes("text-xs font-semibold").style(f"color:{_MID}")
         cols = [
@@ -756,7 +766,7 @@ async def abrir_dialogo_mayorista(uid: int, sku: str, producto: str, desde_fecha
                     ui.spinner(size="sm")
                     ui.label(f"Aplicando… ({hechas} de {total}) — no cierres esta ventana").classes("text-sm font-semibold")
         pendientes = [p for p in planes if efectivo(p) is not None and p["item_id"] not in estado["resultados"]]
-        con_selector = [p for p in planes if p["hay_cambios"] and not p["error"]]
+        con_selector = [p for p in planes if not p["error"] and p["tipo"] != "cuotas" and (p["hay_cambios"] or p["qtys_actuales"])]
         if con_selector:
             cnt = {k: sum(1 for p in con_selector if p["opcion"] == k) for k in _OPCIONES}
             with info:

@@ -675,6 +675,25 @@ def _construir_correccion_automatica_mayorista(ev: Dict[str, Any], umbral_pp: fl
     if not candidatos:
         return {"cambios": {}, "detalle": detalle, "motivo_skip": None}
 
+    # ML valida TODO el array en el POST (5599 "Amount above recommended"): un tier que se preserva
+    # con % apenas por debajo del minimo recomendado (dentro del umbral, o sea "ok") hace fallar la
+    # escritura entera. Solo se ajusta cuando la publicacion YA se va a escribir por otra causa, y
+    # es la unica excepcion a "solo sube el precio": ese tier baja <= umbral_pp (en la practica <0,3 pp).
+    for t in tiers:
+        q, pc, pcalc = t["quantity"], t.get("pct_cargado"), t.get("pct_calculado")
+        if (q in candidatos or t.get("estado") != "ok" or pc is None or pcalc is None
+                or q in (ev.get("incoherentes") or []) or not (0 < pcalc - pc <= umbral_pp)):
+            continue
+        nuevo = round(pcalc, 2)
+        candidatos[q] = nuevo
+        target[q] = nuevo
+        detalle.append({
+            "quantity": q, "accion": "ajustar_a_minimo_ml", "pct_anterior": pc,
+            "monto_anterior": round(precio_vig * (1 - pc / 100), 2),
+            "pct_nuevo": nuevo, "monto_nuevo_estimado": round(precio_vig * (1 - nuevo / 100), 2),
+            "pct_calculado_ml": pcalc, "usa_piso_coherencia": False,
+        })
+
     if len(tiers) > _ML_MAX_TIERS_PXQ_MAYORISTA:
         return {"cambios": {}, "detalle": detalle, "motivo_skip": "tope_5_tiers"}
 
@@ -749,7 +768,7 @@ def _ejecutar_y_registrar_correccion(token: str, user_id: int, sku: str, item_id
     mayorista_correcciones_automaticas (con el set anterior completo) y deja el resultado en
     `payload` (tiers_corregidos_automaticamente; si salió ok, saca esos tiers de tiers_revisar)."""
     err, _advertencias = _ejecutar_correccion_automatica_mayorista(token, user_id, sku, item_id, correccion["cambios"])
-    corregidos = [d for d in correccion["detalle"] if d["accion"] == "corregir_perdida_real"]
+    corregidos = [d for d in correccion["detalle"] if d["accion"] in ("corregir_perdida_real", "ajustar_a_minimo_ml")]
     resultado_tier = "ok" if err is None else "error"
     tiers_prev = _tiers_previos_json(prices_body)
     for d in corregidos:
