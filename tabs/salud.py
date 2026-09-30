@@ -202,6 +202,17 @@ def _bool_dim(items: List[dict], ok_fn) -> Dict[str, Any]:
     return {"texto": f"{n_ok}/{total}", "color": _MID, "orden": n_ok / total}
 
 
+def _tiene_gtin_motivo(it: dict) -> bool:
+    raw = it.get("atributos_faltantes_json")
+    if not raw:
+        return False
+    try:
+        parsed = json.loads(raw) if isinstance(raw, str) else raw
+    except (TypeError, ValueError):
+        return False
+    return bool((parsed or {}).get("gtin_motivo"))
+
+
 def _gtin_dim(items: List[dict]) -> Dict[str, Any]:
     """GTIN separado en propias (accionable -- ML permite editarlo) vs. catálogo
     (informativo -- se hereda del producto de catálogo, ML nunca aplica un PUT ahí,
@@ -213,11 +224,16 @@ def _gtin_dim(items: List[dict]) -> Dict[str, Any]:
     donde ML no deja escribirlo."""
     propias = [it for it in items if not it.get("catalog_listing")]
     catalogo = [it for it in items if it.get("catalog_listing")]
-    prop_tot, prop_ok = len(propias), sum(1 for it in propias if it.get("gtin"))
+    prop_tot, prop_con_gtin = len(propias), sum(1 for it in propias if it.get("gtin"))
+    # Sin GTIN pero con EMPTY_GTIN_REASON declarado (salud_audit lo guarda en
+    # atributos_faltantes_json["gtin_motivo"]): cuenta como resuelto, informado aparte.
+    prop_motivo = sum(1 for it in propias if not it.get("gtin") and _tiene_gtin_motivo(it))
+    prop_ok = prop_con_gtin + prop_motivo
     cat_tot, cat_ok = len(catalogo), sum(1 for it in catalogo if it.get("gtin"))
     orden = (prop_ok / prop_tot) if prop_tot else -1.0
     return {
         "propias_ok": prop_ok, "propias_total": prop_tot,
+        "propias_con_gtin": prop_con_gtin, "propias_motivo": prop_motivo,
         "catalogo_ok": cat_ok, "catalogo_total": cat_tot,
         "orden": orden,
     }
@@ -2742,8 +2758,13 @@ def build_tab_salud(container) -> None:
                                                         color_prop = _BAD
                                                     else:
                                                         color_prop = _MID
+                                                    pm = d.get("propias_motivo") or 0
+                                                    txt_prop = (
+                                                        f"Propias: {d.get('propias_con_gtin', po)} con GTIN · {pm} sin código (motivo declarado)"
+                                                        f" de {pt} (accionable)" if pm else f"Propias: {po}/{pt} con GTIN (accionable)"
+                                                    )
                                                     tooltip = (
-                                                        f"Propias: {po}/{pt} con GTIN (accionable) · "
+                                                        f"{txt_prop} · "
                                                         f"Catálogo: {co}/{ct} con GTIN (informativo, ML no permite editarlo)"
                                                     )
                                                     with ui.column().classes("gap-0 items-center"):

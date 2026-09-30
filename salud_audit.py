@@ -872,10 +872,15 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         "price": item.get("price"),
     }
 
+    # Motivo declarado de GTIN vacío (EMPTY_GTIN_REASON, ver doc "identificadores-de-productos"):
+    # va dentro de atributos_faltantes_json["gtin_motivo"] (value_id), NO en `gtin` -- ese campo
+    # es solo el código real. Un value_id "-1" (N/A) no es un motivo.
+    gtin_motivo = ""
     for attr in item.get("attributes") or []:
         if attr.get("id") == "GTIN":
             data["gtin"] = (attr.get("value_name") or "").strip()
-            break
+        elif attr.get("id") == "EMPTY_GTIN_REASON" and str(attr.get("value_id") or "") not in ("", "-1"):
+            gtin_motivo = str(attr["value_id"])
 
     shipping = item.get("shipping") or {}
     data["retiro_persona"] = bool(shipping.get("local_pick_up"))
@@ -1018,9 +1023,10 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         data["atributos_faltantes_editables"] = len(editables)
         data["atributos_faltantes_bloqueados"] = len(bloqueados)
         import json as _json
-        data["atributos_faltantes_json"] = _json.dumps(
-            {"editables": editables, "bloqueados": bloqueados, "opcionales": opcionales}, ensure_ascii=False
-        )
+        faltantes_payload: Dict[str, Any] = {"editables": editables, "bloqueados": bloqueados, "opcionales": opcionales}
+        if gtin_motivo:
+            faltantes_payload["gtin_motivo"] = gtin_motivo
+        data["atributos_faltantes_json"] = _json.dumps(faltantes_payload, ensure_ascii=False)
 
     data["error"] = " | ".join(errores) if errores else None
     return data
