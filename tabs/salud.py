@@ -1633,8 +1633,9 @@ def _tiers_plan(evaluacion: Dict[str, Any], incluir: set,
 
 def _escribir_atributo(token: str, uid: int, sku: str, item_id: str, attr_id: str,
                         campo_label: str, valor_anterior: str, attr_payload: Dict[str, Any],
-                        valor_mostrado: str) -> Optional[str]:
-    """Devuelve None si ok, o un mensaje de error para el resumen si falló. `attr_payload`
+                        valor_mostrado: str, origen: str = "salud_popup") -> Optional[str]:
+    """Devuelve None si ok, o un mensaje de error para el resumen si falló. `origen` va a
+    ml_escrituras.origen ("salud_popup_no_aplica" para el botón No aplica). `attr_payload`
     ya viene armado por el popup ({"id": attr_id, "value_id": ...} para boolean/list,
     {"id": attr_id, "value_name": ...} para number_unit/multivalued/string/N-A) -- acá
     no se decide el tipo, solo se escribe y se verifica contra el campo que corresponda
@@ -1657,10 +1658,10 @@ def _escribir_atributo(token: str, uid: int, sku: str, item_id: str, attr_id: st
             or _valores_con_unidad_equivalentes(actual_attr.get("value_name"), attr_payload.get("value_name"))
         )
     if ok:
-        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, "salud_popup", "ok", None)
+        log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, origen, "ok", None)
         return None
     detalle = post_detalle or f"GET de verificación no coincide (quedó {actual_attr!r})"
-    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, "salud_popup", "error", detalle)
+    log_ml_escritura(uid, sku, item_id, f"atributo:{attr_id}", valor_anterior, valor_mostrado, origen, "error", detalle)
     return f"{campo_label} ({item_id}): {detalle}"
 
 
@@ -2111,7 +2112,7 @@ def build_tab_salud(container) -> None:
                     grupos_dec = _consolidar(decision_editable)
 
                     inputs: Dict[str, tuple] = {}
-                    def _render_campo(g: Dict[str, Any], seccion: str) -> _CampoWidget:
+                    def _render_campo(g: Dict[str, Any], seccion: str, clave_no_aplica: Optional[str] = None) -> _CampoWidget:
                         attr_def = cat_attrs_by_id.get(g.get("attr_id")) if g["tipo"] == "atributo" else None
                         tipo_campo = _tipo_campo(attr_def) if g["tipo"] == "atributo" else "free"
                         valor_inicial = g["valor_sugerido"] if seccion == "sugerido" else ""
@@ -2332,6 +2333,10 @@ def build_tab_salud(container) -> None:
                                             marca_ia.style(f"color:{_MID}")
                                         marca_ia.set_visibility(True)
                                     ui.button(icon="auto_awesome", on_click=_click_ia).props("flat dense round size=sm").tooltip("Sugerir con IA")
+                                if clave_no_aplica is not None and g["tipo"] == "atributo":
+                                    btn_na = ui.button("No aplica").props("flat dense no-caps size=sm color=grey-8")
+                                    btn_na.tooltip("Marca el atributo como no aplica (value_id -1) en las publicaciones propias")
+                                    btn_na.on_click(lambda g=g, btn_na=btn_na, clave=clave_no_aplica: _click_no_aplica(g, btn_na, clave))
                             if g["tipo"] == "descripcion":
                                 contador = ui.label().classes("text-xs pl-1")
 
@@ -2383,7 +2388,7 @@ def build_tab_salud(container) -> None:
                             with ui.expansion(f"🔧 Opcionales — SEO / calidad, no obligatorios ({len(grupos_opc)})", value=True).classes("w-full text-sm mt-2"):
                                 for i, g in enumerate(grupos_opc):
                                     seccion = "sugerido" if g["valor_sugerido"] else "decision"
-                                    campo = _render_campo(g, seccion)
+                                    campo = _render_campo(g, seccion, clave_no_aplica=f"opc_{i}")
                                     inputs[f"opc_{i}"] = (g, campo)
 
                         ui.label("Mayorista: se gestiona desde el botón 🔧 de la tabla").classes("text-xs mt-2").style(f"color:{_GREY}")
@@ -2392,6 +2397,60 @@ def build_tab_salud(container) -> None:
                             ui.label("Sin hallazgos accionables -- este SKU está al día.").classes("text-sm").style(f"color:{_OK}")
 
                         resumen_area = ui.column().classes("w-full gap-1")
+
+                    def _click_no_aplica(g: Dict[str, Any], btn_na: Any, clave: str) -> None:
+                        # Solo llega acá para atributos de la sección Opcionales, y g["items"] ya
+                        # trae únicamente publicaciones propias (_clasificar_hallazgos manda las de
+                        # catálogo a "normal"). Nunca se ofrece para atributos required.
+                        n = len(g["items"])
+                        with ui.dialog() as dlg_na, ui.card():
+                            ui.label(
+                                f"Marcar '{g['campo']}' como no aplica en {n} publicaci{'ones propias' if n != 1 else 'ón propia'}. "
+                                "El atributo no se mostrará en la ficha."
+                            ).classes("text-sm")
+                            with ui.row().classes("justify-end w-full"):
+                                ui.button("Cancelar", on_click=dlg_na.close).props("flat")
+
+                                async def _confirmar_na() -> None:
+                                    dlg_na.close()
+                                    btn_na.props("loading")
+                                    payload = {"id": g["attr_id"], "value_id": "-1", "value_name": None}
+                                    errores_na: List[str] = []
+                                    ok_na = 0
+                                    for it in g["items"]:
+                                        err = await run.io_bound(
+                                            _escribir_atributo, token, uid, sku, it["item_id"], g["attr_id"], g["campo"],
+                                            None, payload, "no aplica (value_id=-1)", "salud_popup_no_aplica",
+                                        )
+                                        if err:
+                                            errores_na.append(err)
+                                        else:
+                                            ok_na += 1
+                                    resumen_area.clear()
+                                    with resumen_area:
+                                        ui.separator()
+                                        if ok_na:
+                                            ui.label(f"✅ '{g['campo']}': no aplica en {ok_na} publicación(es), verificado").style(f"color:{_OK}").classes("text-sm")
+                                        for e in errores_na:
+                                            ui.label(f"❌ {e}").style(f"color:{_BAD}").classes("text-xs")
+                                    if ok_na:
+                                        # Lo que el usuario haya tipeado en este campo no debe pisar el "no aplica" al Guardar.
+                                        inputs.pop(clave, None)
+                                        try:
+                                            resultado3 = await run.io_bound(audit_sku, uid, seller_id or "", sku, True)
+                                        except Exception:  # noqa: BLE001 -- lo escrito en ML ya quedó; el refresco es cosmético
+                                            resultado3 = None
+                                        if resultado3 and not resultado3.get("error"):
+                                            cierre_ref["resultado"] = resultado3
+                                        else:
+                                            ui.notify("Se guardó en ML, pero no se pudo refrescar la fila. Recargá la página.", type="warning")
+                                    btn_na.props(remove="loading")
+                                    if not errores_na:
+                                        btn_na.set_text("✔ No aplica")
+                                        btn_na.disable()
+
+                                ui.button("Marcar como no aplica", on_click=_confirmar_na).props("color=primary")
+                        dlg_na.open()
 
                     async def _guardar() -> None:
                         guardar_btn.props("loading")
