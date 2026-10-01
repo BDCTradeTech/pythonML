@@ -213,6 +213,30 @@ def init_salud_tables() -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_mayorista_correcciones_ts ON mayorista_correcciones_automaticas(ts)"
     )
+    # Resumen por usuario y noche del mayorista automático del cron (2026-10-01; reemplaza a la
+    # auto-corrección vieja, que escribía en mayorista_correcciones_automaticas -- esa tabla queda
+    # solo como historial). Una fila por corrida y usuario; alimenta la tarjeta de detalle de Salud
+    # del dashboard. La escritura en sí sigue en ml_escrituras (origen 'cron_auto_mayorista').
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS salud_mayorista_cron (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts                TEXT NOT NULL,
+            fecha             TEXT NOT NULL,
+            user_id           INTEGER NOT NULL,
+            skus_con_llave    INTEGER NOT NULL DEFAULT 0,
+            pubs_a_escribir   INTEGER NOT NULL DEFAULT 0,
+            pubs_escritas     INTEGER NOT NULL DEFAULT 0,
+            pubs_error        INTEGER NOT NULL DEFAULT 0,
+            pubs_concurrente  INTEGER NOT NULL DEFAULT 0,
+            pubs_margen_neg   INTEGER NOT NULL DEFAULT 0,
+            frenado           INTEGER NOT NULL DEFAULT 0,
+            detalle_json      TEXT,
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_salud_mayorista_cron_fecha ON salud_mayorista_cron(fecha, user_id)")
     # Set COMPLETO de tiers cargados justo antes de la corrección (2026-09-29), para poder
     # reconstruir/revertir -- pct_anterior/monto_anterior solo describen el tier corregido.
     try:
@@ -1769,6 +1793,28 @@ def log_correccion_automatica_mayorista(
         conn.close()
 
 
+def log_salud_mayorista_cron(fecha: str, user_id: int, resumen: Dict[str, Any]) -> None:
+    """Guarda el resumen de la corrida del mayorista automático del cron para (fecha, user_id).
+    Reemplaza cualquier fila previa de esa fecha/usuario (una corrida manual repetida el mismo día)."""
+    import json as _json
+    from datetime import datetime as _dt
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM salud_mayorista_cron WHERE fecha=? AND user_id=?", (fecha, user_id))
+        conn.execute(
+            "INSERT INTO salud_mayorista_cron (ts, fecha, user_id, skus_con_llave, pubs_a_escribir, pubs_escritas, "
+            "pubs_error, pubs_concurrente, pubs_margen_neg, frenado, detalle_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (_dt.utcnow().isoformat(), fecha, user_id, resumen["skus_con_llave"], resumen["pubs_a_escribir"],
+             resumen["pubs_escritas"], len(resumen["errores"]), len(resumen["cambio_concurrente"]),
+             len(resumen["salteadas_margen"]), 1 if resumen["frenado"] else 0,
+             _json.dumps({k: resumen.get(k) for k in ("salteadas_margen", "errores", "cambio_concurrente", "no_evaluables", "sin_costo", "acciones", "freno_detalle", "desactivado")},
+                         ensure_ascii=False)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def log_ml_escritura(
     user_id: int, sku: str, item_id: str, campo: str,
     valor_anterior: Any, valor_nuevo: Any, origen: str,
@@ -3298,6 +3344,17 @@ def set_app_config(key: str, value: str) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def mayorista_auto_activo(user_id: int) -> bool:
+    """Opt-in POR CUENTA del mayorista automático del cron (apagado por defecto). Vive en app_config con la
+    clave 'mayorista_auto_user_<user_id>' = '1'. Para prenderlo en otra cuenta: set_mayorista_auto(<user_id>, True)
+    (o set_app_config('mayorista_auto_user_<user_id>', '1')); para apagarlo, '0'."""
+    return (get_app_config(f"mayorista_auto_user_{int(user_id)}") or "0").strip() == "1"
+
+
+def set_mayorista_auto(user_id: int, activo: bool) -> None:
+    set_app_config(f"mayorista_auto_user_{int(user_id)}", "1" if activo else "0")
 
 
 def get_cached(key: str, max_age_minutes: int) -> Optional[Any]:

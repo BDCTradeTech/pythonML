@@ -26,7 +26,7 @@ from nicegui import app, background_tasks, ui, run
 
 from db import (
     GROQ_MODEL, delete_short_override, get_app_config, get_connection, get_short_overrides,
-    log_ml_escritura, set_short_override,
+    log_ml_escritura, mayorista_auto_activo, set_short_override,
 )
 from ml_api import (
     get_ml_access_token,
@@ -37,6 +37,9 @@ from ml_api import (
     ml_update_item_attributes,
     ml_write_item_description,
     ml_write_price_per_quantity,
+)
+from salud_mayorista_motor import (  # noqa: F401 -- movidos al motor compartido (el cron no puede importar tabs/); re-exportados acá
+    _ML_MAX_TIERS_PXQ, _construir_payload_mayorista, _escribir_mayorista_pxq, _pct_seguro, _tier_body,
 )
 from tabs.salud_reg import REGULATORIOS_SET, abrir_popup_reg
 from tabs.salud_mayorista_fix import (
@@ -518,7 +521,7 @@ def _puntaje_de_items(items: List[dict]) -> Optional[int]:
 
 
 def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
-                 short_override: Optional[dict] = None) -> Dict[str, Any]:
+                 short_override: Optional[dict] = None, sin_mayorista_dispara: bool = True) -> Dict[str, Any]:
     n_items = len(items)
 
     dims = {
@@ -629,7 +632,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
         "atributos_bloqueados_total": sum(bloqueados_vals) if bloqueados_vals else 0,
         "puntaje_ml": puntaje,
         # 🔧 Mayorista (condición del ícono, solo snapshot, ver tabs/salud_mayorista_fix.py)
-        "mayfix": motivos_mayorista_fix(items, (prod_meta.get(sku) or {}).get("stock")),
+        "mayfix": motivos_mayorista_fix(items, (prod_meta.get(sku) or {}).get("stock"), sin_mayorista_dispara),
     }
 
 
@@ -656,7 +659,8 @@ def _build_rows(user_id: int) -> tuple:
         por_sku[it["sku"]].append(it)
 
     overrides = get_short_overrides(user_id)
-    filas = [_sku_summary(sku, grp, prod_meta, overrides.get(sku)) for sku, grp in por_sku.items()]
+    sin_may = mayorista_auto_activo(user_id)  # cuentas sin mayorista automático: "Sin mayorista" no dispara la 🔧
+    filas = [_sku_summary(sku, grp, prod_meta, overrides.get(sku), sin_may) for sku, grp in por_sku.items()]
     return filas, snap_date
 
 
@@ -1736,191 +1740,12 @@ def _escribir_descripcion(token: str, uid: int, sku: str, item_id: str,
     return f"Descripción ({item_id}): {detalle}"
 
 
-def _tier_body(mpu: int, pct: float) -> Dict[str, Any]:
-    return {
-        "type": "discount_percentage",
-        "percentage": pct,
-        "conditions": {
-            "context_restrictions": ["channel_marketplace", "user_type_business"],
-            "min_purchase_unit": mpu,
-            "eligible": True,
-        },
-    }
-
-
-def _pct_seguro(pct: Optional[float]) -> bool:
-    """Piso de sanidad genérico (independiente de la causa puntual del esquema fijo
-    en salud_audit.py, ver _PCT_TECHO_SANIDAD): ningún % que llegue a este punto --
-    cualquiera sea su origen -- puede escribirse a ML si da un precio negativo o
-    casi regalado. Segundo chequeo, redundante con el de salud_audit.py a propósito."""
-    return pct is not None and 0 < pct < _PCT_TECHO_SANIDAD
-
-
-def _construir_payload_mayorista(prices_info: dict, cambios: Dict[int, float],
-                                  eliminar: Optional[set] = None) -> Tuple[List[Dict[str, Any]], bool, List[Dict[str, Any]]]:
-    """Arma el body completo para POST /prices/price-per-quantity a partir de lo que
-    hay HOY + los cambios pedidos (cantidad -> % nuevo). El endpoint reemplaza el
-    array entero: cualquier cantidad que no se re-envíe queda eliminada -- por eso
-    acá se reconstruye TODO lo que tiene que sobrevivir (tier de 1 unidad, cantidades
-    no estándar, tiers "ok"/"revisar" que no están en `cambios`), no solo lo nuevo.
-    Si el ítem tiene el sistema legacy (tag standard_price_by_quantity), sus tiers se
-    convierten a % preservando el mismo precio real (remove-absolute-pxq los borra
-    del lado de ML de todas formas, así que hay que re-crearlos acá para no perderlos).
-    Los tiers % existentes que se preservan sin cambios van con su "id" propio -- por
-    la lógica documentada de ML, mandar el id de un precio existente lo deja intacto;
-    omitirlo lo borra.
-
-    `eliminar`: cantidades que el usuario tildó explícitamente para sacar del array
-    (ver FIX A / tope de 5, 2026-09-07) -- se excluyen de body_items sin importar si
-    venían del sistema legacy o del % nuevo, y sin importar si además aparecen en
-    `cambios` (eliminar gana; el popup ya las trata como mutuamente excluyentes por
-    tier, esto es solo la segunda capa de defensa).
-
-    Devuelve además `descartados`: cantidades pedidas en `cambios` con un % inválido
-    (faltante, <=0 o >=_PCT_TECHO_SANIDAD -- ver _pct_seguro) que NO se escribieron.
-    Si la cantidad ya tenía un tier cargado, se preserva el valor actual (no se borra
-    un tier existente por un cálculo nuevo inválido); si era un tier nuevo ("crear"),
-    directamente no se agrega."""
-    eliminar = eliminar or set()
-    standard_amount = _standard_amount_de(prices_info)
-    tiene_absoluto = any(
-        p.get("type") == "standard" and (p.get("conditions") or {}).get("min_purchase_unit") is not None
-        for p in prices_info.get("prices") or []
-    )
-    body_items: List[Dict[str, Any]] = []
-    vistos: set = set()
-    descartados: List[Dict[str, Any]] = []
-
-    for p in prices_info.get("prices") or []:
-        cond = p.get("conditions") or {}
-        mpu = cond.get("min_purchase_unit")
-        if mpu is None or p.get("amount") is None or not standard_amount:
-            continue
-        vistos.add(mpu)
-        if mpu in eliminar:
-            continue
-        pct = cambios.get(mpu)
-        if pct is not None and not _pct_seguro(pct):
-            descartados.append({"quantity": mpu, "pct_pedido": pct})
-            pct = None
-        if pct is None:
-            pct = round((1 - float(p["amount"]) / standard_amount) * 100, 2)
-        body_items.append(_tier_body(mpu, pct))
-
-    for p in prices_info.get("price_per_quantity") or []:
-        if p.get("type") != "discount_percentage":
-            continue
-        cond = p.get("conditions") or {}
-        mpu = cond.get("min_purchase_unit")
-        if mpu is None or mpu in vistos:
-            continue
-        vistos.add(mpu)
-        if mpu in eliminar:
-            continue
-        pct = cambios.get(mpu)
-        if mpu in cambios and not _pct_seguro(pct):
-            descartados.append({"quantity": mpu, "pct_pedido": pct})
-            pct = None
-        if pct is not None:
-            body_items.append(_tier_body(mpu, pct))
-        else:
-            preservado = _tier_body(mpu, p.get("percentage"))
-            preservado["id"] = p["id"]
-            body_items.append(preservado)
-
-    for mpu, pct in cambios.items():
-        if mpu not in vistos and mpu not in eliminar:
-            if not _pct_seguro(pct):
-                descartados.append({"quantity": mpu, "pct_pedido": pct})
-                continue
-            body_items.append(_tier_body(mpu, pct))
-
-    # Los tiers "crear" (nuevos, recién agregados arriba) quedan al final del array en
-    # el orden en que se procesaron, no por cantidad -- confirmado en vivo 2026-09-04
-    # (MLA1944479697/MLA1944467261) que ML valida "invalid coherence order" sensible al
-    # orden del array además de a los valores en sí. Se ordena siempre por cantidad
-    # ascendente antes de enviar, sin importar en qué orden se armó arriba.
-    body_items.sort(key=lambda b: b["conditions"]["min_purchase_unit"])
-    return body_items, tiene_absoluto, descartados
-
-
-_ML_MAX_TIERS_PXQ = 5
-
 # Confirmado EMPÍRICAMENTE en vivo el 2026-09-08 contra MLA2489345232 (Awei-KA3,
 # catalog_listing=False) -- la doc oficial (descripcion-de-articulos, verificada por
 # MCP) no documenta un número. ML devuelve cause_id 200
 # "item.description.plain_text.max": "More than 50000 characters is not allowed."
 # arriba de este valor; 50000 exacto fue aceptado (200), 50001 rechazado (400).
 _ML_MAX_DESCRIPCION = 50000
-
-
-def _escribir_mayorista_pxq(token: str, uid: int, sku: str, item_id: str,
-                             cambios: Dict[int, float],
-                             eliminar: Optional[set] = None,
-                             origen: str = "salud_popup") -> Tuple[Optional[str], List[str]]:
-    """cambios: {cantidad: porcentaje} SOLO para las cantidades a crear/corregir --
-    todo lo demás que el ítem ya tenga cargado se preserva (ver _construir_payload_mayorista).
-    eliminar: cantidades tildadas para sacar del array y liberar lugar (ver FIX A /
-    tope de 5, 2026-09-07).
-    origen: se pasa tal cual a ml_escrituras.origen (Diego, 2026-09-09) -- el default
-    preserva el comportamiento de siempre para el popup; el cron de auto-corrección
-    nocturna pasa "cron_auto_mayorista" para poder distinguir ambos en el log.
-    Devuelve (error, advertencias) -- advertencias lista las cantidades que
-    _construir_payload_mayorista descartó por el piso de sanidad (nunca se
-    escribieron a ML), aunque el resto se haya guardado bien (error=None)."""
-    prices_info = ml_get_prices_with_version(token, item_id)
-    if not prices_info or "version" not in prices_info:
-        msg = "no se pudo leer la versión de precios (X-Version) antes de escribir"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", None, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
-        return f"Mayorista ({item_id}): {msg}", []
-    version = prices_info["version"]
-    # set COMPLETO de tiers antes de escribir (2026-09-29; antes valor_anterior quedaba None)
-    tiers_previos = _tiers_previos_json(prices_info)
-    body_items, tiene_pxq_absoluto, descartados = _construir_payload_mayorista(prices_info, cambios, eliminar)
-    if len(body_items) > _ML_MAX_TIERS_PXQ:
-        # Backstop server-side: el popup ya bloquea el guardado antes de llegar acá
-        # (banner ⛔ + mayorista_sobre_tope en build_tab_salud), pero el GET de acá es
-        # más fresco que el que vio el popup al abrirse -- si algo cambió del lado de
-        # ML entre medio
-        # (otra escritura, otra pestaña), nunca se manda un POST que ML va a
-        # rechazar con "Maximum 5 price_per_quantity entries allowed" (caso real
-        # MLA3684456394, 2026-09-07: 5 cargados + 1 "crear" = 6, 400). El cron de
-        # auto-corrección (origen="cron_auto_mayorista") también depende de este
-        # mismo backstop para su regla de "no auto-corregir si se pasa el tope de 5".
-        msg = f"quedarían {len(body_items)} precios por cantidad, ML permite máximo {_ML_MAX_TIERS_PXQ} -- no se envió"
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, json.dumps(cambios, ensure_ascii=False), origen, "error", msg)
-        return f"Mayorista ({item_id}): {msg}", []
-    advertencias = [
-        f"Mayorista ({item_id}) {d['quantity']}+: % pedido inválido ({d['pct_pedido']}) descartado, no se envió a ML"
-        for d in descartados
-    ]
-    cambios_efectivos = {mpu: pct for mpu, pct in cambios.items() if mpu not in {d["quantity"] for d in descartados}}
-    if not cambios_efectivos and not eliminar:
-        return None, advertencias  # todo lo pedido se descartó por el piso de sanidad -- nada que escribir
-    valor_nuevo = json.dumps(
-        {"cambios": cambios_efectivos, "eliminados": sorted(eliminar)} if eliminar else cambios_efectivos,
-        ensure_ascii=False,
-    )
-    resp = ml_write_price_per_quantity(token, item_id, body_items, version, remove_absolute_pxq=tiene_pxq_absoluto)
-    post_detalle = f"status={resp.status_code} {resp.text[:300]}" if resp.status_code != 200 else None
-    time.sleep(0.4)
-    verify = ml_get_prices_with_version(token, item_id)
-    verify_pct = {}
-    if verify:
-        for p in verify.get("price_per_quantity") or []:
-            cond = p.get("conditions") or {}
-            if cond.get("min_purchase_unit") is not None:
-                verify_pct[cond["min_purchase_unit"]] = p.get("percentage")
-    ok = bool(verify) and len(verify_pct) == len(body_items) and all(
-        verify_pct.get(mpu) is not None and abs(verify_pct[mpu] - pct) < 0.05
-        for mpu, pct in cambios_efectivos.items()
-    )
-    if ok:
-        log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, valor_nuevo, origen, "ok", None)
-        return None, advertencias
-    detalle = post_detalle or f"GET de verificación no coincide (quedó {verify_pct!r})"
-    log_ml_escritura(uid, sku, item_id, "mayorista_pxq", tiers_previos, valor_nuevo, origen, "error", detalle)
-    return f"Mayorista ({item_id}): {detalle}", advertencias
 
 
 def build_tab_salud(container) -> None:
@@ -2081,7 +1906,7 @@ def build_tab_salud(container) -> None:
                     prod_meta_single = {sku: {
                         "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                     }}
-                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
+                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku), mayorista_auto_activo(uid))
                     for idx, f in enumerate(filas_todas):
                         if f["sku"] == sku:
                             filas_todas[idx] = nueva_fila
@@ -2094,7 +1919,7 @@ def build_tab_salud(container) -> None:
                 prod_meta_single = {sku: {
                     "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                 }}
-                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
+                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku), mayorista_auto_activo(uid))
                 for idx, f in enumerate(filas_todas):
                     if f["sku"] == sku:
                         filas_todas[idx] = nueva_fila
@@ -2173,7 +1998,7 @@ def build_tab_salud(container) -> None:
                         prod_meta_single = {sku: {
                             "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                         }}
-                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
+                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku), mayorista_auto_activo(uid))
                         for idx, f in enumerate(filas_todas):
                             if f["sku"] == sku:
                                 filas_todas[idx] = nueva_fila

@@ -234,7 +234,7 @@ def _read_cron_log_block(job: str, date_iso: str, user_id: int, max_lines: int =
 
 def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
     """Detalle de un día del cron de Salud, armado desde la DB (scoped a user_id):
-    cron_runs (row) + salud_item_snapshots + mayorista_correcciones_automaticas."""
+    cron_runs (row) + salud_item_snapshots + salud_mayorista_cron."""
     import json as _json
     if not row:
         return "No corrió: no hay registro de salud_audit para este día."
@@ -254,10 +254,9 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
         snaps = conn.execute(
             "SELECT mayorista_estado, mayorista_revisar_json FROM salud_item_snapshots"
             " WHERE user_id=? AND snapshot_date=?", (user_id, date_iso)).fetchall()
-        # ts se guarda en UTC (utcnow); el cron corre 05:30 hora local, mismo día UTC.
-        corr = conn.execute(
-            "SELECT resultado, COUNT(*) FROM mayorista_correcciones_automaticas"
-            " WHERE user_id=? AND date(ts)=? GROUP BY resultado", (user_id, date_iso)).fetchall()
+        may = conn.execute(
+            "SELECT * FROM salud_mayorista_cron WHERE user_id=? AND fecha=? ORDER BY id DESC LIMIT 1",
+            (user_id, date_iso)).fetchone()
     finally:
         conn.close()
     if snaps:
@@ -303,10 +302,37 @@ def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
             out.append(f"Fuera del total (mayorista invertido / sin precio estándar): {n_fuera}")
     else:
         out.append("Mayorista: sin snapshots de este día.")
-    if corr:
-        out.append("Auto-correcciones: " + ", ".join(f"{n} {res}" for res, n in corr))
-    else:
-        out.append("Auto-correcciones: 0")
+    if may:
+        try:
+            det = _json.loads(may["detalle_json"] or "{}")
+        except (TypeError, ValueError):
+            det = {}
+        out.append("")
+        if det.get("desactivado"):
+            out.append("Mayorista automático: desactivado")
+        else:
+            out.append(f"Mayorista automático (🔧 de la noche): {_fmt_miles(may['skus_con_llave'])} SKUs con llave")
+            out.append(f"  Publicaciones escritas: {may['pubs_escritas']} de {may['pubs_a_escribir']} a escribir")
+            salt = det.get("salteadas_margen") or []
+            out.append(f"  Salteadas por margen negativo: {len(salt)}" + (
+                " — " + ", ".join(sorted({s['sku'] for s in salt})) if salt else ""))
+            conc = det.get("cambio_concurrente") or []
+            if conc:
+                out.append(f"  Salteadas porque cambiaron mientras tanto: {len(conc)} — " + ", ".join(sorted({c['sku'] for c in conc})))
+            sc = det.get("sin_costo") or []
+            if sc:
+                out.append(f"  Sin costo cargado, no se tocó: {len(sc)} — " + ", ".join(sorted({s['sku'] + (' (parcial)' if s.get('parcial') else '') for s in sc})))
+            errs = det.get("errores") or []
+            noev = det.get("no_evaluables") or []
+            if noev:
+                out.append(f"  No evaluables (publicación sin precio estándar en /prices, no es error): {len(noev)}")
+            out.append(f"  Errores: {len(errs)}")
+            for e in errs:
+                out.append(f"    • {e.get('sku')} {e.get('item_id') or ''} ({e.get('fase')}): {e.get('error')}")
+            if may["frenado"]:
+                out.append(f"  ⛔ FRENO: {det.get('freno_detalle') or 'no se escribió ninguna publicación'}")
+    elif row["status"] != "fail":
+        out.append("Mayorista automático: sin resumen de este día (corridas anteriores al 2026-10-01 usaban la auto-corrección vieja).")
     if row["status"] == "fail":
         out.append("La corrida se abortó; puede no haber snapshots de este día.")
     return "\n".join(out)

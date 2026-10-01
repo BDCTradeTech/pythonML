@@ -50,7 +50,7 @@ from dotenv import load_dotenv
 load_dotenv(BASE_DIR / ".env")
 
 import requests
-from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run, log_correccion_automatica_mayorista
+from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run, log_salud_mayorista_cron
 from db import get_producto_costo
 from margen import _calc_margen_prod, _load_params_prod
 from ml_api import get_ml_access_token, ml_get_pxq_recommendations
@@ -593,120 +593,10 @@ def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Auto-corrección nocturna de mayorista (Diego, 2026-09-09; reescrita 2026-09-29).
-# Reglas de seguridad (no son opcionales):
-#   1) SOLO corrige tiers "revisar" con descuento MÁS PROFUNDO que el mínimo de ML
-#      (diff_pp = % cargado - % recomendado > umbral): subirlos al % recomendado
-#      siempre SUBE el precio. Nunca baja un precio ni toca tiers más caros que la
-#      recomendación (esos solo se flaguean). Se usa el % que devuelve ML DIRECTO --
-#      nunca se convierte un monto a % sobre la lista (ese cálculo daba % de hasta
-#      41 % en publicaciones con promo, ver diagnóstico 2026-09-29).
-#   2) Un % recomendado de 0 no se manda: se usa el piso de coherencia (% del tier
-#      anterior + 0.01, o 0.01) igual que tabs/salud.py::_tiers_plan.
-#   3) Todos los tiers de la publicación se evalúan y escriben juntos en un solo POST
-#      (_escribir_mayorista_pxq preserva por id los no incluidos en `cambios`).
-#   4) Si el conjunto final queda incoherente (% no estrictamente creciente con la
-#      cantidad) NO se autocorrige NADA de ese ítem.
-#   5) Si el resultado supera el tope de 5 entradas de ML, tampoco.
-#   6) Antes de escribir se guarda el set COMPLETO de tiers anterior (ml_escrituras.
-#      valor_anterior y mayorista_correcciones_automaticas.tiers_anteriores_json).
-#   El margen negativo es solo informativo: nunca bloquea ni cambia una escritura.
+# Auto-corrección nocturna de mayorista (Diego, 2026-10-01): ya NO vive acá. La hace
+# salud_mayorista_motor.autocorregir_usuario con el mismo motor que la 🔧 en modo directo
+# (un solo camino de escritura); este módulo sigue evaluando y persistiendo el snapshot.
 # ---------------------------------------------------------------------------
-
-_ML_MAX_TIERS_PXQ_MAYORISTA = 5  # debe reflejar tabs.salud._ML_MAX_TIERS_PXQ
-
-
-def _construir_correccion_automatica_mayorista(ev: Dict[str, Any], umbral_pp: float = UMBRAL_PP_MAYORISTA) -> Dict[str, Any]:
-    """A partir del resultado de _evaluar_mayorista_gold_special (modo cron,
-    TODOS los tiers de la publicación), decide qué corresponde auto-corregir esta
-    noche. Ver el bloque de comentario de arriba -- no tocar sin releerlo.
-
-    Devuelve {"cambios": {cantidad: pct_nuevo}, "detalle": [...], "motivo_skip": None|str}.
-    "cambios" vacío + motivo_skip=None: nada que corregir. motivo_skip != None: había
-    >=1 tier corregible pero no se puede con seguridad (coherencia o tope de 5) --
-    "cambios" queda vacío también, no se corrige nada parcial."""
-    precio_vig = ev.get("precio_vigente") or ev["precio_base"]
-    tiers = sorted((t for t in ev["tiers"] if t.get("estado") != "crear"), key=lambda t: t["quantity"])
-
-    cand: set = set()
-    detalle: List[Dict[str, Any]] = []
-    for t in tiers:
-        if t["estado"] not in ("revisar", "roto"):
-            continue
-        diff = t.get("diff_pp")
-        if t["estado"] == "revisar" and diff is not None and diff > umbral_pp:
-            cand.add(t["quantity"])
-        else:
-            detalle.append({
-                "quantity": t["quantity"], "accion": "no_tocar",
-                "motivo": "mas_caro_que_recomendado" if (diff is not None and diff < 0) else "roto_sin_perdida",
-                "pct_anterior": t.get("pct_cargado"), "pct_calculado_ml": t.get("pct_calculado"),
-            })
-
-    piso = 0.0
-    target: Dict[int, float] = {}
-    candidatos: Dict[int, float] = {}
-    for t in tiers:
-        q = t["quantity"]
-        pc = t.get("pct_cargado")
-        if q in cand:
-            pct_calc = t["pct_calculado"]
-            usa_piso = not (pct_calc > piso)
-            nuevo = round(piso + 0.01 if usa_piso else pct_calc, 2)
-            if nuevo >= pc:
-                detalle.append({"quantity": q, "accion": "no_tocar", "motivo": "sin_mejora_por_coherencia",
-                                "pct_anterior": pc, "pct_calculado_ml": pct_calc})
-                target[q] = pc
-                piso = max(piso, pc)
-                continue
-            candidatos[q] = nuevo
-            target[q] = nuevo
-            piso = nuevo
-            detalle.append({
-                "quantity": q, "accion": "corregir_perdida_real", "pct_anterior": pc,
-                "monto_anterior": round(precio_vig * (1 - pc / 100), 2),
-                "pct_nuevo": nuevo, "monto_nuevo_estimado": round(precio_vig * (1 - nuevo / 100), 2),
-                "pct_calculado_ml": pct_calc, "usa_piso_coherencia": usa_piso,
-            })
-        elif pc is not None:
-            target[q] = pc
-            piso = max(piso, pc)
-
-    if not candidatos:
-        return {"cambios": {}, "detalle": detalle, "motivo_skip": None}
-
-    # ML valida TODO el array en el POST (5599 "Amount above recommended"): un tier que se preserva
-    # con % apenas por debajo del minimo recomendado (dentro del umbral, o sea "ok") hace fallar la
-    # escritura entera. Solo se ajusta cuando la publicacion YA se va a escribir por otra causa, y
-    # es la unica excepcion a "solo sube el precio": ese tier baja <= umbral_pp (en la practica <0,3 pp).
-    for t in tiers:
-        q, pc, pcalc = t["quantity"], t.get("pct_cargado"), t.get("pct_calculado")
-        if (q in candidatos or t.get("estado") != "ok" or pc is None or pcalc is None
-                or q in (ev.get("incoherentes") or []) or not (0 < pcalc - pc <= umbral_pp)):
-            continue
-        nuevo = round(pcalc, 2)
-        candidatos[q] = nuevo
-        target[q] = nuevo
-        detalle.append({
-            "quantity": q, "accion": "ajustar_a_minimo_ml", "pct_anterior": pc,
-            "monto_anterior": round(precio_vig * (1 - pc / 100), 2),
-            "pct_nuevo": nuevo, "monto_nuevo_estimado": round(precio_vig * (1 - nuevo / 100), 2),
-            "pct_calculado_ml": pcalc, "usa_piso_coherencia": False,
-        })
-
-    if len(tiers) > _ML_MAX_TIERS_PXQ_MAYORISTA:
-        return {"cambios": {}, "detalle": detalle, "motivo_skip": "tope_5_tiers"}
-
-    qtys_desc = sorted(target.keys(), reverse=True)
-    for i in range(1, len(qtys_desc)):
-        if target[qtys_desc[i]] >= target[qtys_desc[i - 1]]:
-            return {"cambios": {}, "detalle": detalle, "motivo_skip": "rompe_coherencia_con_tier_no_tocable"}
-
-    return {"cambios": candidatos, "detalle": detalle, "motivo_skip": None}
-
-
-_DRY_RUN_ACTIVO = False  # lo prende dry_run_mayorista(); con esto prendido NINGUNA escritura a ML sale
-
 
 def _tiers_previos_json(prices_body: Optional[dict]) -> str:
     """Set COMPLETO de tiers de mayorista cargados hoy (sistema % nuevo y absoluto
@@ -728,22 +618,10 @@ def _tiers_previos_json(prices_body: Optional[dict]) -> str:
     return json.dumps(tiers, ensure_ascii=False)
 
 
-def _ejecutar_correccion_automatica_mayorista(token: str, user_id: int, sku: str, item_id: str,
-                                               cambios: Dict[int, float]) -> Tuple[Optional[str], List[str]]:
-    """Import perezoso de _escribir_mayorista_pxq (tabs/salud.py importa DE este
-    módulo a nivel de archivo -- un import a nivel de módulo acá crearía un
-    ciclo; funciona bien adentro de la función porque para cuando se llama ya
-    están ambos módulos completamente cargados)."""
-    if _DRY_RUN_ACTIVO:
-        raise RuntimeError("dry-run activo: escritura a ML bloqueada")
-    from tabs.salud import _escribir_mayorista_pxq
-    return _escribir_mayorista_pxq(token, user_id, sku, item_id, cambios, origen="cron_auto_mayorista")
-
-
 def _firma_tiers(prices_body: Optional[dict]) -> list:
     """Firma comparable del estado que se evaluó: precio de lista, precio vigente y TODOS los
     tiers cargados (sistema % y absoluto). Se guarda al evaluar y se compara con un GET /prices
-    fresco justo antes de escribir (ver _aplicar_correcciones_pendientes): si difiere, alguien
+    fresco justo antes de escribir (ver salud_mayorista_motor.aplicar_publicacion): si difiere, alguien
     cambió tiers o precio entre medio y la recomendación quedó vieja."""
     body = prices_body or {}
     base = _standard_amount_de(body)
@@ -762,43 +640,14 @@ def _firma_tiers(prices_body: Optional[dict]) -> list:
     return sorted(firma, key=lambda x: (x[0], x[1] is None, x[1] or 0))
 
 
-def _ejecutar_y_registrar_correccion(token: str, user_id: int, sku: str, item_id: str, prices_body: Optional[dict],
-                                      correccion: Dict[str, Any], payload: Dict[str, Any]) -> None:
-    """Escribe la corrección a ML (un POST con el set completo), registra una fila por tier en
-    mayorista_correcciones_automaticas (con el set anterior completo) y deja el resultado en
-    `payload` (tiers_corregidos_automaticamente; si salió ok, saca esos tiers de tiers_revisar)."""
-    err, _advertencias = _ejecutar_correccion_automatica_mayorista(token, user_id, sku, item_id, correccion["cambios"])
-    corregidos = [d for d in correccion["detalle"] if d["accion"] in ("corregir_perdida_real", "ajustar_a_minimo_ml")]
-    resultado_tier = "ok" if err is None else "error"
-    tiers_prev = _tiers_previos_json(prices_body)
-    for d in corregidos:
-        d["resultado"] = resultado_tier
-        d["detalle_error"] = err
-        log_correccion_automatica_mayorista(
-            user_id, sku, item_id, d["quantity"],
-            d["pct_anterior"], d["monto_anterior"],
-            d["pct_nuevo"], d["monto_nuevo_estimado"],
-            resultado_tier, err, tiers_anteriores=tiers_prev,
-        )
-    payload["tiers_corregidos_automaticamente"] = corregidos
-    payload.pop("correccion_pendiente", None)
-    if resultado_tier == "ok":
-        # los tiers recién corregidos ya no son una alerta pendiente para HOY
-        qtys_corregidos = {d["quantity"] for d in corregidos}
-        payload["tiers_revisar"] = [t for t in payload.get("tiers_revisar", []) if t["quantity"] not in qtys_corregidos]
-
-
-def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_id: Optional[int], sku: str,
-                                auto_corregir: bool = False, dry_run: bool = False,
-                                pendientes: Optional[list] = None) -> Dict[str, Any]:
+def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_id: Optional[int], sku: str) -> Dict[str, Any]:
     """Arma el dict que se persiste en salud_item_snapshots.mayorista_revisar_json
     para UNA publicación gold_special con tiers cargados.
       - status != active -> {"evaluable": True, "motivo": "no_activa"} (sin llamadas a ML)
       - active con stock 0 -> motivo "sin_stock"
       - active con stock >= 1 -> evaluación completa (recomendaciones de a una cantidad)
-    dry_run=True: no escribe nada (ni a ML ni a mayorista_correcciones_automaticas);
-    deja lo que HABRÍA corregido en payload["dry_run_correccion"] y los tiers
-    completos en payload["_ev_tiers"] (solo para el harness, no se persiste)."""
+    Solo evalúa y arma el payload: nunca escribe a ML (la corrección la hace
+    salud_mayorista_motor.autocorregir_usuario después de guardar el snapshot)."""
     status = item.get("status")
     stock = item.get("available_quantity") or 0
     if status != "active":
@@ -828,34 +677,12 @@ def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_i
     sin_rec = {str(t["quantity"]): t.get("sin_rec_motivo") for t in ev["tiers"] if t.get("sin_recomendacion")}
     if sin_rec:
         payload["tiers_sin_recomendacion"] = sin_rec
-    if dry_run:
-        payload["_ev_tiers"] = ev["tiers"]
-    # Auto-corrección nocturna -- solo cuando el caller la pide explícitamente
-    # (auto_corregir=True, desde _run_user/el cron real). audit_sku (popup a demanda)
-    # NUNCA la pide. Ver el bloque de reglas de seguridad arriba.
-    if auto_corregir and user_id is not None and tiers_revisar:
-        correccion = _construir_correccion_automatica_mayorista(ev, UMBRAL_PP_MAYORISTA)
-        if correccion["cambios"]:
-            if dry_run:
-                payload["dry_run_correccion"] = {"cambios": correccion["cambios"], "detalle": correccion["detalle"]}
-            elif pendientes is not None:
-                # Modo diferido (cron real): NO se escribe todavía. _run_user junta las correcciones
-                # de todo el usuario y, si superan SALUD_MAYORISTA_MAX_AUTOCORR, no escribe ninguna
-                # (freno de emergencia); si no, las aplica al final con _aplicar_correcciones_pendientes.
-                pendientes.append({"item_id": item["id"], "sku": sku, "correccion": correccion,
-                                   "firma": _firma_tiers(prices_body)})
-                payload["correccion_pendiente"] = True
-            else:
-                _ejecutar_y_registrar_correccion(token, user_id, sku, item["id"], prices_body, correccion, payload)
-        elif correccion["motivo_skip"]:
-            payload["motivo_no_autocorregido"] = correccion["motivo_skip"]
     return payload
 
 
 def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
                 seller_id: str = "", session: Optional[requests.Session] = None,
-                user_id: Optional[int] = None, auto_corregir: bool = False,
-                correcciones_pendientes: Optional[list] = None) -> Dict[str, Any]:
+                user_id: Optional[int] = None) -> Dict[str, Any]:
     """Audita UN ítem propio ya traído (item = body completo de /items/{id} o del
     multiget). Devuelve el dict de columnas crudas para salud_item_snapshots.
     Nunca levanta excepción: cualquier llamada que falle deja su campo en None
@@ -953,8 +780,7 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
     if item.get("listing_type_id") == "gold_special" and seller_id and tiene_tiers_cargados:
         try:
             payload = _mayorista_revisar_payload(
-                token, item, prices_body_para_revisar, user_id, data["sku"], auto_corregir=auto_corregir,
-                pendientes=correcciones_pendientes,
+                token, item, prices_body_para_revisar, user_id, data["sku"],
             )
             # stock de ESTA publicación y si tiene tiers legacy (monto absoluto): los usa el ícono 🔧
             # de la tabla (tabs/salud_mayorista_fix.py) sin llamar a ML
@@ -1197,63 +1023,6 @@ def audit_skus_nuevos(user_id: int, seller_id: str, skus: List[str]) -> Dict[str
     }
 
 
-MAX_AUTOCORR_POR_CORRIDA = int(os.environ.get("SALUD_MAYORISTA_MAX_AUTOCORR", "150"))
-
-
-def _aplicar_correcciones_pendientes(token: str, user_id: int, hoy: str, pendientes: List[Dict[str, Any]], conn) -> Tuple[int, int]:
-    """Aplica las correcciones diferidas (ya verificado que no superan el freno). Para cada
-    publicación: GET /prices fresco (set anterior real para el log) que se COMPARA con lo que se
-    evaluó en la auditoría (_firma_tiers): si difiere (alguien cambió tiers o precio entre
-    medio) o no se pudo leer, NO se escribe esa publicación y queda
-    motivo_no_autocorregido='cambio_concurrente' / 'no_verificable'; se sigue con las demás.
-    Después escribe y actualiza el mayorista_revisar_json del snapshot de hoy.
-    Devuelve (ok, error, concurrentes)."""
-    n_ok = n_err = n_conc = 0
-    for p in pendientes:
-        row = conn.execute(
-            "SELECT mayorista_revisar_json FROM salud_item_snapshots WHERE user_id=? AND item_id=? AND snapshot_date=?",
-            (user_id, p["item_id"], hoy),
-        ).fetchone()
-        try:
-            payload = json.loads(row["mayorista_revisar_json"]) if row and row["mayorista_revisar_json"] else {}
-        except (TypeError, ValueError):
-            payload = {}
-        try:
-            r = _get_con_reintentos(f"{ML_API}/items/{p['item_id']}/prices",
-                                    {"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
-            body = r.json() if r.status_code == 200 else None
-            if body is None:
-                payload["motivo_no_autocorregido"] = "no_verificable"
-                payload.pop("correccion_pendiente", None)
-                n_err += 1
-                ok = None
-            elif _firma_tiers(body) != p["firma"]:
-                payload["motivo_no_autocorregido"] = "cambio_concurrente"
-                payload.pop("correccion_pendiente", None)
-                log.warning("user_id=%s item=%s: tiers/precio cambiaron desde la auditoria -- no se auto-corrige", user_id, p["item_id"])
-                n_conc += 1
-                ok = None
-            else:
-                _ejecutar_y_registrar_correccion(token, user_id, p["sku"], p["item_id"], body, p["correccion"], payload)
-                ok = all(d.get("resultado") == "ok" for d in payload.get("tiers_corregidos_automaticamente", []))
-        except Exception as e:
-            log.exception("auto-correccion %s fallo", p["item_id"])
-            payload["motivo_no_autocorregido"] = f"error: {e}"
-            payload.pop("correccion_pendiente", None)
-            ok = False
-        if ok is True:
-            n_ok += 1
-        elif ok is False:
-            n_err += 1
-        conn.execute(
-            "UPDATE salud_item_snapshots SET mayorista_revisar_json=? WHERE user_id=? AND item_id=? AND snapshot_date=?",
-            (json.dumps(payload, ensure_ascii=False), user_id, p["item_id"], hoy),
-        )
-        conn.commit()
-        time.sleep(0.4)
-    return n_ok, n_err, n_conc
-
-
 def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     token = get_ml_access_token(user_id)
     if not token:
@@ -1266,10 +1035,8 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
     conn = get_connection()
     session = requests.Session()
     n_errores = 0
-    pendientes: List[Dict[str, Any]] = []
     for idx, it in enumerate(items):
-        data = audit_item(token, it, cat_attrs_cache, seller_id, session, user_id=user_id, auto_corregir=True,
-                          correcciones_pendientes=pendientes)
+        data = audit_item(token, it, cat_attrs_cache, seller_id, session, user_id=user_id)
         if data.get("error"):
             n_errores += 1
         write_snapshot(conn, user_id, it["id"], data, hoy)
@@ -1279,34 +1046,28 @@ def _run_user(user_id: int, seller_id: str) -> Dict[str, Any]:
         time.sleep(0.08)
     conn.commit()
 
-    nota = None
-    if pendientes:
-        if len(pendientes) > MAX_AUTOCORR_POR_CORRIDA:
-            # FRENO DE EMERGENCIA: no se escribe ninguna; la auditoría ya quedó guardada.
-            nota = (f"freno auto-correccion mayorista: {len(pendientes)} publicaciones a corregir > "
-                    f"{MAX_AUTOCORR_POR_CORRIDA} (SALUD_MAYORISTA_MAX_AUTOCORR), no se escribio ninguna")
-            log.warning("user_id=%s: %s", user_id, nota)
-            for p in pendientes:
-                row = conn.execute(
-                    "SELECT mayorista_revisar_json FROM salud_item_snapshots WHERE user_id=? AND item_id=? AND snapshot_date=?",
-                    (user_id, p["item_id"], hoy),
-                ).fetchone()
-                try:
-                    payload = json.loads(row["mayorista_revisar_json"]) if row and row["mayorista_revisar_json"] else {}
-                except (TypeError, ValueError):
-                    payload = {}
-                payload.pop("correccion_pendiente", None)
-                payload["motivo_no_autocorregido"] = "freno_emergencia"
-                conn.execute(
-                    "UPDATE salud_item_snapshots SET mayorista_revisar_json=? WHERE user_id=? AND item_id=? AND snapshot_date=?",
-                    (json.dumps(payload, ensure_ascii=False), user_id, p["item_id"], hoy),
-                )
-            conn.commit()
-        else:
-            n_ok, n_err, n_conc = _aplicar_correcciones_pendientes(token, user_id, hoy, pendientes, conn)
-            log.info("user_id=%s: auto-correccion mayorista: %d ok, %d con error/no verificable, %d omitidas por cambio concurrente",
-                     user_id, n_ok, n_err, n_conc)
     conn.close()
+
+    # Mayorista automático (reemplaza a la auto-corrección vieja): mismo motor que la 🔧 en modo directo,
+    # para todos los SKUs con 🔧 en el snapshot que se acaba de guardar. Un fallo acá no invalida la auditoría
+    # (ya está guardada): se anota en cron_runs y la corrida queda "partial".
+    nota = None
+    try:
+        from salud_mayorista_motor import autocorregir_usuario  # import diferido: el motor importa este módulo
+        token = get_ml_access_token(user_id) or token  # la auditoría tarda minutos: token fresco para escribir
+        res = autocorregir_usuario(token, user_id, seller_id, hoy, log=log)
+        log_salud_mayorista_cron(hoy, user_id, res)
+        if res.get("desactivado"):
+            log.info("user_id=%s: mayorista automatico desactivado (app_config mayorista_auto_user_%s)", user_id, user_id)
+        else:
+            log.info("user_id=%s: mayorista automatico: %d SKUs con llave, %d pubs a escribir, %d escritas, %d con error, "
+                   "%d salteadas por margen negativo, %d por cambio concurrente%s", user_id, res["skus_con_llave"],
+                   res["pubs_a_escribir"], res["pubs_escritas"], len(res["errores"]), len(res["salteadas_margen"]),
+                   len(res["cambio_concurrente"]), " -- FRENADO" if res["frenado"] else "")
+        nota = res["freno_detalle"]
+    except Exception as e:  # noqa: BLE001
+        log.exception("user_id=%s: el mayorista automatico fallo", user_id)
+        nota = f"mayorista automatico fallo: {e}"
     return {"items_procesados": len(items), "errores": n_errores, "nota": nota}
 
 
@@ -1350,39 +1111,33 @@ def run(only_user: Optional[int] = None) -> None:
         log_cron_run("salud_audit", user_id, status, result["items_procesados"], time.time() - t0, msg)
         time.sleep(1)
 
-    _reportar_resumen_correcciones_automaticas(date.today().isoformat())
+    _reportar_resumen_mayorista_cron(date.today().isoformat())
     _reportar_resumen_flags_pendientes(date.today().isoformat())
 
 
-def _reportar_resumen_correcciones_automaticas(fecha: str) -> None:
-    """Resumen de lo que el cron corrigió SOLO esta noche (las 3 cuentas juntas,
-    mismo alcance que run()) -- para leer a la mañana en /var/log/pythonml_salud.log
-    (Diego, 2026-09-09, punto 5). Lee mayorista_correcciones_automaticas, que
-    audit_item llena fila por fila en el momento de cada corrección."""
+def _reportar_resumen_mayorista_cron(fecha: str) -> None:
+    """Resumen en /var/log/pythonml_salud.log de lo que hizo esta noche el mayorista automatico
+    (todas las cuentas), leido de salud_mayorista_cron."""
     conn = get_connection()
-    filas = conn.execute(
-        "SELECT * FROM mayorista_correcciones_automaticas WHERE date(ts)=? ORDER BY user_id, item_id, quantity",
-        (fecha,),
-    ).fetchall()
-    conn.close()
-    ok = [f for f in filas if f["resultado"] == "ok"]
-    err = [f for f in filas if f["resultado"] != "ok"]
-    log.info("=== RESUMEN correccion automatica de mayorista -- %s ===", fecha)
-    log.info("Tiers corregidos OK: %d | Fallidos (se escribio pero no verifico, o error de ML): %d", len(ok), len(err))
-    for f in ok:
-        log.info(
-            "  OK item=%s sku=%s user_id=%s qty=%s+: %s%% ($%s) -> %s%% ($%s)",
-            f["item_id"], f["sku"], f["user_id"], f["quantity"],
-            f["pct_anterior"], f["monto_anterior"], f["pct_nuevo"], f["monto_nuevo"],
-        )
-    for f in err:
-        log.info(
-            "  FALLO item=%s sku=%s user_id=%s qty=%s+: intento %s%% ($%s) -> %s%% ($%s) -- %s",
-            f["item_id"], f["sku"], f["user_id"], f["quantity"],
-            f["pct_anterior"], f["monto_anterior"], f["pct_nuevo"], f["monto_nuevo"], f["detalle"],
-        )
+    try:
+        filas = conn.execute("SELECT * FROM salud_mayorista_cron WHERE fecha=? ORDER BY user_id", (fecha,)).fetchall()
+    finally:
+        conn.close()
+    log.info("=== RESUMEN mayorista automatico -- %s ===", fecha)
     if not filas:
-        log.info("  (ninguna publicacion necesito correccion automatica hoy)")
+        log.info("  (no corrio / sin resumen guardado)")
+    for f in filas:
+        log.info("user_id=%s: %d escritas de %d a escribir | %d error | %d salteadas por margen negativo | %d cambio concurrente%s",
+                 f["user_id"], f["pubs_escritas"], f["pubs_a_escribir"], f["pubs_error"], f["pubs_margen_neg"],
+                 f["pubs_concurrente"], " | FRENADO" if f["frenado"] else "")
+        try:
+            det = json.loads(f["detalle_json"] or "{}")
+        except (TypeError, ValueError):
+            det = {}
+        for e in det.get("errores", []):
+            log.info("  ERROR sku=%s item=%s (%s): %s", e.get("sku"), e.get("item_id"), e.get("fase"), e.get("error"))
+        for e in det.get("salteadas_margen", []):
+            log.info("  MARGEN NEGATIVO (no se toco) sku=%s item=%s", e.get("sku"), e.get("item_id"))
 
 
 def _reportar_resumen_flags_pendientes(fecha: str) -> None:
@@ -1455,14 +1210,11 @@ def _access_token_sin_refresh(user_id: int) -> Tuple[Optional[str], str]:
     return row["access_token"], f"vigente hasta {exp}"
 
 
-def dry_run_mayorista(user_ids: Optional[List[int]], out_path: str, extra_hook=None) -> None:
-    """DRY-RUN del motor de mayorista del cron: recorre las gold_special con tiers de
-    los usuarios pedidos, evalúa exactamente igual que el cron real (auto_corregir=True)
-    pero SIN escribir a ML, SIN tocar mayorista_correcciones_automaticas/ml_escrituras y
-    SIN escribir snapshots (solo GETs + POST de consulta /recommendations). Una línea
-    JSON por publicación en out_path. _DRY_RUN_ACTIVO bloquea además cualquier escritura."""
-    global _DRY_RUN_ACTIVO
-    _DRY_RUN_ACTIVO = True
+def dry_run_mayorista(user_ids: Optional[List[int]], out_path: str, opt_in: Optional[Dict[int, bool]] = None) -> None:
+    """DRY-RUN del mayorista automatico: usa el ULTIMO snapshot de cada usuario, planifica los SKUs con 🔧
+    exactamente como el cron real y vuelca el resumen (JSON por usuario, con el plan por publicacion) a
+    out_path. NO escribe nada: ni a ML (ESCRITURAS_BLOQUEADAS), ni a la DB, ni refresca tokens."""
+    from salud_mayorista_motor import autocorregir_usuario
     conn = get_connection()
     creds = conn.execute("SELECT DISTINCT user_id, raw_data FROM ml_credentials").fetchall()
     conn.close()
@@ -1472,35 +1224,19 @@ def dry_run_mayorista(user_ids: Optional[List[int]], out_path: str, extra_hook=N
                 continue
             seller_id = str(json.loads(raw_data or "{}").get("user_id") or "")
             token, motivo_token = _access_token_sin_refresh(user_id)
-            if not token or not seller_id:
-                log.error("dry-run user_id=%s ABORTADO: token %s / seller_id=%r", user_id, motivo_token, seller_id)
+            if not token:
+                log.error("dry-run user_id=%s ABORTADO: token %s", user_id, motivo_token)
                 fh.write(json.dumps({"user_id": user_id, "abortado": motivo_token}, ensure_ascii=False) + "\n")
                 continue
-            log.info("dry-run user_id=%s: token %s", user_id, motivo_token)
-            items = fetch_all_own_items(token, seller_id)
-            log.info("dry-run user_id=%s: %d publicaciones", user_id, len(items))
-            for it in items:
-                if it.get("listing_type_id") != "gold_special":
-                    continue
-                r = _get_con_reintentos(f"{ML_API}/items/{it['id']}/prices",
-                                        {"Authorization": f"Bearer {token}", "show-all-prices": "TRUE"}, timeout=15)
-                if r.status_code != 200:
-                    continue
-                body = r.json()
-                w = _wholesale_from_prices(body)
-                if not w["tiers"]:
-                    continue
-                sku = _get_seller_sku(it)
-                payload = _mayorista_revisar_payload(token, it, body, user_id, sku, auto_corregir=True, dry_run=True)
-                linea = {
-                    "user_id": user_id, "item_id": it["id"], "sku": sku, "status": it.get("status"),
-                    "stock": it.get("available_quantity"), "mayorista_estado": w["estado"], "payload": payload,
-                }
-                if extra_hook:
-                    linea["extra"] = extra_hook(user_id, it, body, sku, token)
-                fh.write(json.dumps(linea, ensure_ascii=False) + "\n")
-                fh.flush()
-                time.sleep(0.08)
+            conn = get_connection()
+            fecha = conn.execute("SELECT MAX(snapshot_date) FROM salud_item_snapshots WHERE user_id=?", (user_id,)).fetchone()[0]
+            conn.close()
+            log.info("dry-run user_id=%s: token %s, snapshot %s", user_id, motivo_token, fecha)
+            res = autocorregir_usuario(token, user_id, seller_id, fecha, dry_run=True, log=log,
+                                       opt_in=(opt_in or {}).get(user_id))
+            res.update({"user_id": user_id, "snapshot": fecha})
+            fh.write(json.dumps(res, ensure_ascii=False) + "\n")
+            fh.flush()
 
 
 if __name__ == "__main__":
