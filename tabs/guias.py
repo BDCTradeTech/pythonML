@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import re
 import traceback
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional
@@ -1294,6 +1295,23 @@ def _extract_pdf_text(data: bytes, max_pages: int = 4) -> str:
     return result
 
 
+# HAWB de LHS: "AF" + exactamente 6 dígitos (ej. AF729484). Gemini a veces agarra otro dato de la hoja
+# ("Solicitud", "BUE*00136272", 2026-10-01): si no hay ese patrón NO se guarda, queda vacío y la tabla
+# avisa para cargarlo a mano. Se busca DENTRO del texto (MIAAF727792 -> AF727792), sin distinguir
+# mayúsculas, y se guarda siempre en mayúsculas. Solo LHS: Transporter tiene otro formato (ej. KLAE-9438).
+_HAWB_LHS_RE = re.compile(r"AF\d{6}(?!\d)", re.IGNORECASE)
+
+
+def _normalizar_hawb_lhs(*candidatos: Any) -> str:
+    """Primer candidato que, sin espacios, contiene AF + 6 dígitos (sin otro dígito después):
+    devuelve solo ese tramo en mayúsculas. Si ninguno lo contiene, "" (hawb vacío)."""
+    for c in candidatos:
+        m = _HAWB_LHS_RE.search(re.sub(r"\s+", "", str(c or "")))
+        if m:
+            return m.group(0).upper()
+    return ""
+
+
 def _extraer_hawb_lhs(pdf_bytes: bytes) -> str | None:
     import re
     import fitz
@@ -1590,9 +1608,17 @@ def _rebuild_tabla(
                         f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
                     )
                     # HAWB
-                    ui.label(r["hawb"]).style(
-                        f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
-                    )
+                    if not (r["hawb"] or "").strip() and (r.get("courier") or "").upper() == "LHS":
+                        _aviso = ui.label("HAWB no detectado, cargalo a mano").style(
+                            f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center;"
+                            "color:#B26A00;font-size:10px;font-weight:600;cursor:pointer"
+                        )
+                        _aviso.tooltip("HAWB no detectado, cargalo a mano (click para editar)")
+                        _aviso.on("click", lambda rid=rid: _show_edit_hawb_dialog(rid, user_id, refresh, recien))
+                    else:
+                        ui.label(r["hawb"]).style(
+                            f"{_ct};overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:center"
+                        )
                     # PA — chip clickeable para editar
                     with ui.element("div").style(
                         f"display:flex;justify-content:center;align-items:center;padding:3px 4px;overflow:hidden;{_sep};{_row_bg}"
@@ -2137,6 +2163,9 @@ def _show_unificar_lhs_dialog(
                 spinner.set_visibility(True)
                 try:
                     hawb_final = hawb
+                    if courier == "LHS" and not (hawb or "").strip():
+                        ui.notify("Cargá el HAWB antes de unificar (click en la celda HAWB de la tabla)", color="warning")
+                        return
                     if courier == "Transporter":
                         # El HAWB de Transporter no viene en la Factura -- se extrae
                         # recién acá, del Air Waybill que se acaba de subir.
@@ -2305,6 +2334,30 @@ def _show_traida_dialog(breakdown: dict) -> None:
         ui.button("Cerrar", on_click=d.close).props("flat").style(
             "margin-top:10px;color:#374151"
         )
+    d.open()
+
+
+def _show_edit_hawb_dialog(rid: int, user_id: int, refresh, recien: set | None = None) -> None:
+    """Carga manual del HAWB de LHS cuando la extracción no lo detectó (ver _normalizar_hawb_lhs)."""
+    with ui.dialog() as d, ui.card().style("padding:24px;min-width:320px"):
+        ui.label("Cargar HAWB (LHS)").style("font-size:14px;font-weight:600;color:#374151")
+        ui.label("Formato AF + 6 dígitos, ej. AF729484").style("font-size:12px;color:#6b7280;margin:4px 0")
+        inp = ui.input(placeholder="AF729484").props("dense outlined").style("width:100%")
+        with ui.row().classes("gap-2").style("margin-top:16px;justify-content:flex-end"):
+            ui.button("Cancelar", on_click=d.close).props("flat")
+
+            def _guardar(d=d):
+                nuevo = _normalizar_hawb_lhs(inp.value)
+                if not nuevo:
+                    ui.notify("El HAWB de LHS debe contener AF + 6 dígitos (ej. AF729484)", color="warning")
+                    return
+                _update_hawb(rid, user_id, nuevo)
+                d.close()
+                ui.notify("HAWB actualizado", color="positive")
+                if recien is not None:
+                    recien.add(rid)
+                refresh(recien)
+            ui.button("Guardar", on_click=_guardar).props("flat").style("color:#185FA5;font-weight:600")
     d.open()
 
 
@@ -2842,8 +2895,13 @@ def _build_lhs_panel(
                 if not (parsed.get("pais_procedencia") or "").strip():
                     parsed["pais_procedencia"] = "USA"
                 _hawb_extraido = await run.io_bound(_extraer_hawb_lhs, archivo_data_lhs1[0])
-                if _hawb_extraido:
-                    parsed["hawb"] = _hawb_extraido
+                _hawb_gemini = parsed.get("hawb")
+                parsed["hawb"] = _normalizar_hawb_lhs(_hawb_extraido, _hawb_gemini)
+                if not parsed["hawb"]:
+                    logging.warning(
+                        "[HAWB-LHS] sin HAWB valido (regex=%r, IA=%r): se guarda vacio, cargar a mano",
+                        _hawb_extraido, _hawb_gemini,
+                    )
                 parsed_ref[0] = parsed
                 nro_fac = (parsed.get("nro_factura") or "").strip()
                 if nro_fac and _exists_factura(user_id, nro_fac, "LHS"):
