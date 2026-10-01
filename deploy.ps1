@@ -1,3 +1,4 @@
+# NUNCA copiar app.db al droplet: la base de producción vive solo ahí
 # Script de deploy para DigitalOcean
 # Configurá estas variables según tu servidor:
 $DROPLET_USER = "root"

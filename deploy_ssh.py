@@ -1,3 +1,4 @@
+# NUNCA copiar app.db al droplet: la base de producción vive solo ahí
 import os
 import paramiko
 import time
