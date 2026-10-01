@@ -13,7 +13,6 @@ from db import (
     get_connection,
     get_cotizador_param,
     set_cotizador_param,
-    delete_cotizador_param,
     get_cotizador_tabla,
     set_cotizador_tabla,
     COTIZADOR_DEFAULTS,
@@ -437,10 +436,6 @@ def build_tab_datos() -> None:
                         set_cotizador_param("tn_regla_redondeo", e.value, uid)
                         ui.notify("Guardado", type="positive", position="bottom-right", timeout=1500)
                     sel.on_value_change(_on_redondeo_change)
-
-        # Eliminar tablas obsoletas de la BD si existían
-        for k in ["tabla_cambio_pa", "tabla_derechos", "tabla_estadisticas"]:
-            delete_cotizador_param(k, uid)
 
         # ══════════════════════════════════════════════════════════════════
         # Tablas editables (sin cambios)

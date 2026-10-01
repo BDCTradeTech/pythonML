@@ -26,7 +26,7 @@ from ml_api import (
     ml_get_shipping_preferences,
     _parse_ml_item_body,
 )
-from db import get_cotizador_param, get_marca_override_map
+from db import get_connection, get_cotizador_param, get_marca_override_map
 
 
 # ---------------------------------------------------------------------------
@@ -760,8 +760,7 @@ def _pintar_home_inline(
                                 ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                         _vd_cuotas: Dict[str, str] = {}
                         try:
-                            import sqlite3 as _sqlite3
-                            _vd_conn = _sqlite3.connect("app.db")
+                            _vd_conn = get_connection()
                             _vd_rows = _vd_conn.execute(
                                 "SELECT order_id, cuotas FROM ventas_datos "
                                 "WHERE user_id=? AND order_date >= ? AND cuotas IS NOT NULL",
