@@ -24,7 +24,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 from nicegui import app, background_tasks, ui, run
 
-from db import GROQ_MODEL, get_app_config, get_connection, log_ml_escritura
+from db import (
+    GROQ_MODEL, delete_short_override, get_app_config, get_connection, get_short_overrides,
+    log_ml_escritura, set_short_override,
+)
 from ml_api import (
     get_ml_access_token,
     ml_get_item,
@@ -56,6 +59,7 @@ _OK = "#2E7D32"
 _MID = "#BA7517"
 _BAD = "#A32D2D"
 _GREY = "#9CA3AF"
+_OK_MANUAL = "#66BB6A"  # verde claro: Short confirmado a mano (distinto del OK automático)
 ML_API = "https://api.mercadolibre.com"
 
 
@@ -200,6 +204,34 @@ def _bool_dim(items: List[dict], ok_fn) -> Dict[str, Any]:
     if n_ok == 0:
         return {"texto": "Falta", "color": _BAD, "orden": 0.0}
     return {"texto": f"{n_ok}/{total}", "color": _MID, "orden": n_ok / total}
+
+
+def _short_dim(items: List[dict], override: Optional[dict]) -> Dict[str, Any]:
+    """Columna Short. Base = indicador UP_SHORTS de ML (_bool_dim). Override manual (2026-10-01):
+    ML a veces deja UP_SHORTS=PENDING aunque el clip esté publicado (error de sincronización de
+    ML, no corregible). Si hay override y alguna publicación propia sigue PENDING, se muestra OK
+    "manual" (cuenta como OK: orden 1.0). Si la API ya dice COMPLETED en todas, el override se
+    ignora (sin borrarlo: nada de escrituras al dibujar la tabla). Guarda "base" para recalcular al marcar/desmarcar sin releer."""
+    hay_pending = any(it.get("short_status") == "PENDING" for it in items)
+    return _aplicar_override_short(_bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
+                                   override, hay_pending)
+
+
+def _aplicar_override_short(base: Dict[str, Any], override: Optional[dict], hay_pending: bool) -> Dict[str, Any]:
+    out = dict(base)
+    out["base"] = base
+    out["hay_pending"] = hay_pending
+    if override and hay_pending:
+        try:
+            fecha = datetime.fromisoformat(override["marcado_at"]).strftime("%d/%m")
+        except (TypeError, ValueError, KeyError):
+            fecha = "?"
+        out.update({
+            "texto": "OK", "color": _OK_MANUAL, "orden": 1.0, "manual": True,
+            "tooltip": f"Short confirmado manualmente el {fecha} (ML no lo refleja en la API)\n"
+                       f"Marcado por {override.get('marcado_por') or '?'} · click para quitar",
+        })
+    return out
 
 
 def _tiene_gtin_motivo(it: dict) -> bool:
@@ -485,7 +517,8 @@ def _puntaje_de_items(items: List[dict]) -> Optional[int]:
     return round(sum(scores) / len(scores)) if scores else None
 
 
-def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict[str, Any]:
+def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
+                 short_override: Optional[dict] = None) -> Dict[str, Any]:
     n_items = len(items)
 
     dims = {
@@ -500,7 +533,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any]) -> Dict
         # (gap de membresía del grupo, pendiente y separado) -- van a aparecer solas acá y en
         # el popup en cuanto ese gap se resuelva, sin tocar nada de esta dimensión.
         "descripcion": _descripcion_dim(items),
-        "short": _bool_dim(items, lambda it: _perf_status_ok(it.get("short_status"))),
+        "short": _short_dim(items, short_override),
         "fotos": _fotos_dim(items),
         "mayorista": _mayorista_dim(items, (prod_meta.get(sku) or {}).get("stock")),
         "flex": _bool_dim(items, lambda it: _perf_status_ok(it.get("flex_status"))),
@@ -622,7 +655,8 @@ def _build_rows(user_id: int) -> tuple:
     for it in items:
         por_sku[it["sku"]].append(it)
 
-    filas = [_sku_summary(sku, grp, prod_meta) for sku, grp in por_sku.items()]
+    overrides = get_short_overrides(user_id)
+    filas = [_sku_summary(sku, grp, prod_meta, overrides.get(sku)) for sku, grp in por_sku.items()]
     return filas, snap_date
 
 
@@ -707,7 +741,8 @@ _COLUMNS = [
             "Verde 10 · verde claro 5-9 · amarillo 1-4 o más de 10 (algo sobra o está duplicado)."},
     {"name": "gtin", "label": "GTIN", "field": "gtin", "align": "center", "w": "65px"},
     {"name": "descripcion", "label": "Descripción", "field": "descripcion", "align": "center", "w": "85px"},
-    {"name": "short", "label": "Short", "field": "short", "align": "center", "w": "65px"},
+    {"name": "short", "label": "Short", "field": "short", "align": "center", "w": "65px",
+     "tip": "Dato del indicador de calidad de ML. ML confirmó que puede figurar 'pendiente' aunque el clip esté publicado."},
     {"name": "fotos", "label": "Fotos", "field": "fotos", "align": "center", "w": "65px"},
     {"name": "mayorista", "label": "Mayorista", "field": "mayorista", "align": "center", "w": "100px"},
     {"name": "flex", "label": "Flex", "field": "flex", "align": "center", "w": "65px"},
@@ -1996,6 +2031,47 @@ def build_tab_salud(container) -> None:
                     sort_ref["asc"] = True
                 _render()
 
+            def _toggle_short(sku: str) -> None:
+                """Click en la celda Short (pendiente o con override): confirma/quita el override manual.
+                Solo toca la tabla salud_short_override -- nada en ML."""
+                row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
+                d = (row_actual or {}).get("dims", {}).get("short")
+                if not d or "base" not in d:
+                    return
+                quitar = bool(d.get("manual"))
+                with ui.dialog() as dlg_sh, ui.card().classes("gap-2"):
+                    ui.label(
+                        f"¿Quitar la confirmación manual de Short de {sku}?" if quitar
+                        else f"¿Confirmás que este producto tiene Short publicado en ML? ({sku})"
+                    ).classes("text-sm")
+                    ui.label(
+                        "Volverá a mostrarse según lo que informa ML." if quitar
+                        else "ML lo marca pendiente en la API; se mostrará OK manual. Si la API pasa a COMPLETED, se ignora."
+                    ).classes("text-xs text-gray-600")
+                    with ui.row().classes("justify-end w-full"):
+                        ui.button("Cancelar", on_click=dlg_sh.close).props("flat")
+
+                        def _confirmar_short() -> None:
+                            dlg_sh.close()
+                            try:
+                                if quitar:
+                                    delete_short_override(uid, sku)
+                                    ov = None
+                                else:
+                                    ov = {
+                                        "marcado_por": user.get("username") or user.get("email") or str(uid),
+                                        "marcado_at": datetime.now().isoformat(timespec="seconds"),
+                                    }
+                                    set_short_override(uid, sku, ov["marcado_por"], ov["marcado_at"])
+                            except Exception as exc:  # noqa: BLE001
+                                ui.notify(f"No se pudo guardar el override de Short: {exc}", color="negative")
+                                return
+                            row_actual["dims"]["short"] = _aplicar_override_short(d["base"], ov, d["hay_pending"])
+                            _render()
+
+                        ui.button("Quitar" if quitar else "Confirmar", on_click=_confirmar_short).props("color=primary")
+                dlg_sh.open()
+
             async def _abrir_popup_reg_sku(sku: str) -> None:
                 row_actual = next((f for f in filas_todas if f["sku"] == sku), None)
                 if not row_actual:
@@ -2005,7 +2081,7 @@ def build_tab_salud(container) -> None:
                     prod_meta_single = {sku: {
                         "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                     }}
-                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                    nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
                     for idx, f in enumerate(filas_todas):
                         if f["sku"] == sku:
                             filas_todas[idx] = nueva_fila
@@ -2018,7 +2094,7 @@ def build_tab_salud(container) -> None:
                 prod_meta_single = {sku: {
                     "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                 }}
-                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
                 for idx, f in enumerate(filas_todas):
                     if f["sku"] == sku:
                         filas_todas[idx] = nueva_fila
@@ -2097,7 +2173,7 @@ def build_tab_salud(container) -> None:
                         prod_meta_single = {sku: {
                             "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                         }}
-                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single)
+                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku))
                         for idx, f in enumerate(filas_todas):
                             if f["sku"] == sku:
                                 filas_todas[idx] = nueva_fila
@@ -2588,7 +2664,9 @@ def build_tab_salud(container) -> None:
                         "en Fotos, GTIN y Descripción es informativo, ML no permite editarlo. "
                         "En Caracterist., el catálogo va sin separar obligatoria/opcional y nunca cuenta. "
                         "Puntaje ML: rojo <50 · naranja 50-59 · amarillo 60-69 · lima 70-79 · verde 80-89 · verde oscuro 90-99 · azul 100. "
-                        "Caracterist.: el conteo de catálogo va en verde (depende de ML, no accionable)."
+                        "Caracterist.: el conteo de catálogo va en verde (depende de ML, no accionable). "
+                        "Short: Dato del indicador de calidad de ML. ML confirmó que puede figurar 'pendiente' aunque el clip esté publicado. "
+                        "Click en un Short pendiente para confirmarlo a mano (OK en verde claro con lápiz)."
                     )
 
                 header_div.clear()
@@ -2837,6 +2915,22 @@ def build_tab_salud(container) -> None:
                                                                 ui.icon("storefront", size="12px").style(f"color:{_GREY}")
                                                                 ui.label(_rng(c)).classes("text-xs").style(f"color:{_GREY}")
                                                             fila_cat.tooltip(tooltip)
+                                            elif name == "short":
+                                                d = row["dims"].get("short")
+                                                if not d:
+                                                    ui.label("—")
+                                                elif d.get("manual"):
+                                                    with ui.row().classes("items-center justify-center gap-0.5 no-wrap cursor-pointer") as fila_sh:
+                                                        ui.icon("edit", size="12px").style(f"color:{d['color']}")
+                                                        ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
+                                                    fila_sh.tooltip(d["tooltip"]).style("white-space: pre-line")
+                                                    fila_sh.on("click", lambda s=row["sku"]: _toggle_short(s))
+                                                else:
+                                                    lbl = ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
+                                                    if d.get("hay_pending"):
+                                                        lbl.classes("cursor-pointer")
+                                                        lbl.tooltip("Click para confirmar manualmente que tiene Short publicado en ML")
+                                                        lbl.on("click", lambda s=row["sku"]: _toggle_short(s))
                                             elif name == "mayorista":
                                                 d = row["dims"].get(name)
                                                 with ui.row().classes("items-center justify-center gap-1 no-wrap"):

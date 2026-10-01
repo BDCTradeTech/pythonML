@@ -243,8 +243,56 @@ def init_salud_tables() -> None:
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ml_escrituras_sku ON ml_escrituras(user_id, sku, campo, id)"
     )
+    # Override manual del indicador Short de Salud (2026-10-01): ML confirmó que el clip está
+    # publicado pero /performance sigue en UP_SHORTS=PENDING (error de sincronización de ML, no
+    # corregible). Una fila por (user_id, sku); solo la lee/escribe la UI de Salud, nunca toca ML.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS salud_short_override (
+            user_id     INTEGER NOT NULL,
+            sku         TEXT NOT NULL,
+            marcado_por TEXT NOT NULL,
+            marcado_at  TEXT NOT NULL,
+            PRIMARY KEY (user_id, sku),
+            FOREIGN KEY (user_id) REFERENCES users (id)
+        )
+        """
+    )
     conn.commit()
     conn.close()
+
+
+def get_short_overrides(user_id: int) -> dict:
+    """{sku: {"marcado_por", "marcado_at"}} -- overrides manuales de Short de la cuenta."""
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT sku, marcado_por, marcado_at FROM salud_short_override WHERE user_id=?", (user_id,)
+        ).fetchall()
+        return {r["sku"]: {"marcado_por": r["marcado_por"], "marcado_at": r["marcado_at"]} for r in rows}
+    finally:
+        conn.close()
+
+
+def set_short_override(user_id: int, sku: str, marcado_por: str, marcado_at: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO salud_short_override (user_id, sku, marcado_por, marcado_at) VALUES (?,?,?,?)",
+            (user_id, sku, marcado_por, marcado_at),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_short_override(user_id: int, sku: str) -> None:
+    conn = get_connection()
+    try:
+        conn.execute("DELETE FROM salud_short_override WHERE user_id=? AND sku=?", (user_id, sku))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def init_ml_stock_snapshots_schema() -> None:
