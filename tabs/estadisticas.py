@@ -125,7 +125,8 @@ _FRACCION_BARRA_BAJA = 0.25
 
 
 def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_mes_actual_monto: float,
-                                 moneda: str = "ARS", dolar: float = 1.0) -> Tuple[Dict[str, Any], Optional[str]]:
+                                 moneda: str = "ARS", dolar: float = 1.0,
+                                 n_meses: int = 12) -> Tuple[Dict[str, Any], Optional[str]]:
     """Devuelve (opciones del echart, texto del promedio o None) de FACTURACIÓN MENSUAL: últimos 12
     meses (incluido el actual), todas las barras del mismo azul. El mes en curso es UNA sola barra
     apilada: lo facturado a hoy (lleno) + hasta el estimado (relleno suave con contorno punteado).
@@ -134,7 +135,9 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
     ("2.219u", blanco) o, si la barra es baja, arriba sobre el label de $; en el mes en curso, "N u est."
     dentro de la parte estimada. Las unidades NO dependen de la moneda. Mismo cálculo de facturación
     (por_mes) y de estimado de siempre; `moneda` "USD" divide la facturación por `dolar` (misma
-    cotización fija de la tabla de Ventas históricas)."""
+    cotización fija de la tabla de Ventas históricas). `n_meses` (12, o 6 en pantallas angostas) solo
+    recorta lo que se DIBUJA: promedio, línea punteada y % se calculan siempre sobre los 12 meses."""
+    n_meses = max(1, min(12, int(n_meses)))
     usd = moneda == "USD"
     div = dolar if usd else 1.0
     corto = fmt_usd_corto if usd else fmt_corto
@@ -169,13 +172,14 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
     promedio = sum(cerrados) / len(cerrados) if cerrados else 0.0
     promedio_txt = corto(promedio) if any(v > 0 for v in cerrados) else None
     # Eje Y: la barra más alta (contando el estimado) llega cerca del techo, con lugar para su label
-    y_max = max(efectivos + [promedio, 1.0]) * 1.15
+    y_max = max(efectivos[-n_meses:] + [promedio, 1.0]) * 1.15
     # Poca muestra (hasta el día 7): la parte estimada baja a ~0.45 de opacidad. Se hace con alpha en
     # relleno y contorno (no con itemStyle.opacity) para que el texto siga legible.
     tenue_fm = {"color": "rgba(55,138,221,0.07)", "borderColor": "rgba(55,138,221,0.45)"} if dias_t <= 7 else None
 
     labels, real_data, est_data, tope_data = [], [], [], []
-    for i, k in enumerate(keys):
+    for i in range(len(keys) - n_meses, len(keys)):
+        k = keys[i]
         nombre = f"{_MESES_ABR.get(k[5:7], k[5:7])}-{k[2:4]}"
         labels.append(f"{nombre}\n{_pastilla_pct(efectivos, i)}")
         es_actual = k == actual
@@ -664,20 +668,28 @@ def _pintar_home_inline(
                 # Card Facturación Mensual (echart)
                 if meses_orden:
                     dolar_card = _dolar_oficial_de(user_id)
+                    # Estado del gráfico: moneda y modo angosto (celular vertical, viewport <= 640 px: solo 6 meses)
+                    estado_fm = {"moneda": "ARS", "angosto": False}
+                    _card_fm_base = f"{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0;display:flex;flex-direction:column"
+                    _card_fm_ancha = f"flex:2;min-width:520px;{_card_fm_base}"
+                    _card_fm_angosta = f"flex:1 1 100%;min-width:0;max-width:100%;{_card_fm_base}"
                     chart_options, prom_txt = _facturacion_mensual_options(por_mes, today_local, ventas_mes_actual_monto)
-                    with ui.element("div").style(f"flex:2;min-width:520px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0;display:flex;flex-direction:column"):
-                        with ui.element("div").style("padding:10px 14px 4px;display:flex;align-items:center;justify-content:space-between"):
+                    with ui.element("div").style(_card_fm_ancha) as card_fm:
+                        # el toggle baja debajo del título (alineado a la derecha) si no entra en una línea
+                        with ui.element("div").style("padding:10px 14px 4px;display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:4px 8px"):
                             with ui.row().classes("items-baseline gap-1 no-wrap"):
                                 ui.label("FACTURACIÓN MENSUAL").style(_LBL)
                                 lbl_prom = ui.label("").style("font-size:11px;color:#9ca3af;font-weight:400")
-                            with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px"):
+                            with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px;margin-left:auto"):
                                 pill_ars = ui.label("$ ARS")
                                 pill_usd = ui.label("US$")
                         chart_fm = ui.echart(chart_options).classes("w-full").style("flex:1;min-height:200px;height:auto")
 
-                        def _aplicar_moneda_fm(moneda: str, _chart=chart_fm, _lbl=lbl_prom, _pa=pill_ars, _pu=pill_usd) -> None:
+                        def _redibujar_fm(_chart=chart_fm, _lbl=lbl_prom, _pa=pill_ars, _pu=pill_usd) -> None:
+                            moneda = estado_fm["moneda"]
                             opciones, prom = _facturacion_mensual_options(
-                                por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card)
+                                por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card,
+                                6 if estado_fm["angosto"] else 12)
                             _chart.options.clear()
                             _chart.options.update(opciones)
                             _chart.update()
@@ -688,9 +700,34 @@ def _pintar_home_inline(
                             _pa.style(replace=_on if moneda == "ARS" else _off)
                             _pu.style(replace=_on if moneda == "USD" else _off)
 
+                        def _aplicar_moneda_fm(moneda: str) -> None:
+                            estado_fm["moneda"] = moneda
+                            _redibujar_fm()
+
+                        def _modo_angosto_fm(e) -> None:
+                            args = e.args if isinstance(e.args, dict) else {"detail": e.args}
+                            angosto = bool(args.get("detail"))
+                            if angosto == estado_fm["angosto"]:
+                                return
+                            estado_fm["angosto"] = angosto
+                            card_fm.style(replace=_card_fm_angosta if angosto else _card_fm_ancha)
+                            _redibujar_fm()
+
                         pill_ars.on("click", lambda: _aplicar_moneda_fm("ARS"))
                         pill_usd.on("click", lambda: _aplicar_moneda_fm("USD"))
-                        _aplicar_moneda_fm("ARS")
+                        chart_fm.on("fm_narrow", _modo_angosto_fm, args=["detail"])
+                        _redibujar_fm()
+                        # Mide el viewport (media query) y avisa al servidor al cargar y al rotar el celular
+                        # (vertical <-> horizontal): 6 <-> 12 meses.
+                        ui.timer(0.2, lambda _id=chart_fm.id: ui.run_javascript(
+                            "(function go(n){var el=document.getElementById('c" + str(_id) + "');"
+                            "if(!el){if(n<60)setTimeout(function(){go(n+1);},100);return;}"
+                            "if(window._fmOff)window._fmOff();"
+                            "var mq=window.matchMedia('(max-width: 640px)');"
+                            "function send(){el.dispatchEvent(new CustomEvent('fm_narrow',{detail:mq.matches}));}"
+                            "mq.addEventListener('change',send);"
+                            "window._fmOff=function(){mq.removeEventListener('change',send);};"
+                            "setTimeout(send,150);})(0);"), once=True)
                 else:
                     with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
                         ui.label("FACTURACIÓN MENSUAL").style(_LBL)
