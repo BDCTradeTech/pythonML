@@ -2441,6 +2441,14 @@ def build_tab_salud(container) -> None:
                                 else:
                                     aplicados += 1
 
+                        if not aplicados and not errores and not advertencias:
+                            # Nada marcado: aviso como notificación y se cierra igual que Cancelar
+                            # (sin escrituras; _cerrar_dialogo aplica el refresco de la fila).
+                            ui.notify("No se marcó ningún campo para guardar.", type="info")
+                            guardar_btn.props(remove="loading")
+                            _cerrar_dialogo()
+                            return
+
                         resumen_area.clear()
                         with resumen_area:
                             ui.separator()
@@ -2450,8 +2458,6 @@ def build_tab_salud(container) -> None:
                                 ui.label(f"❌ {e}").style(f"color:{_BAD}").classes("text-xs")
                             for a in advertencias:
                                 ui.label(f"⚠️ {a}").style(f"color:{_MID}").classes("text-xs")
-                            if not aplicados and not errores and not advertencias:
-                                ui.label("No se marcó ningún campo para guardar.").classes("text-xs text-gray-500")
 
                         if aplicados:
                             # Acá SÍ hace falta releer ML -- el audit de la apertura del popup
