@@ -164,6 +164,12 @@ def init_salud_tables() -> None:
     _salud_cols = [r[1] for r in cur.fetchall()]
     if "price" not in _salud_cols:
         cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN price REAL")
+    # Migración: price_vigente (lo que paga hoy el comprador, con promo, calculado del /prices que ya
+    # trae audit_item) y promo_hasta (end_time ISO de la promo ganadora). price queda como lista.
+    if "price_vigente" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN price_vigente REAL")
+    if "promo_hasta" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN promo_hasta TEXT")
     # Migración: mayorista_revisar_json -- detalle de tiers gold_special en estado "revisar"
     # (cargado vs. calculado con cotización de envío real) e "invertido", calculado en el cron
     # (ver _evaluar_mayorista_gold_special, movida a salud_audit.py). NULL = no se evaluó (0

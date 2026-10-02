@@ -612,15 +612,24 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
 
     errores = [it for it in items if it.get("error")]
 
-    precios = [it.get("price") for it in items if it.get("price") is not None]
-    precio_min = min(precios) if precios else None
+    # Precio = vigente (con promo) de la gold_special propia; si no hay, la de catálogo; si no hay
+    # gold_special, None ("—"). Snapshots viejos sin price_vigente: cae a price (lista).
+    gs = [it for it in items if it.get("listing_type_id") == "gold_special"]
+    gs_ref = [it for it in gs if not it.get("catalog_listing")] or gs
+    gs_ref = [it for it in gs_ref if (it.get("price_vigente") if it.get("price_vigente") is not None else it.get("price")) is not None]
+    it_precio = min(gs_ref, key=lambda it: it["price_vigente"] if it.get("price_vigente") is not None else it["price"]) if gs_ref else None
+    precio = (it_precio["price_vigente"] if it_precio.get("price_vigente") is not None else it_precio["price"]) if it_precio else None
+    precio_lista = it_precio.get("price") if it_precio else None
+    promo_hasta = it_precio.get("promo_hasta") if it_precio else None
 
     return {
         "sku": sku,
         "producto": (prod_meta.get(sku) or {}).get("nombre") or "",
         "marca": (prod_meta.get(sku) or {}).get("marca") or "",
         "stock": (prod_meta.get(sku) or {}).get("stock"),
-        "precio_min": precio_min,
+        "precio": precio,
+        "precio_lista": precio_lista,
+        "promo_hasta": promo_hasta,
         "n_items": n_items,
         "variantes": _variantes_dim(items),
         "n_errores": len(errores),
@@ -871,6 +880,19 @@ def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
     return f"{txt} {iso[11:16]}" if con_hora and len(iso) >= 16 else txt
 
 
+def _tooltip_promo(promo_hasta: Optional[str], lista: float) -> str:
+    """'Promoción vigente hasta dd/mm · precio de lista $X'. promo_hasta viene en UTC (ISO 'Z');
+    la fecha se muestra en hora de Argentina (UTC-3)."""
+    hasta = ""
+    if promo_hasta:
+        try:
+            dt = datetime.strptime(promo_hasta[:19], "%Y-%m-%dT%H:%M:%S") - timedelta(hours=3)
+            hasta = f" hasta {dt.strftime('%d/%m')}"
+        except ValueError:
+            hasta = ""
+    return f"Promoción vigente{hasta} · precio de lista {_fmt_moneda(lista)}"
+
+
 def _dec_es(v: float, signo: bool = False) -> str:
     """1 decimal con coma; signo explícito (+/−) si se pide."""
     txt = f"{abs(v):.1f}".replace(".", ",")
@@ -950,7 +972,7 @@ def _sort_key(row: dict, col: str):
         v = row.get("puntaje_ml")
         return v if v is not None else -1
     if col == "precio":
-        v = row.get("precio_min")
+        v = row.get("precio")
         return v if v is not None else -1.0
     if col == "stock":
         v = row.get("stock")
@@ -2552,8 +2574,13 @@ def build_tab_salud(container) -> None:
                                             elif name == "marca":
                                                 ui.label(row["marca"] or "—")
                                             elif name == "precio":
-                                                v = row.get("precio_min")
-                                                ui.label(_fmt_moneda(v) if v is not None else "—")
+                                                v = row.get("precio")
+                                                with ui.row().classes("items-center justify-end gap-1 no-wrap"):
+                                                    ui.label(_fmt_moneda(v) if v is not None else "—")
+                                                    lista = row.get("precio_lista")
+                                                    if v is not None and lista is not None and v < lista:
+                                                        ui.icon("local_offer", size="14px").style(f"color:{_GREY}").tooltip(
+                                                            _tooltip_promo(row.get("promo_hasta"), lista))
                                             elif name == "stock":
                                                 v = row.get("stock")
                                                 ui.label(str(v) if v is not None else "—")

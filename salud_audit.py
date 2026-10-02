@@ -414,6 +414,19 @@ def _tiers_cargados_todos(prices_body: dict, precio_base: float) -> Dict[int, fl
 UMBRAL_PP_MAYORISTA = float(os.environ.get("SALUD_MAYORISTA_UMBRAL_PP", "1.0"))
 
 
+def _promo_hasta_de(prices_body: dict, vigente: float, precio_base: float) -> Optional[str]:
+    """end_time (ISO, UTC) de la promo ganadora (la que fija `vigente`), o None si no hay promo
+    que baje el precio o el nodo no trae fecha."""
+    if vigente >= precio_base:
+        return None
+    for p in prices_body.get("prices") or []:
+        if (p.get("type") == "promotion" and p.get("amount") is not None
+                and float(p["amount"]) == vigente
+                and (p.get("conditions") or {}).get("min_purchase_unit") is None):
+            return (p.get("conditions") or {}).get("end_time")
+    return None
+
+
 def _precio_vigente_de(prices_body: dict, precio_base: float) -> float:
     """Precio vigente de la publicación (lo que paga hoy un comprador de 1 unidad):
     el menor entre el precio de lista y cualquier nodo type=promotion de /prices.
@@ -716,6 +729,8 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         "atributos_faltantes_json": None,
         "performance_score": None,
         "price": item.get("price"),
+        "price_vigente": None,
+        "promo_hasta": None,
     }
 
     # Motivo declarado de GTIN vacío (EMPTY_GTIN_REASON, ver doc "identificadores-de-productos"):
@@ -757,6 +772,11 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         r = S.get(f"{ML_API}/items/{iid}/prices", headers={**H, "show-all-prices": "TRUE"}, timeout=15)
         if r.status_code == 200:
             prices_body_para_revisar = r.json()
+            # Precio vigente (con promo) para la columna Precio de Salud: sin llamada extra
+            _base = _standard_amount_de(prices_body_para_revisar) or item.get("price")
+            if _base:
+                data["price_vigente"] = _precio_vigente_de(prices_body_para_revisar, float(_base))
+                data["promo_hasta"] = _promo_hasta_de(prices_body_para_revisar, data["price_vigente"], float(_base))
             w = _wholesale_from_prices(prices_body_para_revisar)
             data["mayorista_estado"] = w["estado"]
             tiene_tiers_cargados = bool(w["tiers"])
@@ -884,7 +904,7 @@ def write_snapshot(conn, user_id: int, item_id: str, data: Dict[str, Any], snaps
         "mayorista_tiers_json", "mayorista_revisar_json", "flex_status", "retiro_persona", "garantia_tipo",
         "garantia_tiempo", "envio_gratis", "regulatoria_estado",
         "atributos_faltantes_editables", "atributos_faltantes_bloqueados",
-        "atributos_faltantes_json", "performance_score", "price", "error",
+        "atributos_faltantes_json", "performance_score", "price", "price_vigente", "promo_hasta", "error",
     ]
     placeholders = ", ".join(["?"] * (len(cols) + 3))
     set_clause = ", ".join(f"{c}=excluded.{c}" for c in cols)
