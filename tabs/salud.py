@@ -14,6 +14,7 @@ desglose por ítem queda para el popup (Fase 2).
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 import unicodedata
@@ -1957,7 +1958,10 @@ def build_tab_salud(container) -> None:
                 if not row_actual:
                     return
 
-                with ui.dialog().props("persistent") as dlg, ui.card().classes("w-[900px] max-w-full gap-2"):
+                # El diálogo se ancla en el padre de table_container (no en el slot del click, que
+                # está DENTRO de table_container): así _render() puede correr con el popup abierto
+                # (refresco de la fila al abrir) sin borrar el propio diálogo.
+                with table_container.parent_slot, ui.dialog().props("persistent") as dlg, ui.card().classes("w-[900px] max-w-full gap-2"):
                     dlg.open()
                     with ui.row().classes("items-center gap-2 w-full") as header_row:
                         ui.label(f"{sku} — {row_actual['producto'] or ''}").classes("text-lg font-bold")
@@ -1998,24 +2002,29 @@ def build_tab_salud(container) -> None:
                         prod_meta_single = {sku: {
                             "nombre": row_actual["producto"], "marca": row_actual["marca"], "stock": row_actual["stock"],
                         }}
-                        nueva_fila = _sku_summary(sku, [r["audit"] for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku), mayorista_auto_activo(uid))
+                        # el audit en vivo no trae item_id (las filas armadas desde la DB sí): sin esto
+                        # el detalle por publicación de Fotos queda con None
+                        nueva_fila = _sku_summary(sku, [{**r["audit"], "item_id": r["item"]["id"]} for r in resultado_audit["items"]], prod_meta_single, get_short_overrides(uid).get(sku), mayorista_auto_activo(uid))
                         for idx, f in enumerate(filas_todas):
                             if f["sku"] == sku:
                                 filas_todas[idx] = nueva_fila
                                 break
                         _render()
 
-                    # Guarda el audit más reciente para aplicarlo a la fila recién al CERRAR el
-                    # diálogo -- nunca mientras está abierto. BUG 2026-09-04 (VERSION .15):
-                    # llamar _aplicar_resultado_a_fila() (que dispara _render() -> table_container
-                    # .clear()) apenas terminaba este audit_sku() cerraba el popup solo -- el
-                    # diálogo, creado dentro del handler de click de la fila, queda anidado en el
-                    # slot de table_container (patrón normal de NiceGUI para diálogos on-demand),
-                    # así que limpiar table_container borraba el propio diálogo de la vista.
-                    # _guardar() actualiza este holder con el audit post-guardado (resultado2)
-                    # cuando corresponde; el botón "Cancelar" lo aplica recién después de
-                    # dlg.close(), momento en que ya no importa tocar table_container.
+                    # Holder del audit más reciente: la fila ya se refrescó al abrir (arriba); al cerrar
+                    # se vuelve a aplicar el de _guardar() (resultado2) si se escribió algo.
+                    # BUG 2026-09-04 (VERSION .15): refrescar la fila con el diálogo anidado en el
+                    # slot de table_container lo borraba de la vista (_render() hace clear()); por
+                    # eso ahora el diálogo se ancla en el padre de table_container.
                     cierre_ref: Dict[str, Any] = {"resultado": resultado}
+
+                    # La lectura en vivo de arriba ya persistió el snapshot de hoy (persist=True):
+                    # se usa la MISMA lectura para refrescar la fila entera ya, sin esperar al
+                    # cierre. Una vez por apertura; si falla la fila queda como estaba.
+                    try:
+                        _aplicar_resultado_a_fila(resultado)
+                    except Exception:  # noqa: BLE001 -- refresco cosmético, no debe romper el popup
+                        logging.getLogger(__name__).exception("Salud: no se pudo refrescar la fila de %s al abrir el popup", sku)
 
                     clasif = await run.io_bound(_clasificar_hallazgos, token, resultado["items"])
 
