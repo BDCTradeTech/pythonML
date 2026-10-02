@@ -92,6 +92,8 @@ def fmt_usd(val) -> str:
 
 
 _AZUL_BARRA = "#378ADD"
+_AZUL_UNIDADES = "#B5D4F4"
+_ALTO_FM = 312  # alto (px) del echart de Facturación mensual: facturación + franja de unidades
 _MESES_ABR = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
               "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
 _MESES_NOMBRE = {"01": "enero", "02": "febrero", "03": "marzo", "04": "abril", "05": "mayo", "06": "junio",
@@ -109,14 +111,26 @@ def _dolar_oficial_de(user_id: Optional[int]) -> float:
     return dolar if dolar > 0 else 1475.0
 
 
+def _pastilla_pct(valores: List[float], i: int) -> str:
+    """Pastilla rich-text de la variación % del índice i vs el anterior: ▲ verde / ▼ rojo; "—" gris
+    para el primer mes o cuando el anterior es 0 (no se divide por cero)."""
+    if i == 0 or valores[i - 1] <= 0:
+        return "{nul|—}"
+    pct = (valores[i] - valores[i - 1]) / valores[i - 1] * 100
+    txt = f"{abs(pct):.1f}%" if abs(pct) < 100 else f"{abs(pct):.0f}%"
+    return f"{{pos|▲ {txt}}}" if pct >= 0 else f"{{neg|▼ {txt}}}"
+
+
 def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_mes_actual_monto: float,
                                  moneda: str = "ARS", dolar: float = 1.0) -> Tuple[Dict[str, Any], Optional[str]]:
     """Devuelve (opciones del echart, texto del promedio o None) de FACTURACIÓN MENSUAL: últimos 12
     meses (incluido el actual), todas las barras del mismo azul. El mes en curso es UNA sola barra
     apilada: lo facturado a hoy (lleno) + hasta el estimado (relleno suave con contorno punteado).
     Debajo de cada barra, pastilla con el % vs el mes anterior (el mes en curso compara el ESTIMADO).
-    Línea punteada con el promedio de los meses cerrados. Mismo cálculo de facturación (por_mes) y de
-    estimado de siempre; `moneda` "USD" divide todo por `dolar` (misma cotización fija de la tabla)."""
+    Línea punteada con el promedio de los meses cerrados. Debajo, franja de UNIDADES (mini barras con
+    escala propia, número y pastilla %), que NO depende de la moneda. Mismo cálculo de facturación
+    (por_mes) y de estimado de siempre; `moneda` "USD" divide la facturación por `dolar` (misma
+    cotización fija de la tabla de Ventas históricas)."""
     usd = moneda == "USD"
     div = dolar if usd else 1.0
     corto = fmt_usd_corto if usd else fmt_corto
@@ -145,23 +159,25 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
     efectivos = list(reales)  # para el % vs mes anterior: el mes en curso usa el estimado
     if est is not None:
         efectivos[-1] = est
+    # Unidades estimadas del mes en curso: misma fórmula que la facturación
+    unid_est = unidades[-1] / dias_t * dias_m if venta_est is not None else None
+    unid_efectivas = [float(u) for u in unidades]
+    if unid_est is not None:
+        unid_efectivas[-1] = unid_est
     cerrados = reales[:-1]
     promedio = sum(cerrados) / len(cerrados) if cerrados else 0.0
     promedio_txt = corto(promedio) if any(v > 0 for v in cerrados) else None
+    # Poca muestra (hasta el día 7): la parte estimada baja a ~0.45 de opacidad. Se hace con alpha en
+    # relleno y contorno (no con itemStyle.opacity) para que el texto "N est." siga legible.
+    tenue_fm = {"color": "rgba(55,138,221,0.07)", "borderColor": "rgba(55,138,221,0.45)"} if dias_t <= 7 else None
+    tenue_un = {"color": "rgba(181,212,244,0.14)", "borderColor": "rgba(141,188,235,0.45)"} if dias_t <= 7 else None
 
-    pastilla = {"padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold", "borderRadius": 8}
     labels, real_data, est_data = [], [], []
+    u_labels, u_real, u_est = [], [], []
     for i, k in enumerate(keys):
         nombre = f"{_MESES_ABR.get(k[5:7], k[5:7])}-{k[2:4]}"
-        if i == 0 or efectivos[i - 1] <= 0:
-            labels.append(f"{nombre}\n{{nul|—}}")  # primer mes (o sin base): pastilla gris neutra
-        else:
-            pct = (efectivos[i] - efectivos[i - 1]) / efectivos[i - 1] * 100
-            pct_txt = f"{abs(pct):.1f}%" if abs(pct) < 100 else f"{abs(pct):.0f}%"
-            if pct >= 0:
-                labels.append(f"{nombre}\n{{pos|▲ {pct_txt}}}")
-            else:
-                labels.append(f"{nombre}\n{{neg|▼ {pct_txt}}}")
+        labels.append(f"{nombre}\n{_pastilla_pct(efectivos, i)}")
+        u_labels.append(f"{{n|{fmt_n(unidades[i])}}}\n{_pastilla_pct(unid_efectivas, i)}")
         es_actual = k == actual
         real = round(reales[i], 0)
         ticket = reales[i] / ordenes[i] if ordenes[i] else 0.0
@@ -180,9 +196,20 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                 },
                 "tooltip": {"formatter": tip},
             }
-            if dias_t <= 7:
-                item_est["itemStyle"] = {"opacity": 0.45}  # poca muestra: el estimado se ve más tenue
+            if tenue_fm:
+                item_est["itemStyle"] = dict(tenue_fm)
             est_data.append(item_est)
+            tip_u = (f"{titulo_mes}<br/>Unidades a hoy: {fmt_n(unidades[i])}"
+                     f"<br/>Estimadas: {fmt_n(unid_est)}")
+            u_real.append({"value": unidades[i], "label": {"show": False}, "tooltip": {"formatter": tip_u}})
+            item_u_est = {
+                "value": round(unid_est - unidades[i], 1),
+                "label": {"show": True, "formatter": f"{fmt_n(unid_est)} est."},
+                "tooltip": {"formatter": tip_u},
+            }
+            if tenue_un:
+                item_u_est["itemStyle"] = dict(tenue_un)
+            u_est.append(item_u_est)
         else:
             tip = (f"{titulo_mes}<br/>Facturado: {completo(reales[i])}"
                    f"<br/>Unidades: {fmt_n(unidades[i])}<br/>Ticket prom.: {completo(ticket)}")
@@ -191,27 +218,55 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                 "tooltip": {"formatter": tip},
             })
             est_data.append({"value": 0, "label": {"show": False}, "tooltip": {"show": False}})
+            u_real.append({"value": unidades[i], "label": {"show": False},
+                           "tooltip": {"formatter": f"{titulo_mes}<br/>Unidades: {fmt_n(unidades[i])}"}})
+            u_est.append({"value": 0, "label": {"show": False}, "tooltip": {"show": False}})
 
     etiqueta = {"position": "top", "fontSize": 9, "color": "#111827"}
+    pastilla = {"padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold", "borderRadius": 8}
+    rich_pastillas = {
+        "pos": {**pastilla, "color": "#16a34a", "backgroundColor": "#dcfce7"},
+        "neg": {**pastilla, "color": "#dc2626", "backgroundColor": "#fee2e2"},
+        "nul": {**pastilla, "color": "#9ca3af", "backgroundColor": "#f3f4f6"},
+    }
+    ancho_grid = {"left": 5, "right": 16, "containLabel": False}  # right: deja lugar al rótulo "est." de la última barra
     opciones = {
         "backgroundColor": "transparent",
-        "grid": {"left": 5, "right": 5, "top": 40, "bottom": 40, "containLabel": False},
+        # grid 0 = facturación; grid 1 = franja de unidades (posiciones en px, la card mide _ALTO_FM)
+        "grid": [
+            {**ancho_grid, "top": 40, "height": 105},
+            {**ancho_grid, "top": 226, "height": 35},
+        ],
         "tooltip": {"trigger": "item"},
-        "xAxis": {
-            "type": "category", "data": labels, "axisTick": {"show": False},
-            "axisLabel": {
-                "fontSize": 10, "interval": 0, "lineHeight": 16,
-                "rich": {
-                    "pos": {**pastilla, "color": "#16a34a", "backgroundColor": "#dcfce7"},
-                    "neg": {**pastilla, "color": "#dc2626", "backgroundColor": "#fee2e2"},
-                    "nul": {**pastilla, "color": "#9ca3af", "backgroundColor": "#f3f4f6"},
+        "xAxis": [
+            {
+                "type": "category", "gridIndex": 0, "data": labels, "axisTick": {"show": False},
+                "axisLabel": {"fontSize": 10, "interval": 0, "lineHeight": 16, "rich": rich_pastillas},
+            },
+            {
+                "type": "category", "gridIndex": 1, "data": u_labels, "axisTick": {"show": False},
+                "axisLine": {"show": False},
+                "axisLabel": {
+                    "interval": 0, "lineHeight": 16, "fontSize": 10,
+                    "rich": {**rich_pastillas, "n": {"fontSize": 10, "color": "#374151", "align": "center"}},
                 },
             },
-        },
-        "yAxis": {"show": False, "type": "value"},
+        ],
+        "yAxis": [
+            {"show": False, "type": "value", "gridIndex": 0},
+            {"show": False, "type": "value", "gridIndex": 1},  # escala propia de la franja
+        ],
+        # separador fino y etiqueta "UNIDADES" entre la facturación y la franja
+        "graphic": [
+            {"type": "line", "left": 5, "right": 16, "top": 202, "silent": True,
+             "shape": {"x1": 0, "y1": 0, "x2": 2000, "y2": 0}, "style": {"stroke": "#e5e7eb", "lineWidth": 1}},
+            {"type": "text", "left": 5, "top": 207, "silent": True,
+             "style": {"text": "UNIDADES", "fill": "#9ca3af", "fontSize": 9, "fontWeight": 500}},
+        ],
         "series": [
             {
                 "name": "real", "type": "bar", "stack": "mes", "barWidth": "60%",
+                "xAxisIndex": 0, "yAxisIndex": 0,
                 "itemStyle": {"color": _AZUL_BARRA},
                 "label": etiqueta,
                 "data": real_data,
@@ -224,10 +279,25 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
             },
             {
                 "name": "estimado", "type": "bar", "stack": "mes", "barWidth": "60%",
+                "xAxisIndex": 0, "yAxisIndex": 0,
                 "itemStyle": {"color": "rgba(55,138,221,0.15)", "borderColor": _AZUL_BARRA,
                               "borderType": "dashed", "borderWidth": 1.5},
                 "label": etiqueta,
                 "data": est_data,
+            },
+            {
+                "name": "unidades", "type": "bar", "stack": "unid", "barWidth": "30%",
+                "xAxisIndex": 1, "yAxisIndex": 1,
+                "itemStyle": {"color": _AZUL_UNIDADES},
+                "data": u_real,
+            },
+            {
+                "name": "unidades est.", "type": "bar", "stack": "unid", "barWidth": "30%",
+                "xAxisIndex": 1, "yAxisIndex": 1,
+                "itemStyle": {"color": "rgba(181,212,244,0.30)", "borderColor": "#8DBCEB",
+                              "borderType": "dashed", "borderWidth": 1},
+                "label": {"position": "top", "fontSize": 8, "color": "#6b7280"},
+                "data": u_est,
             },
         ],
     }
@@ -639,7 +709,7 @@ def _pintar_home_inline(
                             with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px"):
                                 pill_ars = ui.label("$ ARS")
                                 pill_usd = ui.label("US$")
-                        chart_fm = ui.echart(chart_options).classes("w-full").style("height:200px")
+                        chart_fm = ui.echart(chart_options).classes("w-full").style(f"height:{_ALTO_FM}px")
 
                         def _aplicar_moneda_fm(moneda: str, _chart=chart_fm, _lbl=lbl_prom, _pa=pill_ars, _pu=pill_usd) -> None:
                             opciones, prom = _facturacion_mensual_options(
