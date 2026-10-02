@@ -58,6 +58,128 @@ def fmt_n(val) -> str:
         return "0"
 
 
+def fmt_corto(val) -> str:
+    """$296,9M / $450K / $850 -- formato corto para las barras del gráfico."""
+    try:
+        v = float(val)
+    except Exception:
+        return "$0"
+    if abs(v) >= 1_000_000:
+        return f"${v / 1_000_000:,.1f}M".replace(",", "X").replace(".", ",").replace("X", ".")
+    if abs(v) >= 1_000:
+        return f"${v / 1_000:,.0f}K".replace(",", ".")
+    return f"${v:,.0f}".replace(",", ".")
+
+
+_AZUL_BARRA = "#378ADD"
+
+
+def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_mes_actual_monto: float) -> Dict[str, Any]:
+    """Opciones del echart de FACTURACIÓN MENSUAL: últimos 12 meses (incluido el actual), todas las
+    barras del mismo azul. El mes en curso es UNA sola barra apilada: lo facturado a hoy (lleno) +
+    hasta el estimado (relleno suave con contorno punteado). Debajo de cada barra, pastilla con el %
+    vs el mes anterior (el mes en curso compara el ESTIMADO). Línea punteada con el promedio de los
+    11 meses cerrados. Mismo cálculo de facturación (por_mes) y de estimado que antes."""
+    meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
+                 "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+    keys: List[str] = []
+    y, m = today_local.year, today_local.month
+    for _ in range(12):
+        keys.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    keys.reverse()
+    actual = keys[-1]
+
+    # Estimado del mes en curso: misma fórmula de siempre (promedio diario a hoy x días del mes)
+    dias_t = (today_local - today_local.replace(day=1)).days + 1
+    dias_m = calendar.monthrange(today_local.year, today_local.month)[1]
+    venta_est = None
+    if dias_t < dias_m and ventas_mes_actual_monto > 0:
+        venta_est = (ventas_mes_actual_monto / dias_t) * dias_m
+
+    reales = [float((por_mes.get(k) or {}).get("total") or 0.0) for k in keys]
+    efectivos = list(reales)  # para el % vs mes anterior: el mes en curso usa el estimado
+    if venta_est is not None:
+        efectivos[-1] = venta_est
+    cerrados = reales[:-1]
+    promedio = sum(cerrados) / len(cerrados) if cerrados else 0.0
+
+    labels, real_data, est_data = [], [], []
+    for i, k in enumerate(keys):
+        nombre = f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}"
+        if i == 0 or efectivos[i - 1] <= 0:
+            labels.append(nombre)  # primer mes (o sin base): sin pastilla
+        else:
+            pct = (efectivos[i] - efectivos[i - 1]) / efectivos[i - 1] * 100
+            pct_txt = f"{abs(pct):.1f}%" if abs(pct) < 100 else f"{abs(pct):.0f}%"
+            if pct >= 0:
+                labels.append(f"{nombre}\n{{pos|▲ {pct_txt}}}")
+            else:
+                labels.append(f"{nombre}\n{{neg|▼ {pct_txt}}}")
+        es_actual = k == actual
+        real = round(reales[i], 0)
+        if es_actual and venta_est is not None:
+            real_data.append({
+                "value": real, "label": {"show": False},
+                "tooltip": {"formatter": f"real a hoy {fmt_m(real)}"},
+            })
+            est_data.append({
+                "value": round(venta_est - real, 0),
+                "label": {"show": True, "formatter": f"{fmt_corto(venta_est)} est."},
+                "tooltip": {"formatter": f"estimado {fmt_m(venta_est)}"},
+            })
+        else:
+            real_data.append({
+                "value": real,
+                "label": {"show": True, "formatter": fmt_corto(real)},
+                "tooltip": {"formatter": f"{nombre}: {fmt_m(real)}"},
+            })
+            est_data.append({"value": 0, "label": {"show": False}, "tooltip": {"show": False}})
+
+    etiqueta = {"position": "top", "fontSize": 9, "color": "#111827"}
+    return {
+        "backgroundColor": "transparent",
+        "grid": {"left": 5, "right": 5, "top": 28, "bottom": 40, "containLabel": False},
+        "tooltip": {"trigger": "item"},
+        "xAxis": {
+            "type": "category", "data": labels, "axisTick": {"show": False},
+            "axisLabel": {
+                "fontSize": 10, "interval": 0, "lineHeight": 16,
+                "rich": {
+                    "pos": {"color": "#16a34a", "backgroundColor": "#dcfce7", "borderRadius": 8,
+                            "padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold"},
+                    "neg": {"color": "#dc2626", "backgroundColor": "#fee2e2", "borderRadius": 8,
+                            "padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold"},
+                },
+            },
+        },
+        "yAxis": {"show": False, "type": "value"},
+        "series": [
+            {
+                "name": "real", "type": "bar", "stack": "mes", "barWidth": "60%",
+                "itemStyle": {"color": _AZUL_BARRA},
+                "label": etiqueta,
+                "data": real_data,
+                "markLine": {
+                    "silent": True, "symbol": "none", "animation": False,
+                    "label": {"show": False},
+                    "lineStyle": {"type": "dashed", "color": "#9ca3af", "width": 1},
+                    "data": [{"yAxis": round(promedio, 0)}],
+                },
+            },
+            {
+                "name": "estimado", "type": "bar", "stack": "mes", "barWidth": "60%",
+                "itemStyle": {"color": "rgba(55,138,221,0.15)", "borderColor": _AZUL_BARRA,
+                              "borderType": "dashed", "borderWidth": 1.5},
+                "label": etiqueta,
+                "data": est_data,
+            },
+        ],
+    }
+
+
 def _safe_str(val) -> str:
     if isinstance(val, str):
         return val.strip()
@@ -452,79 +574,8 @@ def _pintar_home_inline(
 
                 # Card Facturación Mensual (echart)
                 if meses_orden:
-                    orden_rev = list(reversed(meses_orden))
-                    meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
-                                 "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
-                    chart_labels = [f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}" for k in orden_rev]
-                    chart_data = []
-                    for i, k in enumerate(orden_rev):
-                        val_m = por_mes[k]["total"]
-                        is_actual = i == len(orden_rev) - 1
-                        is_reciente = i >= len(orden_rev) - 3
-                        if is_actual:
-                            bar_color = _GREEN
-                        elif is_reciente:
-                            bar_color = "#3b82f6"
-                        else:
-                            bar_color = "#bfdbfe"
-                        monto_str = fmt_m(val_m)
-                        if i > 0:
-                            val_prev = por_mes[orden_rev[i - 1]]["total"]
-                            if val_prev > 0:
-                                pct_var = (val_m - val_prev) / val_prev * 100
-                                pct_str = f"{pct_var:+.1f}%"
-                                rich_key = "pctpos" if pct_var >= 0 else "pctneg"
-                                lbl_fmt = f"{{{rich_key}|{pct_str}}}\n{{monto|{monto_str}}}"
-                            else:
-                                lbl_fmt = f"{{monto|{monto_str}}}"
-                        else:
-                            lbl_fmt = f"{{monto|{monto_str}}}"
-                        chart_data.append({
-                            "value": round(val_m, 0),
-                            "itemStyle": {"color": bar_color},
-                            "label": {"formatter": lbl_fmt},
-                        })
-                    _dias_t_est = (today_local - primer_dia_mes).days + 1
-                    _dias_m_est = calendar.monthrange(today_local.year, today_local.month)[1]
-                    if _dias_t_est < _dias_m_est and ventas_mes_actual_monto > 0:
-                        _venta_est = (ventas_mes_actual_monto / _dias_t_est) * _dias_m_est
-                        _val_mes_ant = por_mes[orden_rev[-2]]["total"] if len(orden_rev) >= 2 else 0
-                        _monto_est_str = fmt_m(_venta_est)
-                        if _val_mes_ant > 0:
-                            _pct_est = (_venta_est - _val_mes_ant) / _val_mes_ant * 100
-                            _rich_est = "pctpos" if _pct_est >= 0 else "pctneg"
-                            _lbl_est = f"{{{_rich_est}|{_pct_est:+.1f}%}}\n{{monto|{_monto_est_str}}}"
-                        else:
-                            _lbl_est = f"{{monto|{_monto_est_str}}}"
-                        _mes_abr_est = meses_abr.get(today_local.strftime("%m"), today_local.strftime("%m"))
-                        chart_labels.append(f"{_mes_abr_est}-{today_local.strftime('%y')} Est.")
-                        chart_data.append({
-                            "value": round(_venta_est, 0),
-                            "itemStyle": {"color": "#86efac"},
-                            "label": {"formatter": _lbl_est},
-                        })
-                    chart_options = {
-                        "backgroundColor": "transparent",
-                        "grid": {"left": 5, "right": 5, "top": 42, "bottom": 35, "containLabel": False},
-                        "xAxis": {"type": "category", "data": chart_labels, "axisLabel": {"fontSize": 10, "interval": 0}},
-                        "yAxis": {"show": False},
-                        "series": [{
-                            "type": "bar",
-                            "data": chart_data,
-                            "barWidth": "55%",
-                            "label": {
-                                "show": True,
-                                "position": "top",
-                                "textAlign": "center",
-                                "rich": {
-                                    "pctpos": {"color": "#16a34a", "fontSize": 9, "fontWeight": "bold", "align": "center"},
-                                    "pctneg": {"color": "#dc2626", "fontSize": 9, "fontWeight": "bold", "align": "center"},
-                                    "monto": {"color": "#111827", "fontSize": 9, "align": "center"},
-                                },
-                            },
-                        }],
-                    }
-                    with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
+                    chart_options = _facturacion_mensual_options(por_mes, today_local, ventas_mes_actual_monto)
+                    with ui.element("div").style(f"flex:2;min-width:520px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("FACTURACIÓN MENSUAL").style(_LBL)
                         ui.echart(chart_options).classes("w-full").style("height:200px")
@@ -868,7 +919,7 @@ def _pintar_home_inline(
                             },
                         }}],
                     }
-                    with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
+                    with ui.element("div").style(f"flex:2;min-width:520px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
                         with ui.element("div").style("padding:10px 14px 4px"):
                             ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
                         ui.echart(chart_options_sem).classes("w-full").style("height:220px")
