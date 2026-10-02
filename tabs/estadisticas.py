@@ -8,7 +8,7 @@ import re
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from nicegui import app, background_tasks, run, ui
 
@@ -71,17 +71,56 @@ def fmt_corto(val) -> str:
     return f"${v:,.0f}".replace(",", ".")
 
 
+def fmt_usd_corto(val) -> str:
+    """US$ 197,5k / US$ 1,2M / US$ 850 -- formato corto en dólares (k miles, M millones)."""
+    try:
+        v = float(val)
+    except Exception:
+        return "US$ 0"
+    if abs(v) >= 1_000_000:
+        return f"US$ {v / 1_000_000:.1f}M".replace(".", ",")
+    if abs(v) >= 1_000:
+        return f"US$ {v / 1_000:.1f}k".replace(".", ",")
+    return f"US$ {v:.0f}"
+
+
+def fmt_usd(val) -> str:
+    try:
+        return f"US$ {int(round(float(val))):,}".replace(",", ".")
+    except Exception:
+        return "US$ 0"
+
+
 _AZUL_BARRA = "#378ADD"
+_MESES_ABR = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
+              "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+_MESES_NOMBRE = {"01": "enero", "02": "febrero", "03": "marzo", "04": "abril", "05": "mayo", "06": "junio",
+                 "07": "julio", "08": "agosto", "09": "septiembre", "10": "octubre", "11": "noviembre", "12": "diciembre"}
 
 
-def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_mes_actual_monto: float) -> Dict[str, Any]:
-    """Opciones del echart de FACTURACIÓN MENSUAL: últimos 12 meses (incluido el actual), todas las
-    barras del mismo azul. El mes en curso es UNA sola barra apilada: lo facturado a hoy (lleno) +
-    hasta el estimado (relleno suave con contorno punteado). Debajo de cada barra, pastilla con el %
-    vs el mes anterior (el mes en curso compara el ESTIMADO). Línea punteada con el promedio de los
-    11 meses cerrados. Mismo cálculo de facturación (por_mes) y de estimado que antes."""
-    meses_abr = {"01": "ene", "02": "feb", "03": "mar", "04": "abr", "05": "may", "06": "jun",
-                 "07": "jul", "08": "ago", "09": "sep", "10": "oct", "11": "nov", "12": "dic"}
+def _dolar_oficial_de(user_id: Optional[int]) -> float:
+    """Misma cotización que la columna u$ USD de Ventas históricas: UNA sola, la actual del
+    cotizador (cotizador_datos.dolar_oficial del usuario, 1475 si no hay), para todos los meses."""
+    dolar_str = (get_cotizador_param("dolar_oficial", user_id) or "1475") if user_id else "1475"
+    try:
+        dolar = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
+    except ValueError:
+        dolar = 1475.0
+    return dolar if dolar > 0 else 1475.0
+
+
+def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_mes_actual_monto: float,
+                                 moneda: str = "ARS", dolar: float = 1.0) -> Tuple[Dict[str, Any], Optional[str]]:
+    """Devuelve (opciones del echart, texto del promedio o None) de FACTURACIÓN MENSUAL: últimos 12
+    meses (incluido el actual), todas las barras del mismo azul. El mes en curso es UNA sola barra
+    apilada: lo facturado a hoy (lleno) + hasta el estimado (relleno suave con contorno punteado).
+    Debajo de cada barra, pastilla con el % vs el mes anterior (el mes en curso compara el ESTIMADO).
+    Línea punteada con el promedio de los meses cerrados. Mismo cálculo de facturación (por_mes) y de
+    estimado de siempre; `moneda` "USD" divide todo por `dolar` (misma cotización fija de la tabla)."""
+    usd = moneda == "USD"
+    div = dolar if usd else 1.0
+    corto = fmt_usd_corto if usd else fmt_corto
+    completo = fmt_usd if usd else fmt_m
     keys: List[str] = []
     y, m = today_local.year, today_local.month
     for _ in range(12):
@@ -99,18 +138,23 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
     if dias_t < dias_m and ventas_mes_actual_monto > 0:
         venta_est = (ventas_mes_actual_monto / dias_t) * dias_m
 
-    reales = [float((por_mes.get(k) or {}).get("total") or 0.0) for k in keys]
+    reales = [float((por_mes.get(k) or {}).get("total") or 0.0) / div for k in keys]
+    unidades = [int((por_mes.get(k) or {}).get("units") or 0) for k in keys]
+    ordenes = [int((por_mes.get(k) or {}).get("orders") or 0) for k in keys]
+    est = venta_est / div if venta_est is not None else None
     efectivos = list(reales)  # para el % vs mes anterior: el mes en curso usa el estimado
-    if venta_est is not None:
-        efectivos[-1] = venta_est
+    if est is not None:
+        efectivos[-1] = est
     cerrados = reales[:-1]
     promedio = sum(cerrados) / len(cerrados) if cerrados else 0.0
+    promedio_txt = corto(promedio) if any(v > 0 for v in cerrados) else None
 
+    pastilla = {"padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold", "borderRadius": 8}
     labels, real_data, est_data = [], [], []
     for i, k in enumerate(keys):
-        nombre = f"{meses_abr.get(k[5:7], k[5:7])}-{k[2:4]}"
+        nombre = f"{_MESES_ABR.get(k[5:7], k[5:7])}-{k[2:4]}"
         if i == 0 or efectivos[i - 1] <= 0:
-            labels.append(nombre)  # primer mes (o sin base): sin pastilla
+            labels.append(f"{nombre}\n{{nul|—}}")  # primer mes (o sin base): pastilla gris neutra
         else:
             pct = (efectivos[i] - efectivos[i - 1]) / efectivos[i - 1] * 100
             pct_txt = f"{abs(pct):.1f}%" if abs(pct) < 100 else f"{abs(pct):.0f}%"
@@ -120,38 +164,47 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                 labels.append(f"{nombre}\n{{neg|▼ {pct_txt}}}")
         es_actual = k == actual
         real = round(reales[i], 0)
-        if es_actual and venta_est is not None:
-            real_data.append({
-                "value": real, "label": {"show": False},
-                "tooltip": {"formatter": f"real a hoy {fmt_m(real)}"},
-            })
-            est_data.append({
-                "value": round(venta_est - real, 0),
-                "label": {"show": True, "formatter": f"{fmt_corto(venta_est)} est."},
-                "tooltip": {"formatter": f"estimado {fmt_m(venta_est)}"},
-            })
+        ticket = reales[i] / ordenes[i] if ordenes[i] else 0.0
+        titulo_mes = f"<b>{_MESES_NOMBRE.get(k[5:7], k[5:7])} {k[:4]}</b>"
+        if es_actual and est is not None:
+            tip = (f"{titulo_mes}<br/>Real a hoy: {completo(reales[i])}<br/>Estimado: {completo(est)}"
+                   f"<br/>Unidades (a hoy): {fmt_n(unidades[i])}<br/>Ticket prom. (a hoy): {completo(ticket)}")
+            real_data.append({"value": real, "label": {"show": False}, "tooltip": {"formatter": tip}})
+            item_est = {
+                "value": round(est - reales[i], 0),
+                "label": {
+                    "show": True,
+                    "formatter": f"{{a|{corto(est)} est.}}\n{{d|{dias_t}/{dias_m} días}}",
+                    "rich": {"a": {"fontSize": 9, "color": "#111827", "align": "center"},
+                             "d": {"fontSize": 8, "color": "#d4a24c", "align": "center"}},
+                },
+                "tooltip": {"formatter": tip},
+            }
+            if dias_t <= 7:
+                item_est["itemStyle"] = {"opacity": 0.45}  # poca muestra: el estimado se ve más tenue
+            est_data.append(item_est)
         else:
+            tip = (f"{titulo_mes}<br/>Facturado: {completo(reales[i])}"
+                   f"<br/>Unidades: {fmt_n(unidades[i])}<br/>Ticket prom.: {completo(ticket)}")
             real_data.append({
-                "value": real,
-                "label": {"show": True, "formatter": fmt_corto(real)},
-                "tooltip": {"formatter": f"{nombre}: {fmt_m(real)}"},
+                "value": real, "label": {"show": True, "formatter": corto(reales[i])},
+                "tooltip": {"formatter": tip},
             })
             est_data.append({"value": 0, "label": {"show": False}, "tooltip": {"show": False}})
 
     etiqueta = {"position": "top", "fontSize": 9, "color": "#111827"}
-    return {
+    opciones = {
         "backgroundColor": "transparent",
-        "grid": {"left": 5, "right": 5, "top": 28, "bottom": 40, "containLabel": False},
+        "grid": {"left": 5, "right": 5, "top": 40, "bottom": 40, "containLabel": False},
         "tooltip": {"trigger": "item"},
         "xAxis": {
             "type": "category", "data": labels, "axisTick": {"show": False},
             "axisLabel": {
                 "fontSize": 10, "interval": 0, "lineHeight": 16,
                 "rich": {
-                    "pos": {"color": "#16a34a", "backgroundColor": "#dcfce7", "borderRadius": 8,
-                            "padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold"},
-                    "neg": {"color": "#dc2626", "backgroundColor": "#fee2e2", "borderRadius": 8,
-                            "padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold"},
+                    "pos": {**pastilla, "color": "#16a34a", "backgroundColor": "#dcfce7"},
+                    "neg": {**pastilla, "color": "#dc2626", "backgroundColor": "#fee2e2"},
+                    "nul": {**pastilla, "color": "#9ca3af", "backgroundColor": "#f3f4f6"},
                 },
             },
         },
@@ -178,6 +231,7 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
             },
         ],
     }
+    return opciones, promedio_txt
 
 
 def _safe_str(val) -> str:
@@ -314,9 +368,10 @@ def _pintar_home_inline(
                 top_productos[key_id]["units"] += qty
         key = dt.strftime("%Y-%m")
         if key not in por_mes:
-            por_mes[key] = {"units": 0, "total": 0.0}
+            por_mes[key] = {"units": 0, "total": 0.0, "orders": 0}
         por_mes[key]["units"] += units
         por_mes[key]["total"] += total_amount
+        por_mes[key]["orders"] += 1
 
     # Si se obtuvo conteo directo de /shipments/search, tiene prioridad sobre el loop
     if shipments_today is not None:
@@ -329,7 +384,7 @@ def _pintar_home_inline(
     # Incluir siempre el mes actual aunque no tenga ventas (para que el gráfico muestre marzo, etc.)
     mes_actual_key = today_local.strftime("%Y-%m")
     if mes_actual_key not in por_mes:
-        por_mes[mes_actual_key] = {"units": 0, "total": 0.0}
+        por_mes[mes_actual_key] = {"units": 0, "total": 0.0, "orders": 0}
     meses_orden = sorted(por_mes.keys(), reverse=True)[:6]  # Solo 6 meses para caber en pantalla
 
     container.clear()
@@ -574,11 +629,34 @@ def _pintar_home_inline(
 
                 # Card Facturación Mensual (echart)
                 if meses_orden:
-                    chart_options = _facturacion_mensual_options(por_mes, today_local, ventas_mes_actual_monto)
+                    dolar_card = _dolar_oficial_de(user_id)
+                    chart_options, prom_txt = _facturacion_mensual_options(por_mes, today_local, ventas_mes_actual_monto)
                     with ui.element("div").style(f"flex:2;min-width:520px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
-                        with ui.element("div").style("padding:10px 14px 4px"):
-                            ui.label("FACTURACIÓN MENSUAL").style(_LBL)
-                        ui.echart(chart_options).classes("w-full").style("height:200px")
+                        with ui.element("div").style("padding:10px 14px 4px;display:flex;align-items:center;justify-content:space-between"):
+                            with ui.row().classes("items-baseline gap-1 no-wrap"):
+                                ui.label("FACTURACIÓN MENSUAL").style(_LBL)
+                                lbl_prom = ui.label("").style("font-size:11px;color:#9ca3af;font-weight:400")
+                            with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px"):
+                                pill_ars = ui.label("$ ARS")
+                                pill_usd = ui.label("US$")
+                        chart_fm = ui.echart(chart_options).classes("w-full").style("height:200px")
+
+                        def _aplicar_moneda_fm(moneda: str, _chart=chart_fm, _lbl=lbl_prom, _pa=pill_ars, _pu=pill_usd) -> None:
+                            opciones, prom = _facturacion_mensual_options(
+                                por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card)
+                            _chart.options.clear()
+                            _chart.options.update(opciones)
+                            _chart.update()
+                            _lbl.set_text(f"(prom. {prom})" if prom else "")
+                            _lbl.set_visibility(bool(prom))
+                            _base = "font-size:10px;font-weight:600;padding:2px 10px;border-radius:999px;cursor:pointer;"
+                            _on, _off = f"{_base}background:{_AZUL_BARRA};color:#fff", f"{_base}background:transparent;color:#6b7280"
+                            _pa.style(replace=_on if moneda == "ARS" else _off)
+                            _pu.style(replace=_on if moneda == "USD" else _off)
+
+                        pill_ars.on("click", lambda: _aplicar_moneda_fm("ARS"))
+                        pill_usd.on("click", lambda: _aplicar_moneda_fm("USD"))
+                        _aplicar_moneda_fm("ARS")
                 else:
                     with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
                         ui.label("FACTURACIÓN MENSUAL").style(_LBL)
