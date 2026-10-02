@@ -882,11 +882,13 @@ def _fecha_corta(iso: Optional[str], con_hora: bool = False) -> str:
 
 def _tooltip_promo(promo_hasta: Optional[str], lista: float) -> str:
     """'Promoción vigente hasta dd/mm · precio de lista $X'. promo_hasta viene en UTC (ISO 'Z');
-    la fecha se muestra en hora de Argentina (UTC-3)."""
+    la fecha se muestra en hora de Argentina (UTC-3) y es el último día vigente."""
     hasta = ""
     if promo_hasta:
         try:
             dt = datetime.strptime(promo_hasta[:19], "%Y-%m-%dT%H:%M:%S") - timedelta(hours=3)
+            if dt.time() == datetime.min.time():
+                dt -= timedelta(days=1)  # termina a las 00:00: el último día vigente es el anterior
             hasta = f" hasta {dt.strftime('%d/%m')}"
         except ValueError:
             hasta = ""
