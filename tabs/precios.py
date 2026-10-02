@@ -263,6 +263,8 @@ def _show_item_detail_dialog(
     inp_refs: Dict[str, Any] = {}
     recalc_ref: Dict[str, Any] = {}
 
+    _promo_activa = row.get("price_promo") is not None
+
     def _recalcular():
         precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
         precio = _parse_moneda(precio_str)
@@ -271,13 +273,12 @@ def _show_item_detail_dialog(
         costo    = float(row.get("costo") or 0)
         if precio < 1:
             precio = float(row.get("precio") or 0) or 1
-        tiene_promo = row.get("price_promo") is not None
-        if tiene_promo:
-            precio_calc = float(row.get("price_promo") or 0)
-        else:
-            precio_calc = precio
-            if precio_calc < 1:
-                precio_calc = float(row.get("precio") or 0) or 1
+        # Con promo activa esto es SIMULACION: se calcula con el precio escrito (ML da de baja
+        # la promo si se cambia el precio). Si coincide con el de la promo, se muestra la promo vigente.
+        tiene_promo = _promo_activa and abs(precio - float(row.get("price_promo") or 0)) <= 0.01
+        precio_calc = float(row.get("price_promo") or 0) if tiene_promo else precio
+        if precio_calc < 1:
+            precio_calc = float(row.get("precio") or 0) or 1
         comision = precio_calc * ml_comision
         cobrado  = precio_calc - comision
         deb_cred = precio_calc * ml_debcre
@@ -304,7 +305,7 @@ def _show_item_detail_dialog(
             "comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas,
             "iva_venta": iva_venta, "iva_total": iva_total, "iva_meli": iva_meli, "iva_impor": iva_impor,
             "deb_cred": deb_cred, "iibb": iibb, "envio": envio, "costo_pesos": costo_pesos,
-            "bonif_ml": bonif_ml,
+            "bonif_ml": bonif_ml, "simulacion": _promo_activa,
             "margen_pesos": margen_pesos, "margen_costo_pct": margen_costo_pct, "margen_venta_pct": margen_venta_pct,
         }
         _pintar_recalc(recalc_ref["container"], data)
@@ -317,6 +318,9 @@ def _show_item_detail_dialog(
         _ICO_XS = '<i class="ti ti-calculator" style="font-size:12px;color:#BA7517"></i>'
         cont.clear()
         with cont:
+            if data.get("simulacion"):
+                ui.label("Simulación — no se guarda").classes(
+                    "w-full text-xs font-medium rounded px-2 py-1 mb-1 bg-amber-100 text-amber-900")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
@@ -387,6 +391,8 @@ def _show_item_detail_dialog(
                 ui.label("Valor estimado")
 
     def _guardar(dlg):
+        if _promo_activa:
+            ui.notify("Hay una promo activa: solo simulación.", color="warning"); return
         item_id  = str(row.get("id", ""))
         sku_real = str(row.get("seller_sku") or "").strip()
         if not item_id:
@@ -571,7 +577,11 @@ def _show_item_detail_dialog(
             with ui.row().classes("w-full justify-end gap-2 mt-2"):
                 ui.button("Cerrar",   on_click=lambda: d.close(),   color="secondary").props("flat")
                 ui.button("Calcular", on_click=_recalcular,         color="secondary")
-                ui.button("Guardar",  on_click=lambda: _guardar(d), color="primary")
+                with ui.element("span") as _wrap_g:  # el tooltip no funciona sobre un botón disabled
+                    _btn_g = ui.button("Guardar",  on_click=lambda: _guardar(d), color="primary")
+                if _promo_activa:
+                    _btn_g.disable()
+                    _wrap_g.tooltip("Hay una promo activa: cambiar el precio la daría de baja. Solo simulación.")
     d.open()
 
 
