@@ -930,6 +930,25 @@ def audit_sku(user_id: int, seller_id: str, sku: str, persist: bool = True) -> D
     ]
 
     session = requests.Session()
+    # Publicaciones nuevas del SKU que todavía no están en ningún snapshot (el cron corre una vez
+    # por noche): se buscan en ML por seller_sku (active + paused, sin cerradas) y se unen a las
+    # conocidas. Si el search falla se sigue solo con las conocidas.
+    ids_ml: List[str] = []
+    if seller_id:
+        for st in ("active", "paused"):
+            try:
+                r = session.get(
+                    f"{ML_API}/users/{seller_id}/items/search",
+                    params={"seller_sku": sku, "status": st},
+                    headers={"Authorization": f"Bearer {token}"}, timeout=15,
+                )
+                if r.status_code == 200:
+                    ids_ml.extend(r.json().get("results") or [])
+                else:
+                    log.warning("audit_sku %s: items/search seller_sku status=%s -> HTTP %s", sku, st, r.status_code)
+            except Exception:  # noqa: BLE001 -- el search es un extra, no debe romper el popup
+                log.exception("audit_sku %s: items/search seller_sku status=%s fallo", sku, st)
+    prev_ids = list(dict.fromkeys(prev_ids + ids_ml))
     group: List[dict] = []
     if prev_ids:
         for i in range(0, len(prev_ids), 20):
