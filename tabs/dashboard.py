@@ -232,20 +232,47 @@ def _read_cron_log_block(job: str, date_iso: str, user_id: int, max_lines: int =
     return "".join(block)
 
 
+_AVISOS_MAX_PCT = 0.02
+
+
+def _avisos_txt(n: int) -> str:
+    return "1 aviso" if n == 1 else f"{n} avisos"
+
+
+def _estado_cron(job_key: str, row: Optional[Dict]) -> Tuple[str, int]:
+    """Estado efectivo de una corrida para la card: ('none'|'ok'|'ok_avisos'|'partial'|'fail', n_avisos).
+    Solo salud_audit: un 'partial' cuyo ÚNICO motivo es "N items con error" (sin nota de mayorista:
+    etapa que no corrió / freno) y N <= 2% de los ítems auditados se muestra como OK con avisos
+    (errores sueltos de ML, p.ej. un 429). Cualquier otra cosa sigue siendo Parcial."""
+    if not row:
+        return "none", 0
+    st = row["status"]
+    if st == "partial" and job_key == "salud_audit":
+        m = re.fullmatch(r"(\d+) items con error", (row.get("error") or "").strip())
+        cnt = row.get("count") or 0
+        if m and cnt > 0 and int(m.group(1)) <= cnt * _AVISOS_MAX_PCT:
+            return "ok_avisos", int(m.group(1))
+    return st, 0
+
+
 def _salud_detalle_dia(user_id: int, date_iso: str, row: Optional[Dict]) -> str:
     """Detalle de un día del cron de Salud, armado desde la DB (scoped a user_id):
     cron_runs (row) + salud_item_snapshots + salud_mayorista_cron."""
     import json as _json
     if not row:
         return "No corrió: no hay registro de salud_audit para este día."
-    st = {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(row["status"], row["status"])
+    est, n_av = _estado_cron("salud_audit", row)
+    st = (f"OK · {_avisos_txt(n_av)}" if est == "ok_avisos"
+          else {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(row["status"], row["status"]))
     out = [f"Estado: {st}"]
     if row.get("error"):
         out.append(f"Error: {row['error']}")
     out.append(f"Publicaciones auditadas: {_fmt_miles(row['count'])}")
     m = re.match(r"(\d+) items con error", row.get("error") or "")
     if m:
-        out.append(f"Ítems con error: {m.group(1)}")
+        out.append(f"Ítems con error: {m.group(1)}" + (
+            f" ({_avisos_txt(n_av)} de {_fmt_miles(row['count'])} auditados, ≤ {_AVISOS_MAX_PCT:.0%}; "
+            "ML devolvió 429/5xx en un paso suelto y el dato anterior se conservó)" if est == "ok_avisos" else ""))
     dur = row.get("duration_seconds")
     if dur is not None:
         out.append(f"Duración: {int(dur // 60)} min {int(dur % 60)} s")
@@ -1100,7 +1127,7 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                             last_by_job[job_key] = last_row
                             if last_row is None or last_row["status"] == "fail":
                                 cron_ov = _RED
-                            elif last_row["status"] == "partial" and cron_ov == _GREEN:
+                            elif _estado_cron(job_key, last_row)[0] == "partial" and cron_ov == _GREEN:
                                 cron_ov = _YELLOW
 
                         with ui.card().classes("w-full").style("border:1px solid #e0e0e0;padding:5px"):
@@ -1111,8 +1138,10 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                     last_row = last_by_job[job_key]
                                     if last_row is None:
                                         estado_txt, estado_color = "Sin corridas", "#9ca3af"
-                                    elif last_row["status"] == "ok":
-                                        estado_txt = f"OK · {_fmt_miles(last_row['count'])} · {_fmt_dt(last_row['run_datetime'])}"
+                                    elif _estado_cron(job_key, last_row)[0] in ("ok", "ok_avisos"):
+                                        _av = _estado_cron(job_key, last_row)[1]
+                                        estado_txt = (f"OK · {_avisos_txt(_av)} · " if _av else "OK · ") + (
+                                            f"{_fmt_miles(last_row['count'])} · {_fmt_dt(last_row['run_datetime'])}")
                                         estado_color = _GREEN
                                     elif last_row["status"] == "partial":
                                         estado_txt = f"Parcial · {_fmt_miles(last_row['count'])} · {_fmt_dt(last_row['run_datetime'])}"
@@ -1130,14 +1159,16 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                 "display:grid;grid-template-columns:repeat(7,1fr);gap:3px"):
                                             for d in dias_list:
                                                 row = days_map.get(d)
-                                                c = (_GREEN if row and row["status"] == "ok"
-                                                     else _YELLOW if row and row["status"] == "partial"
+                                                est_d, av_d = _estado_cron(job_key, row)
+                                                c = (_GREEN if est_d in ("ok", "ok_avisos")
+                                                     else _YELLOW if est_d == "partial"
                                                      else _RED if row and row["status"] == "fail"
                                                      else "#d1d5db")
                                                 es_hoy = (d == dias_list[-1])
                                                 letra = _DIAS_LETRA[datetime.fromisoformat(d).weekday()]
-                                                estado_legible = {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(
-                                                    row["status"] if row else "", "Sin corrida")
+                                                estado_legible = (f"OK · {_avisos_txt(av_d)}" if est_d == "ok_avisos" else
+                                                                  {"ok": "OK", "partial": "Parcial", "fail": "Falló"}.get(
+                                                                      row["status"] if row else "", "Sin corrida"))
                                                 tip = f"{d}: {estado_legible}"
                                                 if row:
                                                     tip += f" — {_fmt_miles(row['count'])} registros"
@@ -1160,7 +1191,8 @@ def build_tab_dashboard(container, navigate_to=None) -> None:
                                                 tile.on("click", lambda jk=job_key, jl=job_label, dd=d, rr=row:
                                                         _open_cron_log_dialog(jl, jk, dd, rr, uid))
                                         fails = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "fail")
-                                        oks = sum(1 for d in dias_list if days_map.get(d) and days_map[d]["status"] == "ok")
+                                        oks = sum(1 for d in dias_list
+                                                  if _estado_cron(job_key, days_map.get(d))[0] in ("ok", "ok_avisos"))
                                         if fails > 0:
                                             ui.label(f"Falló {fails}/7 días").classes("text-xs font-semibold").style(f"color:{_RED}")
                                         else:

@@ -112,6 +112,54 @@ def _get_con_reintentos(url: str, headers: dict, params: Optional[dict] = None, 
     raise requests.exceptions.RequestException(f"GET {url} fallo tras {_REINTENTOS_ML} reintentos ({ultimo})")
 
 
+_ESPERAS_REINTENTO_SESION_S = (0, 2, 6)
+# Columnas de salud_item_snapshots que llena cada paso de audit_item (para heredarlas si el paso falla)
+_COLS_PRICES = ["mayorista_estado", "mayorista_tiers_json", "mayorista_revisar_json"]
+_COLS_PERFORMANCE = ["short_status", "flex_status", "performance_score"]
+_COLS_ATRIBUTOS = ["atributos_faltantes_editables", "atributos_faltantes_bloqueados", "atributos_faltantes_json"]
+
+
+def _get_sesion_con_reintentos(S, url: str, **kw) -> requests.Response:
+    """GET con la sesion S (audit_item): esperas de 0/2/6 s, reintenta SOLO ante 429 o >=500
+    (ML throttlea en rafagas de ~12 s: 2026-10-05, 14 performance con local_rate_limited).
+    Devuelve la ultima respuesta tal cual; timeouts/errores de conexion se propagan como antes."""
+    r = None
+    for espera in _ESPERAS_REINTENTO_SESION_S:
+        if espera:
+            time.sleep(espera)
+        r = S.get(url, **kw)
+        if r.status_code != 429 and r.status_code < 500:
+            break
+    return r
+
+
+_FALLOS_MAX_CATEGORIA = 3
+
+
+def _traer_atributos_categoria(S, H, cat_id: str, cache: Dict[str, Any], errores: List[str]) -> Optional[list]:
+    """Atributos de la categoria, cacheados por corrida SOLO si ML respondio 200. Si falla no se
+    cachea nada (el siguiente item de la categoria reintenta) y devuelve None: el caller deja los
+    atributos sin dato (herencia) en vez de guardar "0 faltantes". Tras _FALLOS_MAX_CATEGORIA fallos
+    en la corrida no se vuelve a pedir esa categoria (los items quedan con error + herencia)."""
+    if cat_id in cache:
+        return cache[cat_id]
+    clave_fallos = f"__fallos__{cat_id}"
+    fallos = cache.get(clave_fallos, 0)
+    if fallos >= _FALLOS_MAX_CATEGORIA:
+        errores.append(f"categories/{cat_id}/attributes omitido tras {fallos} fallos en esta corrida")
+        return None
+    try:
+        r = _get_sesion_con_reintentos(S, f"{ML_API}/categories/{cat_id}/attributes", headers=H, timeout=15)
+        if r.status_code == 200:
+            cache[cat_id] = r.json()
+            return cache[cat_id]
+        errores.append(f"categories/{cat_id}/attributes status={r.status_code}")
+    except requests.exceptions.RequestException as e:
+        errores.append(f"categories/{cat_id}/attributes error={e}")
+    cache[clave_fallos] = fallos + 1
+    return None
+
+
 def _scan_ids_status(token: str, seller_id: str, extra: dict) -> List[str]:
     ids: List[str] = []
     scroll_id = None
@@ -704,6 +752,9 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
     H = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     iid = item["id"]
     errores: List[str] = []
+    # Columnas que quedan en NULL por un error de ML en su paso: write_snapshot las completa con
+    # el ultimo snapshot del mismo (user_id, item_id) para no pisar un dato bueno con NULL.
+    sin_dato: List[str] = []
 
     data: Dict[str, Any] = {
         "sku": _get_seller_sku(item),
@@ -763,13 +814,15 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             data["descripcion_len"] = 0
         else:
             errores.append(f"description status={r.status_code} {_err_detalle(r)}")
+            sin_dato += ["descripcion_len"]
     except requests.exceptions.RequestException as e:
         errores.append(f"description error={e}")
+        sin_dato += ["descripcion_len"]
 
     prices_body_para_revisar: Optional[dict] = None
     tiene_tiers_cargados = False
     try:
-        r = S.get(f"{ML_API}/items/{iid}/prices", headers={**H, "show-all-prices": "TRUE"}, timeout=15)
+        r = _get_sesion_con_reintentos(S, f"{ML_API}/items/{iid}/prices", headers={**H, "show-all-prices": "TRUE"}, timeout=15)
         if r.status_code == 200:
             prices_body_para_revisar = r.json()
             # Precio vigente (con promo) para la columna Precio de Salud: sin llamada extra
@@ -786,8 +839,10 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             )
         else:
             errores.append(f"prices status={r.status_code} {_err_detalle(r)}")
+            sin_dato += _COLS_PRICES
     except requests.exceptions.RequestException as e:
         errores.append(f"prices error={e}")
+        sin_dato += _COLS_PRICES
 
     # Mayorista "revisar"/"invertido" -- solo gold_special con >=1 tier cargado (sin
     # nada cargado no hay contra qué comparar). Desde 2026-09-29 el cron evalúa
@@ -812,9 +867,10 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             data["mayorista_revisar_json"] = json.dumps(payload, ensure_ascii=False)
         except Exception as e:
             errores.append(f"mayorista_revisar error={e}")
+            sin_dato += ["mayorista_revisar_json"]
 
     try:
-        r = S.get(f"{ML_API}/item/{iid}/performance", headers=H, timeout=15)
+        r = _get_sesion_con_reintentos(S, f"{ML_API}/item/{iid}/performance", headers=H, timeout=15)
         if r.status_code == 200:
             perf = r.json()
             data["performance_score"] = perf.get("score")
@@ -845,22 +901,16 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
             data["flex_status"] = "no_aplica_no_activo"
         else:
             errores.append(f"performance status={r.status_code} {_err_detalle(r)}")
+            sin_dato += _COLS_PERFORMANCE
     except requests.exceptions.RequestException as e:
         errores.append(f"performance error={e}")
+        sin_dato += _COLS_PERFORMANCE
 
     cat_id = item.get("category_id")
-    if cat_id:
-        if cat_id not in cat_attrs_cache:
-            try:
-                r = S.get(f"{ML_API}/categories/{cat_id}/attributes", headers=H, timeout=15)
-                cat_attrs_cache[cat_id] = r.json() if r.status_code == 200 else []
-                if r.status_code != 200:
-                    errores.append(f"categories/{cat_id}/attributes status={r.status_code}")
-            except requests.exceptions.RequestException as e:
-                cat_attrs_cache[cat_id] = []
-                errores.append(f"categories/{cat_id}/attributes error={e}")
-
-        cat_attrs = cat_attrs_cache.get(cat_id) or []
+    cat_attrs = _traer_atributos_categoria(S, H, cat_id, cat_attrs_cache, errores) if cat_id else None
+    if cat_id and cat_attrs is None:
+        sin_dato += _COLS_ATRIBUTOS  # no se pudo traer: hereda el snapshot anterior, nunca "0 faltantes"
+    if cat_id and cat_attrs is not None:
         item_attr_ids = {a.get("id") for a in item.get("attributes") or [] if a.get("id")}
         condicion = (item.get("condition") or "").lower()
         hidden_tag_por_condicion = {"new": "new_hidden", "used": "used_hidden"}.get(condicion)
@@ -894,6 +944,7 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         data["atributos_faltantes_json"] = _json.dumps(faltantes_payload, ensure_ascii=False)
 
     data["error"] = " | ".join(errores) if errores else None
+    data["_sin_dato"] = sorted(set(sin_dato))  # solo lo lee write_snapshot
     return data
 
 
@@ -906,6 +957,17 @@ def write_snapshot(conn, user_id: int, item_id: str, data: Dict[str, Any], snaps
         "atributos_faltantes_editables", "atributos_faltantes_bloqueados",
         "atributos_faltantes_json", "performance_score", "price", "price_vigente", "promo_hasta", "error",
     ]
+    heredar = [c for c in data.get("_sin_dato") or [] if c in cols and data.get(c) is None]
+    if heredar:
+        # un paso fallo por error transitorio de ML: conservar lo que decia el snapshot anterior mas
+        # reciente del mismo item (si no hay, queda NULL como antes). El error se sigue registrando.
+        prev = conn.execute(
+            f"SELECT {', '.join(heredar)} FROM salud_item_snapshots"
+            " WHERE user_id=? AND item_id=? AND snapshot_date<? ORDER BY snapshot_date DESC LIMIT 1",
+            (user_id, item_id, snapshot_date),
+        ).fetchone()
+        if prev:
+            data = {**data, **{c: v for c, v in zip(heredar, prev) if v is not None}}
     placeholders = ", ".join(["?"] * (len(cols) + 3))
     set_clause = ", ".join(f"{c}=excluded.{c}" for c in cols)
     conn.execute(
