@@ -5,10 +5,15 @@ Funciones exportadas: build_tab_busqueda
 """
 from __future__ import annotations
 
+import json
+import logging
 from typing import Any, Dict, List, Optional
 
+from fastapi.responses import FileResponse, PlainTextResponse
 from nicegui import app, background_tasks, context, run, ui
+from starlette.background import BackgroundTask
 
+import video_ml
 from ml_api import (
     get_ml_access_token,
     ml_fetch_price_for_item,
@@ -33,10 +38,141 @@ def _require_login() -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# Descargar video de ML
+# ---------------------------------------------------------------------------
+
+video_ml.limpiar_temporales()  # al iniciar el servicio: restos de descargas de más de 1 hora
+
+
+@app.get("/video_ml/dl/{token}")
+def _video_ml_descarga(token: str):
+    """Entrega un video ya bajado a un temporal. El token (un solo uso, 10 min) lo emite el botón
+    "Descargar" a un usuario logueado; después de servir el archivo se borra el temporal."""
+    t = video_ml.tomar_descarga(token)
+    if not t:
+        return PlainTextResponse("Descarga vencida o ya usada. Volvé a tocar Descargar.", status_code=404)
+    ruta, nombre = t
+    return FileResponse(ruta, media_type="video/mp4", filename=nombre, background=BackgroundTask(video_ml._borrar, ruta))
+
+
+def _build_card_video(video_m3u8: Optional[str] = None) -> None:
+    """Card "Descargar video de ML": URLs .m3u8 (una por línea) -> ficha por video -> descarga con ffmpeg -c copy."""
+    with ui.card().classes("w-full p-4 gap-2"):
+        ui.label("Descargar video de ML").classes("text-lg font-semibold")
+        ui.label(
+            "Pegá la URL del master .m3u8 del video (http2.mlstatic.com/storage/shorts-api/...), una por línea. "
+            "Se baja la variante de mayor resolución, sin recomprimir."
+        ).classes("text-sm text-gray-600")
+        entrada = ui.textarea(placeholder="https://http2.mlstatic.com/storage/shorts-api/.../XXXX.m3u8").classes("w-full").props("outlined dense autogrow")
+        avisos = ui.column().classes("w-full gap-1")
+        resultados = ui.column().classes("w-full gap-2")
+
+        def _tarjeta(f: Dict[str, Any]) -> None:
+            with resultados:
+                with ui.card().classes("w-full p-3 gap-1 border"):
+                    with ui.row().classes("items-center gap-3 w-full"):
+                        ui.label(f["codigo"]).classes("font-mono font-semibold")
+                        ui.label(f'{f["w"]}x{f["h"]}').classes("text-sm")
+                        ui.label(f["orientacion"]).classes("text-sm")
+                        ui.label(video_ml.fmt_dur(f["duracion"])).classes("text-sm")
+                        ui.label("~" + video_ml.fmt_tam(f["tam_estimado"])).classes("text-sm")
+                        if f["cumple_short"]:
+                            ui.label("Cumple Short ✓").classes("text-sm text-positive font-medium")
+                        else:
+                            ui.label("Cumple Short ✗").classes("text-sm text-negative font-medium")
+                    motivo = []
+                    if f["orientacion"] != "vertical":
+                        motivo.append("no es vertical")
+                    if f["duracion"] > video_ml.SHORT_MAX_SEG:
+                        motivo.append("dura más de 60 s")
+                    ui.label(
+                        "Short: vertical y hasta 60 s."
+                        + (" No cumple: " + " y ".join(motivo) + "." if motivo else "")
+                        + (" Variantes en el master: " + ", ".join(f["variantes"]) + "." if f["variantes"] else "")
+                    ).classes("text-xs text-gray-500")
+                    if f["excede_tope"]:
+                        ui.label("Supera el tope de 200 MB: no se puede descargar.").classes("text-xs text-negative")
+                    btn = ui.button("Descargar", icon="download").props("no-caps unelevated color=primary dense")
+                    if f["excede_tope"]:
+                        btn.disable()
+
+                    async def _bajar(f=f, btn=btn) -> None:
+                        btn.disable()
+                        try:
+                            ui.notify("Descargando en el servidor…", type="info")
+                            ruta = await run.io_bound(video_ml.descargar, f["media_url"], f["codigo"])
+                            token = video_ml.registrar_descarga(ruta, f["codigo"])
+                            ui.download(f"/video_ml/dl/{token}", f["codigo"] + ".mp4")
+                        except video_ml.VideoError as e:
+                            ui.notify(str(e), type="negative", multi_line=True)
+                        except Exception as e:  # noqa: BLE001
+                            logging.exception("[VIDEO_ML] descarga")
+                            ui.notify(f"Error inesperado: {e}", type="negative")
+                        finally:
+                            btn.enable()
+
+                    btn.on_click(_bajar)
+
+        async def _buscar() -> None:
+            if not app.storage.user.get("user"):
+                ui.notify("Debes iniciar sesión para continuar", color="negative")
+                return
+            avisos.clear()
+            resultados.clear()
+            validas, links, rechazadas = video_ml.parsear_entrada(entrada.value or "")
+            with avisos:
+                if links:
+                    ui.label(
+                        "ML no permite leer la página desde el servidor. Usá el marcador 'Video ML' desde la página de ML "
+                        "(abajo: Cómo instalar el marcador)."
+                    ).classes("text-sm text-warning")
+                for r in rechazadas:
+                    ui.label(f"URL rechazada (solo https://*.mlstatic.com/....m3u8): {r[:90]}").classes("text-sm text-negative")
+                if len(validas) > video_ml.MAX_URLS:
+                    ui.label(f"Máximo {video_ml.MAX_URLS} videos por búsqueda; se usan los primeros.").classes("text-sm text-warning")
+                if not (validas or links or rechazadas):
+                    ui.label("Pegá al menos una URL .m3u8.").classes("text-sm text-gray-600")
+            for u in validas[:video_ml.MAX_URLS]:
+                try:
+                    ficha = await run.io_bound(video_ml.analizar, u)
+                except video_ml.VideoError as e:
+                    with avisos:
+                        ui.label(f"{video_ml.codigo_de(u)}: {e}").classes("text-sm text-negative")
+                    continue
+                except Exception as e:  # noqa: BLE001
+                    logging.exception("[VIDEO_ML] analizar")
+                    with avisos:
+                        ui.label(f"{video_ml.codigo_de(u)}: error inesperado: {e}").classes("text-sm text-negative")
+                    continue
+                _tarjeta(ficha)
+
+        ui.button("Buscar", on_click=_buscar, color="primary").props("no-caps unelevated")
+
+        with ui.expansion('Cómo instalar el marcador "Video ML"', icon="bookmark").classes("w-full text-sm"):
+            ui.markdown(
+                "1. Creá un marcador nuevo en tu navegador (en cualquier página) y llamalo **Video ML**.\n"
+                "2. En la URL del marcador pegá el código de abajo (botón copiar).\n"
+                "3. Abrí en MercadoLibre la página con el video (publicación o catálogo), dale play al video de la galería "
+                "y tocá el marcador: abre esta pestaña con el video listo para descargar.\n"
+                "4. Si no encuentra el video te lo avisa: dale play y tocá el marcador de nuevo."
+            ).classes("text-sm")
+            codigo = video_ml.bookmarklet_js()
+            ui.textarea(value=codigo).props("outlined dense readonly autogrow").classes("w-full font-mono text-xs")
+            ui.button(
+                "Copiar código del marcador", icon="content_copy",
+                on_click=lambda: (ui.run_javascript("navigator.clipboard.writeText(" + json.dumps(codigo) + ")"), ui.notify("Código copiado", type="positive")),
+            ).props("no-caps unelevated dense color=secondary")
+
+        if video_m3u8:
+            entrada.value = "\n".join(x.strip() for x in video_m3u8.split(",") if x.strip())
+            ui.timer(0.2, _buscar, once=True)
+
+
+# ---------------------------------------------------------------------------
 # Función exportada
 # ---------------------------------------------------------------------------
 
-def build_tab_busqueda() -> None:
+def build_tab_busqueda(video_m3u8: Optional[str] = None) -> None:
     """Pestaña Búsqueda: texto + botón, resultados en tabla (nombre, precio, vendedor, stock, tipo)."""
     user = _require_login()
     if not user:
@@ -67,6 +203,7 @@ def build_tab_busqueda() -> None:
             solo_propias_switch = ui.checkbox("Solo publicaciones propias (no catálogo)", value=True).classes("text-sm")
             solo_activas_stock_switch = ui.checkbox("Solo activas con stock", value=True).classes("text-sm")
         results_container = ui.column().classes("w-full mt-2")
+        _build_card_video(video_m3u8)
 
         def _norm_busqueda(r: dict, from_catalog: bool) -> dict:
             seller = r.get("seller") or {}

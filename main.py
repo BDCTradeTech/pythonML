@@ -161,7 +161,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.10.05.03"
+VERSION = "3.26.10.05.04"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -1023,7 +1023,9 @@ def show_main_layout(container) -> None:
                 historicos_container = ui.column().classes("w-full")
 
             with ui.tab_panel(tab_busqueda):
-                build_tab_busqueda()
+                # ?video_m3u8=... (marcador "Video ML"): index() lo deja en el storage del usuario
+                _video_pend = app.storage.user.pop("video_m3u8_pend", None)
+                build_tab_busqueda(video_m3u8=_video_pend)
 
             with ui.tab_panel(tab_importacion):
                 build_tab_importacion()
@@ -1121,6 +1123,8 @@ def show_main_layout(container) -> None:
         tab_panels.on_value_change(on_tab_change)
         tab_enter_times["Home"] = datetime.now()
         log_event(user["id"], "Home", "page_view")
+        if _video_pend and perms.get("busqueda", True):
+            _go("Búsqueda")()  # abierto con ?video_m3u8=: arranca en Búsqueda (la card ya se busca sola)
 
 
 def _get_base_url(request: Request) -> str:
@@ -1200,6 +1204,11 @@ def index(request: Request) -> None:  # type: ignore[override]
         '<link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">'
     )
     root = ui.column().classes("w-full")
+
+    # Marcador "Video ML": ?video_m3u8=<urls separadas por coma> -> abre Búsqueda y busca solo
+    _vid_q = request.query_params.get("video_m3u8")
+    if _vid_q:
+        app.storage.user["video_m3u8_pend"] = _vid_q[:4000]
 
     # Procesar callback de OAuth
     ml_code = request.query_params.get("ml_oauth_code")
