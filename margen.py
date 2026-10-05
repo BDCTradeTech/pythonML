@@ -138,6 +138,18 @@ def fees_publicacion(access_token: Optional[str], category_id: Optional[str], li
     return fb[0], fb[1], "fallback"
 
 
+def fee_estimado_orden(access_token: Optional[str], category_id: Optional[str], listing_type_id: Optional[str],
+                       unit_price: float, cantidad: int, cuotas: str = "x1") -> Tuple[float, float]:
+    """(meli_fee, cuotas_fee) ESTIMADOS de una orden sin charges reales (fee_origen 'estimada'):
+    comisión de la publicación (fees_publicacion; fallback 15 / 15,5 %) y financiación REAL de la
+    campaña (financiacion_cuotas_ml), ambas sobre el total de la orden. El costo fijo no va acá:
+    los llamadores ya lo traen aparte (ml_get_fixed_fee)."""
+    total = float(unit_price) * max(int(cantidad or 1), 1)
+    com, _fijo, _o = fees_publicacion(access_token, category_id, listing_type_id, float(unit_price))
+    fin = financiacion_real().get(str(cuotas or "x1").strip().lower(), 0.0)
+    return total * com, total * fin
+
+
 def bonif_ml_promo(amount: float, meli_pct: Any, seller_pct: Any, *bases: Any) -> float:
     """Monto que aporta ML en una promo cofinanciada. La base del % es la que cumple
     base × (1 − (%ML + %vendedor)) ≈ precio de venta; si ninguna cuadra, la primera disponible."""

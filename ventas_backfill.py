@@ -19,6 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 import requests
 
 from db import get_connection, get_cotizador_param
+from margen import fee_estimado_orden, financiacion_real
 from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
@@ -69,10 +70,8 @@ def _cargar_params_cotizador(user_id: int) -> Dict[str, Any]:
         "ml_iibb_per": _vp_parse_rate(get_cotizador_param("ml_iibb_per", user_id) or "0.055"),
         "ml_envios": _vp_parse_float(get_cotizador_param("ml_envios", user_id) or "5823") or 5823.0,
         "ml_envios_gratuitos": _vp_parse_float(get_cotizador_param("ml_envios_gratuitos", user_id) or "33000") or 33000.0,
-        "cuotas_3x": _vp_parse_rate(get_cotizador_param("cuotas_3x", user_id) or "0.094"),
-        "cuotas_6x": _vp_parse_rate(get_cotizador_param("cuotas_6x", user_id) or "0.151"),
-        "cuotas_9x": _vp_parse_rate(get_cotizador_param("cuotas_9x", user_id) or "0.207"),
-        "cuotas_12x": _vp_parse_rate(get_cotizador_param("cuotas_12x", user_id) or "0.259"),
+        # costo REAL de la campaña (financiacion_cuotas_ml), no el recargo de precio cotizador_datos.cuotas_Nx
+        **{f"cuotas_{n}x": financiacion_real().get(f"x{n}", 0.0) for n in (3, 6, 9, 12)},
     }
 
 
@@ -333,6 +332,9 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     has_calc = total_price > 0 and costo_usd > 0
     _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
     meli_fee, cuotas_fee, fee_origen = ml_fee_con_fallback(charges, _sale_fee_ml, total_price)
+    if fee_origen == "estimada":
+        meli_fee, cuotas_fee = fee_estimado_orden(access_token, category_id, listing_type_id, unit_price, cantidad,
+                                                  str(v.get("cuotas") or "x1").strip().lower())
     deb_cred = ml_charge_neto(charges, contains="debitos_creditos")
     iibb_ret = ml_charge_neto(charges, contains="iibb")
     sirtac = ml_charge_neto(charges, contains="sirtac")
@@ -359,7 +361,7 @@ def _compute_venta(pay_data: Dict, v: Dict, zip_code: str, bonif_flex: float, pa
     envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
     gan_pesos = gan_vta_pct = gan_cos_pct = None
     if estado in ("approved", "in_mediation", "pendiente") and has_calc:
-        gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
+        gan_pesos = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - (0.0 if fee_origen == "orden" else costo_fijo)
         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
     elif estado == "refunded":

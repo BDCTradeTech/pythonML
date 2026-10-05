@@ -61,7 +61,6 @@ from db import (
     actualizar_activacion_descuento,
     crear_activacion_descuento,
     get_activacion_descuento_vigente,
-    get_financiacion_cuotas_ml,
     get_historial_precio,
     get_producto_costo,
     log_ml_escritura,
@@ -80,6 +79,7 @@ from ml_api import (
 )
 from salud_audit import _calcular_mayorista_recomendado, _standard_amount_de, _tiers_cargados_todos, _wholesale_from_prices
 from tabs.cuotas import _cuotas_key, _cuotas_score
+from margen import fees_publicacion
 from tabs.dashboard import _calc_margen_prod, _load_params_prod
 from tabs.salud import _escribir_mayorista_pxq
 
@@ -475,6 +475,7 @@ def build_tab_descuentos(container) -> None:
                         precio_raw = fresco.get("price") or 0
                         sale_price = fresco.get("sale_price")
                         precio_actual = float(sale_price) if sale_price is not None else float(precio_raw or 0)
+                        _meta_fee[iid] = (fresco.get("category_id"), fresco.get("listing_type_id"))
                         out.append({
                             "tramo": tramo,
                             "item_id": iid,
@@ -587,23 +588,24 @@ def build_tab_descuentos(container) -> None:
                 def _costo_sku(sku: str) -> Optional[tuple]:
                     return get_producto_costo(sku, uid)
 
-                def _margen(precio: Optional[float], costo: Optional[tuple], tramo: str = "contado") -> Optional[float]:
-                    """Margen completo contra el costo real del SKU. _calc_margen_prod
-                    (tabs/dashboard.py) NO resta el costo de financiación de cuotas de ML --
-                    para cualquier tramo que no sea contado hay que restarlo acá, igual que
-                    hace _calc() en tabs/promos.py, si no el número de esta pantalla queda
-                    sobrestimado (pasó dos veces el 2026-09-14: echodot5-azul x12 y
-                    Tag-Royal-LF12 x6/x12 -- ver memoria margen-no-incluye-financiacion-cuotas)."""
+                # item_id -> (category_id, listing_type_id), lo llena _fetch_familia_sync; con eso
+                # _margen pide la comisión y el costo fijo reales de cada publicación.
+                _meta_fee: Dict[str, tuple] = {}
+
+                def _margen(precio: Optional[float], costo: Optional[tuple], tramo: str = "contado",
+                            item_id: Optional[str] = None) -> Optional[float]:
+                    """Margen completo contra el costo real del SKU: financiación REAL de la campaña
+                    (financiacion_cuotas_ml, via cuotas=tramo), comisión y costo fijo reales de la
+                    publicación (listing_prices por categoría + listing + precio; fallback 15/15,5 %
+                    y tramos de costo fijo si ML no responde). Ver margen.py."""
                     if not costo or not precio or precio <= 0:
                         return None
                     costo_usd, tipo_iva = costo
-                    margen = _calc_margen_prod(precio, costo_usd, tipo_iva, _load_params_prod(uid))
-                    if margen is None:
-                        return None
-                    if tramo != "contado" and tramo.startswith("x") and tramo[1:].isdigit():
-                        tasa = get_financiacion_cuotas_ml().get(int(tramo[1:]), {}).get("pct", 0.0)
-                        margen -= precio * tasa
-                    return margen
+                    cat, lt = _meta_fee.get(str(item_id), (None, None))
+                    com, fijo, _o = fees_publicacion(access_token, cat, lt, precio)
+                    cuotas = tramo if (tramo.startswith("x") and tramo[1:].isdigit()) else "x1"
+                    return _calc_margen_prod(precio, costo_usd, tipo_iva, _load_params_prod(uid),
+                                             cuotas=cuotas, comision_pct=com, fixed_fee=fijo)
 
                 def _objetivo_tramo(f: Dict[str, Any]) -> tuple:
                     """(precio_final_deseado, precio_lista, pct) para este tramo, según los
@@ -647,6 +649,13 @@ def build_tab_descuentos(container) -> None:
                             p for p in f["promos"]
                             if str(p.get("type")) == _TIPO_CAMPANIA_JOIN and str(p.get("status")) == "candidate"
                         ]
+                        # llena el cache de comisión / costo fijo (listing_prices) para los precios que
+                        # se van a mostrar, así _margen no hace red en el hilo de la UI
+                        _cat, _lt = _meta_fee.get(str(f["item_id"]), (None, None))
+                        _precios = {f.get("precio_actual"), (f["activa"] or {}).get("price"), _objetivo_tramo(f)[0]}
+                        for _px in _precios:
+                            if _px and _px > 0:
+                                await run.io_bound(fees_publicacion, access_token, _cat, _lt, float(_px))
                         return f
 
                     return list(await asyncio.gather(*[_con_promos(f) for f in familia]))
@@ -735,7 +744,7 @@ def build_tab_descuentos(container) -> None:
                                                     f"🟢 Activa: {activa.get('name') or activa.get('type')} "
                                                     f"-{pct_off:.1f}% → {_fmt_moneda(precio_promo)}"
                                                 ).classes("text-positive")
-                                            margen = _margen(precio_promo, costo, f["tramo"])
+                                            margen = _margen(precio_promo, costo, f["tramo"], f["item_id"])
                                             with ui.element("td").style("padding:3px 6px"):
                                                 if margen is None:
                                                     ui.label("—").classes("text-gray-400")
@@ -766,7 +775,7 @@ def build_tab_descuentos(container) -> None:
                                                         f"Sin promo -- campaña '{candidatas[0].get('name') or candidatas[0]['id']}' disponible"
                                                     ).classes("text-gray-600")
                                             final_deseado, precio_lista, _pct = _objetivo_tramo(f)
-                                            margen = _margen(final_deseado, costo, f["tramo"]) if precio_lista else None
+                                            margen = _margen(final_deseado, costo, f["tramo"], f["item_id"]) if precio_lista else None
                                             with ui.element("td").style("padding:3px 6px"):
                                                 if not precio_lista or margen is None:
                                                     ui.label(
@@ -871,7 +880,7 @@ def build_tab_descuentos(container) -> None:
                                     for f in seleccion:
                                         camp = campania_elegida.get(f["tramo"]) or f["candidatas"][0]
                                         final_deseado, precio_lista = objetivos[f["tramo"]]
-                                        margen = _margen(final_deseado, costo, f["tramo"])
+                                        margen = _margen(final_deseado, costo, f["tramo"], f["item_id"])
                                         margen_txt = f"${margen:,.0f} ({100*margen/final_deseado:.1f}%)" if (margen is not None and final_deseado) else "sin dato"
                                         with ui.element("tr").style("border-bottom:1px solid #e5e7eb"):
                                             with ui.element("td").style("padding:3px 6px"):
@@ -1040,7 +1049,7 @@ def build_tab_descuentos(container) -> None:
                                     continue
 
                             item["deal_price"], item["alcanzo_exacto"] = deal_price_final, alcanzo_exacto
-                            margen = _margen(deal_price_final, costo, item["tramo"])
+                            margen = _margen(deal_price_final, costo, item["tramo"], item["item_id"])
                             margen_pct = (100 * margen / deal_price_final) if (margen is not None and deal_price_final) else None
                             item["margen"], item["margen_pct"] = margen, margen_pct
                             if not alcanzo_exacto:

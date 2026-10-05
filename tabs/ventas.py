@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, background_tasks, context, run, ui
 
 from db import get_connection, get_cotizador_param
+from margen import fee_estimado_orden, fees_publicacion, financiacion_real
 from ml_api import (
     _cuotas_desde_item,
     get_ml_access_token,
@@ -143,7 +144,7 @@ def build_tab_ventas(container) -> None:
         def _update_margen(productos_key: str, val: str) -> None:
             margenes_ref[productos_key] = val or ""
 
-        def _calc_gan_row(unit_price: float, sku: str, cuotas_val: str) -> tuple:
+        def _calc_gan_row(unit_price: float, sku: str, cuotas_val: str, category_id: str = "", listing_type_id: str = "") -> tuple:
             p = params_ventas_ref
             if not p:
                 return None, None
@@ -153,7 +154,8 @@ def build_tab_ventas(container) -> None:
             costo_usd = float(prod["costo_usd"])
             tipo_iva = float(prod.get("tipo_iva") or 0.105)
             dolar = float(p.get("dolar_oficial") or 1475)
-            ml_com = float(p.get("ml_comision") or 0.15)
+            # comisión y costo fijo de la publicación: solo cache / fallback (sin red, se llama por fila)
+            ml_com, ml_fijo, _o = fees_publicacion(None, category_id, listing_type_id, unit_price, red=False)
             ml_deb = float(p.get("ml_debcre") or 0.006)
             ml_iibb = float(p.get("ml_iibb_per") or 0.055)
             ml_env = float(p.get("ml_envios") or 5823)
@@ -177,7 +179,7 @@ def build_tab_ventas(container) -> None:
             envio = 0.0 if unit_price < ml_env_grat else ml_env
             costo_pesos = costo_usd * dolar
             costo_cuotas = unit_price * tasa_cuotas
-            gan_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio - costo_cuotas
+            gan_pesos = cobrado - costo_pesos - iva_total - iibb_monto - deb_cred - envio - costo_cuotas - ml_fijo
             gan_vta_pct = (gan_pesos / unit_price * 100) if unit_price > 0 else 0.0
             return gan_pesos, gan_vta_pct
 
@@ -528,7 +530,7 @@ def build_tab_ventas(container) -> None:
                     iva_total   = iva_venta - iva_meli - iva_impor
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if estado in ("approved", "in_mediation", "pendiente") and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - (0.0 if fee_origen == "orden" else fixed_fee)
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                     elif estado == "refunded":
@@ -579,6 +581,8 @@ def build_tab_ventas(container) -> None:
                     charges    = pay_data.get("charges_details") or []
                     _sale_fee_ml = float(row.get("sale_fee") or 0) * cantidad
                     meli_fee, cuotas_fee, fee_origen = ml_fee_con_fallback(charges, _sale_fee_ml, total_price)
+                    if fee_origen == "estimada":
+                        meli_fee, cuotas_fee = fee_estimado_orden(access_token, category_id, listing_type_id, unit_price, cantidad, cuotas_val)
                     deb_cred   = ml_charge_neto(charges, contains="debitos_creditos")
                     iibb_ret   = ml_charge_neto(charges, contains="iibb")
                     sirtac     = ml_charge_neto(charges, contains="sirtac")
@@ -623,7 +627,7 @@ def build_tab_ventas(container) -> None:
                             )
                     gan_pesos = gan_vta_pct = gan_cos_pct = None
                     if estado in ("approved", "in_mediation", "pendiente") and has_calc:
-                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - fixed_fee
+                        gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - (0.0 if fee_origen == "orden" else fixed_fee)
                         gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                         gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                     elif estado == "refunded":
@@ -692,7 +696,7 @@ def build_tab_ventas(container) -> None:
                             _msg_sin_datos = "Pago rechazado" if estado == "rejected" else "Venta cancelada"
                             ui.label(f"{_msg_sin_datos} — sin comisión cobrada").classes("text-negative text-sm font-medium py-3 text-center w-full")
                         elif not has_api:
-                            _ml_com      = float(p.get("ml_comision") or 0.15)
+                            _ml_com      = fees_publicacion(None, category_id, listing_type_id, unit_price, red=False)[0]
                             _ml_deb      = float(p.get("ml_debcre") or 0.006)
                             _ml_env      = float(p.get("ml_envios") or 5823)
                             _ml_env_grat = float(p.get("ml_envios_gratuitos") or 33000)
@@ -1611,6 +1615,10 @@ def build_tab_ventas(container) -> None:
                 has_calc = total_price > 0 and costo_usd > 0
                 _sale_fee_ml = float(v.get("sale_fee") or 0) * cantidad
                 meli_fee, cuotas_fee, fee_origen = ml_fee_con_fallback(charges, _sale_fee_ml, total_price)
+                if fee_origen == "estimada":
+                    meli_fee, cuotas_fee = fee_estimado_orden(
+                        access_token, category_id, listing_type_id, unit_price, cantidad,
+                        str(v.get("cuotas") or "x1").strip().lower())
                 deb_cred   = ml_charge_neto(charges, contains="debitos_creditos")
                 iibb_ret   = ml_charge_neto(charges, contains="iibb")
                 sirtac     = ml_charge_neto(charges, contains="sirtac")
@@ -1637,7 +1645,7 @@ def build_tab_ventas(container) -> None:
                 envio_efectivo = 0.0 if unit_price < ml_env_grat_c else envio_real
                 gan_pesos = gan_vta_pct = gan_cos_pct = None
                 if estado in ("approved", "in_mediation", "pendiente") and has_calc:
-                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - costo_fijo
+                    gan_pesos   = total_price - meli_fee - cuotas_fee - iva_total - deb_cred - iibb_ret - sirtac - iibb_perc - envio_efectivo - total_costo + bonif_flex - (0.0 if fee_origen == "orden" else costo_fijo)
                     gan_vta_pct = (gan_pesos / total_price * 100) if total_price > 0 else 0.0
                     gan_cos_pct = (gan_pesos / total_costo * 100) if total_costo > 0 else 0.0
                 elif estado == "refunded":
@@ -1922,7 +1930,7 @@ def build_tab_ventas(container) -> None:
                     _cant = int(v.get("cantidad") or 1)
                     _sk   = str(v.get("seller_sku") or "").removeprefix("SKU ").strip()
                     _cv   = str(v.get("cuotas") or "x1").strip().lower()
-                    _gp_u, _ = _calc_gan_row(_up, _sk, _cv)
+                    _gp_u, _ = _calc_gan_row(_up, _sk, _cv, str(v.get("category_id") or ""), str(v.get("listing_type_id") or ""))
                     if _gp_u is not None:
                         _env = v.get("envio_real_am") or (
                             0.0 if _up < float(p.get("ml_envios_gratuitos") or 33000)
@@ -2115,6 +2123,7 @@ def build_tab_ventas(container) -> None:
                     return float(str(s).replace(".", "").replace(",", ".").strip() or 0)
                 except (ValueError, TypeError): return 0.0
             _uid_v = user["id"]
+            _fin_real = financiacion_real()
             params_ventas_ref.update({
                 "dolar_oficial": _vp_parse_float(get_cotizador_param("dolar_oficial", _uid_v) or "1475") or 1475.0,
                 "ml_comision": _vp_parse_rate(get_cotizador_param("ml_comision", _uid_v) or "0.15"),
@@ -2122,10 +2131,8 @@ def build_tab_ventas(container) -> None:
                 "ml_iibb_per": _vp_parse_rate(get_cotizador_param("ml_iibb_per", _uid_v) or "0.055"),
                 "ml_envios": _vp_parse_float(get_cotizador_param("ml_envios", _uid_v) or "5823") or 5823.0,
                 "ml_envios_gratuitos": _vp_parse_float(get_cotizador_param("ml_envios_gratuitos", _uid_v) or "33000") or 33000.0,
-                "cuotas_3x": _vp_parse_rate(get_cotizador_param("cuotas_3x", _uid_v) or "0.094"),
-                "cuotas_6x": _vp_parse_rate(get_cotizador_param("cuotas_6x", _uid_v) or "0.151"),
-                "cuotas_9x": _vp_parse_rate(get_cotizador_param("cuotas_9x", _uid_v) or "0.207"),
-                "cuotas_12x": _vp_parse_rate(get_cotizador_param("cuotas_12x", _uid_v) or "0.259"),
+                # costo REAL de la campaña (financiacion_cuotas_ml), no el recargo de precio cotizador_datos.cuotas_Nx
+                **{f"cuotas_{n}x": _fin_real.get(f"x{n}", 0.0) for n in (3, 6, 9, 12)},
             })
             _all_skus_v = [s for s in item_id_to_sku.values() if s]
             if _all_skus_v:

@@ -32,7 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from db import get_connection, get_producto_costo, log_ml_escritura, mayorista_auto_activo
-from margen import _calc_margen_prod, _load_params_prod
+from margen import _calc_margen_prod, _load_params_prod, fees_publicacion
 from ml_api import ml_get_prices_with_version, ml_write_price_per_quantity
 from salud_audit import (
     _NOTA_INCOHERENTE,
@@ -438,10 +438,15 @@ def calcular_pcts_objetivo(target: Tuple[int, ...], rec: Dict[int, float], sin_r
     return out
 
 
-def _margen(precio: float, q: int, costo: Optional[Tuple[float, float]], params: dict) -> Optional[float]:
+def _margen(precio: float, q: int, costo: Optional[Tuple[float, float]], params: dict,
+            token: Optional[str] = None, category_id: Optional[str] = None,
+            listing_type_id: Optional[str] = None) -> Optional[float]:
+    """Margen por unidad (contado, x1) con la comisión y el costo fijo reales de la publicación
+    (listing_prices por categoría + listing + precio unitario del tier; fallback si ML no responde)."""
     if not costo:
         return None
-    m = _calc_margen_prod(precio, costo[0], costo[1], params, cantidad=q)
+    com, fijo, _o = fees_publicacion(token, category_id, listing_type_id, precio)
+    m = _calc_margen_prod(precio, costo[0], costo[1], params, cantidad=q, comision_pct=com, fixed_fee=fijo)
     return None if m is None else round(m, 2)
 
 
@@ -533,7 +538,7 @@ def planificar_publicacion(token: str, uid: int, sku: str, pub: dict) -> Dict[st
             fila["pct_nuevo"] = pct
             precio = round(vigente * (1 - pct / 100), 2)
             fila["precio_nuevo"] = precio
-            m = _margen(precio, q, costo, params)
+            m = _margen(precio, q, costo, params, token, pub.get("category_id"), pub["listing_type_id"])
             fila["margen"] = m
             fila["margen_pct"] = round(m / precio * 100, 1) if (m is not None and precio) else None
             fila["margen_neg"] = None if m is None else m < 0
@@ -631,7 +636,7 @@ def leer_y_planificar(token: str, uid: int, sku: str, item_ids: List[str]) -> Di
             ignoradas += 1
             continue
         body = ml_get_prices_with_version(token, iid)
-        pubs.append({"item_id": iid, "catalog_listing": bool(it.get("catalog_listing")),
+        pubs.append({"item_id": iid, "catalog_listing": bool(it.get("catalog_listing")), "category_id": it.get("category_id"),
                      "listing_type_id": it["listing_type_id"], "stock": int(it.get("available_quantity") or 0),
                      "body": body})
         time.sleep(0.05)

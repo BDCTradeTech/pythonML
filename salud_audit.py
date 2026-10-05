@@ -52,7 +52,7 @@ load_dotenv(BASE_DIR / ".env")
 import requests
 from db import get_connection, init_cron_runs_db, init_salud_tables, log_cron_run, log_salud_mayorista_cron
 from db import get_producto_costo
-from margen import _calc_margen_prod, _load_params_prod
+from margen import _calc_margen_prod, _load_params_prod, fees_publicacion
 from ml_api import get_ml_access_token, ml_get_pxq_recommendations
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -606,8 +606,9 @@ def _evaluar_mayorista_gold_special(token: str, item: dict,
 # ---------------------------------------------------------------------------
 # Margen por tier (Diego, 2026-09-29) -- SOLO informativo: nunca bloquea ni cambia
 # una escritura. Precio de cada tier = precio_vigente x (1 - %), margen con
-# margen._calc_margen_prod (misma función que el Dashboard; contado, no resta
-# financiación de cuotas ni envío por múltiples unidades).
+# margen._calc_margen_prod (misma función que el Dashboard; contado, sin financiación
+# de cuotas) con la comisión y el costo fijo REALES de la publicación (fees_publicacion:
+# categoría + listing + precio unitario del tier); el envío se prorratea por cantidad.
 # ---------------------------------------------------------------------------
 
 _MARGEN_PARAMS_CACHE: Dict[int, dict] = {}
@@ -619,7 +620,8 @@ def _margen_params(user_id: int) -> dict:
     return _MARGEN_PARAMS_CACHE[user_id]
 
 
-def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int) -> None:
+def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int, token: Optional[str] = None,
+                    item: Optional[dict] = None) -> None:
     """Agrega a cada tier de `ev` margen_cargado / margen_recomendado (ARS por unidad
     al precio del tier), precio_cargado / precio_recomendado y margen_negativo
     (True si alguno de los dos es < 0; None si no hay costo del SKU). Deja
@@ -630,6 +632,8 @@ def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int) -> None:
         return
     costo_usd, tipo_iva = costo
     params = _margen_params(user_id)
+    cat = (item or {}).get("category_id")
+    lt = (item or {}).get("listing_type_id")
     vigente = ev["precio_vigente"]
     hay_negativo = False
     hay_dato = False
@@ -639,7 +643,9 @@ def _agregar_margen(ev: Dict[str, Any], sku: str, user_id: int) -> None:
             if pct is None:
                 continue
             precio = round(vigente * (1 - pct / 100), 2)
-            m = _calc_margen_prod(precio, costo_usd, tipo_iva, params, cantidad=t["quantity"])
+            com, fijo, _o = fees_publicacion(token, cat, lt, precio)
+            m = _calc_margen_prod(precio, costo_usd, tipo_iva, params, cantidad=t["quantity"],
+                                  comision_pct=com, fixed_fee=fijo)
             t[f"precio_{clave}"] = precio
             t[f"margen_{clave}"] = None if m is None else round(m, 2)
             if m is not None:
@@ -721,7 +727,7 @@ def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_i
         # con siempre_devolver=True, None es inequívoco: no se pudo evaluar (sin precio base)
         return {"evaluable": False}
     if user_id is not None:
-        _agregar_margen(ev, sku, user_id)
+        _agregar_margen(ev, sku, user_id, token, item)
     tiers_revisar = [t for t in ev["tiers"] if t["estado"] in ("revisar", "roto")]
     payload: Dict[str, Any] = {
         "evaluable": True, "invertido": ev["invertido"], "tiers_revisar": tiers_revisar,
