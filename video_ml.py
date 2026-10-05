@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import subprocess
 import tempfile
 import time
@@ -180,14 +181,38 @@ def elegir_variante(m3u8_url: str) -> Dict[str, Any]:
 # ffprobe / ffmpeg
 # ---------------------------------------------------------------------------
 
+_BIN_DIRS = ("/usr/bin", "/usr/local/bin", "/bin")
+
+
+def _bin(nombre: str) -> str:
+    """Ruta del binario: FFMPEG_BIN / FFPROBE_BIN (.env) > shutil.which > /usr/bin, /usr/local/bin, /bin.
+    El PATH del servicio systemd es solo el del venv, por eso no alcanza con el nombre pelado.
+    Si no está, VideoError con las rutas que se probaron."""
+    probadas: List[str] = []
+    env = (os.getenv(nombre.upper() + "_BIN") or "").strip()
+    if env:
+        probadas.append(env + " (" + nombre.upper() + "_BIN)")
+        if os.path.isfile(env) and os.access(env, os.X_OK):
+            return env
+    w = shutil.which(nombre)
+    probadas.append("which " + nombre + " -> " + (w or "no está en el PATH " + os.environ.get("PATH", "")))
+    if w:
+        return w
+    for d in _BIN_DIRS:
+        ruta = os.path.join(d, nombre)
+        probadas.append(ruta)
+        if os.path.isfile(ruta) and os.access(ruta, os.X_OK):
+            return ruta
+    raise VideoError(nombre + " no está instalado en el servidor. Se probó: " + "; ".join(probadas))
+
 def _probe(media_url: str) -> Dict[str, Any]:
     import json
     try:
         p = subprocess.run(
-            ["ffprobe", "-v", "error", *_FF_FLAGS, "-print_format", "json", "-show_format", "-show_streams", media_url],
+            [_bin("ffprobe"), "-v", "error", *_FF_FLAGS, "-print_format", "json", "-show_format", "-show_streams", media_url],
             capture_output=True, text=True, timeout=PROBE_TIMEOUT)
     except FileNotFoundError as e:
-        raise VideoError("ffprobe no está instalado en el servidor") from e
+        raise VideoError("no se pudo ejecutar ffprobe: " + str(e)) from e
     except subprocess.TimeoutExpired as e:
         raise VideoError("ffprobe tardó demasiado leyendo el video") from e
     if p.returncode != 0:
@@ -223,7 +248,7 @@ def descargar(media_url: str, codigo: str) -> str:
     os.close(fd)
     try:
         p = subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", *_FF_FLAGS, "-i", media_url, "-c", "copy",
+            [_bin("ffmpeg"), "-y", "-loglevel", "error", *_FF_FLAGS, "-i", media_url, "-c", "copy",
              "-bsf:a", "aac_adtstoasc", "-fs", str(MAX_BYTES), "-movflags", "+faststart", ruta],
             capture_output=True, text=True, timeout=DOWNLOAD_TIMEOUT)
         if p.returncode != 0:
