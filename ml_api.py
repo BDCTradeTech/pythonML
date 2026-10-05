@@ -1074,6 +1074,11 @@ def ml_get_active_promo_prices_bulk(access_token: str, seller_id: str) -> Option
                             "promotion_type": ptype,
                             "campaign_id": pid,
                             "meli_percentage": float(item.get("meli_percentage") or item.get("meli_percent") or 0),
+                            # para el cálculo de margen (bonificación de ML) y el tooltip de "otras promos"
+                            "seller_percentage": float(item.get("seller_percentage") or item.get("seller_percent") or 0),
+                            "finish_date": promo.get("finish_date"),
+                            "status": (item.get("status") or "").lower(),
+                            "promo_name": promo.get("name"),
                         }
                     except (TypeError, ValueError):
                         continue

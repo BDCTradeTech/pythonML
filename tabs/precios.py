@@ -46,11 +46,27 @@ from ml_api import (
 )
 from tabs.catalogos import _search_catalogs_sync, _sync_one_catalog, _item_url, _fmt_delivery
 from tabs.cuotas import _cuotas_key
+from margen import (
+    bonif_ml_promo, calc_margen_detalle, fees_publicacion, financiacion_real, _tramo as _tramo_fee,
+)
 
 
 # ---------------------------------------------------------------------------
 # Helper de sesión (mismo patrón que otros tabs; se unificará en auth.py Fase 4)
 # ---------------------------------------------------------------------------
+
+def _fmt_vence_promo(s: Any) -> str:
+    """'2026-10-19T03:00:00Z' / '2026-10-19T00:00:00-03:00' -> '19/10' (hora Argentina). '' si no hay fecha."""
+    if not s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=-3)))
+        return dt.astimezone(timezone(timedelta(hours=-3))).strftime("%d/%m")
+    except Exception:
+        return ""
+
 
 def _require_login() -> Optional[Dict[str, Any]]:
     user = app.storage.user.get("user")
@@ -264,6 +280,17 @@ def _show_item_detail_dialog(
     recalc_ref: Dict[str, Any] = {}
 
     _promo_activa = row.get("price_promo") is not None
+    # Margen REAL (margen.py): financiación real de la campaña, comisión y costo fijo de ESTE item_id
+    _p_pop = {"ml_comision": ml_comision, "ml_debcre": ml_debcre, "ml_iibb_per": ml_iibb_per,
+              "ml_envios_gratuitos": ml_envios_gratuitos, "ml_envios_val": ml_envios,
+              "dolar_oficial": dolar_oficial, "financiacion": financiacion_real()}
+
+    def _calc_pop(precio_calc, costo, tipo_iva, bonif, red=False):
+        # cuotas reales de ESTA publicación (si la fila no las trae, de su listing/sale_terms)
+        cuotas_val = str(row.get("cuotas") or _cuotas_desde_item(row)).strip().lower()
+        lt = row.get("listing_type_id") or ("gold_pro" if cuotas_val != "x1" else "gold_special")
+        com, fijo, _o = fees_publicacion(access_token, row.get("category_id"), lt, precio_calc, red=red)
+        return calc_margen_detalle(precio_calc, costo, tipo_iva, _p_pop, 1, cuotas_val, com, fijo, bonif)
 
     def _recalcular():
         precio_str = inp_refs.get("precio") and getattr(inp_refs["precio"], "value", None) or ""
@@ -275,37 +302,28 @@ def _show_item_detail_dialog(
             precio = float(row.get("precio") or 0) or 1
         # Con promo activa esto es SIMULACION: se calcula con el precio escrito (ML da de baja
         # la promo si se cambia el precio). Si coincide con el de la promo, se muestra la promo vigente.
-        tiene_promo = _promo_activa and abs(precio - float(row.get("price_promo") or 0)) <= 0.01
+        # tolerancia de 1 peso: el input muestra el precio sin decimales ("$194.349") y price_promo puede traer centavos
+        tiene_promo = _promo_activa and abs(precio - float(row.get("price_promo") or 0)) <= 1.0
         precio_calc = float(row.get("price_promo") or 0) if tiene_promo else precio
         if precio_calc < 1:
             precio_calc = float(row.get("precio") or 0) or 1
-        comision = precio_calc * ml_comision
-        cobrado  = precio_calc - comision
-        deb_cred = precio_calc * ml_debcre
-        iibb     = precio_calc * ml_iibb_per
-        iva_venta = precio_calc * tipo_iva / (1 + tipo_iva)
-        iva_total, iva_meli, iva_impor = _calc_iva(precio_calc, tipo_iva, comision, costo)
-        envio       = _envio_a_restar(precio_calc)
         costo_pesos = costo * dolar_oficial
-        cuotas_val  = str(row.get("cuotas") or "x1").strip().lower()
-        tasa        = {"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(cuotas_val, 0.0)
-        costo_cuotas = precio_calc * tasa if tasa else 0.0
         bonif_ml = 0.0
         if tiene_promo:
-            _ml_pct = float(row.get("promo_ml_pct") or 0)
-            _orig   = float(row.get("price_original") or 0)
-            bonif_ml = _orig * _ml_pct / 100
+            bonif_ml = bonif_ml_promo(precio_calc, row.get("promo_ml_pct"), row.get("promo_yo_pct"), row.get("price_original"))
+        d = _calc_pop(precio_calc, costo, tipo_iva, bonif_ml)
         if costo_pesos <= 0:
             margen_pesos = margen_costo_pct = margen_venta_pct = 0.0
         else:
-            margen_pesos     = cobrado - costo_pesos - iva_total - iibb - deb_cred - envio - costo_cuotas + bonif_ml
+            margen_pesos     = d["margen"]
             margen_costo_pct = (margen_pesos / costo_pesos * 100) if costo_pesos > 0 else 0.0
-            margen_venta_pct = (margen_pesos / precio_calc * 100) if precio_calc > 0 else 0.0
+            margen_venta_pct = d["margen_pct"]
         data = {
-            "comision": comision, "cobrado": cobrado, "costo_cuotas": costo_cuotas,
-            "iva_venta": iva_venta, "iva_total": iva_total, "iva_meli": iva_meli, "iva_impor": iva_impor,
-            "deb_cred": deb_cred, "iibb": iibb, "envio": envio, "costo_pesos": costo_pesos,
-            "bonif_ml": bonif_ml, "simulacion": _promo_activa,
+            "comision": d["comision"], "comision_pct": d["comision_pct"], "cobrado": d["cobrado"],
+            "costo_cuotas": d["financiacion"], "financiacion": d["financiacion"], "financiacion_pct": d["financiacion_pct"],
+            "fixed_fee": d["fixed_fee"], "iva_venta": d["iva_venta"], "iva_total": d["iva_total"],
+            "iva_meli": d["iva_meli"], "iva_impor": d["iva_impor"], "deb_cred": d["deb_cred"], "iibb": d["iibb"],
+            "envio": d["envio"], "costo_pesos": costo_pesos, "bonif_ml": bonif_ml, "simulacion": _promo_activa,
             "margen_pesos": margen_pesos, "margen_costo_pct": margen_costo_pct, "margen_venta_pct": margen_venta_pct,
         }
         _pintar_recalc(recalc_ref["container"], data)
@@ -324,13 +342,20 @@ def _show_item_detail_dialog(
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
-                    ui.label("Comisión ML").classes("text-sm font-medium text-gray-600")
+                    ui.label("Comisión ML" + (f" ({fmt_pct2(float(data['comision_pct']) * 100)})" if data.get("comision_pct") else "")).classes("text-sm font-medium text-gray-600")
                 ui.label(fmt_moneda(data.get("comision"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
-                    ui.label("Costo Cuotas").classes("text-sm font-medium text-gray-600")
-                ui.label(fmt_moneda(data.get("costo_cuotas"))).classes("text-sm text-negative")
+                    _fp = float(data.get("financiacion_pct") or 0)
+                    ui.label("Financiación ML" + (f" ({fmt_pct2(_fp * 100)})" if _fp else "")).classes("text-sm font-medium text-gray-600")
+                ui.label(fmt_moneda(data.get("financiacion", data.get("costo_cuotas")))).classes("text-sm text-negative")
+            if float(data.get("fixed_fee") or 0) > 0:
+                with ui.row().classes("w-full justify-between py-0.5 gap-4"):
+                    with ui.row().classes("items-center gap-1"):
+                        ui.html(_ICO)
+                        ui.label("Costo fijo ML").classes("text-sm font-medium text-gray-600")
+                    ui.label(fmt_moneda(data.get("fixed_fee"))).classes("text-sm text-negative")
             with ui.row().classes("w-full justify-between py-0.5 gap-4"):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(_ICO)
@@ -469,20 +494,17 @@ def _show_item_detail_dialog(
                         pc2 = nuevo_precio
                         if tiene_promo:
                             pc2 = float(it.get("price_original") or 0) * (1 - float(it.get("promo_yo_pct") or 0) / 100)
-                        com2  = pc2 * ml_comision
-                        cob2  = pc2 - com2
-                        deb2  = pc2 * ml_debcre
-                        iibb2 = pc2 * ml_iibb_per
-                        it2, im2, ii2 = _calc_iva(pc2, nuevo_tipo_iva, com2, nuevo_costo)
-                        env2  = _envio_a_restar(pc2)
-                        cp2   = nuevo_costo * dolar_oficial
-                        cv2   = pc2 * ({"x3": cuotas_3x, "x6": cuotas_6x, "x9": cuotas_9x, "x12": cuotas_12x}.get(str(it.get("cuotas") or "x1").lower(), 0.0))
+                        _d2 = _calc_pop(pc2, nuevo_costo, nuevo_tipo_iva, 0.0, red=True)
+                        com2, cob2, cv2 = _d2["comision"], _d2["cobrado"], _d2["financiacion"]
+                        it2, im2, ii2 = _d2["iva_total"], _d2["iva_meli"], _d2["iva_impor"]
+                        deb2, iibb2, env2 = _d2["deb_cred"], _d2["iibb"], _d2["envio"]
+                        cp2 = nuevo_costo * dolar_oficial
                         if cp2 <= 0:
                             mg2 = mc2 = mv2 = 0.0
                         else:
-                            mg2 = cob2 - cp2 - it2 - iibb2 - deb2 - env2 - cv2
+                            mg2 = _d2["margen"]
                             mc2 = (mg2 / cp2 * 100) if cp2 > 0 else 0.0
-                            mv2 = (mg2 / pc2 * 100) if pc2 > 0 else 0.0
+                            mv2 = _d2["margen_pct"]
                         it.update({"comision": com2, "cobrado": cob2, "costo_cuotas": cv2,
                                    "iva_total": it2, "iva_meli": im2, "iva_impor": ii2,
                                    "deb_cred": deb2, "iibb": iibb2, "envio": env2,
@@ -805,6 +827,28 @@ def _mostrar_tabla_precios(
     if ml_envios_grat_p <= 0:
         ml_envios_grat_p = 33000.0
 
+    # --- Margen REAL por publicación (margen.py). Cuotas, comisión y costo fijo salen del PROPIO item_id;
+    # la financiación es el costo real de la campaña (financiacion_cuotas_ml), NO cotizador_datos.cuotas_Nx
+    # (esos son el recargo de precio de las variantes en cuotas). ---
+    _p_margen = {
+        "ml_comision": ml_comision_p, "ml_debcre": ml_debcre_p, "ml_iibb_per": ml_iibb_per_p,
+        "ml_envios_gratuitos": ml_envios_grat_p, "ml_envios_val": ml_envios_p,
+        "dolar_oficial": dolar_oficial, "financiacion": financiacion_real(),
+    }
+
+    def _margen_item(r: Dict[str, Any], precio: float, bonif: float = 0.0, red: bool = False,
+                     costo: Optional[float] = None, tipo_iva: Optional[float] = None):
+        """(margen $, margen % s/ precio) de UNA publicación al precio dado, con SUS datos: cuotas reales
+        (_cuotas_desde_item), comisión y costo fijo de listing_prices (cache; red=False = cache o fallback)
+        y financiación real. Nunca mira otra publicación del grupo. (None, None) si no hay costo."""
+        costo_f = float(costo if costo is not None else (r.get("costo_usd") or 0))
+        if costo_f <= 0 or precio <= 0:
+            return None, None
+        tiva = float(tipo_iva if tipo_iva is not None else (r.get("tipo_iva") or 0.105))
+        com, fijo, _o = fees_publicacion(access_token, r.get("category_id"), r.get("listing_type_id"), precio, red=red)
+        d = calc_margen_detalle(precio, costo_f, tiva, _p_margen, 1, _cuotas_desde_item(r), com, fijo, bonif)
+        return d["margen"], d["margen_pct"]
+
     items_loaded = []
     for i in items_dedup:
         precio = i.get("price") or 0
@@ -832,28 +876,12 @@ def _mostrar_tabla_precios(
         # Calcular Gan $ y Gan Vta%
         _costo_c = float(_prod_row["costo_usd"]) if _prod_row and _prod_row.get("costo_usd") is not None else 0.0
         _tiva_c  = float(_prod_row["tipo_iva"])  if _prod_row and _prod_row.get("tipo_iva")  is not None else 0.105
-        _lt_c    = str(i.get("listing_type_id") or "").lower()
-        _tasa_c  = cuotas_6x_p if _lt_c == "gold_pro" else 0.0
         _pc_c    = float(precio)
-        if _costo_c > 0 and _pc_c > 0:
-            _com_c  = _pc_c * ml_comision_p
-            _cob_c  = _pc_c - _com_c
-            _ivav_c = _pc_c * _tiva_c / (1 + _tiva_c)
-            _ivam_c = _com_c * 0.21 / 1.21
-            _ivai_c = 0.09 * _costo_c * dolar_oficial
-            _ivat_c = _ivav_c - _ivam_c - _ivai_c
-            _deb_c  = _pc_c * ml_debcre_p
-            _iibb_c = _pc_c * ml_iibb_per_p
-            _env_c  = ml_envios_p if _pc_c >= ml_envios_grat_p else 0.0
-            _ccuot_c = _pc_c * _tasa_c if _tasa_c else 0.0
-            _cp_c   = _costo_c * dolar_oficial
-            _promo_ml_pct_c = float(i.get("promo_ml_pct") or 0)
-            _bonif_ml_c = (float(i.get("price_original") or _pc_c) * _promo_ml_pct_c / 100) if _promo_ml_pct_c > 0 else 0.0
-            _mgn_c  = _cob_c - _cp_c - _ivat_c - _iibb_c - _deb_c - _env_c - _ccuot_c + _bonif_ml_c
-            _mvta_c = _mgn_c / _pc_c * 100
-        else:
-            _mgn_c  = None
-            _mvta_c = None
+        # promo: se aplica en _enriquecer_items (solo la del PROPIO item_id); acá, precio de lista.
+        # Comisión/costo fijo: cache de listing_prices o fallback; _enriquecer_items refina con la API.
+        _promo_ml_pct_c = float(i.get("promo_ml_pct") or 0)
+        _bonif_ml_c = (float(i.get("price_original") or _pc_c) * _promo_ml_pct_c / 100) if _promo_ml_pct_c > 0 else 0.0
+        _mgn_c, _mvta_c = _margen_item(i, _pc_c, _bonif_ml_c, costo=_costo_c, tipo_iva=_tiva_c)
         _price_upd_at = _prod_row["price_updated_at"] if _prod_row else None
         _dias_sin_modif: Optional[int] = None
         _hoy_dt = datetime.now().date()
@@ -1011,6 +1039,8 @@ def _mostrar_tabla_precios(
                 return None
 
             _meli_pct_map: Dict[str, float] = {}
+            _promo_meta_map: Dict[str, Dict[str, Any]] = {}      # rid -> entry de la promo del PROPIO item
+            _otras_promos_map: Dict[str, List[Dict[str, Any]]] = {}  # rid -> promos de OTRAS publicaciones del SKU
 
             def _fetch_has_promo(ids):
                 _pairs = [(iid, cid) for iid in ids for cid in (_grp_ids_map.get(iid) or [iid])]
@@ -1056,13 +1086,19 @@ def _mostrar_tabla_precios(
 
                 res: Dict[str, Optional[float]] = {}
                 for rid, cid in _pairs:
-                    price_p = _precio_con_descuento(sp_lookup.get(cid))
-                    if price_p is not None:
-                        if rid not in res or res[rid] is None:
-                            res[rid] = price_p
-                            _meli_pct_map[rid] = float((sp_lookup.get(cid) or {}).get("meli_percentage") or 0)
-                    elif rid not in res:
-                        res[rid] = None
+                    _ent = sp_lookup.get(cid)
+                    price_p = _precio_con_descuento(_ent)
+                    if cid == rid:
+                        # precio promo, % de ML y bonificación salen SOLO del item_id de la fila
+                        res[rid] = price_p
+                        if price_p is not None:
+                            _meli_pct_map[rid] = float((_ent or {}).get("meli_percentage") or 0)
+                            _promo_meta_map[rid] = _ent or {}
+                    elif price_p is not None:
+                        # promo de otra publicación del SKU: solo informativa (ícono gris), no entra en el cálculo
+                        _otras_promos_map.setdefault(rid, []).append({"item_id": cid, "price_promo": price_p, "entry": _ent or {}})
+                for _iid in ids:
+                    res.setdefault(_iid, None)
                 return res
             _t_api_promo = time.perf_counter()
             _promo_map = _fetch_has_promo(_sp_item_ids)
@@ -1070,43 +1106,84 @@ def _mostrar_tabla_precios(
                 f"[PERF-PRODUCTOS] fase='api_promo_sale_price' user_id={_perf_uid} "
                 f"tiempo={time.perf_counter() - _t_api_promo:.3f}s items={len(_sp_item_ids)}"
             )
-            _gan_promo_rows = []
+            # Promos 'pending' (todavía sin arrancar o recién arrancadas): el precio que paga el comprador es el
+            # de sale_price, no el de la lista de promos (Awei-H21: LIGHTNING pending 23.361 vs DEAL vigente 24.591).
+            _pend = [_k for _k, _e in _promo_meta_map.items() if (_e.get("status") or "") == "pending"]
+            if _pend:
+                with ThreadPoolExecutor(max_workers=8) as _ex_sp:
+                    _sp_ver = dict(zip(_pend, _ex_sp.map(lambda _x: ml_get_item_sale_price_full(access_token, _x), _pend)))
+                for _k, _sp in _sp_ver.items():
+                    _e = _promo_meta_map[_k]
+                    if (_sp and _sp.get("amount") is not None and _sp.get("regular_amount") is not None
+                            and float(_sp["amount"]) < float(_sp["regular_amount"]) - 0.01):
+                        _amt = float(_sp["amount"])
+                        _mismo = abs(float(_e.get("amount") or 0) - _amt) <= 1.0  # el % de ML es de la promo que explica el precio
+                        _promo_map[_k] = _amt
+                        _promo_meta_map[_k] = {**_e, "amount": _amt, "regular_amount": float(_sp["regular_amount"]),
+                                               "meli_percentage": _e.get("meli_percentage") if _mismo else 0.0,
+                                               "seller_percentage": _e.get("seller_percentage") if _mismo else 0.0}
+                    else:
+                        _promo_map[_k] = None      # la promo todavía no rige
+                        _promo_meta_map.pop(_k, None)
+            _by_id_all = {str(x.get("id") or ""): x for x in items}
             for r in items_subset:
                 _rid = str(r.get("id") or "")
-                if _rid in _promo_map:
-                    _pp = _promo_map[_rid]
-                    r["has_promo"] = _pp is not None
-                    if _pp is not None:
-                        r["price_promo"] = _pp
-                        _costo_rp = float(r.get("costo_usd") or 0)
-                        if _costo_rp > 0 and _pp > 0:
-                            _lt_rp    = str(r.get("listing_type_id") or "").lower()
-                            _tasa_rp  = cuotas_6x_p if _lt_rp == "gold_pro" else 0.0
-                            _tiva_rp  = float(r.get("tipo_iva") or 0.105)
-                            _com_rp   = _pp * ml_comision_p
-                            _cob_rp   = _pp - _com_rp
-                            _ivav_rp  = _pp * _tiva_rp / (1 + _tiva_rp)
-                            _ivam_rp  = _com_rp * 0.21 / 1.21
-                            _ivai_rp  = 0.09 * _costo_rp * dolar_oficial
-                            _ivat_rp  = _ivav_rp - _ivam_rp - _ivai_rp
-                            _deb_rp   = _pp * ml_debcre_p
-                            _iibb_rp  = _pp * ml_iibb_per_p
-                            _env_rp   = ml_envios_p if _pp >= ml_envios_grat_p else 0.0
-                            _ccuot_rp = _pp * _tasa_rp if _tasa_rp else 0.0
-                            _cp_rp    = _costo_rp * dolar_oficial
-                            _meli_pct_rp  = _meli_pct_map.get(_rid, 0.0)
-                            _price_orig_rp = float(r.get("precio") or _pp)
-                            _bonif_ml_rp  = _price_orig_rp * _meli_pct_rp / 100
-                            _mgn_rp   = _cob_rp - _cp_rp - _ivat_rp - _iibb_rp - _deb_rp - _env_rp - _ccuot_rp + _bonif_ml_rp
-                            r["margen_pesos"]     = _mgn_rp
-                            r["margen_venta_pct"] = (_mgn_rp / _pp * 100) if _pp > 0 else 0.0
-                            if r.get("seller_sku"):
-                                _gan_promo_rows.append((
-                                    r["margen_pesos"], r["margen_venta_pct"],
-                                    r.get("available_quantity"), str(r.get("title") or ""),
-                                    _resolve_marca(r.get("marca")),
-                                    r["seller_sku"]
-                                ))
+                if _rid not in _promo_map:
+                    continue
+                _pp = _promo_map[_rid]
+                r["has_promo"] = _pp is not None
+                _ent = _promo_meta_map.get(_rid) or {}
+                if _pp is not None:
+                    r["price_promo"] = _pp
+                    _reg = _ent.get("regular_amount")
+                    # /items.price desactualizado (p.ej. Awei-H21: 24.432 vs standard 44.711 en /prices):
+                    # si el price listado no supera al de la promo, la base real es el regular_amount de ML
+                    if _reg and float(_reg) > _pp and float(r.get("price") or 0) <= _pp + 0.01:
+                        r["price_items_api"] = r.get("price")
+                        r["price"] = float(_reg)
+                    r["bonif_ml_monto"] = bonif_ml_promo(
+                        _pp, _ent.get("meli_percentage"), _ent.get("seller_percentage"), _reg, r.get("price"))
+                    r["promo_vence"] = _ent.get("finish_date")
+                else:
+                    r["price_promo"] = None
+                    r["bonif_ml_monto"] = 0.0
+                    r["promo_vence"] = None
+                r["otras_promos"] = [
+                    {"item_id": o["item_id"],
+                     "cuotas": _cuotas_desde_item(_by_id_all.get(o["item_id"]) or {}),
+                     "price_promo": o["price_promo"], "vence": (o.get("entry") or {}).get("finish_date")}
+                    for o in _otras_promos_map.get(_rid, [])
+                ]
+
+            def _precio_margen(r: Dict[str, Any]) -> float:
+                return float(r["price_promo"]) if r.get("price_promo") is not None else float(r.get("price") or 0)
+
+            # comisión y costo fijo reales por (categoría, listing, tramo de precio): en paralelo y con cache
+            _fees_pend: Dict[tuple, tuple] = {}
+            for r in items_subset:
+                _px = _precio_margen(r)
+                if _px > 0 and float(r.get("costo_usd") or 0) > 0:
+                    _fees_pend.setdefault(
+                        (r.get("category_id"), str(r.get("listing_type_id") or "").lower(), _tramo_fee(_px)), (r, _px))
+            if _fees_pend:
+                with ThreadPoolExecutor(max_workers=8) as _ex_fees:
+                    list(_ex_fees.map(
+                        lambda v: fees_publicacion(access_token, v[0].get("category_id"), v[0].get("listing_type_id"), v[1], red=True),
+                        list(_fees_pend.values())))
+
+            _gan_promo_rows = []
+            for r in items_subset:
+                _bn = float(r.get("bonif_ml_monto") or 0) if r.get("price_promo") is not None else 0.0
+                _mg, _mp = _margen_item(r, _precio_margen(r), _bn)
+                if _mg is None:
+                    continue
+                r["margen_pesos"] = _mg
+                r["margen_venta_pct"] = _mp
+                if r.get("seller_sku"):
+                    _gan_promo_rows.append((
+                        _mg, _mp, r.get("available_quantity"), str(r.get("title") or ""),
+                        _resolve_marca(r.get("marca")), r["seller_sku"]
+                    ))
             if _gan_promo_rows:
                 _now_gp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                 _conn_gp = get_connection()
@@ -1757,26 +1834,7 @@ def _mostrar_tabla_precios(
                                     row["dias_sin_modificar"] = 0
                                     row["price_updated_at"] = _now.isoformat()
                                 await run.io_bound(_save_rev_cel)
-                            _costo_p = float(row.get("costo_usd") or 0)
-                            _tiva_p  = float(row.get("tipo_iva") or 0.105)
-                            _lt_p    = str(row.get("listing_type_id") or "").lower()
-                            _tasa_p  = cuotas_6x_p if _lt_p == "gold_pro" else 0.0
-                            if _costo_p > 0 and nuevo > 0:
-                                _com_p   = nuevo * ml_comision_p
-                                _cob_p   = nuevo - _com_p
-                                _ivav_p  = nuevo * _tiva_p / (1 + _tiva_p)
-                                _ivam_p  = _com_p * 0.21 / 1.21
-                                _ivai_p  = 0.09 * _costo_p * dolar_oficial
-                                _ivat_p  = _ivav_p - _ivam_p - _ivai_p
-                                _deb_p   = nuevo * ml_debcre_p
-                                _iibb_p  = nuevo * ml_iibb_per_p
-                                _env_p   = ml_envios_p if nuevo >= ml_envios_grat_p else 0.0
-                                _ccuot_p = nuevo * _tasa_p if _tasa_p else 0.0
-                                _cp_p    = _costo_p * dolar_oficial
-                                _mgn_p   = _cob_p - _cp_p - _ivat_p - _iibb_p - _deb_p - _env_p - _ccuot_p
-                                _mvta_p  = _mgn_p / nuevo * 100
-                            else:
-                                _mgn_p = _mvta_p = None
+                            _mgn_p, _mvta_p = await run.io_bound(_margen_item, row, float(nuevo), 0.0, True)
                             row["precio"]           = nuevo
                             row["price"]            = nuevo
                             row["margen_pesos"]     = _mgn_p
@@ -1927,25 +1985,12 @@ def _mostrar_tabla_precios(
                         except Exception as e:
                             ui.notify(f"Error: {e}", color="negative"); return
                     row["tipo_iva"] = nuevo_iva
-                    _pc_r    = float(row.get("price") or row.get("precio") or 0)
-                    _costo_r = float(row.get("costo_usd") or 0)
-                    _lt_r    = str(row.get("listing_type_id") or "").lower()
-                    _tasa_r  = cuotas_6x_p if _lt_r == "gold_pro" else 0.0
-                    if _costo_r > 0 and _pc_r > 0:
-                        _com_r   = _pc_r * ml_comision_p
-                        _cob_r   = _pc_r - _com_r
-                        _ivav_r  = _pc_r * nuevo_iva / (1 + nuevo_iva)
-                        _ivam_r  = _com_r * 0.21 / 1.21
-                        _ivai_r  = 0.09 * _costo_r * dolar_oficial
-                        _ivat_r  = _ivav_r - _ivam_r - _ivai_r
-                        _deb_r   = _pc_r * ml_debcre_p
-                        _iibb_r  = _pc_r * ml_iibb_per_p
-                        _env_r   = ml_envios_p if _pc_r >= ml_envios_grat_p else 0.0
-                        _ccuot_r = _pc_r * _tasa_r if _tasa_r else 0.0
-                        _cp_r    = _costo_r * dolar_oficial
-                        _mgn_r   = _cob_r - _cp_r - _ivat_r - _iibb_r - _deb_r - _env_r - _ccuot_r
+                    _pc_r = float(row.get("price_promo") or row.get("price") or row.get("precio") or 0)
+                    _bn_r = float(row.get("bonif_ml_monto") or 0) if row.get("price_promo") is not None else 0.0
+                    _mgn_r, _mvta_r = _margen_item(row, _pc_r, _bn_r, tipo_iva=nuevo_iva)
+                    if _mgn_r is not None:
                         row["margen_pesos"]     = _mgn_r
-                        row["margen_venta_pct"] = (_mgn_r / _pc_r * 100) if _pc_r > 0 else 0.0
+                        row["margen_venta_pct"] = _mvta_r
                     dialog.close()
                     background_tasks.create(filtrar_y_pintar())
 
@@ -2129,7 +2174,9 @@ def _mostrar_tabla_precios(
                 "precio":         float(row_base.get("price") or 0),
                 "costo":          float(row_base.get("costo_usd") or 0),
                 "tipo_iva":       float(row_base.get("tipo_iva") or 0.105),
-                "cuotas":         "x1",
+                "cuotas":         str(_cuotas_desde_item(row_base)).strip().lower(),
+                "category_id":    row_base.get("category_id"),
+                "listing_type_id": row_base.get("listing_type_id"),
                 "price_original": None, "promo_ml_pct": None,
                 "promo_yo_pct":   None, "price_promo":  None,
             }
@@ -2165,12 +2212,13 @@ def _mostrar_tabla_precios(
                         reg = sp_data.get("regular_amount")
                         if reg is not None and float(reg) > 0 and abs(float(reg) - amt_f) > 0.01:
                             reg_f = float(reg)
-                            _act = next(
-                                (p for p in (sp_promos or [])
-                                 if (p.get("status") or "").lower() in ("started", "pending")
-                                 and p.get("meli_percentage") is not None),
-                                None
-                            )
+                            _starts = [p for p in (sp_promos or [])
+                                       if (p.get("status") or "").lower() in ("started", "pending")
+                                       and p.get("meli_percentage") is not None]
+                            # la promo que explica el precio de venta (no "la primera"): con dos campañas
+                            # SMART simultáneas el % de ML puede diferir entre ellas
+                            _act = next((p for p in _starts if p.get("price") is not None
+                                         and abs(float(p["price"]) - amt_f) <= 1.0), None) or (_starts[0] if _starts else None)
                             row["precio"]         = amt_f
                             row["price_original"] = reg_f
                             row["price_promo"]    = amt_f
@@ -2185,6 +2233,12 @@ def _mostrar_tabla_precios(
                             row["precio"] = amt_f
                 except Exception:
                     pass
+            try:
+                # comisión y costo fijo de ESTE item_id al precio con el que abre el popup (cache para los recálculos)
+                await run.io_bound(fees_publicacion, access_token, row.get("category_id"), row.get("listing_type_id"),
+                                   float(row.get("price_promo") or row.get("precio") or 0), True)
+            except Exception:
+                pass
             with cl:
                 _show_item_detail_dialog(
                     row,
@@ -3078,6 +3132,18 @@ def _mostrar_tabla_precios(
             for col in columns_precios:
                 ui.element("col").style(f"width:{_col_w.get(col['name'], '80px')}")
 
+    def _icono_otras_promos(row: dict) -> None:
+        """Ícono gris si OTRA publicación del SKU tiene promo. Solo informativo: no entra en el cálculo."""
+        otras = row.get("otras_promos") or []
+        if not otras:
+            return
+        lineas = []
+        for o in otras:
+            v = _fmt_vence_promo(o.get("vence"))
+            lineas.append(f"Promo en {o.get('cuotas') or 'x1'}: {fmt_moneda(o.get('price_promo'))}" + (f" · vence {v}" if v else ""))
+        with ui.icon("local_offer", size="15px").classes("text-grey-6"):
+            ui.tooltip("\n".join(lineas)).style("white-space: pre-line")
+
     def _render_row_cells(row: dict) -> None:
         for col in columns_precios:
             field = col.get("field", col["name"])
@@ -3144,17 +3210,21 @@ def _mostrar_tabla_precios(
                         ui.label(_ttxt[:80]).classes("text-left text-xs w-full")
                 elif col["name"] == "price" and row.get("tipo") in ("Propia", "Prop Comb"):
                     pp = row.get("price_promo")
-                    if pp is not None:
-                        ui.button(fmt_moneda(pp), on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium hover:underline").style("color:#E24B4A")
-                    else:
-                        precio_str = fmt_moneda(val) if val is not None else "$0"
-                        ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                    with ui.row().classes("items-center gap-1 no-wrap"):
+                        if pp is not None:
+                            ui.button(fmt_moneda(pp), on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium hover:underline").style("color:#E24B4A")
+                        else:
+                            precio_str = fmt_moneda(val) if val is not None else "$0"
+                            ui.button(precio_str, on_click=lambda r=row: abrir_editar_precio(r)).props("flat dense no-caps").classes("cursor-pointer text-xs font-medium text-primary hover:underline")
+                        _icono_otras_promos(row)
                 elif col["name"] == "price":
                     pp = row.get("price_promo")
-                    if pp is not None:
-                        ui.label(fmt_moneda(pp)).style("color:#E24B4A")
-                    else:
-                        ui.label(fmt_moneda(val) if val is not None else "$0")
+                    with ui.row().classes("items-center gap-1 no-wrap"):
+                        if pp is not None:
+                            ui.label(fmt_moneda(pp)).style("color:#E24B4A")
+                        else:
+                            ui.label(fmt_moneda(val) if val is not None else "$0")
+                        _icono_otras_promos(row)
                 elif col["name"] == "promo":
                     if row.get("has_promo"):
                         ui.html('<i class="ti ti-discount-2" style="font-size:16px;color:#E24B4A"></i>')
