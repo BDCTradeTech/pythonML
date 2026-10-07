@@ -38,9 +38,26 @@ BACKUP_VERSION = 2
 # llama-3.3-70b-versatile fue deprecado por Groq el 16/08/26; reemplazo oficial: openai/gpt-oss-120b.
 GROQ_MODEL = "openai/gpt-oss-120b"
 
-# DeepSeek (https://api.deepseek.com) — integración paso 1: solo guardado de key en Configuración.
-DEEPSEEK_MODEL = "deepseek-v4-flash"
+# DeepSeek (https://api.deepseek.com). "deepseek-flash" es el id vigente (GET /models); "deepseek-v4-flash" era un alias.
+DEEPSEEK_MODEL = "deepseek-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+
+# Gemini (Preguntas y chequeo de estado). El razonamiento de 2.5-flash se limita con thinking_budget (tokens de "pensar"):
+# 0 = sin razonar (rapido, mas propenso a inventar), 256 = ~1,5 s con algo de razonamiento. Subirlo si inventa datos.
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_THINKING_BUDGET = 1024
+
+# IA de Preguntas que todavia NO pasaron la prueba de "no inventar datos" (10 preguntas, 2 corridas, 0 inventos claros):
+# su caja muestra la etiqueta "sin verificar · revisar antes de enviar". Sacar el nombre de la lista cuando pase la prueba.
+IA_SIN_VERIFICAR = {"groq", "gemini"}
+
+# Configuracion de razonamiento / topes de las IA de Preguntas (y de su chequeo de estado). Se prioriza precision sobre
+# velocidad: el razonamiento cuenta dentro de max_tokens, asi que los topes son altos. Groq: reasoning_effort low|medium|high.
+GROQ_REASONING_EFFORT = "medium"
+GROQ_MAX_TOKENS = 1500
+GROQ_TIMEOUT = 20
+DEEPSEEK_MAX_TOKENS = 4000
+DEEPSEEK_TIMEOUT = 30
 
 
 # ==========================

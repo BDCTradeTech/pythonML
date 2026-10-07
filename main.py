@@ -161,7 +161,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.10.07.34"
+VERSION = "3.26.10.07.35"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -220,57 +220,47 @@ def _server_stat_color(val: float) -> str:
     return "#A32D2D"
 
 
-def _check_grok_status() -> str:
+_IA_PROBE_PROMPT = (
+    "Sos vendedor en MercadoLibre Argentina.\nProducto: Parlante Bluetooth portátil negro\n"
+    "Ficha técnica: Color: Negro | Incluye cargador: No\nPregunta: ¿De qué color es?\n\n"
+    "Respondé SOLO la respuesta, en una frase corta."
+)
+
+
+def _check_ia_status(clave: str, generar: Callable[[str, str], str]) -> str:
+    """Prueba un proveedor con la misma funcion que usa Preguntas y un prompt corto real. Verde = respondio con texto;
+    rojo = sin key, error o contenido vacio (p. ej. un modelo que gasta todos los tokens razonando); ambar = 429."""
     try:
-        key = get_app_config("groq_api_key")
+        key = get_app_config(clave)
         if not key:
             return "red"
-        resp = requests.post(
-            "https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": GROQ_MODEL, "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return "green"
-        elif resp.status_code == 429:
-            return "amber"
+        texto = generar(key, _IA_PROBE_PROMPT)
+        if not (texto or "").strip():
+            logging.warning("[IA] %s respondio con contenido vacio", clave)
+            return "red"
+        return "green"
+    except requests.HTTPError as exc:
+        code = getattr(exc.response, "status_code", None)
+        logging.warning("[IA] %s HTTP %s", clave, code)
+        return "amber" if code == 429 else "red"
+    except Exception as exc:
+        logging.warning("[IA] %s fallo: %r", clave, exc)
         return "red"
-    except Exception:
-        return "red"
+
+
+def _check_grok_status() -> str:
+    from tabs.preguntas import _groq_generate
+    return _check_ia_status("groq_api_key", _groq_generate)
 
 
 def _check_gemini_status() -> str:
-    try:
-        key = get_app_config("gemini_api_key")
-        if not key:
-            return "red"
-        from google import genai as _genai
-        client = _genai.Client(api_key=key)
-        client.models.generate_content(model="gemini-2.5-flash", contents=".")
-        return "green"
-    except Exception:
-        return "red"
+    from tabs.preguntas import _gemini_generate
+    return _check_ia_status("gemini_api_key", _gemini_generate)
 
 
 def _check_deepseek_status() -> str:
-    try:
-        key = get_app_config("deepseek_api_key")
-        if not key:
-            return "red"
-        resp = requests.post(
-            f"{DEEPSEEK_BASE_URL}/chat/completions",
-            headers={"Authorization": f"Bearer {key}"},
-            json={"model": DEEPSEEK_MODEL, "messages": [{"role": "user", "content": "."}], "max_tokens": 1},
-            timeout=10,
-        )
-        if resp.status_code == 200:
-            return "green"
-        elif resp.status_code == 429:
-            return "amber"
-        return "red"
-    except Exception:
-        return "red"
+    from tabs.preguntas import _deepseek_generate
+    return _check_ia_status("deepseek_api_key", _deepseek_generate)
 
 
 def _update_ia_cache() -> None:

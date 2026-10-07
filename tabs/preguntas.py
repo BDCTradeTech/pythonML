@@ -15,7 +15,10 @@ import requests as _requests
 
 from nicegui import app, background_tasks, context, run, ui
 
-from db import get_app_config, set_app_config, GROQ_MODEL, DEEPSEEK_MODEL, DEEPSEEK_BASE_URL
+from db import (
+    get_app_config, set_app_config, GROQ_MODEL, DEEPSEEK_MODEL, DEEPSEEK_BASE_URL, GEMINI_MODEL, GEMINI_THINKING_BUDGET,
+    GROQ_REASONING_EFFORT, GROQ_MAX_TOKENS, GROQ_TIMEOUT, DEEPSEEK_MAX_TOKENS, DEEPSEEK_TIMEOUT, IA_SIN_VERIFICAR,
+)
 from ml_api import get_ml_access_token, get_ml_session, ml_get_user_id, ml_get_user_profile
 
 _DEFAULT_FRASES = [
@@ -58,6 +61,24 @@ def _ml_get_questions(access_token: str, seller_id: str) -> List[dict]:
     return resp.json().get("questions", [])
 
 
+logger = logging.getLogger(__name__)
+
+# Tope de la ficha tecnica que se manda a la IA (caracteres) y valores que se descartan por no aportar dato.
+_FICHA_MAX_CHARS = 3000
+_VALORES_VACIOS = {"N/A", "NA", "NO APLICA", "-", "--", "S/D"}
+
+
+def _armar_ficha(items: List[str]) -> str:
+    """Une los atributos "Nombre: valor" con " | ". Si pasa de _FICHA_MAX_CHARS corta en el ultimo atributo entero que
+    entra y termina con "…"."""
+    txt = " | ".join(items)
+    if len(txt) <= _FICHA_MAX_CHARS:
+        return txt
+    corte = txt[: _FICHA_MAX_CHARS - 2]
+    i = corte.rfind(" | ")
+    return (corte[:i] if i > 0 else corte).rstrip() + " …"
+
+
 def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict]:
     info: Dict[str, dict] = {}
     for i in range(0, len(item_ids), 20):
@@ -69,20 +90,25 @@ def _ml_get_items_info(access_token: str, item_ids: List[str]) -> Dict[str, dict
             timeout=15,
         )
         if resp.ok:
-            for entry in resp.json():
+            for idx, entry in enumerate(resp.json()):
                 body = entry.get("body") or {}
+                if entry.get("code") not in (None, 200):
+                    logger.warning("[PREGUNTAS] no se pudo leer la ficha de %s: code=%s %s",
+                                   batch[idx] if idx < len(batch) else batch, entry.get("code"), str(body)[:200])
                 if body.get("id"):
                     ficha = []
                     for attr in body.get("attributes") or []:
                         nombre = attr.get("name")
-                        valor = attr.get("value_name")
-                        if nombre and valor:
+                        valor = str(attr.get("value_name") or "").strip()
+                        if nombre and valor and valor.upper() not in _VALORES_VACIOS:
                             ficha.append(f"{nombre}: {valor}")
                     info[str(body["id"])] = {
                         "title": body.get("title") or str(body["id"]),
                         "status": body.get("status") or "",
-                        "ficha_tecnica": " | ".join(ficha[:25]),
+                        "ficha_tecnica": _armar_ficha(ficha),
                     }
+        else:
+            logger.warning("[PREGUNTAS] no se pudo leer la ficha de %s: HTTP %s %s", ",".join(batch), resp.status_code, resp.text[:200])
     return info
 
 
@@ -97,8 +123,9 @@ def _ml_get_description(access_token: str, item_id: str) -> str:
             body = resp.json()
             texto = (body.get("plain_text") or body.get("text") or "").strip()
             return texto[:1500]
-    except Exception:
-        pass
+        logger.warning("[PREGUNTAS] no se pudo leer la descripcion de %s: HTTP %s %s", item_id, resp.status_code, resp.text[:200])
+    except Exception as exc:
+        logger.warning("[PREGUNTAS] no se pudo leer la descripcion de %s: %r", item_id, exc)
     return ""
 
 
@@ -134,28 +161,42 @@ def _ml_post_answer(access_token: str, question_id: Any, text: str) -> Dict[str,
     return {"status_code": resp.status_code, "body": body}
 
 
+def _aviso_sin_verificar(proveedor: str) -> None:
+    """Etiqueta gris/naranja arriba de la respuesta de las IA que todavia no pasaron la prueba de "no inventar datos"
+    (db.IA_SIN_VERIFICAR)."""
+    if proveedor in IA_SIN_VERIFICAR:
+        ui.label("sin verificar · revisar antes de enviar").style(
+            "font-size:10px;font-weight:600;color:#b45309;background:#fef3c7;border-radius:4px;"
+            "padding:1px 6px;align-self:flex-start"
+        )
+
+
 def _groq_generate(api_key: str, prompt: str) -> str:
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
         "model": GROQ_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300,
+        "max_tokens": GROQ_MAX_TOKENS,  # gpt-oss razona: el razonamiento cuenta dentro del tope
+        "reasoning_effort": GROQ_REASONING_EFFORT,
         "temperature": 0.7,
     }
-    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    resp = _requests.post(url, headers=headers, json=payload, timeout=GROQ_TIMEOUT)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
 
 def _gemini_generate(api_key: str, prompt: str) -> str:
     from google import genai
+    from google.genai import types as _gtypes
     client = genai.Client(api_key=api_key)
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model=GEMINI_MODEL,
         contents=prompt,
+        config=_gtypes.GenerateContentConfig(
+            thinking_config=_gtypes.ThinkingConfig(thinking_budget=GEMINI_THINKING_BUDGET)),
     )
-    return response.text
+    return response.text or ""
 
 
 def _deepseek_generate(api_key: str, prompt: str) -> str:
@@ -164,10 +205,10 @@ def _deepseek_generate(api_key: str, prompt: str) -> str:
     payload = {
         "model": DEEPSEEK_MODEL,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 300,
+        "max_tokens": DEEPSEEK_MAX_TOKENS,  # razonamiento activo (mas fiel a la ficha): cuenta dentro del tope
         "temperature": 0.7,
     }
-    resp = _requests.post(url, headers=headers, json=payload, timeout=15)
+    resp = _requests.post(url, headers=headers, json=payload, timeout=DEEPSEEK_TIMEOUT)
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]["content"]
 
@@ -855,7 +896,8 @@ def build_tab_preguntas(container) -> None:
                                 return await run.io_bound(
                                     _ml_get_description, access_token, item_id_detalle
                                 )
-                            except Exception:
+                            except Exception as exc:
+                                logger.warning("[PREGUNTAS] fallo la descripcion de %s: %r", item_id_detalle, exc)
                                 return ""
 
                         buyer_nick, descripcion = await asyncio.gather(
@@ -873,12 +915,12 @@ def build_tab_preguntas(container) -> None:
                             f"Producto: {title}{ficha_txt}{descripcion_txt}\n"
                             f"Pregunta: {text}\n\n"
                             f"Respondé SOLO la respuesta a la pregunta, sin saludo ni cierre.\n"
-                            f"Si la ficha técnica o la descripción de arriba tienen el dato pedido, "
-                            f"usalo tal cual figura ahí. Si no está disponible, no inventes ni "
-                            f"adivines un dato específico (modelos, códigos, medidas). En ese caso "
-                            f"SIEMPRE tenés que escribir igual una frase breve confirmando que vas a "
-                            f"averiguarlo, por ejemplo \"Voy a confirmar ese dato y te aviso a la "
-                            f"brevedad.\" — nunca dejes el cuerpo de la respuesta vacío.\n"
+                            f"Usá la ficha técnica y la descripción para responder. Solo si el dato "
+                            f"realmente no aparece en ninguna de las dos, decí que lo vas a confirmar. "
+                            f"No afirmes nada que no figure ahí. "
+                            f"Si la pregunta compara con otro producto, solo podés usar datos de ESTE "
+                            f"producto. No describas el otro producto. "
+                            f"Si la ficha dice que no incluye X, no deduzcas que tampoco incluye otras cosas.\n"
                             f"En español rioplatense, amable y breve. Solo el cuerpo de la respuesta."
                         )
 
@@ -1038,6 +1080,7 @@ def build_tab_preguntas(container) -> None:
                                                 "font-size:10px;color:#e65100;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
+                                        _aviso_sin_verificar("groq")
                                         groq_spin_desktop = ui.element("div").style(
                                             "display:flex;align-items:center;gap:6px"
                                         )
@@ -1093,6 +1136,7 @@ def build_tab_preguntas(container) -> None:
                                                 "font-size:10px;color:#1565c0;"
                                                 "letter-spacing:0.05em;font-weight:600"
                                             )
+                                        _aviso_sin_verificar("gemini")
                                         gemini_spin_desktop = ui.element("div").style(
                                             "display:flex;align-items:center;gap:6px"
                                         )
@@ -1239,6 +1283,7 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#e65100;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
+                                    _aviso_sin_verificar("groq")
                                     groq_spin_mobile = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
@@ -1294,6 +1339,7 @@ def build_tab_preguntas(container) -> None:
                                             "font-size:10px;color:#1565c0;"
                                             "letter-spacing:0.05em;font-weight:600"
                                         )
+                                    _aviso_sin_verificar("gemini")
                                     gemini_spin_mobile = ui.element("div").style(
                                         "display:flex;align-items:center;gap:6px"
                                     )
