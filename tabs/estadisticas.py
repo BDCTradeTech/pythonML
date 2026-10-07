@@ -1221,11 +1221,11 @@ def _pintar_home_inline(
                                             if p.get("solo_catalogo"):
                                                 with ui.element("span").style(
                                                         "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
-                                                        "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
+                                                        "padding:0 5px;line-height:9px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
                                                     ui.label("CATÁLOGO")
                                     with ui.element("div").style("flex-shrink:0;text-align:right;white-space:nowrap"):
-                                        ui.label(f"{p['units']}u").style("font-size:15px;line-height:16px;font-weight:700;color:#1D4ED8")
-                                        ui.label(f"{pct:.1f}%".replace(".", ",")).style("font-size:10px;line-height:11px;color:#9CA3AF")
+                                        ui.label(f"{p['units']}u").style("font-size:13px;line-height:14px;font-weight:700;color:#1D4ED8")
+                                        ui.label(f"{pct:.1f}%".replace(".", ",")).style("font-size:9px;line-height:10px;color:#9CA3AF")
                             if top_sin_sku:
                                 ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
                                     "font-size:9px;color:#9ca3af;margin-top:4px")
