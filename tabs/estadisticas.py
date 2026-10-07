@@ -1277,7 +1277,7 @@ def _pintar_home_inline(
                 marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
 
                 with ui.element("div").style(f"flex:1.3;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style("padding:12px 14px"):
+                    with ui.element("div").style("padding:12px 14px 10px"):
                         ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
                         if not top_list:
                             ui.label("Sin ventas este mes").style("font-size:12px;color:#9ca3af")
