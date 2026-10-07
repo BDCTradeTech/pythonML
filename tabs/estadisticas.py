@@ -51,11 +51,9 @@ def fmt_m(val) -> str:
         return "$0"
 
 
-_ADS_VIOLETA = "#7B4FD6"
-_ADS_NARANJA = "#C2410C"
-_ADS_VERDE = "#1D9A6C"
 _PROMO_ROSA = "#DB2777"
-_PROMO_NARANJA = "#E8901A"
+_CUOTAS_AZUL = "#2563EB"
+_PUB_VIOLETA = "#7C3AED"
 
 
 def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, float, float]:
@@ -90,16 +88,31 @@ def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, 
     return uds, imp, lista, aporte
 
 
-def _kpi_fila(cuadros: List[Tuple[str, str, str, str]]) -> None:
-    """Fila de cuadros (título, valor grande, color, subtexto) con el mismo estilo que Publicidad."""
-    with ui.row().classes("w-full gap-2 flex-nowrap"):
-        for _lx, _val, _clr, _sub in cuadros:
+def _titulo_seccion(texto: str, color: str, margin_top: int = 0) -> None:
+    """Título de sección con un punto de color antes (estética B)."""
+    with ui.element("div").style(f"display:flex;align-items:center;gap:6px;margin-top:{margin_top}px;margin-bottom:5px"):
+        ui.element("div").style(f"width:8px;height:8px;border-radius:50%;background:{color};flex-shrink:0")
+        ui.label(texto).style("font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500")
+
+
+def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str) -> None:
+    """Fila de cuadros estética B: etiqueta, número gris oscuro, subtexto y (opcional) barra de proporción.
+    Todos del mismo alto (la barra reserva su lugar aunque no se muestre). cuadros = (etiqueta, valor, subtexto, % o None)."""
+    with ui.row().classes("w-full flex-nowrap").style("gap:5px"):
+        for _lx, _val, _sub, _pct in cuadros:
+            _w = max(0.0, min(100.0, _pct)) if _pct is not None else 0.0
+            _barra = (
+                f'<div style="height:4px;background:#E5E7EB;border-radius:2px;margin-top:6px">'
+                f'<div style="height:4px;width:{_w:.1f}%;background:{color};border-radius:2px"></div></div>'
+                if _pct is not None else '<div style="height:4px;margin-top:6px"></div>'
+            )
             ui.html(
-                f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
-                f'padding:6px 2px;text-align:center;width:100%;box-sizing:border-box">'
-                f'<div style="font-size:10px;color:#9ca3af;margin-bottom:2px">{_lx}</div>'
-                f'<div style="font-size:20px;font-weight:700;color:{_clr};line-height:1;margin-bottom:3px">{_val}</div>'
-                f'<div style="font-size:9px;color:#6b7280;white-space:nowrap">{_sub}</div>'
+                f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-left:3px solid {color};border-radius:6px;'
+                f'padding:6px 2px 6px 6px;width:100%;box-sizing:border-box;overflow:hidden">'
+                f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{_lx}</div>'
+                f'<div style="font-size:18px;font-weight:500;color:#111827;line-height:1.2;white-space:nowrap">{_val}</div>'
+                f'<div style="font-size:11px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
+                f'{_barra}'
                 f'</div>'
             ).style("flex:1;min-width:0")
 
@@ -898,7 +911,7 @@ def _pintar_home_inline(
                 if key_ord in facturacion_por_dia:
                     facturacion_por_dia[key_ord] += float(ord_item.get("total_amount") or ord_item.get("paid_amount") or 0)
 
-            with ui.row().classes("w-full gap-2 flex-wrap items-start mt-1"):
+            with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
                 # "Publicaciones": _cuotas_key sobre items_data, que ya trae seller_sku /
                 # catalog_product_id por publicación).
@@ -1091,65 +1104,43 @@ def _pintar_home_inline(
                             _pr_u += _po[0]; _pr_imp += _po[1]; _pr_lista += _po[2]; _pr_aporte += _po[3]
                         # Sin ventas con promo en el mes la sección no se muestra (igual que Publicidad sin datos).
                         if _pr_u > 0:
-                            ui.label(f"PROMOCIONES — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
-                            _kpi_fila([
-                                ("Con promo", fmt_n(_pr_u), _PROMO_ROSA,
-                                 f"{_fmt_dec(_pr_u / total_unidades_mes_c * 100, 1) if total_unidades_mes_c else '0,0'}% del total"),
-                                ("Facturación", _fmt_corto_ads(_pr_imp), _PROMO_ROSA,
-                                 f"{_fmt_dec(_pr_imp / ventas_mes_actual_monto * 100, 1) if ventas_mes_actual_monto else '0,0'}% del total"),
-                                ("Desc. prom.", f"{_fmt_dec((_pr_lista - _pr_imp) / _pr_lista * 100, 1) if _pr_lista else '0,0'}%",
-                                 _PROMO_NARANJA, "sobre lista"),
-                                ("Cupones", _fmt_corto_ads(_pr_aporte), _ADS_VERDE, "en ventas con promo"),
-                            ])
+                            _pr_pu = (_pr_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
+                            _pr_pf = (_pr_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
+                            _pr_desc = ((_pr_lista - _pr_imp) / _pr_lista * 100) if _pr_lista else 0.0
+                            _titulo_seccion(f"PROMOCIONES — {mes_actual_nom.upper()}", _PROMO_ROSA)
+                            _kpi_b([
+                                ("Unid. con promo", fmt_n(_pr_u), f"{_pr_pu:.0f}% · de {fmt_n(total_unidades_mes_c)}", _pr_pu),
+                                ("Fact. con promo", _fmt_corto_ads(_pr_imp),
+                                 f"{_pr_pf:.0f}% · de {_fmt_corto_ads(ventas_mes_actual_monto)}", _pr_pf),
+                                ("Descuento medio", f"−{_fmt_dec(_pr_desc, 1)}%", "sobre lista", None),
+                                ("Cupones", _fmt_corto_ads(_pr_aporte), "en esas ventas", None),
+                            ], _PROMO_ROSA)
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
-                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-top:{8 if _pr_u > 0 else 0}px;margin-bottom:6px")
-                        with ui.row().classes("w-full gap-2 flex-nowrap"):
-                            for _cx, _lx, _clr in [
-                                (1,  "1x",  "#185fa5"),
-                                (3,  "3x",  "#1d9e75"),
-                                (6,  "6x",  "#1d9e75"),
-                                (9,  "9x",  "#ef9f27"),
-                                (12, "12x", "#ef9f27"),
-                            ]:
-                                _cu     = cuotas_dist[_cx]
-                                _pct_c  = _cu / _base_c * 100
-                                _cu_str = f"{_cu:,}".replace(",", ".")
-                                ui.html(
-                                    f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
-                                    f'padding:10px 8px 0 8px;overflow:hidden;position:relative;text-align:center;'
-                                    f'width:100%;box-sizing:border-box">'
-                                    f'<div style="font-size:10px;color:#9ca3af;margin-bottom:4px">{_lx}</div>'
-                                    f'<div style="font-size:24px;font-weight:700;color:{_clr};line-height:1;margin-bottom:4px">{_cu_str}</div>'
-                                    f'<div style="font-size:13px;color:#6b7280;margin-bottom:8px">{_pct_c:.1f}%</div>'
-                                    f'<div style="position:absolute;bottom:0;left:0;height:4px;width:{_pct_c:.1f}%;background:{_clr}"></div>'
-                                    f'</div>'
-                                ).style("flex:1;min-width:0")
+                        _titulo_seccion(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} UNID.", _CUOTAS_AZUL,
+                                        margin_top=8 if _pr_u > 0 else 0)
+                        _kpi_b([
+                            ("Contado" if _cx == 1 else f"{_cx} cuotas", fmt_n(cuotas_dist[_cx]),
+                             f"{_fmt_dec(cuotas_dist[_cx] / _base_c * 100, 1)}%", cuotas_dist[_cx] / _base_c * 100)
+                            for _cx in (1, 3, 6, 9, 12)
+                        ], _CUOTAS_AZUL)
 
                         _ads = _ads_mes_resumen(user_id, primer_dia_mes, today_local)
                         if _ads:
                             _a_u, _a_imp, _a_inv = _ads["unidades"], _ads["importe"], _ads["cost"]
-                            _a_pct_u = f"{_fmt_dec(_a_u / total_unidades_mes_c * 100, 1)}% del total" if total_unidades_mes_c else "—"
-                            _a_pct_f = f"{_fmt_dec(_a_imp / ventas_mes_actual_monto * 100, 1)}% del total" if ventas_mes_actual_monto else "—"
-                            _a_cvta = f"{fmt_m(_a_inv / _a_u)} c/venta" if _a_u else "—"
                             _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
-                            ui.label(f"PUBLICIDAD — {mes_actual_nom.upper()}").style(f"{_LBL};margin-top:2px;margin-bottom:4px")
-                            with ui.row().classes("w-full gap-2 flex-nowrap"):
-                                for _lx, _val, _clr, _sub in [
-                                    ("Unidades", fmt_n(_a_u), _ADS_VIOLETA, _a_pct_u),
-                                    ("Facturación", _fmt_corto_ads(_a_imp), _ADS_VIOLETA, _a_pct_f),
-                                    ("Inversión", _fmt_corto_ads(_a_inv), _ADS_NARANJA, _a_cvta),
-                                    ("Cada $1 vendió", f"${_fmt_dec(_a_roas, 2)}" if _a_inv else "—", _ADS_VERDE,
-                                     f"ROAS {_fmt_dec(_a_roas, 1)}x" if _a_inv else "ROAS —"),
-                                ]:
-                                    ui.html(
-                                        f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
-                                        f'padding:6px 4px;text-align:center;width:100%;box-sizing:border-box">'
-                                        f'<div style="font-size:10px;color:#9ca3af;margin-bottom:2px">{_lx}</div>'
-                                        f'<div style="font-size:20px;font-weight:700;color:{_clr};line-height:1;margin-bottom:3px">{_val}</div>'
-                                        f'<div style="font-size:10px;color:#6b7280;white-space:nowrap">{_sub}</div>'
-                                        f'</div>'
-                                    ).style("flex:1;min-width:0")
+                            _a_pu = (_a_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
+                            _a_pf = (_a_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
+                            _titulo_seccion(f"PUBLICIDAD — {mes_actual_nom.upper()}", _PUB_VIOLETA, margin_top=8)
+                            _kpi_b([
+                                ("Ventas por ads", fmt_n(_a_u), f"{_fmt_dec(_a_pu, 1)}% de tus u." if total_unidades_mes_c else "—",
+                                 _a_pu if total_unidades_mes_c else None),
+                                ("Facturado ads", _fmt_corto_ads(_a_imp), f"{_fmt_dec(_a_pf, 1)}% del total" if ventas_mes_actual_monto else "—",
+                                 _a_pf if ventas_mes_actual_monto else None),
+                                ("Gasto en ads", _fmt_corto_ads(_a_inv), f"{fmt_m(_a_inv / _a_u)} x venta" if _a_u else "—", None),
+                                ("Retorno", f"x{_fmt_dec(_a_roas, 1)}" if _a_inv else "—",
+                                 f"${_fmt_dec(_a_roas, 2)} por $1" if _a_inv else "—", None),
+                            ], _PUB_VIOLETA)
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
