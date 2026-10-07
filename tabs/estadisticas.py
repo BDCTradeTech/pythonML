@@ -779,6 +779,19 @@ def _pintar_home_inline(
     rep = (profile or {}).get("seller_reputation") or {}
     today_local = datetime.now().date()
     primer_dia_mes = today_local.replace(day=1)
+    # Unidades y facturado por dia, hoy + 90 dias atras (mismo criterio sales_core): alimentan el calendario y la aceleracion.
+    ventas_por_dia: Dict[str, int] = {}
+    facturacion_por_dia: Dict[str, float] = {}
+    for d in range(91):
+        fd = today_local - timedelta(days=d)
+        ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
+        facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
+    for ord_item in results:
+        dt = fecha_venta(ord_item)
+        if dt is None or not (0 <= (today_local - dt).days <= 90):
+            continue
+        ventas_por_dia[dt.strftime("%Y-%m-%d")] += unidades_venta(ord_item)
+        facturacion_por_dia[dt.strftime("%Y-%m-%d")] += monto_venta(ord_item)
     hoy_unidades, hoy_monto = 0, 0.0
     flex_hoy = 0
     me_hoy = 0
@@ -1199,19 +1212,6 @@ def _pintar_home_inline(
             mediat_val = (mediat.get("value") or mediat.get("excluded", {}).get("real_value") or 0) if mediat else 0
             canc_val = (canc.get("value") or canc.get("excluded", {}).get("real_value") or 0)
             postventa_total = claims_val + mediat_val + canc_val
-
-            ventas_por_dia: Dict[str, int] = {}
-            facturacion_por_dia: Dict[str, float] = {}
-            for d in range(91):
-                fd = today_local - timedelta(days=d)
-                ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
-                facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
-            for ord_item in results:
-                dt = fecha_venta(ord_item)
-                if dt is None or not (0 <= (today_local - dt).days <= 90):
-                    continue
-                ventas_por_dia[dt.strftime("%Y-%m-%d")] += unidades_venta(ord_item)
-                facturacion_por_dia[dt.strftime("%Y-%m-%d")] += monto_venta(ord_item)
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
