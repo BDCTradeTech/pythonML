@@ -246,7 +246,7 @@ def _media_movil(serie: List[float], n: int) -> List[float]:
     return [sum(serie[i - n + 1:i + 1]) / n for i in range(n - 1, len(serie))]
 
 
-def _svg_velocimetro(pct: float, tip: str) -> str:
+def _svg_velocimetro(pct: float, tip: str, ancho: int = 55) -> str:
     """Semicirculo de -40% a +40% (rojo -40/-10, gris -10/+10, verde +10/+40) con aguja que se corta en los extremos."""
     cx, cy, r = 35.0, 36.0, 29.0
 
@@ -258,7 +258,7 @@ def _svg_velocimetro(pct: float, tip: str) -> str:
 
     ang = 180.0 - (max(-40.0, min(40.0, pct)) + 40.0) / 80.0 * 180.0
     return (
-        f'<svg viewBox="0 0 70 40" width="70" height="40" style="display:block"><title>{tip}</title>'
+        f'<svg viewBox="0 0 70 40" width="{ancho}" height="{ancho * 40 / 70:.1f}" style="display:block"><title>{tip}</title>'
         + _arco(180, 135, "#FCA5A5") + _arco(135, 45, "#E5E7EB") + _arco(45, 0, "#86EFAC")
         + f'<line x1="{cx}" y1="{cy}" x2="{_pt(ang, r - 6).split(",")[0]}" y2="{_pt(ang, r - 6).split(",")[1]}" '
           f'stroke="#111827" stroke-width="1.8" stroke-linecap="round"/>'
@@ -266,13 +266,14 @@ def _svg_velocimetro(pct: float, tip: str) -> str:
     )
 
 
-def _svg_aceleracion(fechas: List[Any], m7: List[float], m28: List[float], fmt: Callable[[float], str]) -> str:
-    """Mini grafico de 60 dias: media movil 7d (azul) y 28d (gris) y el area entre ambas (verde si 7d > 28d, rojo si no).
-    SVG con viewBox fijo que se estira al contenedor (preserveAspectRatio none, trazos non-scaling), sin ejes ni grilla."""
+def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Callable[[float], str]) -> Tuple[str, float, float]:
+    """Mini grafico de 90 dias: media movil 7d (azul), recta del promedio de 90 dias (gris punteada) y el area entre ambas
+    (verde si 7d > promedio, roja si no, cortada en los cruces). SVG con viewBox fijo que se estira al contenedor
+    (preserveAspectRatio none, trazos non-scaling), sin ejes ni grilla. Devuelve (svg, y del ultimo punto 7d en %, y de la recta en %)."""
     n = len(m7)
     w, h = 200.0, 60.0
-    lo = min(min(m7), min(m28))
-    hi = max(max(m7), max(m28))
+    lo = min(min(m7), prom)
+    hi = max(max(m7), prom)
     rng = (hi - lo) or 1.0
     lo -= rng * 0.08
     hi += rng * 0.08
@@ -289,54 +290,61 @@ def _svg_aceleracion(fechas: List[Any], m7: List[float], m28: List[float], fmt: 
     def _poli(lst: List[str], pts: List[Any]) -> None:
         lst.append("M" + " L".join(f"{x:.2f},{y:.2f}" for x, y in pts) + " Z")
 
+    yp = _y(prom)
     for i in range(n - 1):
-        d0, d1 = m7[i] - m28[i], m7[i + 1] - m28[i + 1]
+        d0, d1 = m7[i] - prom, m7[i + 1] - prom
         x0, x1 = _x(i), _x(i + 1)
         if d0 * d1 >= 0:
-            _poli(verde if (d0 + d1) >= 0 else rojo,
-                  [(x0, _y(m7[i])), (x1, _y(m7[i + 1])), (x1, _y(m28[i + 1])), (x0, _y(m28[i]))])
+            _poli(verde if (d0 + d1) >= 0 else rojo, [(x0, _y(m7[i])), (x1, _y(m7[i + 1])), (x1, yp), (x0, yp)])
         else:
             t = d0 / (d0 - d1)
             xc = x0 + (x1 - x0) * t
-            yc = _y(m7[i] + (m7[i + 1] - m7[i]) * t)
-            _poli(verde if d0 > 0 else rojo, [(x0, _y(m7[i])), (xc, yc), (x0, _y(m28[i]))])
-            _poli(verde if d1 > 0 else rojo, [(xc, yc), (x1, _y(m7[i + 1])), (x1, _y(m28[i + 1]))])
+            _poli(verde if d0 > 0 else rojo, [(x0, _y(m7[i])), (xc, yp), (x0, yp)])
+            _poli(verde if d1 > 0 else rojo, [(xc, yp), (x1, _y(m7[i + 1])), (x1, yp)])
     l7 = "M" + " L".join(f"{_x(i):.2f},{_y(v):.2f}" for i, v in enumerate(m7))
-    l28 = "M" + " L".join(f"{_x(i):.2f},{_y(v):.2f}" for i, v in enumerate(m28))
     bw = w / n
     cols = "".join(
         f'<rect x="{_x(i) - bw / 2:.2f}" y="0" width="{bw:.2f}" height="{h}" fill="transparent">'
-        f'<title>{fechas[i].strftime("%d/%m")}: 7d {fmt(m7[i])}/día · 28d {fmt(m28[i])}/día</title></rect>'
+        f'<title>{fechas[i].strftime("%d/%m/%Y")}: prom. 7d {fmt(m7[i])} · prom. 90d {fmt(prom)}</title></rect>'
         for i in range(n)
     )
-    return (
+    svg = (
         f'<svg viewBox="0 0 {w:.0f} {h:.0f}" preserveAspectRatio="none" '
         f'style="position:absolute;inset:0;width:100%;height:100%;display:block">'
         f'<path d="{" ".join(verde)}" fill="#BBF7D0"/><path d="{" ".join(rojo)}" fill="#FECACA"/>'
-        f'<path d="{l28}" fill="none" stroke="#9CA3AF" stroke-width="1.2" vector-effect="non-scaling-stroke"/>'
-        f'<path d="{l7}" fill="none" stroke="#2563EB" stroke-width="2" vector-effect="non-scaling-stroke"/>'
+        f'<line x1="0" y1="{yp:.2f}" x2="{w:.0f}" y2="{yp:.2f}" stroke="#6B7280" stroke-width="1.2" '
+        f'stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>'
+        f'<path d="{l7}" fill="none" stroke="#2563EB" stroke-width="1.8" vector-effect="non-scaling-stroke"/>'
         f'{cols}</svg>'
     )
+    return svg, _y(m7[-1]) / h * 100, yp / h * 100
 
 
 def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy: Any) -> None:
-    """Tarjeta ACELERACION DE VENTAS: por cada serie (unidades, facturado) un velocimetro 7d vs 90d y el mini grafico
-    de 60 dias con las medias moviles de 7 y 28 dias. HOY no cuenta (dia incompleto): todas las ventanas terminan AYER.
-    Las filas se reparten el alto de la tarjeta (flex 1 con min-height 0), asi que no define el alto de la fila."""
+    """Tarjeta ACELERACION DE VENTAS: por cada serie (unidades, facturado) una frase, un velocimetro (promedio de la ultima
+    semana vs promedio de 90 dias) y el grafico de 90 dias con la media movil de 7 dias contra la recta del promedio de 90.
+    HOY no cuenta (dia incompleto): todas las ventanas terminan AYER; se leen 96 dias para que el primer punto de los 90
+    tenga su promedio de 7 dias completo. Las filas se reparten el alto de la tarjeta (flex 1 con min-height 0)."""
     ayer = hoy - timedelta(days=1)
-    fechas = [ayer - timedelta(days=i) for i in range(89, -1, -1)]  # 90 dias completos, del mas viejo al mas nuevo
+    fechas = [ayer - timedelta(days=i) for i in range(95, -1, -1)]  # 96 dias completos, del mas viejo al mas nuevo
     ui.add_css(
         ".ac-w{container-type:inline-size;flex:1;min-height:0;display:flex;flex-direction:column}"
-        ".ac-r{flex:1 1 0;min-height:0;display:flex;align-items:center;gap:8px;background:#F9FAFB;border:1px solid #F3F4F6;"
-        "border-radius:6px;padding:6px 8px}"
-        ".ac-g{flex:0 0 74px;display:flex;flex-direction:column;align-items:center;text-align:center}"
+        ".ac-r{flex:1 1 0;min-height:0;display:flex;flex-direction:column;gap:3px;background:#F9FAFB;border:1px solid #F3F4F6;"
+        "border-radius:6px;padding:5px 8px}"
+        ".ac-f{font-size:9.5px;line-height:12px;color:#374151;white-space:nowrap}.ac-f .fp-l{display:none}"
+        ".ac-f .fp-c{display:inline}"
+        ".ac-b{flex:1;min-height:0;display:flex;align-items:center;gap:8px}"
+        ".ac-g{flex:0 0 60px;display:flex;flex-direction:column;align-items:center;text-align:center}"
         ".ac-c{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column}"
-        ".ac-cv{position:relative;flex:1;min-height:34px}"
-        ".ac-l{white-space:nowrap}"
-        "@container (max-width:300px){.ac-r{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto;align-self:center}"
-        ".ac-c{min-height:84px}.ac-cv{min-height:70px}}"
-        "@media (max-width:640px){.ac-w{flex:none}.ac-r{flex:none;min-height:110px}.ac-g{flex:0 0 80px}"
-        ".ac-cv{min-height:70px}.ac-l{white-space:normal;flex-wrap:wrap;gap:2px 8px}}"
+        ".ac-cr{flex:1;min-height:30px;display:flex}"
+        ".ac-cv{position:relative;flex:1;min-width:0}"
+        ".ac-et{position:relative;flex:0 0 46px}"
+        ".ac-t{position:absolute;left:6px;transform:translateY(-50%);font-size:9px;line-height:10px;white-space:nowrap}"
+        ".ac-ax{display:flex;justify-content:space-between;font-size:8px;line-height:9px;color:#9CA3AF;margin-right:46px}"
+        "@container (max-width:300px){.ac-b{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto;align-self:center}"
+        ".ac-c{min-height:84px}.ac-cr{min-height:70px}}"
+        "@media (max-width:640px){.ac-w{flex:none}.ac-r{flex:none;min-height:120px}.ac-cr{min-height:70px}"
+        ".ac-f{white-space:normal}.ac-f .fp-l{display:inline}.ac-f .fp-c{display:none}}"
     )
     filas = []
     for nombre, datos, fmt_v, fmt_dia in (
@@ -344,31 +352,45 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
         ("Facturado", facturado, _abrev_pesos, lambda v: f"{_abrev_pesos(v)}/día"),
     ):
         serie = [float(datos.get(f.strftime("%Y-%m-%d"), 0) or 0) for f in fechas]
-        a7, a90 = sum(serie[-7:]) / 7, sum(serie) / 90
+        m7 = _media_movil(serie, 7)  # 90 puntos (el primero promedia los 7 dias que terminan en el dia 90 hacia atras)
+        a7 = m7[-1]
+        a90 = sum(serie[-90:]) / 90
         sin_ventas = a90 <= 0
         pct = 0.0 if sin_ventas else (a7 / a90 - 1) * 100
         col = "#6B7280" if sin_ventas else ("#16A34A" if pct > 10 else ("#DC2626" if pct < -10 else "#6B7280"))
-        tip = f"Últimos 7 días: {fmt_v(a7)}/día · Últimos 90 días: {fmt_v(a90)}/día"
-        m28 = _media_movil(serie, 28)[-60:]
-        m7 = _media_movil(serie, 7)[-60:]
-        graf = ('<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
-                'font-size:10px;color:#9CA3AF">Sin ventas</div>') if sin_ventas else _svg_aceleracion(fechas[-60:], m7, m28, fmt_v)
+        pct_txt = f"{round(pct):+d}%".replace("-", "−")
+        tip = f"Esta semana: {fmt_dia(a7)} · Promedio de 90 días: {fmt_dia(a90)}"
+        if sin_ventas:
+            frase = f"<b>{nombre}:</b> Sin ventas en los últimos 90 días"
+            graf = ('<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
+                    'font-size:10px;color:#9CA3AF">Sin ventas</div>')
+            etiquetas = ""
+        else:
+            r = round(pct)
+            rel = "sobre" if r > 0 else ("debajo de" if r < 0 else "en línea con")
+            _p = f'<b style="color:{col}">{pct_txt}</b> {rel}'
+            frase = (f'<b>{nombre}:</b> esta semana {fmt_dia(a7)}, {_p} '
+                     f'<span class="fp-l">tu promedio de 90 días</span><span class="fp-c">prom. 90 días</span> ({fmt_v(a90)})')
+            svg, y7, yp = _svg_aceleracion(fechas[-90:], m7, a90, fmt_v)
+            graf = (svg + f'<div style="position:absolute;right:0;top:{y7:.1f}%;width:6px;height:6px;border-radius:50%;'
+                    'background:#2563EB;transform:translate(50%,-50%);pointer-events:none"></div>')
+            if abs(y7 - yp) < 24:  # etiquetas muy cerca: separarlas verticalmente alrededor del punto medio
+                mid = max(12.0, min(88.0, (y7 + yp) / 2))
+                y7, yp = (mid - 12, mid + 12) if y7 <= yp else (mid + 12, mid - 12)
+            y7, yp = max(6.0, min(94.0, y7)), max(6.0, min(94.0, yp))
+            etiquetas = (f'<div class="ac-t" style="top:{y7:.1f}%;color:#2563EB;font-weight:700">semana</div>'
+                         f'<div class="ac-t" style="top:{yp:.1f}%;color:#6B7280">prom. 90d</div>')
         filas.append(
             '<div class="ac-r">'
-            f'<div class="ac-g" title="{tip}">{_svg_velocimetro(pct, tip)}'
-            f'<div style="font-size:16px;line-height:18px;font-weight:700;color:{col}">{pct:+.0f}%</div>'
-            f'<div style="font-size:9px;line-height:10px;color:#6B7280;white-space:nowrap">{nombre} <span style="color:#9CA3AF">vs 90d</span></div></div>'
-            '<div class="ac-c"><div style="display:flex;justify-content:space-between;align-items:baseline;white-space:nowrap">'
-            f'<b style="font-size:10px;color:#111827">{fmt_dia(a7)}</b><span style="font-size:9px;color:#9CA3AF">últimos 60 días</span></div>'
-            f'<div class="ac-cv">{graf}</div></div></div>'
+            f'<div class="ac-f">{frase}</div>'
+            f'<div class="ac-b"><div class="ac-g" title="{tip}">{_svg_velocimetro(pct, tip)}'
+            f'<div style="font-size:14px;line-height:16px;font-weight:700;color:{col}">{pct_txt}</div></div>'
+            f'<div class="ac-c"><div class="ac-cr"><div class="ac-cv">{graf}</div><div class="ac-et">{etiquetas}</div></div>'
+            '<div class="ac-ax"><span>hace 90 días</span><span>ayer</span></div></div></div></div>'
         )
     ui.html(
         '<div class="ac-w"><div style="display:flex;flex-direction:column;gap:6px;flex:1;min-height:0">'
-        + "".join(filas) +
-        '</div><div class="ac-l" style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;'
-        'margin-top:6px"><span><span style="color:#2563EB">—</span> prom. 7 días '
-        '<span style="color:#9CA3AF">—</span> prom. 28 días <span style="color:#86EFAC">■</span> acelera '
-        '<span style="color:#FCA5A5">■</span> frena</span></div></div>'
+        + "".join(filas) + '</div></div>'
     ).style("flex:1;min-height:0;display:flex;flex-direction:column")
 
 
@@ -789,16 +811,16 @@ def _pintar_home_inline(
     rep = (profile or {}).get("seller_reputation") or {}
     today_local = datetime.now().date()
     primer_dia_mes = today_local.replace(day=1)
-    # Unidades y facturado por dia, hoy + 90 dias atras (mismo criterio sales_core): alimentan el calendario y la aceleracion.
+    # Unidades y facturado por dia, hoy + 96 dias atras (90 de la aceleracion + 6 para el promedio de 7 dias del primer punto) (mismo criterio sales_core): alimentan el calendario y la aceleracion.
     ventas_por_dia: Dict[str, int] = {}
     facturacion_por_dia: Dict[str, float] = {}
-    for d in range(91):
+    for d in range(97):
         fd = today_local - timedelta(days=d)
         ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
         facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
     for ord_item in results:
         dt = fecha_venta(ord_item)
-        if dt is None or not (0 <= (today_local - dt).days <= 90):
+        if dt is None or not (0 <= (today_local - dt).days <= 96):
             continue
         ventas_por_dia[dt.strftime("%Y-%m-%d")] += unidades_venta(ord_item)
         facturacion_por_dia[dt.strftime("%Y-%m-%d")] += monto_venta(ord_item)
@@ -1101,7 +1123,6 @@ def _pintar_home_inline(
                     with ui.element("div").style("padding:12px 14px;flex:1;min-height:0;display:flex;flex-direction:column"):
                         with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
                             ui.label("ACELERACIÓN DE VENTAS").style(_LBL)
-                            ui.label("últimos 7 días vs 90 días").style("font-size:10px;color:#9CA3AF")
                         _pintar_aceleracion(ventas_por_dia, facturacion_por_dia, today_local)
 
                 # Card Facturación Mensual (echart)
