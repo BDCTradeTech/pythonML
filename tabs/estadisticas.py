@@ -156,8 +156,10 @@ _CAL_GRIS = [("#F3F4F6", "#374151"), ("#E5E7EB", "#374151"), ("#D1D5DB", "#37415
              ("#9CA3AF", "#374151"), ("#6B7280", "#FFFFFF"), ("#4B5563", "#FFFFFF")]
 
 
-def _abrev_pesos(v: float) -> str:
-    """$9,3M / $224M / $850k / $0 (decimal con coma)."""
+def _abrev_pesos(v: float, corto: bool = False) -> str:
+    """$9,3M / $224M / $850k / $0 (decimal con coma). corto: sin decimal ($16M) para celdas muy angostas."""
+    if v >= 1_000_000 and corto:
+        return f"${v / 1_000_000:.0f}M"
     if v >= 1_000_000:
         return f"${_fmt_dec(v / 1_000_000, 0 if v >= 100_000_000 else 1)}M"
     if v >= 1_000:
@@ -194,7 +196,7 @@ def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy:
             su += u
             sf += f
             bg, fg = (_CAL_AZUL if (d.year, d.month) == (hoy.year, hoy.month) else _CAL_GRIS)[_tono_cal(u, prom)]
-            dia = f"<b>1 {_MESES_ABR[d.strftime('%m')].upper()}</b>" if d.day == 1 else str(d.day)
+            dia = f"<b>1<span class=\"cal-mes\"> {_MESES_ABR[d.strftime('%m')].upper()}</span></b>" if d.day == 1 else str(d.day)
             es_hoy = d == hoy
             sombra = "box-shadow:inset 0 0 0 2px #16A34A;" if es_hoy else ""
             tag_hoy = '<span class="cal-hoy">HOY</span>' if es_hoy else ""
@@ -202,7 +204,7 @@ def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy:
             celdas.append(
                 f'<div class="cal-c" title="{tip}" style="background:{bg};color:{fg};{sombra}">'
                 f'<span class="cal-d">{dia}</span>{tag_hoy}<span class="cal-u">{u}</span>'
-                f'<span class="cal-f">{_abrev_pesos(f)}</span></div>'
+                f'<span class="cal-f"><span class="fl">{_abrev_pesos(f)}</span><span class="fs">{_abrev_pesos(f, True)}</span></span></div>'
             )
         celdas.append(f'<div class="cal-s"><b>{fmt_n(su)}u</b><span>{_abrev_pesos(sf)}</span></div>')
     leyenda = ""
@@ -219,15 +221,20 @@ def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy:
         ".cal-hoy{position:absolute;top:2px;right:3px;font-size:7px;line-height:9px;font-weight:700}"
         ".cal-u{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}"
         ".cal-f{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:8px;line-height:9px}"
+        ".cal-f .fs{display:none}"
         ".cal-s{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0}"
         ".cal-s b{font-size:11px;line-height:12px;color:#1D4ED8}"
         ".cal-s span{font-size:8px;line-height:9px;color:#6B7280}"
         ".cal-esc i{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 1px;vertical-align:-1px}"
-        "@container (max-width:320px){.cal-f{display:none}}"
+        "@container (max-width:275px){.cal-f .fl{display:none}.cal-f .fs{display:inline}}"
+        "@media (max-width:640px){"
+        ".cal-wrap{flex:none}.cal-g{flex:none;grid-template-rows:10px repeat(var(--n),46px)!important}"
+        ".cal-d{font-size:7px;line-height:8px}.cal-u{font-size:12px}.cal-f{font-size:7px;line-height:8px}"
+        ".cal-mes,.cal-hoy{display:none}}"
     )
     ui.html(
         '<div class="cal-wrap">'
-        f'<div class="cal-g" style="grid-template-rows:10px repeat({n_sem},minmax(0,1fr))">{"".join(celdas)}</div>'
+        f'<div class="cal-g" style="--n:{n_sem};grid-template-rows:10px repeat({n_sem},minmax(0,1fr))">{"".join(celdas)}</div>'
         '<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;margin-top:5px;white-space:nowrap">'
         f'<span>{leyenda}</span><span class="cal-esc">menos {escala} más</span></div>'
         "</div>"
@@ -325,8 +332,11 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
         ".ac-g{flex:0 0 74px;display:flex;flex-direction:column;align-items:center;text-align:center}"
         ".ac-c{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column}"
         ".ac-cv{position:relative;flex:1;min-height:34px}"
-        "@container (max-width:320px){.ac-r{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto}"
-        ".ac-c{min-height:84px}}"
+        ".ac-l{white-space:nowrap}"
+        "@container (max-width:300px){.ac-r{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto;align-self:center}"
+        ".ac-c{min-height:84px}.ac-cv{min-height:70px}}"
+        "@media (max-width:640px){.ac-w{flex:none}.ac-r{flex:none;min-height:110px}.ac-g{flex:0 0 80px}"
+        ".ac-cv{min-height:70px}.ac-l{white-space:normal;flex-wrap:wrap;gap:2px 8px}}"
     )
     filas = []
     for nombre, datos, fmt_v, fmt_dia in (
@@ -355,8 +365,8 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
     ui.html(
         '<div class="ac-w"><div style="display:flex;flex-direction:column;gap:6px;flex:1;min-height:0">'
         + "".join(filas) +
-        '</div><div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;'
-        'margin-top:6px;white-space:nowrap"><span><span style="color:#2563EB">—</span> prom. 7 días '
+        '</div><div class="ac-l" style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;'
+        'margin-top:6px"><span><span style="color:#2563EB">—</span> prom. 7 días '
         '<span style="color:#9CA3AF">—</span> prom. 28 días <span style="color:#86EFAC">■</span> acelera '
         '<span style="color:#FCA5A5">■</span> frena</span></div></div>'
     ).style("flex:1;min-height:0;display:flex;flex-direction:column")
