@@ -95,11 +95,13 @@ def _titulo_seccion(texto: str, color: str, margin_top: int = 0) -> None:
         ui.label(texto).style("font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500")
 
 
-def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str) -> None:
+def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str, a_contenido: bool = False) -> None:
     """Fila de cuadros estética B: etiqueta, número gris oscuro, subtexto y (opcional) barra de proporción.
-    Todos del mismo alto (la barra reserva su lugar aunque no se muestre). cuadros = (etiqueta, valor, subtexto, % o None)."""
-    with ui.row().classes("w-full flex-nowrap").style("gap:5px"):
+    Todos del mismo alto (la barra reserva su lugar aunque no se muestre). cuadros = (etiqueta, valor, subtexto, % o None).
+    a_contenido: el ancho de cada cuadro sigue a su texto (subtexto en 10px) en vez de ser parejo; para filas con textos largos."""
+    with ui.row().classes("w-full flex-nowrap").style("gap:4px" if a_contenido else "gap:5px"):
         for _lx, _val, _sub, _pct in cuadros:
+            _pl = "5px" if a_contenido else "6px"
             _w = max(0.0, min(100.0, _pct)) if _pct is not None else 0.0
             _barra = (
                 f'<div style="height:4px;background:#E5E7EB;border-radius:2px;margin-top:3px">'
@@ -108,13 +110,13 @@ def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str) -> 
             )
             ui.html(
                 f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-left:3px solid {color};border-radius:6px;'
-                f'padding:4px 2px 4px 6px;width:100%;box-sizing:border-box;overflow:hidden">'
+                f'padding:4px 1px 4px {_pl};width:100%;box-sizing:border-box;overflow:hidden">'
                 f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{_lx}</div>'
                 f'<div style="font-size:18px;font-weight:500;color:#111827;line-height:1.2;white-space:nowrap">{_val}</div>'
-                f'<div style="font-size:11px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
+                f'<div style="font-size:{10 if a_contenido else 11}px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
                 f'{_barra}'
                 f'</div>'
-            ).style("flex:1;min-width:0")
+            ).style("flex:1 1 auto;min-width:0" if a_contenido else "flex:1;min-width:0")
 
 
 def _fmt_dec(val: float, dec: int) -> str:
@@ -1109,12 +1111,12 @@ def _pintar_home_inline(
                             _pr_desc = ((_pr_lista - _pr_imp) / _pr_lista * 100) if _pr_lista else 0.0
                             _titulo_seccion(f"PROMOCIONES — {mes_actual_nom.upper()}", _PROMO_ROSA)
                             _kpi_b([
-                                ("Unid. con promo", fmt_n(_pr_u), f"{_pr_pu:.0f}% · de {fmt_n(total_unidades_mes_c)}", _pr_pu),
-                                ("Fact. con promo", _fmt_corto_ads(_pr_imp),
-                                 f"{_pr_pf:.0f}% · de {_fmt_corto_ads(ventas_mes_actual_monto)}", _pr_pf),
+                                ("Vendidas c/promo", fmt_n(_pr_u), f"{_pr_pu:.0f}% de {fmt_n(total_unidades_mes_c)} vendidas", _pr_pu),
+                                ("Facturado c/promo", _fmt_corto_ads(_pr_imp),
+                                 f"{_pr_pf:.0f}% de {_fmt_corto_ads(ventas_mes_actual_monto)}", _pr_pf),
                                 ("Desc. medio", f"−{_fmt_dec(_pr_desc, 1)}%", "sobre lista", None),
                                 ("Cupones", _fmt_corto_ads(_pr_aporte), "en esas ventas", None),
-                            ], _PROMO_ROSA)
+                            ], _PROMO_ROSA, a_contenido=True)
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
                         _titulo_seccion(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} UNID.", _CUOTAS_AZUL,
