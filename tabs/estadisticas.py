@@ -562,9 +562,31 @@ def _m1(v: float) -> str:
     return f"${int(v)}"
 
 
-def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy: Any, dolar: float) -> None:
-    """Tarjeta VENTAS - <MES> (V1): lo facturado vs el estimado de fin de mes, barra de proyeccion con las marcas del mes
-    anterior y del mes record (sin contar el mes en curso) y tabla hasta hoy / fin de mes / vs mes anterior.
+def _ads_gasto_mes(user_id: Optional[int], hoy: Any) -> Optional[Dict[str, float]]:
+    """Gasto de Ads (suma de cost de ml_ads_campaign_metrics_daily) del mes en curso y del mes anterior completo.
+    Las metricas de Ads cierran el dia anterior (10:30), asi que la proyeccion usa los DIAS CON DATO del mes, no los
+    transcurridos: {"gasto", "dias", "prev"}. None si el usuario no tiene Ads (ni este mes ni el anterior)."""
+    if not user_id:
+        return None
+    prev_fin = hoy.replace(day=1) - timedelta(days=1)
+    try:
+        cur = get_ads_campaign_daily_range(int(user_id), hoy.replace(day=1).strftime("%Y-%m-%d"), hoy.strftime("%Y-%m-%d"))
+        prev = get_ads_campaign_daily_range(int(user_id), prev_fin.replace(day=1).strftime("%Y-%m-%d"), prev_fin.strftime("%Y-%m-%d"))
+    except Exception:
+        logging.getLogger(__name__).exception("[ADS] no se pudo leer ml_ads_campaign_metrics_daily para Ventas del mes")
+        return None
+    g_cur = sum(float(x.get("cost") or 0) for x in cur)
+    g_prev = sum(float(x.get("cost") or 0) for x in prev)
+    if not (g_cur or g_prev):
+        return None
+    return {"gasto": g_cur, "dias": float(len({x.get("date") for x in cur if x.get("date")})), "prev": g_prev}
+
+
+def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy: Any, dolar: float,
+                       user_id: Optional[int] = None) -> None:
+    """Tarjeta VENTAS - <MES> (V1 + tabla X2): lo facturado vs el estimado de fin de mes, barra de proyeccion con las marcas
+    del mes anterior y del mes record (sin contar el mes en curso) y tabla hasta hoy / fin de mes / vs mes anterior
+    (montos en pesos con el renglon u$ solo en Facturado, Ganancia e Inversion ads; el dolar es el del cotizador).
     El estimado es el de siempre: (facturado del mes / dias transcurridos, hoy incluido) x dias del mes. Todo sale de
     por_mes (la misma fuente que Ventas historicas) y de _margen_por_mes (ganancia)."""
     cur = hoy.strftime("%Y-%m")
@@ -658,36 +680,75 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
             f'color:{col};font-weight:{700 if neg else 500}">{t}</div>')
     alto_labs = 10 * max(1, len(filas_fin))
 
-    def _fila(nombre: str, hoy_v: str, fin_v: str, vs_v: Optional[float]) -> str:
-        return (f'<div class="vm-t">{nombre}</div><div class="vm-h">{hoy_v}</div>'
-                f'<div class="vm-f">{fin_v}</div><div class="vm-h">{_vs_html(vs_v)}</div>')
-
     dash = '<span style="color:#9CA3AF;font-weight:400">—</span>'
+    ord_m, ord_prev = int(c.get("orders") or 0), int(pv.get("orders") or 0)
+    est_o = int(ord_m / dias_t * dias_m)
+    pct_m, pct_p = gm.get("pct"), gp.get("pct")
+    tip_margen = ""
+    if pct_m is not None:
+        tip_margen = f"Margen {_fmt_dec(pct_m, 1)}%"
+        if hay_prev and pct_p is not None:
+            tip_margen += f" · {f'{pct_m - pct_p:+.1f}'.replace('.', ',').replace('-', '−')} pp vs {nom_prev}"
+
+    def _cel(peso: str, usd: Optional[float] = None, verde: bool = False, pct: Optional[float] = None) -> str:
+        """Celda de monto: pesos (verde bold en FIN DE MES), % de margen opcional al lado y renglon u$ opcional."""
+        cls = "vm-f" if verde else "vm-h"
+        extra = f' <span class="vm-mp">· {_fmt_dec(pct, 1)}%</span>' if pct is not None else ""
+        usd_h = (f'<div class="vm-u" style="color:{"#86A88F" if verde else "#9CA3AF"}">u$ {fmt_n(usd / dolar)}</div>'
+                 if usd is not None else "")
+        return f'<div><div class="{cls}">{peso}{extra}</div>{usd_h}</div>'
+
+    def _vs_celda(v: Optional[float], neutro: bool = False) -> str:
+        if neutro and v is not None:
+            return f'<div class="vm-h" style="color:#6B7280;font-weight:600">{"▲" if v >= 0 else "▼"} {f"{v:+.0f}%".replace("-", "−")}</div>'
+        return f'<div class="vm-h">{_vs_html(v)}</div>'
+
+    filas_t: List[Tuple[str, str, str, str, str]] = []  # (nombre, hoy, fin, vs, tooltip)
+    filas_t.append(("Facturado", _cel(_m1(monto), monto), _cel(_m1(est), est, True), _vs_celda(_vs(est, prev_tot if hay_prev else None)), ""))
+    filas_t.append(("Ganancia",
+                    _cel(_m1(gan_hoy), gan_hoy, False, pct_m) if gan_hoy is not None else _cel(dash),
+                    _cel(_m1(gan_est), gan_est, True, pct_m) if gan_est is not None else _cel(dash, None, True),
+                    _vs_celda(_vs(gan_est, gan_prev)), tip_margen))
+    filas_t.append(("Órdenes", _cel(fmt_n(ord_m)), _cel(fmt_n(est_o), None, True), _vs_celda(_vs(est_o, ord_prev if hay_prev else None)), ""))
+    filas_t.append(("Unidades", _cel(fmt_n(unid)), _cel(fmt_n(est_u), None, True), _vs_celda(_vs(est_u, prev_u if hay_prev else None)), ""))
+    filas_t.append(("Ticket prom.", _cel(fmt_m(tick) if tick is not None else dash), _cel(dash, None, True), _vs_celda(_vs(tick, tick_prev)), ""))
+    filas_t.append(("Prom. diario",
+                    _cel(f"${prom_d / 1_000_000:.2f}M".replace(".", ",") if prom_d >= 1_000_000 else fmt_m(prom_d)),
+                    _cel(dash, None, True), _vs_celda(_vs(prom_d, prom_prev)), ""))
+    ads = _ads_gasto_mes(user_id, hoy)
+    if ads:
+        proy = ads["gasto"] / ads["dias"] * dias_m if ads["dias"] > 0 else None
+        filas_t.append(("Inversión ads",
+                        _cel(_m1(ads["gasto"]), ads["gasto"]) if ads["gasto"] else _cel(dash),
+                        _cel(_m1(proy), proy, True) if proy else _cel(dash, None, True),
+                        _vs_celda(_vs(proy, ads["prev"]), neutro=True), ""))
     tabla = (
-        '<div class="vm-g">'
-        '<div class="vm-c"></div><div class="vm-c">HASTA HOY</div><div class="vm-c">FIN DE MES</div>'
-        f'<div class="vm-c">VS {nom_prev.upper() if hay_prev else "ANTERIOR"}</div>'
-        + _fila("Unidades", fmt_n(unid), fmt_n(est_u), _vs(est_u, prev_u if hay_prev else None))
-        + _fila("Ganancia", _m1(gan_hoy) if gan_hoy is not None else dash, _m1(gan_est) if gan_est is not None else dash,
-                _vs(gan_est, gan_prev))
-        + _fila("En dólares", f"u$ {fmt_n(monto / dolar)}", f"u$ {fmt_n(est / dolar)}", _vs(est, prev_tot if hay_prev else None))
-        + _fila("Prom. diario", f"${prom_d / 1_000_000:.2f}M".replace(".", ",") if prom_d >= 1_000_000 else fmt_m(prom_d),
-                dash, _vs(prom_d, prom_prev))
-        + _fila("Ticket prom.", fmt_m(tick) if tick is not None else dash, dash, _vs(tick, tick_prev))
+        '<div class="vm-g"><div class="vm-r" style="padding-top:0;padding-bottom:0"><div></div>'
+        '<div class="vm-c">HASTA HOY</div><div class="vm-c">FIN DE MES</div>'
+        f'<div class="vm-c">VS {nom_prev.upper() if hay_prev else "ANTERIOR"}</div></div>'
+        + "".join(
+            f'<div class="vm-r{"" if i % 2 else " vm-z"}"' + (f' title="{_html.escape(tip)}"' if tip else "") + '>'
+            f'<div class="vm-t">{nom}</div>{h}{f}{v}</div>'
+            for i, (nom, h, f, v, tip) in enumerate(filas_t))
         + '</div>'
     )
     ui.add_css(
         ".vm-w{container-type:inline-size}"
-        ".vm-n{display:flex;justify-content:space-between;gap:8px;margin-bottom:10px}"
+        ".vm-n{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}"
         ".vm-n>div{min-width:0}"
         ".vm-l{font-size:9px;line-height:11px;color:#6B7280}"
         ".vm-v{font-size:22px;line-height:26px;font-weight:700;white-space:nowrap}"
-        ".vm-g{display:grid;grid-template-columns:auto 1fr 1fr 1fr;column-gap:6px;row-gap:3px;align-items:baseline}"
+        ".vm-g{display:flex;flex-direction:column;row-gap:1px}"
+        ".vm-r{display:grid;grid-template-columns:62px 1fr 1.1fr 1fr;column-gap:6px;align-items:center;padding:1px 4px}"
+        ".vm-z{background:#F9FAFB}"
+        ".vm-u{font-size:8.5px;line-height:10px;text-align:right;white-space:nowrap}"
+        ".vm-mp{font-size:8.5px;font-weight:400;color:#9CA3AF}"
         ".vm-c{font-size:8.5px;line-height:10px;color:#9CA3AF;text-align:right;white-space:nowrap}"
         ".vm-t{font-size:10px;color:#6B7280;white-space:nowrap}"
-        ".vm-h{font-size:10.5px;color:#374151;text-align:right;white-space:nowrap}"
-        ".vm-f{font-size:10.5px;color:#16A34A;font-weight:700;text-align:right;white-space:nowrap}"
+        ".vm-h{font-size:10.5px;line-height:13px;color:#374151;text-align:right;white-space:nowrap}"
+        ".vm-f{font-size:10.5px;line-height:13px;color:#16A34A;font-weight:700;text-align:right;white-space:nowrap}"
         "@container (max-width:290px){.vm-n{flex-direction:column;gap:6px}.vm-n>div:last-child{text-align:left!important}}"
+        "@container (max-width:340px){.vm-mp{display:block;line-height:10px}}"
     )
     ui.html(
         '<div class="vm-w">'
@@ -695,17 +756,17 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
         f'<div class="vm-v" style="color:#2563EB">{fmt_m(monto)}</div></div>'
         '<div style="text-align:right"><div class="vm-l">Estimado fin de mes</div>'
         f'<div class="vm-v" style="color:#16A34A">{_m1(est)}</div></div></div>'
-        '<div style="position:relative;height:16px;margin:6px 0 4px">'
+        '<div style="position:relative;height:16px;margin:4px 0 2px">'
         '<div style="position:absolute;inset:0;border-radius:8px;background:#F3F4F6;overflow:hidden">'
         f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(est):.2f}%;background:#DCFCE7"></div>'
         f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(monto):.2f}%;background:#2563EB;border-radius:8px"></div>'
         f'</div>{rayas}</div>'
-        f'<div style="position:relative;height:{alto_labs}px;margin-bottom:6px">{"".join(labs)}</div>'
-        f'<div style="font-size:10px;line-height:13px;font-weight:700;margin-bottom:6px">{frase}</div>'
-        '<div style="height:1px;background:#F3F4F6;margin-bottom:6px"></div>'
+        f'<div style="position:relative;height:{alto_labs}px;margin-bottom:4px">{"".join(labs)}</div>'
+        f'<div style="font-size:10px;line-height:13px;font-weight:700;margin-bottom:3px">{frase}</div>'
+        '<div style="height:1px;background:#F3F4F6;margin-bottom:3px"></div>'
         + tabla +
-        '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:7px">'
-        'Estimado = promedio diario del mes × días del mes</div></div>'
+        '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:4px">'
+        f'Dólar: ${fmt_n(dolar)} (cotizador) · Estimado = prom. diario × días del mes</div></div>'
     )
 
 
@@ -1794,7 +1855,7 @@ def _pintar_home_inline(
                     with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"):
                         ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:0")
                         ui.label(f"día {today_local.day} de {calendar.monthrange(today_local.year, today_local.month)[1]} · faltan {calendar.monthrange(today_local.year, today_local.month)[1] - today_local.day}").style("font-size:10px;color:#9CA3AF")
-                    _pintar_ventas_mes(por_mes, margen_mes, today_local, dolar_oficial2)
+                    _pintar_ventas_mes(por_mes, margen_mes, today_local, dolar_oficial2, user_id)
 
 
 # ---------------------------------------------------------------------------
