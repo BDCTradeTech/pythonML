@@ -13,6 +13,7 @@ from nicegui import app, background_tasks, run, ui
 
 from db import get_cotizador_param, get_cotizador_tabla, set_cotizador_tabla, COTIZADOR_DEFAULTS
 from ml_api import get_ml_access_token, ml_get_orders_incremental, ml_get_user_id, ml_get_user_profile
+from sales_core import es_venta, fecha_venta, monto_venta
 
 
 # ---------------------------------------------------------------------------
@@ -39,14 +40,10 @@ def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int, per
     raw = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
     ventas_mes_actual_monto = 0.0
     for o in raw:
-        if not isinstance(o, dict):
+        if not isinstance(o, dict) or not es_venta(o):
             continue
-        dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
-        if not dt_str:
-            continue
-        try:
-            dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-        except Exception:
+        dt = fecha_venta(o)
+        if dt is None:
             continue
         if periodo == "mes_actual":
             if not (primer_dia <= dt <= hoy):
@@ -57,14 +54,7 @@ def _compute_ingresos_from_orders(orders_data: Dict[str, Any], user_id: int, per
         # historico: sin filtro de fecha
         elif periodo != "historico":
             continue
-        amt = o.get("total_amount") or o.get("paid_amount")
-        if amt is None and o.get("payments"):
-            p = o["payments"][0] if isinstance(o["payments"], list) else {}
-            amt = p.get("total_amount") or p.get("total_paid_amount") or p.get("transaction_amount")
-        try:
-            ventas_mes_actual_monto += float(amt or 0)
-        except (TypeError, ValueError):
-            pass
+        ventas_mes_actual_monto += monto_venta(o)
     if periodo == "mes_actual":
         dias_transcurridos = (hoy - primer_dia).days + 1
         dias_del_mes = calendar.monthrange(hoy.year, hoy.month)[1]

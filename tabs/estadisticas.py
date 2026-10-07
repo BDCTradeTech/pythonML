@@ -27,6 +27,7 @@ from ml_api import (
     _parse_ml_item_body,
 )
 from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range
+from sales_core import es_venta, fecha_venta, monto_venta, unidades_venta
 
 
 # ---------------------------------------------------------------------------
@@ -418,7 +419,9 @@ def _pintar_home_inline(
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
-    results = [o for o in raw_orders if isinstance(o, dict)]
+    # Criterio unico de venta (sales_core): solo paid/partially_refunded; todo lo demas (hoy, periodos,
+    # por_mes, top, ultimas ventas, cuotas, promos) sale de esta lista.
+    results = [o for o in raw_orders if isinstance(o, dict) and es_venta(o)]
     rep = (profile or {}).get("seller_reputation") or {}
     today_local = datetime.now().date()
     primer_dia_mes = today_local.replace(day=1)
@@ -440,25 +443,11 @@ def _pintar_home_inline(
     antes_ayer_local = today_local - timedelta(days=2)
 
     for ord_item in results:
-        dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ord_item.get("date_last_updated") or ""
-        if not dt_str or not isinstance(dt_str, str):
+        dt = fecha_venta(ord_item)
+        if dt is None:
             continue
-        try:
-            dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-        except Exception:
-            continue
-        total_amount = ord_item.get("total_amount") or ord_item.get("paid_amount")
-        if total_amount is None and ord_item.get("payments"):
-            pay = ord_item["payments"][0] if isinstance(ord_item["payments"], list) else {}
-            total_amount = pay.get("total_amount") or pay.get("total_paid_amount") or pay.get("transaction_amount")
-        try:
-            total_amount = float(total_amount or 0)
-        except (TypeError, ValueError):
-            total_amount = 0.0
-        items = ord_item.get("order_items") or ord_item.get("items") or []
-        units = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
-        if units == 0 and total_amount > 0:
-            units = 1
+        total_amount = monto_venta(ord_item)
+        units = unidades_venta(ord_item)
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
@@ -892,26 +881,15 @@ def _pintar_home_inline(
                 ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
                 facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
             for ord_item in results:
-                dt_str = ord_item.get("date_created") or ord_item.get("date_closed") or ""
-                if not dt_str:
+                dt = fecha_venta(ord_item)
+                if dt is None or (today_local - dt).days > 13:
                     continue
-                try:
-                    dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-                except Exception:
-                    continue
-                if (today_local - dt).days > 13:
-                    continue
-                items_ord = ord_item.get("order_items") or ord_item.get("items") or []
-                units_ord = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items_ord if isinstance(it, dict))
-                if units_ord == 0:
-                    total_amount_ord = ord_item.get("total_amount") or ord_item.get("paid_amount") or 0
-                    if total_amount_ord and float(total_amount_ord or 0) > 0:
-                        units_ord = 1
+                units_ord = unidades_venta(ord_item)
                 key_ord = dt.strftime("%Y-%m-%d")
                 if key_ord in ventas_por_dia:
                     ventas_por_dia[key_ord] += units_ord
                 if key_ord in facturacion_por_dia:
-                    facturacion_por_dia[key_ord] += float(ord_item.get("total_amount") or ord_item.get("paid_amount") or 0)
+                    facturacion_por_dia[key_ord] += monto_venta(ord_item)
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
@@ -1080,21 +1058,11 @@ def _pintar_home_inline(
                         total_unidades_mes_c = 0
                         _pr_u, _pr_imp, _pr_lista, _pr_aporte = 0, 0.0, 0.0, 0.0
                         for _ord in results:
-                            _dt_s = (_ord.get("date_created") or _ord.get("date_closed")
-                                     or _ord.get("date_last_updated") or "")
-                            try:
-                                _dt_c = datetime.strptime(_dt_s[:10], "%Y-%m-%d").date()
-                            except Exception:
-                                continue
-                            if not (primer_dia_mes <= _dt_c <= today_local):
-                                continue
-                            if _ord.get("status") not in ("paid", "payment_required", "confirmed"):
+                            _dt_c = fecha_venta(_ord)
+                            if _dt_c is None or not (primer_dia_mes <= _dt_c <= today_local):
                                 continue
                             _items_c = _ord.get("order_items") or _ord.get("items") or []
-                            _uds_c = sum(int(it.get("quantity") or it.get("qty") or 0)
-                                         for it in _items_c if isinstance(it, dict))
-                            if _uds_c == 0 and float(_ord.get("total_amount") or _ord.get("paid_amount") or 0) > 0:
-                                _uds_c = 1
+                            _uds_c = unidades_venta(_ord)
                             _ord_id_c = str(_ord.get("order_id") or _ord.get("id") or "")
                             _cuotas_c = _vd_cuotas.get(_ord_id_c) or "x1"
                             _inst_key = int(_cuotas_c.lstrip("x") or "1") if _cuotas_c.startswith("x") and _cuotas_c[1:].isdigit() else 1
@@ -1319,8 +1287,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                 _today_str = datetime.now(_tz_arg).strftime("%Y-%m-%d")
                 shipping_ids_hoy: List[str] = []
                 for _ord in (orders_data.get("results") or []):
-                    _dt_str = (_ord.get("date_created") or _ord.get("date_closed") or "")[:10]
-                    if _dt_str == _today_str:
+                    if es_venta(_ord) and str(fecha_venta(_ord)) == _today_str:
                         _ship_id = (_ord.get("shipping") or {}).get("id")
                         if _ship_id:
                             shipping_ids_hoy.append(str(_ship_id))

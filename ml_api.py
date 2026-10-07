@@ -2492,39 +2492,9 @@ def ml_ads_get_items(
 
 
 def compute_ventas_periodo(orders_results: List[Dict[str, Any]], date_from, date_to) -> Dict[str, float]:
-    """Unidades y monto vendidos en [date_from, date_to] (objetos date, inclusive), calculado
-    con la MISMA lógica de tabs/estadisticas.py (_pintar_home_inline): sin filtro de status,
-    total_amount con fallback a paid_amount/payments, 1 unidad si hay monto pero no hay items.
-    Se usa para TACOS -- así "ventas totales" coincide con lo que muestra Estadísticas (no con
-    Balance, que usa la misma fuente en el código actual pero está documentado como referencia
-    histórica de una discrepancia ya resuelta -- ver ml_get_orders_incremental)."""
-    from datetime import datetime as _dt
-    unidades = 0
-    monto = 0.0
-    for o in orders_results:
-        if not isinstance(o, dict):
-            continue
-        dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
-        if not dt_str:
-            continue
-        try:
-            dt = _dt.strptime(dt_str[:10], "%Y-%m-%d").date()
-        except Exception:
-            continue
-        if not (date_from <= dt <= date_to):
-            continue
-        total_amount = o.get("total_amount") or o.get("paid_amount")
-        if total_amount is None and o.get("payments"):
-            pay = o["payments"][0] if isinstance(o["payments"], list) else {}
-            total_amount = pay.get("total_amount") or pay.get("total_paid_amount") or pay.get("transaction_amount")
-        try:
-            total_amount = float(total_amount or 0)
-        except (TypeError, ValueError):
-            total_amount = 0.0
-        items = o.get("order_items") or o.get("items") or []
-        units = sum(int(it.get("quantity") or it.get("qty") or 0) for it in items if isinstance(it, dict))
-        if units == 0 and total_amount > 0:
-            units = 1
-        unidades += units
-        monto += total_amount
-    return {"unidades": unidades, "monto": monto}
+    """Unidades y monto vendidos en [date_from, date_to] (objetos date, inclusive) con el criterio
+    unico de venta (sales_core: status paid/partially_refunded, fecha en hora Argentina, importe
+    sum unit_price x cantidad). Se usa para TACOS -- coincide con Estadisticas, Ventas y Balance."""
+    from sales_core import resumen_ventas
+    r = resumen_ventas(orders_results, date_from, date_to)
+    return {"unidades": r["unidades"], "monto": r["monto"]}

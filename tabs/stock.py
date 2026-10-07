@@ -11,6 +11,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 from nicegui import app, run, ui
 from db import get_connection, get_user_ml_razon_social
+from sales_core import es_venta_status, fecha_venta
 
 MESES = ["Ene","Feb","Mar","Abr","May","Jun","Jul","Ago","Sep","Oct","Nov","Dic"]
 
@@ -265,9 +266,6 @@ def _calcular_metricas(rows: List[Dict]) -> Dict[str, Any]:
     }
 
 
-_ESTADOS_VENTA_VALIDA = ("paid", "handling", "shipped", "delivered")
-
-
 def _get_item_id_a_sku(user_id: int) -> Dict[str, str]:
     """Mapea item_id (ML) -> seller_sku. Fallback para order items que no traen
     item.seller_sku directo. Fuente: ml_stock_snapshots, unica tabla persistida con ambos
@@ -291,24 +289,26 @@ def _get_ventas_reales_por_sku_dia(user_id: int, desde: str, hasta: str) -> Dict
     ml_orders_cache (misma fuente que Ventas). unit_price es el precio real cobrado al
     comprador, ya neto de descuentos -- incluidos los subsidiados por campanas de cuotas
     (confirmado en docs de ML: gross_price = (unit_price + discounts.full) * qty). Filtra por
-    status valido (paid/handling/shipped/delivered, igual que Ventas) para que una orden
-    cancelada no fije el precio real de ese dia."""
+    criterio unico de venta (sales_core: paid/partially_refunded, dia en hora Argentina) para que
+    una orden cancelada no fije el precio real de ese dia."""
     import json as _json
     item_id_a_sku = _get_item_id_a_sku(user_id)
     conn = get_connection()
     rows = conn.execute("""
         SELECT date_created, status, items_json FROM ml_orders_cache
-        WHERE user_id=? AND substr(date_created,1,10) BETWEEN ? AND ?
+        WHERE user_id=? AND substr(date_created,1,10) BETWEEN date(?, '-1 day') AND date(?, '+1 day')
     """, (user_id, desde, hasta)).fetchall()
     conn.close()
 
     out: Dict[str, Dict[str, List[tuple]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
-        status = (r["status"] or "").strip().lower()
-        if status not in _ESTADOS_VENTA_VALIDA:
+        if not es_venta_status(r["status"]):
             continue
-        dia = (r["date_created"] or "")[:10]
-        if not dia:
+        f = fecha_venta({"date_created": r["date_created"]})
+        if f is None:
+            continue
+        dia = f.isoformat()
+        if not (desde <= dia <= hasta):
             continue
         try:
             items = _json.loads(r["items_json"] or "[]")

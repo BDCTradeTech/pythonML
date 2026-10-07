@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from nicegui import app, background_tasks, context, run, ui
 
 from db import get_connection, get_cotizador_param
+from sales_core import es_venta, es_venta_status, fecha_venta
 from margen import fee_estimado_orden, fees_publicacion, financiacion_real
 from ml_api import (
     _cuotas_desde_item,
@@ -184,14 +185,8 @@ def build_tab_ventas(container) -> None:
             return gan_pesos, gan_vta_pct
 
         def _order_in_range(o: Dict, start: datetime.date, end: datetime.date) -> bool:
-            dt_str = o.get("date_created") or o.get("date_closed") or o.get("date_last_updated") or ""
-            if not dt_str or not isinstance(dt_str, str):
-                return False
-            try:
-                dt = datetime.strptime(dt_str[:10], "%Y-%m-%d").date()
-                return start <= dt <= end
-            except Exception:
-                return False
+            dt = fecha_venta(o)  # dia en hora Argentina (sales_core)
+            return dt is not None and start <= dt <= end
 
         def _tipo_oferta_desde_order_item(it: Dict, item_id: str, item_id_to_tipo_oferta: Dict[str, str]) -> tuple:
             """Detecta Promo desde order_item (gross_price/discounts). Retorna (tipo, tipo_display) donde tipo_display tiene % dto y precio orig para Promo."""
@@ -331,7 +326,8 @@ def build_tab_ventas(container) -> None:
                         "tipo_venta": tipo, "cuotas": cuotas, "tipo": tipo_oferta, "tipo_oferta": tipo_oferta,
                         "tipo_display": tipo_display or tipo_oferta,
                         "cantidad": qty, "monto": item_monto, "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
-                        "status": status_display, "status_raw": status_raw, "agrupar_key": agrupar_key, "item_id": item_id or "—",
+                        "status": status_display, "status_raw": status_raw, "es_venta": es_venta(ord_item),
+                        "agrupar_key": agrupar_key, "item_id": item_id or "—",
                         "unit_price": unit_price,
                         "seller_sku": sku,
                         "order_id": str(ord_item.get("id", "") or ""),
@@ -949,9 +945,9 @@ def build_tab_ventas(container) -> None:
             estado_val = str(filtro_estado_ref.get("val", "todas") or "todas")
             ventas_filtradas = ventas_raw
             if estado_val == "pagada":
-                ventas_filtradas = [v for v in ventas_raw if (v.get("status_raw") or "").lower() in ("paid", "handling", "shipped", "delivered") and v.get("pay_status") != "rejected" and not v.get("has_refund")]
+                ventas_filtradas = [v for v in ventas_raw if v.get("es_venta", es_venta_status(v.get("status_raw")))]
             elif estado_val == "cancelada":
-                ventas_filtradas = [v for v in ventas_raw if "cancel" in (v.get("status_raw") or "").lower() or v.get("pay_status") == "rejected" or v.get("has_refund")]
+                ventas_filtradas = [v for v in ventas_raw if not v.get("es_venta", es_venta_status(v.get("status_raw")))]
             cuotas_val = str(filtro_cuotas_ref.get("val", "todas") or "todas")
             if cuotas_val in ("x1", "x3", "x6", "x9", "x12"):
                 ventas_filtradas = [v for v in ventas_filtradas if (v.get("cuotas") or "x1") == cuotas_val]
@@ -1094,8 +1090,8 @@ def build_tab_ventas(container) -> None:
                     ui.label("No hay ventas con el filtro seleccionado.").classes("text-gray-500")
                 else:
                     if agrupar_ref.get("val"):
-                        # Solo agrupar ventas con estado Concretada (paid)
-                        ventas_a_agrupar = [v for v in ventas_raw if (v.get("status_raw") or "").lower() == "paid"]
+                        # Solo agrupar ventas Concretadas (criterio unico de venta, sales_core)
+                        ventas_a_agrupar = [v for v in ventas_raw if v.get("es_venta", es_venta_status(v.get("status_raw")))]
                         if not ventas_a_agrupar:
                             ui.label("No hay ventas Concretadas para agrupar.").classes("text-gray-500")
                         else:
@@ -2231,6 +2227,7 @@ def build_tab_ventas(container) -> None:
                         "monto_fmt": f"$ {item_monto:,.0f}".replace(",", "."),
                         "status": status_display,
                         "status_raw": status_raw,
+                        "es_venta": es_venta(ord_item),
                         "agrupar_key": agrupar_key,
                         "item_id": item_id or "—",
                         "category_id": obj.get("category_id") or "" if isinstance(obj, dict) else "",
