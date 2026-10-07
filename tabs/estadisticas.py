@@ -18,7 +18,7 @@ from ml_api import (
     ml_get_user_profile,
     ml_get_user_id,
     ml_get_orders_incremental,
-    ml_get_shipments_today,
+    ml_get_orders,
     ml_get_pending_labels,
     ml_get_my_items,
     ml_get_unanswered_questions,
@@ -414,6 +414,75 @@ def _smart_truncate(text: str, limit: int = 60) -> str:
 # Renderer principal (sólo llamado desde build_tab_estadisticas)
 # ---------------------------------------------------------------------------
 
+_LOGISTICA_CACHE: Dict[str, Tuple[str, str]] = {}  # shipment_id -> (logistic_type, dia); no cambia una vez asignado
+_SHIP_DE_ORDEN_CACHE: Dict[str, Tuple[str, str]] = {}  # order_id -> (shipment_id, dia)
+_LOGISTICA_FLEX = ("self_service",)
+_LOGISTICA_CORREO = ("fulfillment", "xd_drop_off", "drop_off", "cross_docking", "me2")
+
+
+def _logistica_hoy(access_token: str, seller_id: str, ordenes_hoy: List[Dict[str, Any]]) -> Dict[str, int]:
+    """UNIDADES de las ventas de hoy (ordenes_hoy: ya filtradas con sales_core.es_venta + fecha de hoy)
+    separadas por logistica: {"flex": u, "me": u, "otras": u, "sin_dato": ordenes}. flex = self_service;
+    me (correo / Mercado Envios) = fulfillment, xd_drop_off, drop_off, cross_docking, me2; otras = retiro,
+    sin envio u otro tipo (incluye las que no se pudieron consultar, contadas aparte en sin_dato).
+    flex + me + otras == unidades de VENTAS HOY. ml_orders_cache no guarda `shipping`, asi que el id del
+    envio sale de orders/search de hoy (ml_get_orders) y el tipo de GET /shipments/{id}."""
+    from concurrent.futures import ThreadPoolExecutor
+    if not ordenes_hoy:
+        return {"flex": 0, "me": 0, "otras": 0, "sin_dato": 0}
+    hoy_s = datetime.now(timezone(timedelta(hours=-3))).strftime("%Y-%m-%d")
+    for k in [k for k, (_s, d) in _SHIP_DE_ORDEN_CACHE.items() if d != hoy_s]:
+        _SHIP_DE_ORDEN_CACHE.pop(k, None)
+    oid_hoy = [str(o.get("order_id") or o.get("id") or "") for o in ordenes_hoy]
+    if any(i not in _SHIP_DE_ORDEN_CACHE for i in oid_hoy):  # solo se pide a ML si hay ordenes nuevas
+        vivas = (ml_get_orders(access_token, seller_id, limit=500, date_from=hoy_s + "T00:00:00.000-03:00").get("results") or [])
+        for o in vivas:
+            sid = (o.get("shipping") or {}).get("id")
+            if o.get("id"):  # "" = orden sin envio (retiro): se cachea igual para no volver a pedirla
+                _SHIP_DE_ORDEN_CACHE[str(o["id"])] = (str(sid or ""), hoy_s)
+    ship_de_orden: Dict[str, str] = {i: _SHIP_DE_ORDEN_CACHE[i][0] for i in oid_hoy if _SHIP_DE_ORDEN_CACHE.get(i, ("",))[0]}
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    def _tipo(ship_id: str) -> Optional[str]:
+        try:
+            r = get_ml_session().get(f"https://api.mercadolibre.com/shipments/{ship_id}", headers=headers, timeout=10)
+            return str(r.json().get("logistic_type") or "").lower() if r.status_code == 200 else None
+        except Exception:
+            return None
+
+    # Cache en memoria hasta fin del dia: solo se consultan los envios que todavia no estan.
+    dia = datetime.now(timezone(timedelta(hours=-3))).strftime("%Y-%m-%d")
+    for k in [k for k, (_t, d) in _LOGISTICA_CACHE.items() if d != dia]:
+        _LOGISTICA_CACHE.pop(k, None)
+    ids = sorted(set(ship_de_orden.values()))
+    tipos: Dict[str, Optional[str]] = {i: _LOGISTICA_CACHE[i][0] for i in ids if i in _LOGISTICA_CACHE}
+    nuevos = [i for i in ids if i not in tipos]
+    if nuevos:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for i, t in zip(nuevos, ex.map(_tipo, nuevos)):
+                tipos[i] = t
+                if t is not None:  # un fallo no se cachea: se reintenta en la proxima carga
+                    _LOGISTICA_CACHE[i] = (t, dia)
+    out = {"flex": 0, "me": 0, "otras": 0, "sin_dato": 0}
+    for o in ordenes_hoy:
+        u = unidades_venta(o)
+        sid = ship_de_orden.get(str(o.get("order_id") or o.get("id") or ""))
+        if sid is None:
+            out["otras"] += u  # sin envio (retiro / sin shipping)
+            continue
+        t = tipos.get(sid)
+        if t is None:
+            out["sin_dato"] += 1
+            out["otras"] += u
+        elif t in _LOGISTICA_FLEX:
+            out["flex"] += u
+        elif t in _LOGISTICA_CORREO:
+            out["me"] += u
+        else:
+            out["otras"] += u
+    return out
+
+
 def _pintar_home_inline(
     container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None, access_token: Optional[str] = None,
 ) -> None:
@@ -428,6 +497,7 @@ def _pintar_home_inline(
     hoy_unidades, hoy_monto = 0, 0.0
     flex_hoy = 0
     me_hoy = 0
+    otras_hoy = 0
     ayer_unidades, ayer_monto = 0, 0.0
     antes_ayer_unidades, antes_ayer_monto = 0, 0.0
     semana_unidades, semana_monto = 0, 0.0
@@ -451,11 +521,6 @@ def _pintar_home_inline(
         if dt == today_local:
             hoy_unidades += units
             hoy_monto += total_amount
-            logistic = (ord_item.get("shipping") or {}).get("logistic_type") or ""
-            if logistic == "self_service":
-                flex_hoy += 1
-            elif logistic in ("fulfillment", "xd_drop_off", "drop_off", "cross_docking"):
-                me_hoy += 1
         if dt == ayer_local:
             ayer_unidades += units
             ayer_monto += total_amount
@@ -505,10 +570,21 @@ def _pintar_home_inline(
         por_mes[key]["total"] += total_amount
         por_mes[key]["orders"] += 1
 
-    # Si se obtuvo conteo directo de /shipments/search, tiene prioridad sobre el loop
-    if shipments_today is not None:
+    # Logistica de las ventas de hoy (en UNIDADES, para que flex + correo + otras == VENTAS HOY);
+    # None = no se pudo consultar (se muestra "—").
+    envio_ok = shipments_today is not None
+    if envio_ok:
         flex_hoy = shipments_today.get("flex", 0)
         me_hoy = shipments_today.get("me", 0)
+        otras_hoy = shipments_today.get("otras", 0)
+    # NO CONCRETADAS: ordenes de HOY (fecha en hora Argentina) que no son venta segun sales_core.es_venta
+    # (canceladas, pago rechazado, pendientes de pago, contracargo, reembolso total). `results` ya trae
+    # solo ventas, por eso se recorre raw_orders.
+    nc_n, nc_monto = 0, 0.0
+    for _o in raw_orders:
+        if isinstance(_o, dict) and not es_venta(_o) and fecha_venta(_o) == today_local:
+            nc_n += 1
+            nc_monto += monto_venta(_o)
     _pl_total  = (pending_labels or {}).get("total", 0)
     _pl_flex   = (pending_labels or {}).get("flex", 0)
     _pl_correo = (pending_labels or {}).get("correo", 0)
@@ -550,8 +626,10 @@ def _pintar_home_inline(
                             7: "Julio", 8: "Agosto", 9: "Septiembre", 10: "Octubre", 11: "Noviembre", 12: "Diciembre"}
             mes_actual_nom = meses_nombres.get(today_local.month, today_local.strftime("%B"))
 
-            no_concretadas = max(0, hoy_unidades - flex_hoy - me_hoy)
+            no_concretadas = nc_n
             nc_color = "#dc2626" if no_concretadas > 0 else "#6b7280"
+            nc_sub = f"{fmt_m(nc_monto)} perdidas" if (nc_n > 0 and nc_monto > 0) else "cancel./pend."
+            _envio_sub = "unid." if envio_ok else "sin datos de envío"
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch"):
                 # BLOQUE 1 — Tienda
@@ -559,7 +637,9 @@ def _pintar_home_inline(
                     with ui.element("div").style("display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #1d4ed8;padding-bottom:5px;margin-bottom:8px"):
                         ui.label("TIENDA").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
                         if on_refresh:
-                            ui.button("↻ Actualizar", on_click=lambda: on_refresh()).props("flat dense").style(f"font-size:10px;color:{_BLUE};padding:0;min-height:0")
+                            ui.button("↻ Actualizar", on_click=lambda: on_refresh()).props("unelevated no-caps dense").style(
+                                "background:#2563EB;color:#fff;border-radius:6px;height:28px;min-height:28px;padding:0 12px;"
+                                "font-size:12px;font-weight:500;margin:-7px 0")
                     with ui.element("div").style("display:flex;align-items:center;gap:10px"):
                         if img_url:
                             ui.image(img_url).style("width:40px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e0e2e7")
@@ -581,20 +661,20 @@ def _pintar_home_inline(
                         with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("VENTAS HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
                             ui.label(str(hoy_unidades)).style(f"font-size:22px;font-weight:600;color:{_BLUE};line-height:1.2")
-                            ui.label(fmt_m(hoy_monto)).style("font-size:11px;color:#6b7280")
+                            ui.label(fmt_m(hoy_monto) + (f" · otras {fmt_n(otras_hoy)}" if envio_ok and otras_hoy else "")).style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("MOTO FLEX HOY").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(flex_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
-                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                            ui.label(fmt_n(flex_hoy) if envio_ok else "—").style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
+                            ui.label(_envio_sub).style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding:0 14px;border-right:0.5px solid #e5e7eb"):
                             correo_lbl = f"CORREO ({dispatch_deadline} hs)" if dispatch_deadline else "CORREO"
                             ui.label(correo_lbl).style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(me_hoy)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
-                            ui.label("órdenes").style("font-size:11px;color:#6b7280")
+                            ui.label(fmt_n(me_hoy) if envio_ok else "—").style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
+                            ui.label(_envio_sub).style("font-size:11px;color:#6b7280")
                         with ui.element("div").style("flex:1;padding-left:14px"):
                             ui.label("NO CONCRETADAS").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
-                            ui.label(fmt_n(no_concretadas)).style("font-size:22px;font-weight:600;color:#6b7280;line-height:1.2")
-                            ui.label("cancel./pend.").style("font-size:11px;color:#6b7280")
+                            ui.label(fmt_n(no_concretadas)).style(f"font-size:22px;font-weight:600;color:{nc_color if no_concretadas else '#6b7280'};line-height:1.2")
+                            ui.label(nc_sub).style("font-size:11px;color:#6b7280")
 
                 # BLOQUE 2b — Envíos pendientes
                 with ui.element("div").style("flex:1.5;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
@@ -1274,7 +1354,7 @@ def build_tab_estadisticas(estadisticas_container) -> None:
 
             orders_data: Dict[str, Any] = {}
             items_data: Dict[str, Any] = {"results": []}
-            shipments_today: Dict[str, int] = {"flex": 0, "me": 0}
+            shipments_today: Optional[Dict[str, int]] = None
             if seller_id:
                 t0 = time.perf_counter()
                 orders_data = await run.io_bound(
@@ -1285,18 +1365,14 @@ def build_tab_estadisticas(estadisticas_container) -> None:
 
                 _tz_arg = timezone(timedelta(hours=-3))
                 _today_str = datetime.now(_tz_arg).strftime("%Y-%m-%d")
-                shipping_ids_hoy: List[str] = []
-                for _ord in (orders_data.get("results") or []):
-                    if es_venta(_ord) and str(fecha_venta(_ord)) == _today_str:
-                        _ship_id = (_ord.get("shipping") or {}).get("id")
-                        if _ship_id:
-                            shipping_ids_hoy.append(str(_ship_id))
+                ordenes_hoy = [_ord for _ord in (orders_data.get("results") or [])
+                               if es_venta(_ord) and str(fecha_venta(_ord)) == _today_str]
                 try:
                     t0 = time.perf_counter()
-                    shipments_today = await run.io_bound(ml_get_shipments_today, access_token, shipping_ids_hoy)
-                    logging.warning(f"[TIMING] ml_get_shipments_today ({len(shipping_ids_hoy)} ids): {time.perf_counter()-t0:.2f}s")
+                    shipments_today = await run.io_bound(_logistica_hoy, access_token, str(seller_id), ordenes_hoy)
+                    logging.warning(f"[TIMING] _logistica_hoy ({len(ordenes_hoy)} ordenes): {time.perf_counter()-t0:.2f}s")
                 except Exception:
-                    pass
+                    logging.exception("[ESTADISTICAS] no se pudo obtener la logistica de las ventas de hoy")
 
             pending_labels: Dict[str, int] = {"total": 0, "flex": 0, "correo": 0}
             if seller_id:
