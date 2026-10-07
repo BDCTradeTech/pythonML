@@ -90,14 +90,12 @@ def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, 
     return uds, imp, lista, aporte
 
 
-def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses: List[str],
-                    clave: Optional[Callable[[Any], str]] = None) -> Dict[str, Dict[str, Any]]:
+def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses: List[str]) -> Dict[str, Dict[str, Any]]:
     """Margen ponderado por mes = SUM(ganancia real) / SUM(facturacion) de las ordenes que cuenta sales_core.es_venta
     (ordenes ya filtradas), con la ganancia de ventas_datos.gan_pesos (suma de los pagos de la orden) y la facturacion
     de sales_core.monto_venta (la misma de la columna $ ARS). Solo entran al cociente las ordenes con ganancia cargada
     (en numerador y denominador), para que una orden sin dato no baje el %. Devuelve {mes: {"pct", "falta", "ordenes"}};
-    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos.
-    clave: fecha -> clave del grupo (por defecto el mes "YYYY-MM"); permite agrupar otra ventana, ej. los ultimos 30 dias."""
+    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos."""
     if user_id is None:
         return {}
     try:
@@ -122,7 +120,7 @@ def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses
     acc: Dict[str, Dict[str, float]] = {m: {"gan": 0.0, "fact": 0.0, "ordenes": 0, "falta": 0} for m in meses}
     for o in ordenes:
         dt = fecha_venta(o)
-        a = acc.get(clave(dt) if clave else dt.strftime("%Y-%m")) if dt else None
+        a = acc.get(dt.strftime("%Y-%m")) if dt else None
         if a is None:
             continue
         a["ordenes"] += 1
@@ -172,14 +170,12 @@ def _tono_cal(uds: int, prom: float) -> int:
     return 0 if r < 0.6 else 1 if r < 0.9 else 2 if r < 1.1 else 3 if r < 1.3 else 4 if r < 1.6 else 5
 
 
-def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy: Any,
-                       margen: Optional[Dict[str, Any]]) -> None:
+def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy: Any) -> None:
     """Calendario de ventas de los ultimos 30 dias (hoy + 30 hacia atras = 31 dias, igual que el cuadro "30 días" de Ventas por periodo): filas = semanas LUN-DOM + columna SEMANA.
     El alto de las celdas lo reparte el grid (filas 1fr) entre el alto disponible de la tarjeta, sea de 5 o 6 semanas."""
     ini = hoy - timedelta(days=30)
     dias = [ini + timedelta(days=i) for i in range(31)]
     uds_tot = sum(ventas.get(d.strftime("%Y-%m-%d"), 0) for d in dias)
-    fact_tot = sum(facturado.get(d.strftime("%Y-%m-%d"), 0.0) for d in dias)
     prom = uds_tot / 31
     lunes0 = ini - timedelta(days=ini.weekday())
     n_sem = (hoy - lunes0).days // 7 + 1
@@ -213,8 +209,6 @@ def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy:
         leyenda += f'<span style="color:#9CA3AF">■</span> {_MESES_NOMBRE[ini.strftime("%m")]} '
     leyenda += f'<span style="color:#3B82F6">■</span> {_MESES_NOMBRE[hoy.strftime("%m")]}'
     escala = "".join(f'<i style="background:{bg}"></i>' for bg, _ in _CAL_AZUL)
-    mg_txt, mg_col, mg_tip = _margen_visual(margen)
-    mg_title = f' title="{mg_tip}"' if mg_tip else ""
     ui.add_css(
         ".cal-wrap{container-type:inline-size;flex:1;min-height:0;display:flex;flex-direction:column}"
         ".cal-g{display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) minmax(44px,.9fr);gap:3px;flex:1;min-height:0}"
@@ -233,11 +227,8 @@ def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy:
     ui.html(
         '<div class="cal-wrap">'
         f'<div class="cal-g" style="grid-template-rows:10px repeat({n_sem},minmax(0,1fr))">{"".join(celdas)}</div>'
-        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;margin-top:5px">'
+        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;margin-top:5px;white-space:nowrap">'
         f'<span>{leyenda}</span><span class="cal-esc">menos {escala} más</span></div>'
-        '<div style="font-size:10px;color:#6B7280;margin-top:2px">Últimos 30 días: '
-        f'<b style="color:#1D4ED8">{fmt_n(uds_tot)}u</b> · <b style="color:#1D4ED8">{_abrev_pesos(fact_tot)}</b> · '
-        f'margen <b style="color:{mg_col}"{mg_title}>{mg_txt}</b></div>'
         "</div>"
     ).style("flex:1;min-height:0;display:flex;flex-direction:column")
 
@@ -1136,15 +1127,12 @@ def _pintar_home_inline(
                 fd = today_local - timedelta(days=d)
                 ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
                 facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
-            _ord30: List[Dict[str, Any]] = []
             for ord_item in results:
                 dt = fecha_venta(ord_item)
                 if dt is None or not (0 <= (today_local - dt).days <= 30):
                     continue
-                _ord30.append(ord_item)
                 ventas_por_dia[dt.strftime("%Y-%m-%d")] += unidades_venta(ord_item)
                 facturacion_por_dia[dt.strftime("%Y-%m-%d")] += monto_venta(ord_item)
-            margen_30d = _margen_por_mes(user_id, _ord30, ["v"], clave=lambda _d: "v").get("v")
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
@@ -1415,7 +1403,7 @@ def _pintar_home_inline(
                 with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0;display:flex;flex-direction:column"):
                     with ui.element("div").style("padding:10px 14px;flex:1;min-height:0;display:flex;flex-direction:column"):
                         ui.label("VENTAS DIARIAS — ÚLTIMOS 30 DÍAS").style(f"{_LBL};margin-bottom:6px")
-                        _pintar_calendario(ventas_por_dia, facturacion_por_dia, today_local, margen_30d)
+                        _pintar_calendario(ventas_por_dia, facturacion_por_dia, today_local)
 
                 # Card Ventas del mes / Estimaciones
                 dias_transcurridos = (today_local - primer_dia_mes).days + 1
