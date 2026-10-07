@@ -135,9 +135,24 @@ def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses
                 "falta": int(a["falta"]), "ordenes": int(a["ordenes"])} for m, a in acc.items()}
 
 
-def _titulo_seccion(texto: str, color: str, margin_top: int = 0) -> None:
-    """Título de sección con un punto de color antes (estética B)."""
-    with ui.element("div").style(f"display:flex;align-items:center;gap:6px;margin-top:{margin_top}px;margin-bottom:3px"):
+def _margen_visual(m: Optional[Dict[str, Any]]) -> Tuple[str, str, Optional[str]]:
+    """(texto, color, tooltip) de un mes de _margen_por_mes: verde >=10%, naranja 0-10%, rojo <0; gris con
+    tooltip si mas del 10% de las ordenes del mes no tienen ganancia real; "—" gris si no hay datos."""
+    pct = (m or {}).get("pct")
+    if pct is None:
+        return "—", "#9ca3af", None
+    falta, ordenes = int((m or {}).get("falta") or 0), int((m or {}).get("ordenes") or 0)
+    txt = f"{_fmt_dec(pct, 1)}%"
+    if ordenes and falta / ordenes > 0.10:
+        return txt, "#9ca3af", f"{falta} órdenes sin ganancia real"
+    return txt, ("#16a34a" if pct >= 10 else ("#ea580c" if pct >= 0 else "#dc2626")), None
+
+
+def _titulo_seccion(texto: str, color: str, margin_top: Any = 0) -> None:
+    """Título de sección con un punto de color antes (estética B). margin_top="auto": absorbe el alto sobrante
+    de una columna flex (min. 6px) para repartir las secciones."""
+    _mt = "margin-top:auto;padding-top:6px" if margin_top == "auto" else f"margin-top:{margin_top}px"
+    with ui.element("div").style(f"display:flex;align-items:center;gap:6px;{_mt};margin-bottom:3px"):
         ui.element("div").style(f"width:8px;height:8px;border-radius:50%;background:{color};flex-shrink:0")
         ui.label(texto).style("font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500")
 
@@ -159,7 +174,7 @@ def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str, a_c
                 f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-left:3px solid {color};border-radius:6px;'
                 f'padding:4px 1px 4px {_pl};width:100%;box-sizing:border-box;overflow:hidden">'
                 f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{_lx}</div>'
-                f'<div style="font-size:15px;font-weight:500;color:#374151;line-height:1.2;white-space:nowrap">{_val}</div>'
+                f'<div style="font-size:13px;font-weight:500;color:#374151;line-height:1.2;white-space:nowrap">{_val}</div>'
                 f'<div style="font-size:{10 if a_contenido else 11}px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
                 f'{_barra}'
                 f'</div>'
@@ -677,6 +692,7 @@ def _pintar_home_inline(
             nc_sub = f"{fmt_m(nc_monto)} perdidas" if (nc_n > 0 and nc_monto > 0) else "cancel./pend."
             _envio_sub = "unid." if envio_ok else "sin datos de envío"
 
+            margen_mes = _margen_por_mes(user_id, results, meses_orden)
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch"):
                 # BLOQUE 1 — Tienda
                 with ui.element("div").style("flex:1.1;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
@@ -742,8 +758,14 @@ def _pintar_home_inline(
 
                 # BLOQUE 3 — Facturación mes
                 with ui.element("div").style("flex:1.3;min-width:280px;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:10px 14px"):
-                    with ui.element("div").style("border-bottom:2px solid #16a34a;padding-bottom:5px;margin-bottom:8px"):
+                    with ui.element("div").style("display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;column-gap:8px;border-bottom:2px solid #16a34a;padding-bottom:5px;margin-bottom:8px"):
                         ui.label(f"FACTURACIÓN — {mes_actual_nom.upper()}").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
+                        _mg_txt, _mg_color, _mg_tip = _margen_visual(margen_mes.get(mes_actual_key))
+                        with ui.element("div").style("display:flex;align-items:baseline;gap:4px;margin-left:auto;line-height:13px"):
+                            ui.label("Margen").style("font-size:10px;color:#6b7280;font-weight:500")
+                            _mg_v = ui.label(_mg_txt).style(f"font-size:14px;font-weight:600;color:{_mg_color};line-height:13px")
+                            if _mg_tip:
+                                _mg_v.tooltip(_mg_tip)
                     with ui.element("div").style("display:flex;align-items:flex-start;flex-wrap:wrap"):
                         with ui.element("div").style("flex:1;padding-right:14px;border-right:0.5px solid #e5e7eb"):
                             ui.label("FACTURADO").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em")
@@ -966,7 +988,6 @@ def _pintar_home_inline(
                             dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
                             if dolar_oficial <= 0:
                                 dolar_oficial = 1475.0
-                            margen_mes = _margen_por_mes(user_id, results, meses_orden)
                             with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                 with ui.element("thead"):
                                     with ui.element("tr").style("background:#f9fafb"):
@@ -993,19 +1014,11 @@ def _pintar_home_inline(
                                                 ui.label(fmt_m(v["total"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color if is_mes_actual else '#6b7280'}"):
                                                 ui.label(f"u$ {fmt_n(total_usd)}")
-                                            _mg = margen_mes.get(key) or {}
-                                            _mg_pct = _mg.get("pct")
-                                            _mg_falta = int(_mg.get("falta") or 0)
-                                            _mg_dudoso = _mg_pct is not None and _mg.get("ordenes") and _mg_falta / _mg["ordenes"] > 0.10
-                                            if _mg_pct is None:
-                                                _mg_color, _mg_txt = "#9ca3af", "—"
-                                            else:
-                                                _mg_txt = f"{_fmt_dec(_mg_pct, 1)}%"
-                                                _mg_color = "#9ca3af" if _mg_dudoso else ("#16a34a" if _mg_pct >= 10 else ("#ea580c" if _mg_pct >= 0 else "#dc2626"))
+                                            _mg_txt, _mg_color, _mg_tip = _margen_visual(margen_mes.get(key))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '500'};color:{_mg_color}"):
                                                 _mg_lbl = ui.label(_mg_txt)
-                                                if _mg_dudoso:
-                                                    _mg_lbl.tooltip(f"{_mg_falta} órdenes sin ganancia real")
+                                                if _mg_tip:
+                                                    _mg_lbl.tooltip(_mg_tip)
 
             # ── FILA 2: Top Ventas | Stock | Graf Semanal | Ventas Mes ────────────
             claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
@@ -1177,8 +1190,11 @@ def _pintar_home_inline(
                     return ds[:10] if ds else ""
                 ultimas_5_ventas = sorted(results, key=_orden_fecha, reverse=True)[:10]
 
-                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style("padding:12px 14px"):
+                with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0;display:flex;flex-direction:column"):
+                    # La fila del grid (items-stretch) toma el alto de Top Ventas, la mas alta; el contenido va en
+                    # flex:1 y las secciones 2 y 3 llevan margin-top:auto y se reparten el alto sobrante en vez de dejar el vacio abajo.
+                    with ui.element("div").style("padding:12px 14px;flex:1;display:flex;flex-direction:column"):
+                        ui.label(f"DATOS DE {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:2px")
                         _vd_cuotas: Dict[str, str] = {}
                         try:
                             _vd_conn = get_connection()
@@ -1228,7 +1244,7 @@ def _pintar_home_inline(
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
                         _titulo_seccion(f"VENTAS Y CUOTAS · {_total_str} UNID.", _CUOTAS_AZUL,
-                                        margin_top=6 if _pr_u > 0 else 0)
+                                        margin_top="auto" if _pr_u > 0 else 0)
                         _kpi_b([
                             ("Contado" if _cx == 1 else f"{_cx} cuotas", fmt_n(cuotas_dist[_cx]),
                              f"{_fmt_dec(cuotas_dist[_cx] / _base_c * 100, 1)}%", cuotas_dist[_cx] / _base_c * 100)
@@ -1241,7 +1257,7 @@ def _pintar_home_inline(
                             _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
                             _a_pu = (_a_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
                             _a_pf = (_a_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
-                            _titulo_seccion("PUBLICIDAD", _PUB_VIOLETA, margin_top=6)
+                            _titulo_seccion("PUBLICIDAD", _PUB_VIOLETA, margin_top="auto")
                             _kpi_b([
                                 ("Ventas por ads", fmt_n(_a_u), f"{_fmt_dec(_a_pu, 1)}% de tus u." if total_unidades_mes_c else "—",
                                  _a_pu if total_unidades_mes_c else None),
