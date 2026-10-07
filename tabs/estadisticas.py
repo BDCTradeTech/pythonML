@@ -638,7 +638,7 @@ def _pintar_home_inline(
                         ui.label("TIENDA").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
                         if on_refresh:
                             ui.button("↻ Actualizar", on_click=lambda: on_refresh()).props("unelevated no-caps dense").style(
-                                "background:#2563EB;color:#fff;border-radius:6px;height:28px;min-height:28px;padding:0 12px;"
+                                "background:#2563EB !important;color:#fff !important;border-radius:6px;height:28px;min-height:28px;padding:0 12px;"
                                 "font-size:12px;font-weight:500;margin:-7px 0")
                     with ui.element("div").style("display:flex;align-items:center;gap:10px"):
                         if img_url:
