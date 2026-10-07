@@ -5,6 +5,7 @@ Pestaña Estadísticas: datos de la cuenta ML, reputación y ventas.
 from __future__ import annotations
 import calendar
 import re
+import html as _html
 import logging
 import time
 from datetime import datetime, timedelta, timezone
@@ -456,6 +457,16 @@ def _cuotas_key(it: dict) -> tuple:
     if cpid:
         return ("catalog", cpid)
     return ("id", str(it.get("id") or ""))
+
+
+def _cortar_titulo(text: str, limit: int = 60) -> str:
+    """Corta a `limit` caracteres en el ultimo espacio, SIN puntos suspensivos."""
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    sp = cut.rfind(" ")
+    return (cut[:sp] if sp > limit * 0.6 else cut).rstrip()
 
 
 def _smart_truncate(text: str, limit: int = 60) -> str:
@@ -1107,6 +1118,30 @@ def _pintar_home_inline(
                         top_sin_sku += 1
                     top_groups.setdefault(_gk, []).append((_iid, _info))
 
+                # Titulo de NUESTRA publicacion propia (no catalogo) por SKU: la principal del grupo, con el mismo
+                # criterio que el dedup de Publicaciones (gold_special y luego mas stock). Stock del SKU: el de
+                # productos.stock (lo mantiene _stock_fresco_sync = MAXIMO entre publicaciones hermanas, no suma),
+                # leido de la DB: sin llamadas en vivo a ML al renderizar.
+                _titulo_propio: Dict[tuple, Tuple[Tuple[int, int], str]] = {}
+                for _it_t in (items_data or {}).get("results") or []:
+                    if isinstance(_it_t, dict) and _it_t.get("catalog_listing") is not True and _it_t.get("title"):
+                        _rank = (1 if str(_it_t.get("listing_type_id") or "").lower() == "gold_special" else 0,
+                                 int(_it_t.get("available_quantity") or 0))
+                        _kt = _cuotas_key(_it_t)
+                        if _kt not in _titulo_propio or _rank > _titulo_propio[_kt][0]:
+                            _titulo_propio[_kt] = (_rank, str(_it_t["title"]).strip())
+                _stock_sku: Dict[str, int] = {}
+                if user_id is not None:
+                    try:
+                        _conn_st = get_connection()
+                        try:
+                            for _s, _st in _conn_st.execute("SELECT sku, stock FROM productos WHERE user_id=?", (user_id,)).fetchall():
+                                _stock_sku[str(_s)] = int(_st or 0)
+                        finally:
+                            _conn_st.close()
+                    except Exception:
+                        logging.exception("[ESTADISTICAS] no se pudo leer productos.stock para Top Ventas")
+
                 top_grouped: Dict[tuple, Dict[str, Any]] = {}
                 for _gk, _members in top_groups.items():
                     _units_total = sum(m[1]["units"] for m in _members)
@@ -1115,9 +1150,19 @@ def _pintar_home_inline(
                     _best_iid, _best_info = max(_pool, key=lambda m: m[1]["units"])
                     _es_solo_catalogo = (not _propias) and all(
                         _id_to_is_catalog.get(m[0]) is True for m in _members)
+                    # 1) titulo ACTUAL de la publicacion propia activa del SKU; 2) propia no activa: titulo de la orden
+                    # (el que tenia al venderse): ambos COMPLETOS (si no entran en una linea, la fila hace wrap);
+                    # 3) solo catalogo sin propia: titulo de la orden/catalogo cortado a 60 en el ultimo espacio, sin "...".
+                    if _gk in _titulo_propio:
+                        _tit_top = _titulo_propio[_gk][1]
+                    elif _propias:
+                        _tit_top = _best_info["title"]
+                    else:
+                        _tit_top = _cortar_titulo(_best_info["title"], 60)
                     top_grouped[_gk] = {
-                        "title": _best_info["title"], "units": _units_total,
+                        "title": _tit_top, "units": _units_total,
                         "solo_catalogo": _es_solo_catalogo,
+                        "stock": _stock_sku.get(_gk[1]) if _gk[0] == "sku" else None,
                     }
 
                 top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:12]
@@ -1158,32 +1203,39 @@ def _pintar_home_inline(
                         if not top_list:
                             ui.label("Sin ventas este mes").style("font-size:12px;color:#9ca3af")
                         else:
+                            _max_u_top = max((q["units"] for q in top_list), default=1) or 1
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                tit = _smart_truncate(p["title"] or "—", 60)
-                                with ui.row().classes("w-full items-center gap-2").style("margin-bottom:1px"):
+                                _stk = "—" if p.get("stock") is None else fmt_n(p["stock"])
+                                _fill = max(2.0, 100.0 * p["units"] / _max_u_top)  # puesto 1 = 100% de la barra
+                                with ui.element("div").style("display:flex;align-items:center;gap:8px;margin-bottom:3px"):
                                     with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
                                         ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
-                                    ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
-                                    if p.get("solo_catalogo"):
-                                        with ui.element("span").style(
-                                                "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
-                                                "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
-                                            ui.label("CATÁLOGO")
-                                    with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
-                                        ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
-                                        ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
+                                    with ui.element("div").style("flex:1;min-width:0"):
+                                        # Titulo completo (sin "..."): si no entra en una linea, hace wrap.
+                                        ui.html(f'{_html.escape(p["title"] or "—")} <span style="color:#9CA3AF">({_stk})</span>').style(
+                                            "font-size:11px;line-height:13px;color:#111827;overflow-wrap:anywhere")
+                                        with ui.element("div").style("display:flex;align-items:center;gap:6px;margin-top:2px"):
+                                            with ui.element("div").style("flex:0 1 70%;height:4px;border-radius:2px;background:#F3F4F6;overflow:hidden"):
+                                                ui.element("div").style(f"height:4px;width:{_fill:.1f}%;border-radius:2px;background:#3B82F6")
+                                            if p.get("solo_catalogo"):
+                                                with ui.element("span").style(
+                                                        "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
+                                                        "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
+                                                    ui.label("CATÁLOGO")
+                                    with ui.element("div").style("flex-shrink:0;text-align:right;white-space:nowrap"):
+                                        ui.label(f"{p['units']}u").style("font-size:15px;line-height:16px;font-weight:700;color:#1D4ED8")
+                                        ui.label(f"{pct:.1f}%".replace(".", ",")).style("font-size:10px;line-height:11px;color:#9CA3AF")
                             if top_sin_sku:
                                 ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
                                     "font-size:9px;color:#9ca3af;margin-top:4px")
-                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-top:6px;margin-bottom:3px")
-                        with ui.row().classes("gap-2 w-full flex-nowrap"):
+                        # Resumen de publicaciones en UNA linea (en pantallas angostas puede hacer wrap).
+                        _pub_html = " · ".join(
+                            f'{_lp} <span style="color:{_BLUE};font-weight:700">{_vp}</span>'
                             for _lp, _vp in (("Marcas", str(marcas_distintas)),
                                              ("Publicaciones propias", str(publicaciones_propias_con_stock)),
-                                             ("Unidades propias", fmt_n(unidades_propias_en_stock))):
-                                with ui.element("div").style("flex:1;text-align:center;padding:2px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                    ui.label(_lp).style("font-size:9px;color:#6b7280")
-                                    ui.label(_vp).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
+                                             ("Unidades propias", fmt_n(unidades_propias_en_stock))))
+                        ui.html(_pub_html).style("font-size:11px;line-height:14px;color:#6b7280;margin-top:6px")
 
                 def _orden_fecha(o):
                     ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
