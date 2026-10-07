@@ -90,7 +90,7 @@ def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, 
 
 def _titulo_seccion(texto: str, color: str, margin_top: int = 0) -> None:
     """Título de sección con un punto de color antes (estética B)."""
-    with ui.element("div").style(f"display:flex;align-items:center;gap:6px;margin-top:{margin_top}px;margin-bottom:5px"):
+    with ui.element("div").style(f"display:flex;align-items:center;gap:6px;margin-top:{margin_top}px;margin-bottom:3px"):
         ui.element("div").style(f"width:8px;height:8px;border-radius:50%;background:{color};flex-shrink:0")
         ui.label(texto).style("font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500")
 
@@ -102,13 +102,13 @@ def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str) -> 
         for _lx, _val, _sub, _pct in cuadros:
             _w = max(0.0, min(100.0, _pct)) if _pct is not None else 0.0
             _barra = (
-                f'<div style="height:4px;background:#E5E7EB;border-radius:2px;margin-top:6px">'
+                f'<div style="height:4px;background:#E5E7EB;border-radius:2px;margin-top:3px">'
                 f'<div style="height:4px;width:{_w:.1f}%;background:{color};border-radius:2px"></div></div>'
-                if _pct is not None else '<div style="height:4px;margin-top:6px"></div>'
+                if _pct is not None else '<div style="height:4px;margin-top:3px"></div>'
             )
             ui.html(
                 f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-left:3px solid {color};border-radius:6px;'
-                f'padding:6px 2px 6px 6px;width:100%;box-sizing:border-box;overflow:hidden">'
+                f'padding:4px 2px 4px 6px;width:100%;box-sizing:border-box;overflow:hidden">'
                 f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{_lx}</div>'
                 f'<div style="font-size:18px;font-weight:500;color:#111827;line-height:1.2;white-space:nowrap">{_val}</div>'
                 f'<div style="font-size:11px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
@@ -1043,12 +1043,12 @@ def _pintar_home_inline(
                             if top_sin_sku:
                                 ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
                                     "font-size:9px;color:#9ca3af;margin-top:4px")
-                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-top:8px;margin-bottom:4px")
+                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-top:6px;margin-bottom:3px")
                         with ui.row().classes("gap-2 w-full flex-nowrap"):
                             for _lp, _vp in (("Marcas", str(marcas_distintas)),
                                              ("Publicaciones propias", str(publicaciones_propias_con_stock)),
                                              ("Unidades propias", fmt_n(unidades_propias_en_stock))):
-                                with ui.element("div").style("flex:1;text-align:center;padding:4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
+                                with ui.element("div").style("flex:1;text-align:center;padding:2px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
                                     ui.label(_lp).style("font-size:9px;color:#6b7280")
                                     ui.label(_vp).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
 
@@ -1112,13 +1112,13 @@ def _pintar_home_inline(
                                 ("Unid. con promo", fmt_n(_pr_u), f"{_pr_pu:.0f}% · de {fmt_n(total_unidades_mes_c)}", _pr_pu),
                                 ("Fact. con promo", _fmt_corto_ads(_pr_imp),
                                  f"{_pr_pf:.0f}% · de {_fmt_corto_ads(ventas_mes_actual_monto)}", _pr_pf),
-                                ("Descuento medio", f"−{_fmt_dec(_pr_desc, 1)}%", "sobre lista", None),
+                                ("Desc. medio", f"−{_fmt_dec(_pr_desc, 1)}%", "sobre lista", None),
                                 ("Cupones", _fmt_corto_ads(_pr_aporte), "en esas ventas", None),
                             ], _PROMO_ROSA)
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
                         _titulo_seccion(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} UNID.", _CUOTAS_AZUL,
-                                        margin_top=8 if _pr_u > 0 else 0)
+                                        margin_top=6 if _pr_u > 0 else 0)
                         _kpi_b([
                             ("Contado" if _cx == 1 else f"{_cx} cuotas", fmt_n(cuotas_dist[_cx]),
                              f"{_fmt_dec(cuotas_dist[_cx] / _base_c * 100, 1)}%", cuotas_dist[_cx] / _base_c * 100)
@@ -1131,7 +1131,7 @@ def _pintar_home_inline(
                             _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
                             _a_pu = (_a_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
                             _a_pf = (_a_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
-                            _titulo_seccion(f"PUBLICIDAD — {mes_actual_nom.upper()}", _PUB_VIOLETA, margin_top=8)
+                            _titulo_seccion(f"PUBLICIDAD — {mes_actual_nom.upper()}", _PUB_VIOLETA, margin_top=6)
                             _kpi_b([
                                 ("Ventas por ads", fmt_n(_a_u), f"{_fmt_dec(_a_pu, 1)}% de tus u." if total_unidades_mes_c else "—",
                                  _a_pu if total_unidades_mes_c else None),
