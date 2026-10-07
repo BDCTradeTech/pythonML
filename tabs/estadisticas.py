@@ -26,7 +26,7 @@ from ml_api import (
     ml_get_shipping_preferences,
     _parse_ml_item_body,
 )
-from db import get_connection, get_cotizador_param, get_marca_override_map
+from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +49,49 @@ def fmt_m(val) -> str:
         return f"${int(round(float(val))):,}".replace(",", ".")
     except Exception:
         return "$0"
+
+
+_ADS_VIOLETA = "#7B4FD6"
+_ADS_NARANJA = "#C2410C"
+_ADS_VERDE = "#1D9A6C"
+
+
+def _fmt_dec(val: float, dec: int) -> str:
+    """Número con coma decimal (es-AR), sin separador de miles."""
+    return f"{val:.{dec}f}".replace(".", ",")
+
+
+def _fmt_corto_ads(val: float) -> str:
+    """$1,4M / $329k / $850."""
+    if val >= 1_000_000:
+        return f"${_fmt_dec(val / 1_000_000, 1)}M"
+    if val >= 1_000:
+        return f"${val / 1_000:.0f}k"
+    return f"${val:.0f}"
+
+
+def _ads_mes_resumen(user_id: Optional[int], desde, hasta) -> Optional[Dict[str, Any]]:
+    """Suma de las métricas diarias de Ads (todas las campañas del usuario) en [desde, hasta], leídas de
+    ml_ads_campaign_metrics_daily (la llena ads_snapshot.py). None si no hay datos o no hay actividad:
+    la sección no se muestra."""
+    if not user_id:
+        return None
+    try:
+        rows = get_ads_campaign_daily_range(
+            int(user_id), desde.strftime("%Y-%m-%d"), hasta.strftime("%Y-%m-%d"))
+    except Exception:
+        logging.getLogger(__name__).exception("[ADS] no se pudo leer ml_ads_campaign_metrics_daily para Estadísticas")
+        return None
+    if not rows:
+        return None
+    r = {k: sum(float(x.get(k) or 0) for x in rows) for k in (
+        "cost", "direct_amount", "indirect_amount", "direct_units_quantity", "indirect_units_quantity")}
+    r["unidades"] = r["direct_units_quantity"] + r["indirect_units_quantity"]
+    r["importe"] = r["direct_amount"] + r["indirect_amount"]
+    r["synced"] = max((str(x.get("synced_at") or "") for x in rows), default="")
+    if not (r["cost"] or r["unidades"] or r["importe"]):
+        return None
+    return r
 
 
 def fmt_n(val) -> str:
@@ -1022,6 +1065,35 @@ def _pintar_home_inline(
                                     f'<div style="position:absolute;bottom:0;left:0;height:4px;width:{_pct_c:.1f}%;background:{_clr}"></div>'
                                     f'</div>'
                                 ).style("flex:1;min-width:0")
+
+                        _ads = _ads_mes_resumen(user_id, primer_dia_mes, today_local)
+                        if _ads:
+                            _a_u, _a_imp, _a_inv = _ads["unidades"], _ads["importe"], _ads["cost"]
+                            _a_pct_u = f"{_fmt_dec(_a_u / total_unidades_mes_c * 100, 1)}% del total" if total_unidades_mes_c else "—"
+                            _a_pct_f = f"{_fmt_dec(_a_imp / ventas_mes_actual_monto * 100, 1)}% del total" if ventas_mes_actual_monto else "—"
+                            _a_cvta = f"{fmt_m(_a_inv / _a_u)} c/venta" if _a_u else "—"
+                            _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
+                            ui.label(f"PUBLICIDAD — {mes_actual_nom.upper()}").style(f"{_LBL};margin-top:10px;margin-bottom:6px")
+                            with ui.row().classes("w-full gap-2 flex-nowrap"):
+                                for _lx, _val, _clr, _sub in [
+                                    ("Unidades", fmt_n(_a_u), _ADS_VIOLETA, _a_pct_u),
+                                    ("Facturación", _fmt_corto_ads(_a_imp), _ADS_VIOLETA, _a_pct_f),
+                                    ("Inversión", _fmt_corto_ads(_a_inv), _ADS_NARANJA, _a_cvta),
+                                    ("Cada $1 vendió", f"${_fmt_dec(_a_roas, 2)}" if _a_inv else "—", _ADS_VERDE,
+                                     f"ROAS {_fmt_dec(_a_roas, 1)}x" if _a_inv else "ROAS —"),
+                                ]:
+                                    ui.html(
+                                        f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
+                                        f'padding:10px 8px;text-align:center;width:100%;box-sizing:border-box">'
+                                        f'<div style="font-size:10px;color:#9ca3af;margin-bottom:4px">{_lx}</div>'
+                                        f'<div style="font-size:24px;font-weight:700;color:{_clr};line-height:1;margin-bottom:4px">{_val}</div>'
+                                        f'<div style="font-size:11px;color:#6b7280">{_sub}</div>'
+                                        f'</div>'
+                                    ).style("flex:1;min-width:0")
+                            _a_sync = _ads["synced"]
+                            _a_sync_txt = f"Datos al {_a_sync[8:10]}/{_a_sync[5:7]} · " if len(_a_sync) >= 10 else ""
+                            ui.label(f"{_a_sync_txt}los últimos 14 días todavía pueden sumar ventas atribuidas.").style(
+                                "font-size:10px;color:#9ca3af;margin-top:4px")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
