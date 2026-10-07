@@ -6,6 +6,7 @@ Criterio ÚNICO de "venta" para todas las pantallas (Estadísticas, Ventas, Bala
                  confirmed, etc. (ml_orders_cache se mantiene fresco con ordenes_cache_refresh.py).
                  Tampoco es venta si lo reembolsado de sus pagos (transaction_amount_refunded, o el pago
                  entero si su status es refunded) es >= a lo pagado (pagos que no estan rejected/cancelled).
+                 Tampoco es venta si algun pago esta en charged_back. in_mediation SI cuenta como venta.
   - Fecha      : date_created convertida a hora Argentina (UTC-3) usando el offset real de la cadena
                  (ML devuelve -04:00 y eso corre de día las órdenes de las 23:xx).
   - Importe    : Σ unit_price × cantidad de los ítems (sin envío ni comisiones); fallback
@@ -47,8 +48,12 @@ def reembolso_total(o: Dict[str, Any]) -> bool:
     return pagado > 0 and reembolsado >= pagado - 0.005
 
 
+def con_contracargo(o: Dict[str, Any]) -> bool:
+    return any(isinstance(p, dict) and p.get("status") == "charged_back" for p in o.get("payments") or [])
+
+
 def es_venta(o: Dict[str, Any]) -> bool:
-    return es_venta_status(o.get("status")) and not reembolso_total(o)
+    return es_venta_status(o.get("status")) and not reembolso_total(o) and not con_contracargo(o)
 
 
 def fecha_venta(o: Dict[str, Any]) -> Optional[date]:
@@ -99,13 +104,26 @@ def unidades_venta(o: Dict[str, Any]) -> int:
     return u
 
 
-def monto_venta(o: Dict[str, Any]) -> float:
+def _monto_bruto(o: Dict[str, Any]) -> float:
     items = _items(o)
     if items and all(it.get("unit_price") is not None for it in items):
         m = sum(l["monto"] for l in lineas_venta(o))
         if m > 0:
             return m
     return _monto_orden(o)
+
+
+def monto_reembolsado(o: Dict[str, Any]) -> float:
+    return sum(_num(p.get("transaction_amount_refunded")) for p in o.get("payments") or [] if isinstance(p, dict))
+
+
+def monto_venta(o: Dict[str, Any]) -> float:
+    """Importe de la venta. En ordenes partially_refunded se resta lo reembolsado (suma de
+    transaction_amount_refunded de sus pagos)."""
+    m = _monto_bruto(o)
+    if str(o.get("status") or "").strip().lower() == "partially_refunded":
+        m = max(0.0, m - monto_reembolsado(o))
+    return m
 
 
 def ventas_en_rango(orders: Iterable[Dict[str, Any]], d0: date, d1: date) -> List[Dict[str, Any]]:
