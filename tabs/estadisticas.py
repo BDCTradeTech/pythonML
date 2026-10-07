@@ -1089,19 +1089,21 @@ def _pintar_home_inline(
                             total_unidades_mes_c += _uds_c
                             _po = _promo_de_orden(_items_c, _ord.get("payments"))
                             _pr_u += _po[0]; _pr_imp += _po[1]; _pr_lista += _po[2]; _pr_aporte += _po[3]
-                        ui.label(f"PROMOCIONES — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
-                        _kpi_fila([
-                            ("Con promo", fmt_n(_pr_u), _PROMO_ROSA,
-                             f"{_fmt_dec(_pr_u / total_unidades_mes_c * 100, 1) if total_unidades_mes_c else '0,0'}% del total"),
-                            ("Facturación", _fmt_corto_ads(_pr_imp), _PROMO_ROSA,
-                             f"{_fmt_dec(_pr_imp / ventas_mes_actual_monto * 100, 1) if ventas_mes_actual_monto else '0,0'}% del total"),
-                            ("Desc. prom.", f"{_fmt_dec((_pr_lista - _pr_imp) / _pr_lista * 100, 1) if _pr_lista else '0,0'}%",
-                             _PROMO_NARANJA, "sobre lista"),
-                            ("Cupones", _fmt_corto_ads(_pr_aporte), _ADS_VERDE, "en ventas con promo"),
-                        ])
+                        # Sin ventas con promo en el mes la sección no se muestra (igual que Publicidad sin datos).
+                        if _pr_u > 0:
+                            ui.label(f"PROMOCIONES — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
+                            _kpi_fila([
+                                ("Con promo", fmt_n(_pr_u), _PROMO_ROSA,
+                                 f"{_fmt_dec(_pr_u / total_unidades_mes_c * 100, 1) if total_unidades_mes_c else '0,0'}% del total"),
+                                ("Facturación", _fmt_corto_ads(_pr_imp), _PROMO_ROSA,
+                                 f"{_fmt_dec(_pr_imp / ventas_mes_actual_monto * 100, 1) if ventas_mes_actual_monto else '0,0'}% del total"),
+                                ("Desc. prom.", f"{_fmt_dec((_pr_lista - _pr_imp) / _pr_lista * 100, 1) if _pr_lista else '0,0'}%",
+                                 _PROMO_NARANJA, "sobre lista"),
+                                ("Cupones", _fmt_corto_ads(_pr_aporte), _ADS_VERDE, "en ventas con promo"),
+                            ])
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
-                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-top:8px;margin-bottom:6px")
+                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-top:{8 if _pr_u > 0 else 0}px;margin-bottom:6px")
                         with ui.row().classes("w-full gap-2 flex-nowrap"):
                             for _cx, _lx, _clr in [
                                 (1,  "1x",  "#185fa5"),
