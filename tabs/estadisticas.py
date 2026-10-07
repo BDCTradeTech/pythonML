@@ -96,7 +96,8 @@ def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses
     (ordenes ya filtradas), con la ganancia de ventas_datos.gan_pesos (suma de los pagos de la orden) y la facturacion
     de sales_core.monto_venta (la misma de la columna $ ARS). Solo entran al cociente las ordenes con ganancia cargada
     (en numerador y denominador), para que una orden sin dato no baje el %. Devuelve {mes: {"pct", "falta", "ordenes"}};
-    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos."""
+    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos.
+    "gan" = suma de la ganancia de las ordenes que entran al cociente."""
     if user_id is None:
         return {}
     try:
@@ -133,7 +134,7 @@ def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses
             a["falta"] += 1  # estimada o parcial: entra, pero cuenta para el aviso
         a["gan"] += d[0]
         a["fact"] += monto_venta(o)
-    return {m: {"pct": (a["gan"] / a["fact"] * 100) if a["fact"] > 0 else None,
+    return {m: {"pct": (a["gan"] / a["fact"] * 100) if a["fact"] > 0 else None, "gan": float(a["gan"]),
                 "falta": int(a["falta"]), "ordenes": int(a["ordenes"])} for m, a in acc.items()}
 
 
@@ -485,6 +486,165 @@ def _pintar_reputacion(
         f'<div style="display:flex;gap:3px;margin-bottom:6px">{segs}</div>' + "".join(filas) + extra
         + '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:5px">'
           'Barra = cuánto del límite de ML estás usando</div>'
+    )
+
+
+_MESES_ES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+
+def _m1(v: float) -> str:
+    """$333,0M (siempre un decimal, coma) para millones; $850k para miles; $0 debajo."""
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.1f}M".replace(".", ",")
+    if v >= 1_000:
+        return f"${v / 1_000:.0f}k"
+    return f"${int(v)}"
+
+
+def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy: Any, dolar: float) -> None:
+    """Tarjeta VENTAS - <MES> (V1): lo facturado vs el estimado de fin de mes, barra de proyeccion con las marcas del mes
+    anterior y del mes record (sin contar el mes en curso) y tabla hasta hoy / fin de mes / vs mes anterior.
+    El estimado es el de siempre: (facturado del mes / dias transcurridos, hoy incluido) x dias del mes. Todo sale de
+    por_mes (la misma fuente que Ventas historicas) y de _margen_por_mes (ganancia)."""
+    cur = hoy.strftime("%Y-%m")
+    dias_t = hoy.day
+    dias_m = calendar.monthrange(hoy.year, hoy.month)[1]
+    c = por_mes.get(cur) or {}
+    monto, unid = float(c.get("total") or 0.0), int(c.get("units") or 0)
+    est = monto / dias_t * dias_m
+    est_u = int(unid / dias_t * dias_m)
+    prev_dt = hoy.replace(day=1) - timedelta(days=1)
+    prev_key = prev_dt.strftime("%Y-%m")
+    pv = por_mes.get(prev_key) or {}
+    prev_tot, prev_u = float(pv.get("total") or 0.0), int(pv.get("units") or 0)
+    hay_prev = prev_tot > 0
+    otros = {k: float(v.get("total") or 0.0) for k, v in por_mes.items() if k != cur and float(v.get("total") or 0.0) > 0}
+    rec_key = max(otros, key=lambda k: otros[k]) if otros else None
+    rec = otros[rec_key] if rec_key else 0.0
+    nom_prev = _MESES_ES[prev_dt.month - 1]
+
+    def _corto(key: str) -> str:
+        t = _MESES_ES[int(key[5:7]) - 1][:3]
+        return t if key[:4] == str(hoy.year) or key == prev_key else f"{t} '{key[2:4]}"
+
+    def _vs(a: Optional[float], b: Optional[float]) -> Optional[float]:
+        return None if a is None or b is None or b <= 0 else (a / b - 1) * 100
+
+    def _vs_html(v: Optional[float]) -> str:
+        if v is None:
+            return '<span style="color:#9CA3AF">—</span>'
+        col, flecha = ("#16A34A", "▲") if v >= 0 else ("#DC2626", "▼")
+        return f'<span style="color:{col};font-weight:600">{flecha} {f"{v:+.0f}%".replace("-", "−")}</span>'
+
+    gm = margen_mes.get(cur) or {}
+    gp = margen_mes.get(prev_key) or {}
+    gan_hoy = float(gm["gan"]) if gm.get("pct") is not None else None
+    gan_est = est * float(gm["pct"]) / 100 if gm.get("pct") is not None else None
+    gan_prev = float(gp["gan"]) if (hay_prev and gp.get("pct") is not None) else None
+    prom_d = monto / dias_t
+    prom_prev = prev_tot / prev_dt.day if hay_prev else None
+    tick = monto / unid if unid > 0 else None
+    tick_prev = prev_tot / prev_u if (hay_prev and prev_u > 0) else None
+
+    # Frase de proyeccion
+    if dias_t < 2:
+        frase = '<span style="color:#6B7280">Estimación disponible desde el día 2</span>'
+    elif not hay_prev:
+        frase = '<span style="color:#9CA3AF">—</span>'
+    else:
+        v = (est / prev_tot - 1) * 100
+        if v < 0:
+            frase = f'<span style="color:#DC2626">▼ {f"{v:+.0f}%".replace("-", "−")} vs {nom_prev}</span>'
+        else:
+            ref = max(rec, prev_tot)
+            extra = (f" · superarías el récord por {_m1(est - ref)}" if est > ref
+                     else f" · te faltan {_m1(ref - est)} para el récord")
+            frase = f'<span style="color:#16A34A">▲ {v:+.0f}% vs {nom_prev}{extra}</span>'
+
+    # Barra: 0 .. max(estimado, record) x 1,08
+    escala = (max(est, rec) * 1.08) or 1.0
+
+    def _pc(v: float) -> float:
+        return max(0.0, min(v / escala * 100, 100.0))
+
+    marcas: List[Tuple[float, str, str]] = []  # (pct, color, label)
+    if hay_prev and rec_key and rec > prev_tot:
+        marcas.append((_pc(prev_tot), "#6B7280", f"{_corto(prev_key)} {_m1(prev_tot)}"))
+        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_m1(rec)}"))
+    elif hay_prev:
+        marcas.append((_pc(prev_tot), "#D97706", f"{_corto(prev_key)} (récord) {_m1(prev_tot)}"))
+    elif rec_key:
+        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_m1(rec)}"))
+    rayas = "".join(
+        f'<div style="position:absolute;left:{pc:.2f}%;top:-4px;height:24px;border-left:1.5px dashed {col}"></div>'
+        for pc, col, _t in marcas)
+    # Labels debajo (la marca del mes anterior, la del record y "hoy"): si dos se pisarian van en otra fila
+    items = sorted([(pc, col, t, False) for pc, col, t in marcas] + [(_pc(monto), "#2563EB", "hoy", True)], key=lambda x: x[0])
+    ancho_ref = 300.0  # ancho aproximado de la barra en px, solo para decidir las filas
+    filas_fin: List[float] = []  # borde derecho (px) del ultimo label de cada fila
+    labs = []
+    for pc, col, t, neg in items:
+        w = len(t) * 4.7 + 6
+        izq = max(0.0, min(pc / 100 * ancho_ref - w / 2, ancho_ref - w))
+        fila = next((i for i, fin in enumerate(filas_fin) if izq >= fin + 4), None)
+        if fila is None:
+            filas_fin.append(0.0)
+            fila = len(filas_fin) - 1
+        filas_fin[fila] = izq + w
+        labs.append(
+            f'<div style="position:absolute;top:{fila * 10}px;width:{w:.0f}px;text-align:center;white-space:nowrap;'
+            f'left:clamp(0px,calc({pc:.2f}% - {w / 2:.0f}px),calc(100% - {w:.0f}px));font-size:8.5px;line-height:10px;'
+            f'color:{col};font-weight:{700 if neg else 500}">{t}</div>')
+    alto_labs = 10 * max(1, len(filas_fin))
+
+    def _fila(nombre: str, hoy_v: str, fin_v: str, vs_v: Optional[float]) -> str:
+        return (f'<div class="vm-t">{nombre}</div><div class="vm-h">{hoy_v}</div>'
+                f'<div class="vm-f">{fin_v}</div><div class="vm-h">{_vs_html(vs_v)}</div>')
+
+    dash = '<span style="color:#9CA3AF;font-weight:400">—</span>'
+    tabla = (
+        '<div class="vm-g">'
+        '<div class="vm-c"></div><div class="vm-c">HASTA HOY</div><div class="vm-c">FIN DE MES</div>'
+        f'<div class="vm-c">VS {nom_prev.upper() if hay_prev else "ANTERIOR"}</div>'
+        + _fila("Unidades", fmt_n(unid), fmt_n(est_u), _vs(est_u, prev_u if hay_prev else None))
+        + _fila("Ganancia", _m1(gan_hoy) if gan_hoy is not None else dash, _m1(gan_est) if gan_est is not None else dash,
+                _vs(gan_est, gan_prev))
+        + _fila("En dólares", f"u$ {fmt_n(monto / dolar)}", f"u$ {fmt_n(est / dolar)}", _vs(est, prev_tot if hay_prev else None))
+        + _fila("Prom. diario", f"${prom_d / 1_000_000:.2f}M".replace(".", ",") if prom_d >= 1_000_000 else fmt_m(prom_d),
+                dash, _vs(prom_d, prom_prev))
+        + _fila("Ticket prom.", fmt_m(tick) if tick is not None else dash, dash, _vs(tick, tick_prev))
+        + '</div>'
+    )
+    ui.add_css(
+        ".vm-w{container-type:inline-size}"
+        ".vm-n{display:flex;justify-content:space-between;gap:8px;margin-bottom:10px}"
+        ".vm-n>div{min-width:0}"
+        ".vm-l{font-size:9px;line-height:11px;color:#6B7280}"
+        ".vm-v{font-size:22px;line-height:26px;font-weight:700;white-space:nowrap}"
+        ".vm-g{display:grid;grid-template-columns:auto 1fr 1fr 1fr;column-gap:6px;row-gap:3px;align-items:baseline}"
+        ".vm-c{font-size:8.5px;line-height:10px;color:#9CA3AF;text-align:right;white-space:nowrap}"
+        ".vm-t{font-size:10px;color:#6B7280;white-space:nowrap}"
+        ".vm-h{font-size:10.5px;color:#374151;text-align:right;white-space:nowrap}"
+        ".vm-f{font-size:10.5px;color:#16A34A;font-weight:700;text-align:right;white-space:nowrap}"
+        "@container (max-width:290px){.vm-n{flex-direction:column;gap:6px}.vm-n>div:last-child{text-align:left!important}}"
+    )
+    ui.html(
+        '<div class="vm-w">'
+        '<div class="vm-n"><div><div class="vm-l">Llevás</div>'
+        f'<div class="vm-v" style="color:#2563EB">{fmt_m(monto)}</div></div>'
+        '<div style="text-align:right"><div class="vm-l">Estimado fin de mes</div>'
+        f'<div class="vm-v" style="color:#16A34A">{_m1(est)}</div></div></div>'
+        '<div style="position:relative;height:16px;margin:6px 0 4px">'
+        '<div style="position:absolute;inset:0;border-radius:8px;background:#F3F4F6;overflow:hidden">'
+        f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(est):.2f}%;background:#DCFCE7"></div>'
+        f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(monto):.2f}%;background:#2563EB;border-radius:8px"></div>'
+        f'</div>{rayas}</div>'
+        f'<div style="position:relative;height:{alto_labs}px;margin-bottom:6px">{"".join(labs)}</div>'
+        f'<div style="font-size:10px;line-height:13px;font-weight:700;margin-bottom:6px">{frase}</div>'
+        '<div style="height:1px;background:#F3F4F6;margin-bottom:6px"></div>'
+        + tabla +
+        '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:7px">'
+        'Estimado = promedio diario del mes × días del mes</div></div>'
     )
 
 
@@ -1564,50 +1724,16 @@ def _pintar_home_inline(
                         ui.label("VENTAS DIARIAS — ÚLTIMOS 30 DÍAS").style(f"{_LBL};margin-bottom:6px")
                         _pintar_calendario(ventas_por_dia, facturacion_por_dia, today_local)
 
-                # Card Ventas del mes / Estimaciones
-                dias_transcurridos = (today_local - primer_dia_mes).days + 1
-                dias_del_mes = calendar.monthrange(today_local.year, today_local.month)[1]
-                venta_diaria = ventas_mes_actual_monto / dias_transcurridos if dias_transcurridos > 0 else 0
-                venta_estimada_mes = venta_diaria * dias_del_mes if dias_transcurridos > 0 else 0
+                # Card Ventas del mes (V1): facturado vs estimado de fin de mes
                 dolar_str2 = (get_cotizador_param("dolar_oficial", user_id) or "1475") if user_id else "1475"
                 dolar_oficial2 = float(str(dolar_str2).replace(",", ".").strip()) if dolar_str2 else 1475.0
                 if dolar_oficial2 <= 0:
                     dolar_oficial2 = 1475.0
-                venta_estimada_mes_usd = (venta_estimada_mes / dolar_oficial2) if dolar_oficial2 > 0 else 0
-                venta_diaria_u = ventas_mes_actual_unid / dias_transcurridos if dias_transcurridos > 0 else 0
-                ticket_prom2 = (ventas_mes_actual_monto / ventas_mes_actual_unid) if ventas_mes_actual_unid > 0 else 0
-                venta_x_unidad = ventas_mes_actual_monto / ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 0
-                proyeccion_anual = (ventas_mes_actual_monto / dias_transcurridos * 365) if dias_transcurridos > 0 else 0
-
-                with ui.element("div").style("flex:1;min-width:240px;flex-shrink:0;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:12px"):
-                    ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
-                    # Bloque 1 — Resultados a la fecha
-                    with ui.element("div").style("border-left:3px solid #1d4ed8;background:#f8faff;border-radius:0 6px 6px 0;padding:8px 10px;margin-bottom:6px"):
-                        ui.label(f"RESULTADOS AL DÍA {dias_transcurridos}").style("font-size:10px;color:#0c447c;text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:4px")
-                        ui.label(fmt_m(ventas_mes_actual_monto)).style("font-size:18px;font-weight:500;color:#1d4ed8;margin:3px 0;display:block")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("Días transcurridos").style("color:#6b7280")
-                            ui.label(f"{dias_transcurridos}/{dias_del_mes}").style("font-weight:500;color:#374151")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("Unidades vendidas").style("color:#6b7280")
-                            ui.label(fmt_n(ventas_mes_actual_unid)).style("font-weight:500;color:#374151")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("Prom. diario").style("color:#6b7280")
-                            ui.label(fmt_m(venta_diaria)).style("font-weight:500;color:#374151")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("Ticket promedio").style("color:#6b7280")
-                            ui.label(fmt_m(ticket_prom2)).style("font-weight:500;color:#374151")
-                    # Bloque 2 — Estimación fin de mes
-                    venta_estimada_unid = int(venta_diaria_u * dias_del_mes) if dias_transcurridos > 0 else 0
-                    with ui.element("div").style("border-left:3px solid #16a34a;background:#f0fdf4;border-radius:0 6px 6px 0;padding:8px 10px"):
-                        ui.label("ESTIMACIÓN FIN DE MES").style("font-size:10px;color:#15803d;text-transform:uppercase;letter-spacing:.04em;font-weight:600;margin-bottom:4px")
-                        ui.label(fmt_m(venta_estimada_mes)).style("font-size:18px;font-weight:500;color:#16a34a;margin:3px 0;display:block")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("En dólares").style("color:#6b7280")
-                            ui.label(f"u$ {fmt_n(venta_estimada_mes_usd)}").style("font-weight:500;color:#374151")
-                        with ui.element("div").style("display:flex;justify-content:space-between;padding:2px 0;font-size:11px"):
-                            ui.label("Unidades estimadas").style("color:#6b7280")
-                            ui.label(fmt_n(venta_estimada_unid)).style("font-weight:500;color:#374151")
+                with ui.element("div").style("flex:1;min-width:240px;flex-shrink:0;overflow:hidden;background:#fff;border:1px solid #e0e2e7;border-radius:10px;padding:12px 14px"):
+                    with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"):
+                        ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:0")
+                        ui.label(f"día {today_local.day} de {calendar.monthrange(today_local.year, today_local.month)[1]} · faltan {calendar.monthrange(today_local.year, today_local.month)[1] - today_local.day}").style("font-size:10px;color:#9CA3AF")
+                    _pintar_ventas_mes(por_mes, margen_mes, today_local, dolar_oficial2)
 
 
 # ---------------------------------------------------------------------------
