@@ -90,12 +90,14 @@ def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, 
     return uds, imp, lista, aporte
 
 
-def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses: List[str]) -> Dict[str, Dict[str, Any]]:
+def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses: List[str],
+                    clave: Optional[Callable[[Any], str]] = None) -> Dict[str, Dict[str, Any]]:
     """Margen ponderado por mes = SUM(ganancia real) / SUM(facturacion) de las ordenes que cuenta sales_core.es_venta
     (ordenes ya filtradas), con la ganancia de ventas_datos.gan_pesos (suma de los pagos de la orden) y la facturacion
     de sales_core.monto_venta (la misma de la columna $ ARS). Solo entran al cociente las ordenes con ganancia cargada
     (en numerador y denominador), para que una orden sin dato no baje el %. Devuelve {mes: {"pct", "falta", "ordenes"}};
-    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos."""
+    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos.
+    clave: fecha -> clave del grupo (por defecto el mes "YYYY-MM"); permite agrupar otra ventana, ej. los ultimos 30 dias."""
     if user_id is None:
         return {}
     try:
@@ -120,7 +122,7 @@ def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses
     acc: Dict[str, Dict[str, float]] = {m: {"gan": 0.0, "fact": 0.0, "ordenes": 0, "falta": 0} for m in meses}
     for o in ordenes:
         dt = fecha_venta(o)
-        a = acc.get(dt.strftime("%Y-%m")) if dt else None
+        a = acc.get(clave(dt) if clave else dt.strftime("%Y-%m")) if dt else None
         if a is None:
             continue
         a["ordenes"] += 1
@@ -147,6 +149,97 @@ def _margen_visual(m: Optional[Dict[str, Any]]) -> Tuple[str, str, Optional[str]
     if ordenes and falta / ordenes > 0.10:
         return txt, "#9ca3af", f"{falta} órdenes sin ganancia real"
     return txt, ("#16a34a" if pct >= 10 else ("#ea580c" if pct >= 0 else "#dc2626")), None
+
+
+_CAL_AZUL = [("#DBEAFE", "#1E3A8A"), ("#BFDBFE", "#1E3A8A"), ("#93C5FD", "#1E3A8A"),
+             ("#60A5FA", "#1E3A8A"), ("#2563EB", "#FFFFFF"), ("#1D4ED8", "#FFFFFF")]
+_CAL_GRIS = [("#F3F4F6", "#374151"), ("#E5E7EB", "#374151"), ("#D1D5DB", "#374151"),
+             ("#9CA3AF", "#374151"), ("#6B7280", "#FFFFFF"), ("#4B5563", "#FFFFFF")]
+
+
+def _abrev_pesos(v: float) -> str:
+    """$9,3M / $224M / $850k / $0 (decimal con coma)."""
+    if v >= 1_000_000:
+        return f"${_fmt_dec(v / 1_000_000, 0 if v >= 100_000_000 else 1)}M"
+    if v >= 1_000:
+        return f"${v / 1_000:.0f}k"
+    return f"${int(v)}"
+
+
+def _tono_cal(uds: int, prom: float) -> int:
+    """Indice 0-5 de la escala segun las unidades del dia relativas al promedio diario de la ventana."""
+    r = uds / prom if prom > 0 else 0.0
+    return 0 if r < 0.6 else 1 if r < 0.9 else 2 if r < 1.1 else 3 if r < 1.3 else 4 if r < 1.6 else 5
+
+
+def _pintar_calendario(ventas: Dict[str, int], facturado: Dict[str, float], hoy: Any,
+                       margen: Optional[Dict[str, Any]]) -> None:
+    """Calendario de ventas de los ultimos 30 dias (hoy + 30 hacia atras = 31 dias, igual que el cuadro "30 días" de Ventas por periodo): filas = semanas LUN-DOM + columna SEMANA.
+    El alto de las celdas lo reparte el grid (filas 1fr) entre el alto disponible de la tarjeta, sea de 5 o 6 semanas."""
+    ini = hoy - timedelta(days=30)
+    dias = [ini + timedelta(days=i) for i in range(31)]
+    uds_tot = sum(ventas.get(d.strftime("%Y-%m-%d"), 0) for d in dias)
+    fact_tot = sum(facturado.get(d.strftime("%Y-%m-%d"), 0.0) for d in dias)
+    prom = uds_tot / 31
+    lunes0 = ini - timedelta(days=ini.weekday())
+    n_sem = (hoy - lunes0).days // 7 + 1
+    celdas = ['<div class="cal-h">' + x + "</div>" for x in ("LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB", "DOM")]
+    celdas.append('<div class="cal-h">SEMANA</div>')
+    for w in range(n_sem):
+        su, sf = 0, 0.0
+        for c in range(7):
+            d = lunes0 + timedelta(days=w * 7 + c)
+            if d < ini or d > hoy:
+                celdas.append("<div></div>")
+                continue
+            k = d.strftime("%Y-%m-%d")
+            u, f = ventas.get(k, 0), facturado.get(k, 0.0)
+            su += u
+            sf += f
+            bg, fg = (_CAL_AZUL if (d.year, d.month) == (hoy.year, hoy.month) else _CAL_GRIS)[_tono_cal(u, prom)]
+            dia = f"<b>1 {_MESES_ABR[d.strftime('%m')].upper()}</b>" if d.day == 1 else str(d.day)
+            es_hoy = d == hoy
+            sombra = "box-shadow:inset 0 0 0 2px #16A34A;" if es_hoy else ""
+            tag_hoy = '<span class="cal-hoy">HOY</span>' if es_hoy else ""
+            tip = f"{d.strftime('%d/%m/%Y')}: {u} u · ${fmt_n(f)}"
+            celdas.append(
+                f'<div class="cal-c" title="{tip}" style="background:{bg};color:{fg};{sombra}">'
+                f'<span class="cal-d">{dia}</span>{tag_hoy}<span class="cal-u">{u}</span>'
+                f'<span class="cal-f">{_abrev_pesos(f)}</span></div>'
+            )
+        celdas.append(f'<div class="cal-s"><b>{fmt_n(su)}u</b><span>{_abrev_pesos(sf)}</span></div>')
+    leyenda = ""
+    if ini.month != hoy.month:
+        leyenda += f'<span style="color:#9CA3AF">■</span> {_MESES_NOMBRE[ini.strftime("%m")]} '
+    leyenda += f'<span style="color:#3B82F6">■</span> {_MESES_NOMBRE[hoy.strftime("%m")]}'
+    escala = "".join(f'<i style="background:{bg}"></i>' for bg, _ in _CAL_AZUL)
+    mg_txt, mg_col, mg_tip = _margen_visual(margen)
+    mg_title = f' title="{mg_tip}"' if mg_tip else ""
+    ui.add_css(
+        ".cal-wrap{container-type:inline-size;flex:1;min-height:0;display:flex;flex-direction:column}"
+        ".cal-g{display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) minmax(44px,.9fr);gap:3px;flex:1;min-height:0}"
+        ".cal-h{font-size:8px;line-height:10px;color:#9CA3AF;text-align:center;letter-spacing:.04em}"
+        ".cal-c{position:relative;border-radius:4px;min-height:0;overflow:hidden}"
+        ".cal-d{position:absolute;top:2px;left:3px;font-size:8px;line-height:9px}"
+        ".cal-hoy{position:absolute;top:2px;right:3px;font-size:7px;line-height:9px;font-weight:700}"
+        ".cal-u{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700}"
+        ".cal-f{position:absolute;bottom:2px;left:0;right:0;text-align:center;font-size:8px;line-height:9px}"
+        ".cal-s{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:0}"
+        ".cal-s b{font-size:11px;line-height:12px;color:#1D4ED8}"
+        ".cal-s span{font-size:8px;line-height:9px;color:#6B7280}"
+        ".cal-esc i{display:inline-block;width:9px;height:9px;border-radius:2px;margin:0 1px;vertical-align:-1px}"
+        "@container (max-width:320px){.cal-f{display:none}}"
+    )
+    ui.html(
+        '<div class="cal-wrap">'
+        f'<div class="cal-g" style="grid-template-rows:10px repeat({n_sem},minmax(0,1fr))">{"".join(celdas)}</div>'
+        '<div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;margin-top:5px">'
+        f'<span>{leyenda}</span><span class="cal-esc">menos {escala} más</span></div>'
+        '<div style="font-size:10px;color:#6B7280;margin-top:2px">Últimos 30 días: '
+        f'<b style="color:#1D4ED8">{fmt_n(uds_tot)}u</b> · <b style="color:#1D4ED8">{_abrev_pesos(fact_tot)}</b> · '
+        f'margen <b style="color:{mg_col}"{mg_title}>{mg_txt}</b></div>'
+        "</div>"
+    ).style("flex:1;min-height:0;display:flex;flex-direction:column")
 
 
 def _titulo_seccion(texto: str, color: str, margin_top: Any = 0) -> None:
@@ -1039,21 +1132,19 @@ def _pintar_home_inline(
 
             ventas_por_dia: Dict[str, int] = {}
             facturacion_por_dia: Dict[str, float] = {}
-            dias_semana_es = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
-            for d in range(14):
+            for d in range(31):
                 fd = today_local - timedelta(days=d)
                 ventas_por_dia[fd.strftime("%Y-%m-%d")] = 0
                 facturacion_por_dia[fd.strftime("%Y-%m-%d")] = 0.0
+            _ord30: List[Dict[str, Any]] = []
             for ord_item in results:
                 dt = fecha_venta(ord_item)
-                if dt is None or (today_local - dt).days > 13:
+                if dt is None or not (0 <= (today_local - dt).days <= 30):
                     continue
-                units_ord = unidades_venta(ord_item)
-                key_ord = dt.strftime("%Y-%m-%d")
-                if key_ord in ventas_por_dia:
-                    ventas_por_dia[key_ord] += units_ord
-                if key_ord in facturacion_por_dia:
-                    facturacion_por_dia[key_ord] += monto_venta(ord_item)
+                _ord30.append(ord_item)
+                ventas_por_dia[dt.strftime("%Y-%m-%d")] += unidades_venta(ord_item)
+                facturacion_por_dia[dt.strftime("%Y-%m-%d")] += monto_venta(ord_item)
+            margen_30d = _margen_por_mes(user_id, _ord30, ["v"], clave=lambda _d: "v").get("v")
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
@@ -1320,79 +1411,11 @@ def _pintar_home_inline(
                                  f"${_fmt_dec(_a_roas, 2)} por $1" if _a_inv else "—", None),
                             ], _PUB_VIOLETA)
 
-                # Card Gráfico Semanal — 14 días
-                dias_orden = sorted(ventas_por_dia.keys())[-14:]
-                uds_esta_semana = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7))
-                uds_semana_pasada = sum(ventas_por_dia.get((today_local - timedelta(days=d)).strftime("%Y-%m-%d"), 0) for d in range(7, 14))
-                var_pct = ((uds_esta_semana - uds_semana_pasada) / uds_semana_pasada * 100) if uds_semana_pasada > 0 else (100.0 if uds_esta_semana > 0 else 0.0)
-                def _fmt_compacto(val: float) -> str:
-                    if val >= 1_000_000:
-                        return f"${val/1_000_000:.1f}M"
-                    elif val >= 1_000:
-                        return f"${val/1_000:.0f}K"
-                    return f"${int(val)}"
-
-                if dias_orden:
-                    chart_labels_sem = []
-                    chart_data_sem = []
-                    for i, key in enumerate(dias_orden):
-                        fd = datetime.strptime(key, "%Y-%m-%d").date()
-                        dia_sem = dias_semana_es[fd.weekday()]
-                        chart_labels_sem.append(f"{dia_sem} {fd.day}")
-                        uds_s = ventas_por_dia.get(key, 0)
-                        fact_s = facturacion_por_dia.get(key, 0.0)
-                        days_back = (today_local - fd).days
-                        if days_back == 0:
-                            bar_color_s = _GREEN
-                        elif days_back <= 6:
-                            bar_color_s = "#3b82f6"
-                        else:
-                            bar_color_s = "#e5e7eb"
-                        fact_str = _fmt_compacto(fact_s)
-                        lbl_fmt = f"{{fact|{fact_str}}}\n{{uds|{uds_s}}}"
-                        chart_data_sem.append({"value": uds_s, "itemStyle": {"color": bar_color_s}, "label": {"formatter": lbl_fmt}})
-                    chart_options_sem = {
-                        "backgroundColor": "transparent",
-                        "grid": {"left": 35, "right": 15, "top": 60, "bottom": 25},
-                        "xAxis": {"type": "category", "data": chart_labels_sem, "axisLabel": {"fontSize": 9, "interval": 0, "rotate": 30}},
-                        "yAxis": {"type": "value", "axisLabel": {"fontSize": 9}},
-                        "series": [{"type": "bar", "data": chart_data_sem, "barWidth": "60%", "label": {
-                            "show": True,
-                            "position": "top",
-                            "rich": {
-                                "fact": {"color": "#6b7280", "fontSize": 8, "align": "center"},
-                                "uds":  {"color": "#111827", "fontSize": 9, "fontWeight": "bold", "align": "center"},
-                            },
-                        }}],
-                    }
-                    with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;min-height:185px;flex-shrink:0"):
-                        with ui.element("div").style("padding:10px 14px 4px"):
-                            ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
-                        ui.echart(chart_options_sem).classes("w-full").style("height:220px")
-                        with ui.element("div").style("padding:4px 14px 10px"):
-                            prom_7 = uds_esta_semana / 7
-                            hoy_u = ventas_por_dia.get(today_local.strftime("%Y-%m-%d"), 0)
-                            hoy_vs_prom = ((hoy_u - prom_7) / prom_7 * 100) if prom_7 > 0 else (100.0 if hoy_u > 0 else 0.0)
-                            variacion_color = _GREEN if var_pct >= 0 else "#dc2626"
-                            hoy_vs_color = _GREEN if hoy_vs_prom >= 0 else "#dc2626"
-                            _CELL = "background:#f9fafb;border:0.5px solid #e5e7eb;border-radius:0 4px 4px 0;padding:5px 8px;display:flex;justify-content:space-between;align-items:center"
-                            with ui.element("div").style("display:grid;grid-template-columns:1fr 1fr;gap:4px"):
-                                with ui.element("div").style(f"{_CELL};border-left:3px solid #1d4ed8"):
-                                    ui.label("Esta semana").style("font-size:10px;color:#6b7280")
-                                    ui.label(f"{fmt_n(uds_esta_semana)} u").style("font-size:12px;font-weight:500;color:#1d4ed8")
-                                with ui.element("div").style(f"{_CELL};border-left:3px solid #6b7280"):
-                                    ui.label("Sem. anterior").style("font-size:10px;color:#6b7280")
-                                    ui.label(f"{fmt_n(uds_semana_pasada)} u").style("font-size:12px;font-weight:500;color:#6b7280")
-                                with ui.element("div").style(f"{_CELL};border-left:3px solid {variacion_color}"):
-                                    ui.label("Variación").style("font-size:10px;color:#6b7280")
-                                    ui.label(f"{var_pct:+.1f}%").style(f"font-size:12px;font-weight:500;color:{variacion_color}")
-                                with ui.element("div").style(f"{_CELL};border-left:3px solid {hoy_vs_color}"):
-                                    ui.label("Hoy vs prom 7d").style("font-size:10px;color:#6b7280")
-                                    ui.label(f"{hoy_vs_prom:+.0f}%").style(f"font-size:12px;font-weight:500;color:{hoy_vs_color}")
-                else:
-                    with ui.element("div").style(f"flex:1;min-width:120px;{_CARD};flex-shrink:0"):
-                        ui.label("UNIDADES VENDIDAS — 14 DÍAS").style(_LBL)
-                        ui.label("Sin datos").style("font-size:12px;color:#9ca3af;margin-top:6px")
+                # Card Ventas diarias — calendario de los últimos 30 días
+                with ui.element("div").style(f"flex:1;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0;display:flex;flex-direction:column"):
+                    with ui.element("div").style("padding:10px 14px;flex:1;min-height:0;display:flex;flex-direction:column"):
+                        ui.label("VENTAS DIARIAS — ÚLTIMOS 30 DÍAS").style(f"{_LBL};margin-bottom:6px")
+                        _pintar_calendario(ventas_por_dia, facturacion_por_dia, today_local, margen_30d)
 
                 # Card Ventas del mes / Estimaciones
                 dias_transcurridos = (today_local - primer_dia_mes).days + 1
