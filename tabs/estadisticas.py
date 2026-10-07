@@ -347,18 +347,18 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
             '<div class="ac-r">'
             f'<div class="ac-g" title="{tip}">{_svg_velocimetro(pct, tip)}'
             f'<div style="font-size:16px;line-height:18px;font-weight:700;color:{col}">{pct:+.0f}%</div>'
-            f'<div style="font-size:9px;line-height:10px;color:#6B7280">{nombre}</div></div>'
+            f'<div style="font-size:9px;line-height:10px;color:#6B7280;white-space:nowrap">{nombre} <span style="color:#9CA3AF">vs 90d</span></div></div>'
             '<div class="ac-c"><div style="display:flex;justify-content:space-between;align-items:baseline;white-space:nowrap">'
-            f'<b style="font-size:10px;color:#111827">{fmt_dia(a7)}</b><span style="font-size:9px;color:#9CA3AF">60 días</span></div>'
+            f'<b style="font-size:10px;color:#111827">{fmt_dia(a7)}</b><span style="font-size:9px;color:#9CA3AF">últimos 60 días</span></div>'
             f'<div class="ac-cv">{graf}</div></div></div>'
         )
     ui.html(
         '<div class="ac-w"><div style="display:flex;flex-direction:column;gap:6px;flex:1;min-height:0">'
         + "".join(filas) +
         '</div><div style="display:flex;justify-content:space-between;align-items:center;font-size:9px;color:#6B7280;'
-        'margin-top:6px;white-space:nowrap"><span><span style="color:#2563EB">—</span> 7 días '
-        '<span style="color:#9CA3AF">—</span> 28 días <span style="color:#86EFAC">■</span> acelera '
-        '<span style="color:#FCA5A5">■</span> frena</span><span>aguja: 7d vs 90d</span></div></div>'
+        'margin-top:6px;white-space:nowrap"><span><span style="color:#2563EB">—</span> prom. 7 días '
+        '<span style="color:#9CA3AF">—</span> prom. 28 días <span style="color:#86EFAC">■</span> acelera '
+        '<span style="color:#FCA5A5">■</span> frena</span></div></div>'
     ).style("flex:1;min-height:0;display:flex;flex-direction:column")
 
 
@@ -1091,7 +1091,7 @@ def _pintar_home_inline(
                     with ui.element("div").style("padding:12px 14px;flex:1;min-height:0;display:flex;flex-direction:column"):
                         with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
                             ui.label("ACELERACIÓN DE VENTAS").style(_LBL)
-                            ui.label("7 días vs normal").style("font-size:10px;color:#9CA3AF")
+                            ui.label("últimos 7 días vs 90 días").style("font-size:10px;color:#9CA3AF")
                         _pintar_aceleracion(ventas_por_dia, facturacion_por_dia, today_local)
 
                 # Card Facturación Mensual (echart)
