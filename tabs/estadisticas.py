@@ -89,6 +89,52 @@ def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, 
     return uds, imp, lista, aporte
 
 
+def _margen_por_mes(user_id: Optional[int], ordenes: List[Dict[str, Any]], meses: List[str]) -> Dict[str, Dict[str, Any]]:
+    """Margen ponderado por mes = SUM(ganancia real) / SUM(facturacion) de las ordenes que cuenta sales_core.es_venta
+    (ordenes ya filtradas), con la ganancia de ventas_datos.gan_pesos (suma de los pagos de la orden) y la facturacion
+    de sales_core.monto_venta (la misma de la columna $ ARS). Solo entran al cociente las ordenes con ganancia cargada
+    (en numerador y denominador), para que una orden sin dato no baje el %. Devuelve {mes: {"pct", "falta", "ordenes"}};
+    "falta" = ordenes sin ganancia o con ganancia estimada (fee_origen = 'estimada'). pct None = mes sin datos."""
+    if user_id is None:
+        return {}
+    try:
+        conn = get_connection()
+        try:
+            rows = conn.execute("SELECT order_id, gan_pesos, fee_origen FROM ventas_datos WHERE user_id=?", (user_id,)).fetchall()
+        finally:
+            conn.close()
+    except Exception:
+        logging.exception("[ESTADISTICAS] no se pudo leer ventas_datos para el margen mensual")
+        return {}
+    vd: Dict[str, List[Any]] = {}  # order_id -> [ganancia, pagos, pagos sin ganancia, hay estimada]
+    for oid, gan, fo in rows:
+        d = vd.setdefault(str(oid), [0.0, 0, 0, False])
+        d[1] += 1
+        if gan is None:
+            d[2] += 1
+        else:
+            d[0] += float(gan)
+        if (fo or "") == "estimada":
+            d[3] = True
+    acc: Dict[str, Dict[str, float]] = {m: {"gan": 0.0, "fact": 0.0, "ordenes": 0, "falta": 0} for m in meses}
+    for o in ordenes:
+        dt = fecha_venta(o)
+        a = acc.get(dt.strftime("%Y-%m")) if dt else None
+        if a is None:
+            continue
+        a["ordenes"] += 1
+        d = vd.get(str(o.get("order_id") or o.get("id") or ""))
+        if d is None or d[2] == d[1]:
+            a["falta"] += 1  # sin ganancia: no entra al cociente
+            continue
+        if d[2] > 0 or d[3]:
+            a["falta"] += 1  # estimada o parcial: entra, pero cuenta para el aviso
+        a["gan"] += d[0]
+        a["fact"] += monto_venta(o)
+    return {m: {"pct": (a["gan"] / a["fact"] * 100) if a["fact"] > 0 else None,
+                "falta": int(a["falta"]), "ordenes": int(a["ordenes"])} for m, a in acc.items()}
+
+
 def _titulo_seccion(texto: str, color: str, margin_top: int = 0) -> None:
     """Título de sección con un punto de color antes (estética B)."""
     with ui.element("div").style(f"display:flex;align-items:center;gap:6px;margin-top:{margin_top}px;margin-bottom:3px"):
@@ -113,7 +159,7 @@ def _kpi_b(cuadros: List[Tuple[str, str, str, Optional[float]]], color: str, a_c
                 f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-left:3px solid {color};border-radius:6px;'
                 f'padding:4px 1px 4px {_pl};width:100%;box-sizing:border-box;overflow:hidden">'
                 f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{_lx}</div>'
-                f'<div style="font-size:18px;font-weight:500;color:#111827;line-height:1.2;white-space:nowrap">{_val}</div>'
+                f'<div style="font-size:15px;font-weight:500;color:#374151;line-height:1.2;white-space:nowrap">{_val}</div>'
                 f'<div style="font-size:{10 if a_contenido else 11}px;color:#9ca3af;white-space:nowrap">{_sub}</div>'
                 f'{_barra}'
                 f'</div>'
@@ -638,8 +684,8 @@ def _pintar_home_inline(
                         ui.label("TIENDA").style("font-size:10px;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;font-weight:500")
                         if on_refresh:
                             ui.button("↻ Actualizar", on_click=lambda: on_refresh()).props("unelevated no-caps dense").style(
-                                "background:#2563EB !important;color:#fff !important;border-radius:6px;height:28px;min-height:28px;padding:0 12px;"
-                                "font-size:12px;font-weight:500;margin:-7px 0")
+                                "background:#2563EB !important;color:#fff !important;border-radius:6px;height:22px;min-height:22px;padding:0 8px;"
+                                "font-size:11px;font-weight:500;margin:-4px 0")
                     with ui.element("div").style("display:flex;align-items:center;gap:10px"):
                         if img_url:
                             ui.image(img_url).style("width:40px;height:40px;object-fit:cover;border-radius:8px;flex-shrink:0;border:1px solid #e0e2e7")
@@ -920,10 +966,11 @@ def _pintar_home_inline(
                             dolar_oficial = float(str(dolar_str).replace(",", ".").strip()) if dolar_str else 1475.0
                             if dolar_oficial <= 0:
                                 dolar_oficial = 1475.0
+                            margen_mes = _margen_por_mes(user_id, results, meses_orden)
                             with ui.element("table").style("width:100%;border-collapse:collapse;font-size:11px"):
                                 with ui.element("thead"):
                                     with ui.element("tr").style("background:#f9fafb"):
-                                        for ci, col_h in enumerate(["Mes", "Unid", "$ ARS", "u$ USD"]):
+                                        for ci, col_h in enumerate(["Mes", "Unid", "$ ARS", "u$ USD", "Margen"]):
                                             align = "left" if ci == 0 else "right"
                                             with ui.element("th").style(f"padding:4px 8px;text-align:{align};font-weight:600;font-size:10px;text-transform:uppercase;color:#6b7280;border-bottom:1px solid #e0e2e7"):
                                                 ui.label(col_h)
@@ -946,6 +993,19 @@ def _pintar_home_inline(
                                                 ui.label(fmt_m(v["total"]))
                                             with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '400'};color:{row_color if is_mes_actual else '#6b7280'}"):
                                                 ui.label(f"u$ {fmt_n(total_usd)}")
+                                            _mg = margen_mes.get(key) or {}
+                                            _mg_pct = _mg.get("pct")
+                                            _mg_falta = int(_mg.get("falta") or 0)
+                                            _mg_dudoso = _mg_pct is not None and _mg.get("ordenes") and _mg_falta / _mg["ordenes"] > 0.10
+                                            if _mg_pct is None:
+                                                _mg_color, _mg_txt = "#9ca3af", "—"
+                                            else:
+                                                _mg_txt = f"{_fmt_dec(_mg_pct, 1)}%"
+                                                _mg_color = "#9ca3af" if _mg_dudoso else ("#16a34a" if _mg_pct >= 10 else ("#ea580c" if _mg_pct >= 0 else "#dc2626"))
+                                            with ui.element("td").style(f"padding:4px 8px;text-align:right;font-weight:{'700' if is_mes_actual else '500'};color:{_mg_color}"):
+                                                _mg_lbl = ui.label(_mg_txt)
+                                                if _mg_dudoso:
+                                                    _mg_lbl.tooltip(f"{_mg_falta} órdenes sin ganancia real")
 
             # ── FILA 2: Top Ventas | Stock | Graf Semanal | Ventas Mes ────────────
             claims_val = (claims.get("value") or claims.get("excluded", {}).get("real_value") or 0)
@@ -1157,7 +1217,7 @@ def _pintar_home_inline(
                             _pr_pu = (_pr_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
                             _pr_pf = (_pr_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
                             _pr_desc = ((_pr_lista - _pr_imp) / _pr_lista * 100) if _pr_lista else 0.0
-                            _titulo_seccion(f"PROMOCIONES — {mes_actual_nom.upper()}", _PROMO_ROSA)
+                            _titulo_seccion("PROMOCIONES", _PROMO_ROSA)
                             _kpi_b([
                                 ("Vendidas c/promo", fmt_n(_pr_u), f"{_pr_pu:.0f}% de {fmt_n(total_unidades_mes_c)} vendidas", _pr_pu),
                                 ("Facturado c/promo", _fmt_corto_ads(_pr_imp),
@@ -1167,7 +1227,7 @@ def _pintar_home_inline(
                             ], _PROMO_ROSA, a_contenido=True)
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
-                        _titulo_seccion(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} UNID.", _CUOTAS_AZUL,
+                        _titulo_seccion(f"VENTAS Y CUOTAS · {_total_str} UNID.", _CUOTAS_AZUL,
                                         margin_top=6 if _pr_u > 0 else 0)
                         _kpi_b([
                             ("Contado" if _cx == 1 else f"{_cx} cuotas", fmt_n(cuotas_dist[_cx]),
@@ -1181,7 +1241,7 @@ def _pintar_home_inline(
                             _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
                             _a_pu = (_a_u / total_unidades_mes_c * 100) if total_unidades_mes_c else 0.0
                             _a_pf = (_a_imp / ventas_mes_actual_monto * 100) if ventas_mes_actual_monto else 0.0
-                            _titulo_seccion(f"PUBLICIDAD — {mes_actual_nom.upper()}", _PUB_VIOLETA, margin_top=6)
+                            _titulo_seccion("PUBLICIDAD", _PUB_VIOLETA, margin_top=6)
                             _kpi_b([
                                 ("Ventas por ads", fmt_n(_a_u), f"{_fmt_dec(_a_pu, 1)}% de tus u." if total_unidades_mes_c else "—",
                                  _a_pu if total_unidades_mes_c else None),
