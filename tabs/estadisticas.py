@@ -1165,7 +1165,7 @@ def _pintar_home_inline(
                         "stock": _stock_sku.get(_gk[1]) if _gk[0] == "sku" else None,
                     }
 
-                top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:12]
+                top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:10]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
                 # Publicaciones propias (se muestran en la tarjeta Top Ventas)
