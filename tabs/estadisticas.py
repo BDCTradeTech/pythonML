@@ -4,6 +4,7 @@ Pestaña Estadísticas: datos de la cuenta ML, reputación y ventas.
 """
 from __future__ import annotations
 import calendar
+import json
 import math
 import re
 import html as _html
@@ -24,11 +25,12 @@ from ml_api import (
     ml_get_pending_labels,
     ml_get_my_items,
     ml_get_unanswered_questions,
+    ml_get_response_time,
     ml_get_dispatch_schedule,
     ml_get_shipping_preferences,
     _parse_ml_item_body,
 )
-from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range, get_tiempo_respuesta_preguntas
+from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range, set_cotizador_param
 from sales_core import es_venta, fecha_venta, monto_venta, unidades_venta
 
 
@@ -406,7 +408,7 @@ _REP_NIVELES = [
 
 
 def _fmt_minutos(m: float) -> str:
-    """Duracion en minutos como '38 min' / '2 h 15 min' / '1 d 3 h'."""
+    """Duracion en minutos como '38 min' / '5 h 50 min' / '1 d 3 h'."""
     m = int(round(m or 0))
     if m < 60:
         return f"{m} min"
@@ -418,22 +420,81 @@ def _fmt_minutos(m: float) -> str:
     return f"{d} d {h} h" if h else f"{d} d"
 
 
+def _fmt_hm(m: float) -> str:
+    """Version corta para la linea por franja: '7 h 35' / '2 h' / '45 min' / '2 d 8 h'."""
+    m = int(round(m or 0))
+    if m < 60:
+        return f"{m} min"
+    if m < 1440:
+        h, rem = divmod(m, 60)
+        return f"{h} h {rem}" if rem else f"{h} h"
+    d, rem_min = divmod(m, 1440)
+    h = rem_min // 60
+    return f"{d} d {h} h" if h else f"{d} d"
+
+
+_RT_CLAVE = "ml_response_time_cache"
+_RT_TTL_SEG = 30 * 60
+
+
+def _tiempo_respuesta_ml(user_id: int, access_token: str, seller_id: str) -> Optional[Dict[str, Any]]:
+    """Tiempo de respuesta OFICIAL de ML (GET /users/{seller_id}/questions/response_time, ventana de 14 dias que ML
+    actualiza una vez por dia), en minutos: {"total", "laboral", "finde", "noche", "preguntas"} o
+    {"sin_preguntas": True} si ML responde 404. Cache por usuario de 30 min en cotizador_datos (sobrevive a reinicios):
+    con el cache vigente no llama a ML; si la llamada falla devuelve el ultimo valor guardado aunque sea viejo; sin
+    ninguno, None. Pensada para correr en un hilo (run.io_bound), nunca en el render."""
+    previo: Optional[Dict[str, Any]] = None
+    try:
+        raw = get_cotizador_param(_RT_CLAVE, user_id)
+        previo = json.loads(raw) if raw else None
+    except Exception:
+        previo = None
+    if previo and time.time() - float(previo.get("ts") or 0) < _RT_TTL_SEG:
+        return previo.get("datos")
+    res = ml_get_response_time(access_token, seller_id)
+    datos: Optional[Dict[str, Any]] = None
+    if res.get("status") == "ok":
+        d = res.get("data") or {}
+        tot = (d.get("total") or {}).get("response_time")
+        if tot is not None:
+            datos = {
+                "total": float(tot),
+                "laboral": (d.get("weekdays_working_hours") or {}).get("response_time"),
+                "finde": (d.get("weekend") or {}).get("response_time"),
+                "noche": (d.get("weekdays_extra_hours") or {}).get("response_time"),
+                "preguntas": d.get("total_questions"),
+            }
+    elif res.get("status") == "not_found":
+        datos = {"sin_preguntas": True}
+    if datos is None:  # fallo real de ML: se muestra lo ultimo que se guardo
+        return (previo or {}).get("datos")
+    try:
+        set_cotizador_param(_RT_CLAVE, json.dumps({"ts": time.time(), "datos": datos}), user_id)
+    except Exception:
+        logging.exception("[ESTADISTICAS] no se pudo guardar el cache de response_time (user_id=%s)", user_id)
+    return datos
+
+
 def _pintar_reputacion(
     level_id: Any, metricas: List[Tuple[str, Optional[float], float]], n_sin_responder: Optional[int],
     tiempo: Optional[Dict[str, Any]], lbl: str,
 ) -> None:
     """Contenido de la tarjeta REPUTACION (R1): nivel arriba a la derecha, termometro de 5 segmentos, una fila por metrica con
-    barra del uso del limite de ML (valor / limite, tope 100%), preguntas sin responder y tiempo de respuesta (mediana).
-    metricas = (nombre, tasa 0-1 o None, limite 0-1)."""
+    barra del uso del limite de ML (valor / limite, tope 100%), preguntas sin responder y tiempo de respuesta oficial de ML.
+    metricas = (nombre, tasa 0-1 o None, limite 0-1). Los valores van en dos columnas de ancho fijo a la derecha (valor
+    alineado a la derecha, "/ limite" a la izquierda); preguntas y tiempo comparten el borde derecho de la columna del valor."""
     actual = next((n for n in _REP_NIVELES if n[0] == str(level_id)), None)
     col_nivel = actual[3] if actual else "#6B7280"
     ui.add_css(
-        ".rp-f{display:flex;align-items:center;gap:6px;margin-bottom:4px;line-height:14px}"
+        ".rp-f{display:flex;align-items:center;gap:6px;margin-bottom:4px;line-height:14px;font-variant-numeric:tabular-nums}"
         ".rp-n{flex:0 0 76px;font-size:10px;color:#374151;white-space:nowrap}"
         ".rp-b{flex:1;min-width:24px;height:6px;border-radius:3px;background:#F3F4F6;overflow:hidden}"
         ".rp-b>div{height:100%;border-radius:3px}"
-        ".rp-v{flex:0 0 auto;font-size:10.5px;white-space:nowrap;text-align:right}"
-        ".rp-v i{font-style:normal;color:#9CA3AF;font-weight:400}"
+        ".rp-v1{flex:0 0 auto;min-width:40px;font-size:10.5px;font-weight:700;text-align:right;white-space:nowrap;"
+        "font-variant-numeric:tabular-nums}"
+        ".rp-v2{flex:0 0 32px;font-size:10px;font-weight:400;color:#9CA3AF;text-align:left;white-space:nowrap;"
+        "font-variant-numeric:tabular-nums}"
+        ".rp-s{font-size:8.5px;line-height:10px;color:#9CA3AF}"
     )
     with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
         ui.label("REPUTACIÓN").style(lbl)
@@ -451,7 +512,7 @@ def _pintar_reputacion(
         lim_txt = f"{lim * 100:g}".replace(".", ",") + "%"
         if tasa is None:
             filas.append(f'<div class="rp-f"><span class="rp-n">{nombre}</span><div class="rp-b"></div>'
-                         f'<span class="rp-v" style="color:#9CA3AF"><b>—</b> <i>/ {lim_txt}</i></span></div>')
+                         f'<span class="rp-v1" style="color:#9CA3AF">—</span><span class="rp-v2">/ {lim_txt}</span></div>')
             continue
         uso = tasa / lim if lim > 0 else 1.0
         col = "#16A34A" if uso < 0.5 else ("#D97706" if uso < 0.8 else "#DC2626")
@@ -459,29 +520,29 @@ def _pintar_reputacion(
         filas.append(
             f'<div class="rp-f" title="Usás el {min(uso * 100, 999):.0f}% del límite de ML ({lim_txt})"><span class="rp-n">{nombre}</span>'
             f'<div class="rp-b"><div style="width:{min(uso * 100, 100):.1f}%;background:{col}"></div></div>'
-            f'<span class="rp-v" style="color:{col}"><b>{val}</b> <i>/ {lim_txt}</i></span></div>'
+            f'<span class="rp-v1" style="color:{col}">{val}</span><span class="rp-v2">/ {lim_txt}</span></div>'
         )
     extra = '<div style="height:1px;background:#F3F4F6;margin:5px 0"></div>'
     if n_sin_responder is not None:
         cq = "#16A34A" if n_sin_responder == 0 else ("#D97706" if n_sin_responder <= 5 else "#DC2626")
         extra += (f'<div class="rp-f"><span class="rp-n" style="flex:1">Preguntas sin responder</span>'
-                  f'<span class="rp-v" style="color:{cq}"><b>{n_sin_responder}</b></span></div>')
-    if tiempo:
-        med = tiempo["mediana"]
-        ct = "#16A34A" if med <= 60 else ("#D97706" if med <= 360 else "#DC2626")
-        n = tiempo["n"]
-        tip = (f"Promedio: {_fmt_minutos(tiempo['promedio'])} · la mediana evita que 2 o 3 preguntas lentas "
-               "distorsionen el número")
-        extra += (f'<div title="{tip}" style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
-                  f'<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
-                  f'<span class="rp-v" style="color:{ct}"><b>{_fmt_minutos(med)}</b></span></div>'
-                  f'<div style="font-size:8.5px;line-height:10px;color:#9CA3AF">mediana · últimos 30 días · '
-                  f'{n} pregunta{"s" if n != 1 else ""}</div></div>')
-    else:
+                  f'<span class="rp-v1" style="color:{cq}">{n_sin_responder}</span><span class="rp-v2"></span></div>')
+    if tiempo and tiempo.get("total") is not None:
+        tot = float(tiempo["total"])
+        ct = "#16A34A" if tot <= 60 else ("#D97706" if tot <= 360 else "#DC2626")
+        franjas = " · ".join(f"{n} {_fmt_hm(tiempo[k])}" for k, n in (("laboral", "Laboral"), ("finde", "Finde"), ("noche", "Noche"))
+                             if tiempo.get(k) is not None)
         extra += ('<div style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
                   '<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
-                  '<span class="rp-v" style="color:#9CA3AF"><b>—</b></span></div>'
-                  '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF">mediana · últimos 30 días · sin datos</div></div>')
+                  f'<span class="rp-v1" style="color:{ct}">{_fmt_minutos(tot)}</span><span class="rp-v2"></span></div>'
+                  '<div class="rp-s">MercadoLibre · últimos 14 días</div>'
+                  + (f'<div class="rp-s">{franjas}</div>' if franjas else '') + '</div>')
+    else:
+        sub = "sin preguntas en el período" if (tiempo or {}).get("sin_preguntas") else "sin datos"
+        extra += ('<div style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
+                  '<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
+                  '<span class="rp-v1" style="color:#9CA3AF">—</span><span class="rp-v2"></span></div>'
+                  f'<div class="rp-s">MercadoLibre · últimos 14 días · {sub}</div></div>')
     ui.html(
         f'<div style="display:flex;gap:3px;margin-bottom:6px">{segs}</div>' + "".join(filas) + extra
         + '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:5px">'
@@ -1055,7 +1116,7 @@ def _logistica_hoy(access_token: str, seller_id: str, ordenes_hoy: List[Dict[str
 
 
 def _pintar_home_inline(
-    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None, access_token: Optional[str] = None,
+    container, profile: Optional[Dict], orders_data: Dict[str, Any], user_id: Optional[int] = None, items_data: Optional[Dict[str, Any]] = None, on_refresh: Optional[Callable[[], None]] = None, shipments_today: Optional[Dict[str, int]] = None, questions: Optional[List] = None, dispatch_deadline: Optional[str] = None, pending_labels: Optional[Dict[str, int]] = None, access_token: Optional[str] = None, tiempo_ml: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Pinta el contenido del Home con los datos ya cargados. on_refresh permite actualizar datos al vuelo."""
     raw_orders = orders_data.get("results") or orders_data.get("orders") or orders_data.get("elements") or []
@@ -1324,7 +1385,7 @@ def _pintar_home_inline(
                              ("Cancelaciones", _to_float_rate(rate_canc), MAX_CANC),
                              ("Demora envíos", _to_float_rate(rate_delayed), MAX_DELAYED)],
                             len(questions) if questions is not None else None,
-                            get_tiempo_respuesta_preguntas(user_id) if user_id else None, _LBL,
+                            tiempo_ml, _LBL,
                         )
 
                 # Card Aceleración de ventas (reemplaza Ventas por período)
@@ -1861,6 +1922,13 @@ def build_tab_estadisticas(estadisticas_container) -> None:
                         seller_id,
                     )
 
+            tiempo_ml: Optional[Dict[str, Any]] = None
+            if seller_id:
+                try:
+                    tiempo_ml = await run.io_bound(_tiempo_respuesta_ml, user["id"], access_token, str(seller_id))
+                except Exception:
+                    logging.exception("[ESTADISTICAS] no se pudo obtener el tiempo de respuesta de ML (seller_id=%s)", seller_id)
+
             logging.warning(f"[TIMING] TOTAL estadisticas: {time.perf_counter()-t_inicio:.2f}s")
 
         except Exception as e:
@@ -1870,6 +1938,6 @@ def build_tab_estadisticas(estadisticas_container) -> None:
             return
         estadisticas_container.clear()
         with estadisticas_container:
-            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline, pending_labels=pending_labels, access_token=access_token)
+            _pintar_home_inline(estadisticas_container, profile, orders_data, user_id=user["id"], items_data=items_data, on_refresh=cargar_y_pintar, shipments_today=shipments_today, questions=questions, dispatch_deadline=dispatch_deadline, pending_labels=pending_labels, access_token=access_token, tiempo_ml=tiempo_ml)
 
     cargar_y_pintar()

@@ -16,7 +16,7 @@ _GREEN  = "#2E7D32"
 _YELLOW = "#BA7517"
 _RED    = "#A32D2D"
 
-_JOBS = [("stock", "Stock"), ("competidores", "Competidores"), ("ordenes_cache", "Órdenes"), ("preguntas_resp", "Preguntas")]
+_JOBS = [("stock", "Stock"), ("competidores", "Competidores"), ("ordenes_cache", "Órdenes")]
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
