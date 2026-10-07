@@ -70,7 +70,7 @@ def _fmt_corto_ads(val: float) -> str:
     return f"${val:.0f}"
 
 
-def _ads_mes_resumen(user_id: Optional[int], desde, hasta) -> Optional[Dict[str, Any]]:
+def _ads_mes_resumen(user_id: Optional[int], desde, hasta) -> Optional[Dict[str, float]]:
     """Suma de las métricas diarias de Ads (todas las campañas del usuario) en [desde, hasta], leídas de
     ml_ads_campaign_metrics_daily (la llena ads_snapshot.py). None si no hay datos o no hay actividad:
     la sección no se muestra."""
@@ -88,7 +88,6 @@ def _ads_mes_resumen(user_id: Optional[int], desde, hasta) -> Optional[Dict[str,
         "cost", "direct_amount", "indirect_amount", "direct_units_quantity", "indirect_units_quantity")}
     r["unidades"] = r["direct_units_quantity"] + r["indirect_units_quantity"]
     r["importe"] = r["direct_amount"] + r["indirect_amount"]
-    r["synced"] = max((str(x.get("synced_at") or "") for x in rows), default="")
     if not (r["cost"] or r["unidades"] or r["importe"]):
         return None
     return r
@@ -851,7 +850,7 @@ def _pintar_home_inline(
                 if key_ord in facturacion_por_dia:
                     facturacion_por_dia[key_ord] += float(ord_item.get("total_amount") or ord_item.get("paid_amount") or 0)
 
-            with ui.row().classes("w-full gap-2 flex-wrap items-stretch mt-1"):
+            with ui.row().classes("w-full gap-2 flex-wrap items-start mt-1"):
                 # Card Top Ventas — agrupado por SKU real (misma fuente que el dedup de
                 # "Publicaciones": _cuotas_key sobre items_data, que ya trae seller_sku /
                 # catalog_product_id por publicación).
@@ -1073,7 +1072,7 @@ def _pintar_home_inline(
                             _a_pct_f = f"{_fmt_dec(_a_imp / ventas_mes_actual_monto * 100, 1)}% del total" if ventas_mes_actual_monto else "—"
                             _a_cvta = f"{fmt_m(_a_inv / _a_u)} c/venta" if _a_u else "—"
                             _a_roas = (_a_imp / _a_inv) if _a_inv else 0.0
-                            ui.label(f"PUBLICIDAD — {mes_actual_nom.upper()}").style(f"{_LBL};margin-top:10px;margin-bottom:6px")
+                            ui.label(f"PUBLICIDAD — {mes_actual_nom.upper()}").style(f"{_LBL};margin-top:2px;margin-bottom:4px")
                             with ui.row().classes("w-full gap-2 flex-nowrap"):
                                 for _lx, _val, _clr, _sub in [
                                     ("Unidades", fmt_n(_a_u), _ADS_VIOLETA, _a_pct_u),
@@ -1084,16 +1083,12 @@ def _pintar_home_inline(
                                 ]:
                                     ui.html(
                                         f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
-                                        f'padding:10px 8px;text-align:center;width:100%;box-sizing:border-box">'
-                                        f'<div style="font-size:10px;color:#9ca3af;margin-bottom:4px">{_lx}</div>'
-                                        f'<div style="font-size:24px;font-weight:700;color:{_clr};line-height:1;margin-bottom:4px">{_val}</div>'
-                                        f'<div style="font-size:11px;color:#6b7280">{_sub}</div>'
+                                        f'padding:6px 4px;text-align:center;width:100%;box-sizing:border-box">'
+                                        f'<div style="font-size:10px;color:#9ca3af;margin-bottom:2px">{_lx}</div>'
+                                        f'<div style="font-size:20px;font-weight:700;color:{_clr};line-height:1;margin-bottom:3px">{_val}</div>'
+                                        f'<div style="font-size:10px;color:#6b7280;white-space:nowrap">{_sub}</div>'
                                         f'</div>'
                                     ).style("flex:1;min-width:0")
-                            _a_sync = _ads["synced"]
-                            _a_sync_txt = f"Datos al {_a_sync[8:10]}/{_a_sync[5:7]} · " if len(_a_sync) >= 10 else ""
-                            ui.label(f"{_a_sync_txt}los últimos 14 días todavía pueden sumar ventas atribuidas.").style(
-                                "font-size:10px;color:#9ca3af;margin-top:4px")
 
                 # Card Gráfico Semanal — 14 días
                 dias_orden = sorted(ventas_por_dia.keys())[-14:]
