@@ -582,11 +582,40 @@ def _ads_gasto_mes(user_id: Optional[int], hoy: Any) -> Optional[Dict[str, float
     return {"gasto": g_cur, "dias": float(len({x.get("date") for x in cur if x.get("date")})), "prev": g_prev}
 
 
-def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy: Any, dolar: float,
-                       user_id: Optional[int] = None) -> None:
-    """Tarjeta VENTAS - <MES> (V1 + tabla X2): lo facturado vs el estimado de fin de mes, barra de proyeccion con las marcas
-    del mes anterior y del mes record (sin contar el mes en curso) y tabla hasta hoy / fin de mes / vs mes anterior
-    (montos en pesos con el renglon u$ solo en Facturado, Ganancia e Inversion ads; el dolar es el del cotizador).
+def _pills_moneda() -> Tuple[Any, Any, Callable[[str], None]]:
+    """Selector "$ ARS | US$" (el de FACTURACION MENSUAL, compartido): crea las dos pastillas en el contenedor actual y
+    devuelve (pill_ars, pill_usd, activar(moneda)) para pintar la activa. El estado lo lleva quien lo usa."""
+    with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px;margin-left:auto"):
+        pill_ars = ui.label("$ ARS")
+        pill_usd = ui.label("US$")
+
+    def activar(moneda: str) -> None:
+        _base = "font-size:10px;font-weight:600;padding:2px 10px;border-radius:999px;cursor:pointer;"
+        _on, _off = f"{_base}background:{_AZUL_BARRA};color:#fff", f"{_base}background:transparent;color:#6b7280"
+        pill_ars.style(replace=_on if moneda == "ARS" else _off)
+        pill_usd.style(replace=_on if moneda == "USD" else _off)
+
+    return pill_ars, pill_usd, activar
+
+
+def _mu(v: float) -> str:
+    """Dolares compactos para labels y frase: u$ 1,23M / u$ 219k / u$ 31,5k / u$ 123."""
+    if v >= 1_000_000:
+        return f"u$ {v / 1_000_000:.2f}M".replace(".", ",")
+    if v >= 100_000:
+        return f"u$ {v / 1_000:.0f}k"
+    if v >= 1_000:
+        return f"u$ {v / 1_000:.1f}k".replace(".", ",")
+    return f"u$ {int(v)}"
+
+
+def _ventas_mes_partes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy: Any, dolar: float,
+                       ads: Optional[Dict[str, float]], moneda: str = "ARS") -> Tuple[str, str]:
+    """Tarjeta VENTAS - <MES> (V1 + tabla Y3): devuelve (html de arriba, html de la tabla con su pie). Arriba: lo facturado
+    vs el estimado de fin de mes, barra de proyeccion con las marcas del mes anterior y del mes record (sin contar el mes
+    en curso) y la frase. Abajo: tabla hasta hoy / fin de mes / vs mes anterior, una linea por fila. `moneda` "USD" pasa
+    TODOS los montos a dolares (dolar = cotizador_datos.dolar_oficial); los % y las cantidades no cambian. `ads` es el
+    resultado de _ads_gasto_mes (se lee una sola vez, el selector no vuelve a pedir datos).
     El estimado es el de siempre: (facturado del mes / dias transcurridos, hoy incluido) x dias del mes. Todo sale de
     por_mes (la misma fuente que Ventas historicas) y de _margen_por_mes (ganancia)."""
     cur = hoy.strftime("%Y-%m")
@@ -605,6 +634,15 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
     rec_key = max(otros, key=lambda k: otros[k]) if otros else None
     rec = otros[rec_key] if rec_key else 0.0
     nom_prev = _MESES_ES[prev_dt.month - 1]
+    usd = moneda == "USD"
+
+    def _mc(v: float) -> str:
+        """Monto compacto (labels de la barra y frase)."""
+        return _mu(v / dolar) if usd else _m1(v)
+
+    def _mt(v: float) -> str:
+        """Monto de la tabla: abreviado en pesos, entero en dolares."""
+        return f"u$ {fmt_n(v / dolar)}" if usd else _m1(v)
 
     def _corto(key: str) -> str:
         t = _MESES_ES[int(key[5:7]) - 1][:3]
@@ -640,8 +678,8 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
             frase = f'<span style="color:#DC2626">▼ {f"{v:+.0f}%".replace("-", "−")} vs {nom_prev}</span>'
         else:
             ref = max(rec, prev_tot)
-            extra = (f" · superarías el récord por {_m1(est - ref)}" if est > ref
-                     else f" · te faltan {_m1(ref - est)} para el récord")
+            extra = (f" · superarías el récord por {_mc(est - ref)}" if est > ref
+                     else f" · te faltan {_mc(ref - est)} para el récord")
             frase = f'<span style="color:#16A34A">▲ {v:+.0f}% vs {nom_prev}{extra}</span>'
 
     # Barra: 0 .. max(estimado, record) x 1,08
@@ -652,12 +690,12 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
 
     marcas: List[Tuple[float, str, str]] = []  # (pct, color, label)
     if hay_prev and rec_key and rec > prev_tot:
-        marcas.append((_pc(prev_tot), "#6B7280", f"{_corto(prev_key)} {_m1(prev_tot)}"))
-        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_m1(rec)}"))
+        marcas.append((_pc(prev_tot), "#6B7280", f"{_corto(prev_key)} {_mc(prev_tot)}"))
+        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_mc(rec)}"))
     elif hay_prev:
-        marcas.append((_pc(prev_tot), "#D97706", f"{_corto(prev_key)} (récord) {_m1(prev_tot)}"))
+        marcas.append((_pc(prev_tot), "#D97706", f"{_corto(prev_key)} (récord) {_mc(prev_tot)}"))
     elif rec_key:
-        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_m1(rec)}"))
+        marcas.append((_pc(rec), "#D97706", f"récord {_corto(rec_key)} {_mc(rec)}"))
     rayas = "".join(
         f'<div style="position:absolute;left:{pc:.2f}%;top:-4px;height:24px;border-left:1.5px dashed {col}"></div>'
         for pc, col, _t in marcas)
@@ -684,89 +722,81 @@ def _pintar_ventas_mes(por_mes: Dict[str, Any], margen_mes: Dict[str, Any], hoy:
     ord_m, ord_prev = int(c.get("orders") or 0), int(pv.get("orders") or 0)
     est_o = int(ord_m / dias_t * dias_m)
     pct_m, pct_p = gm.get("pct"), gp.get("pct")
-    tip_margen = ""
-    if pct_m is not None:
-        tip_margen = f"Margen {_fmt_dec(pct_m, 1)}%"
-        if hay_prev and pct_p is not None:
-            tip_margen += f" · {f'{pct_m - pct_p:+.1f}'.replace('.', ',').replace('-', '−')} pp vs {nom_prev}"
 
-    def _cel(peso: str, usd: Optional[float] = None, verde: bool = False, pct: Optional[float] = None) -> str:
-        """Celda de monto: pesos (verde bold en FIN DE MES), % de margen opcional al lado y renglon u$ opcional."""
-        cls = "vm-f" if verde else "vm-h"
-        extra = f' <span class="vm-mp">· {_fmt_dec(pct, 1)}%</span>' if pct is not None else ""
-        usd_h = (f'<div class="vm-u" style="color:{"#86A88F" if verde else "#9CA3AF"}">u$ {fmt_n(usd / dolar)}</div>'
-                 if usd is not None else "")
-        return f'<div><div class="{cls}">{peso}{extra}</div>{usd_h}</div>'
+    def _vs_pp(a: Optional[float], b: Optional[float]) -> str:
+        if a is None or b is None or not hay_prev:
+            return '<span style="color:#9CA3AF">—</span>'
+        d = a - b
+        col, flecha = ("#16A34A", "▲") if d >= 0 else ("#DC2626", "▼")
+        return f'<span style="color:{col};font-weight:600">{flecha} {f"{d:+.1f}".replace(".", ",").replace("-", "−")} pp</span>'
 
     def _vs_celda(v: Optional[float], neutro: bool = False) -> str:
         if neutro and v is not None:
-            return f'<div class="vm-h" style="color:#6B7280;font-weight:600">{"▲" if v >= 0 else "▼"} {f"{v:+.0f}%".replace("-", "−")}</div>'
-        return f'<div class="vm-h">{_vs_html(v)}</div>'
+            return f'<span style="color:#6B7280;font-weight:600">{"▲" if v >= 0 else "▼"} {f"{v:+.0f}%".replace("-", "−")}</span>'
+        return _vs_html(v)
 
-    filas_t: List[Tuple[str, str, str, str, str]] = []  # (nombre, hoy, fin, vs, tooltip)
-    filas_t.append(("Facturado", _cel(_m1(monto), monto), _cel(_m1(est), est, True), _vs_celda(_vs(est, prev_tot if hay_prev else None)), ""))
-    filas_t.append(("Ganancia",
-                    _cel(_m1(gan_hoy), gan_hoy, False, pct_m) if gan_hoy is not None else _cel(dash),
-                    _cel(_m1(gan_est), gan_est, True, pct_m) if gan_est is not None else _cel(dash, None, True),
-                    _vs_celda(_vs(gan_est, gan_prev)), tip_margen))
-    filas_t.append(("Órdenes", _cel(fmt_n(ord_m)), _cel(fmt_n(est_o), None, True), _vs_celda(_vs(est_o, ord_prev if hay_prev else None)), ""))
-    filas_t.append(("Unidades", _cel(fmt_n(unid)), _cel(fmt_n(est_u), None, True), _vs_celda(_vs(est_u, prev_u if hay_prev else None)), ""))
-    filas_t.append(("Ticket prom.", _cel(fmt_m(tick) if tick is not None else dash), _cel(dash, None, True), _vs_celda(_vs(tick, tick_prev)), ""))
-    filas_t.append(("Prom. diario",
-                    _cel(f"${prom_d / 1_000_000:.2f}M".replace(".", ",") if prom_d >= 1_000_000 else fmt_m(prom_d)),
-                    _cel(dash, None, True), _vs_celda(_vs(prom_d, prom_prev)), ""))
-    ads = _ads_gasto_mes(user_id, hoy)
+    pct_txt = f"{_fmt_dec(pct_m, 1)}%" if pct_m is not None else dash
+    prom_txt = (f"u$ {fmt_n(prom_d / dolar)}" if usd else
+                (f"${prom_d / 1_000_000:.2f}M".replace(".", ",") if prom_d >= 1_000_000 else fmt_m(prom_d)))
+    tick_txt = dash if tick is None else (f"u$ {fmt_n(tick / dolar)}" if usd else fmt_m(tick))
+    filas_t: List[Tuple[str, str, str, str]] = [  # (nombre, hoy, fin de mes, vs mes anterior)
+        ("Facturado", _mt(monto), _mt(est), _vs_celda(_vs(est, prev_tot if hay_prev else None))),
+        ("Ganancia", _mt(gan_hoy) if gan_hoy is not None else dash, _mt(gan_est) if gan_est is not None else dash,
+         _vs_celda(_vs(gan_est, gan_prev))),
+        ("Margen", pct_txt, pct_txt, _vs_pp(pct_m, pct_p)),
+        ("Órdenes", fmt_n(ord_m), fmt_n(est_o), _vs_celda(_vs(est_o, ord_prev if hay_prev else None))),
+        ("Unidades", fmt_n(unid), fmt_n(est_u), _vs_celda(_vs(est_u, prev_u if hay_prev else None))),
+        ("Ticket prom.", tick_txt, dash, _vs_celda(_vs(tick, tick_prev))),
+        ("Prom. diario", prom_txt, dash, _vs_celda(_vs(prom_d, prom_prev))),
+    ]
     if ads:
         proy = ads["gasto"] / ads["dias"] * dias_m if ads["dias"] > 0 else None
-        filas_t.append(("Inversión ads",
-                        _cel(_m1(ads["gasto"]), ads["gasto"]) if ads["gasto"] else _cel(dash),
-                        _cel(_m1(proy), proy, True) if proy else _cel(dash, None, True),
-                        _vs_celda(_vs(proy, ads["prev"]), neutro=True), ""))
+        filas_t.append(("Inversión ads", _mt(ads["gasto"]) if ads["gasto"] else dash, _mt(proy) if proy else dash,
+                        _vs_celda(_vs(proy, ads["prev"]), neutro=True)))
     tabla = (
         '<div class="vm-g"><div class="vm-r" style="padding-top:0;padding-bottom:0"><div></div>'
         '<div class="vm-c">HASTA HOY</div><div class="vm-c">FIN DE MES</div>'
         f'<div class="vm-c">VS {nom_prev.upper() if hay_prev else "ANTERIOR"}</div></div>'
         + "".join(
-            f'<div class="vm-r{"" if i % 2 else " vm-z"}"' + (f' title="{_html.escape(tip)}"' if tip else "") + '>'
-            f'<div class="vm-t">{nom}</div>{h}{f}{v}</div>'
-            for i, (nom, h, f, v, tip) in enumerate(filas_t))
+            f'<div class="vm-r{"" if i % 2 else " vm-z"}"><div class="vm-t">{nom}</div>'
+            f'<div class="vm-h">{h}</div><div class="vm-f">{fin}</div><div class="vm-h">{v}</div></div>'
+            for i, (nom, h, fin, v) in enumerate(filas_t))
         + '</div>'
     )
-    ui.add_css(
-        ".vm-w{container-type:inline-size}"
-        ".vm-n{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}"
-        ".vm-n>div{min-width:0}"
-        ".vm-l{font-size:9px;line-height:11px;color:#6B7280}"
-        ".vm-v{font-size:22px;line-height:26px;font-weight:700;white-space:nowrap}"
-        ".vm-g{display:flex;flex-direction:column;row-gap:1px}"
-        ".vm-r{display:grid;grid-template-columns:62px 1fr 1.1fr 1fr;column-gap:6px;align-items:center;padding:1px 4px}"
-        ".vm-z{background:#F9FAFB}"
-        ".vm-u{font-size:8.5px;line-height:10px;text-align:right;white-space:nowrap}"
-        ".vm-mp{font-size:8.5px;font-weight:400;color:#9CA3AF}"
-        ".vm-c{font-size:8.5px;line-height:10px;color:#9CA3AF;text-align:right;white-space:nowrap}"
-        ".vm-t{font-size:10px;color:#6B7280;white-space:nowrap}"
-        ".vm-h{font-size:10.5px;line-height:13px;color:#374151;text-align:right;white-space:nowrap}"
-        ".vm-f{font-size:10.5px;line-height:13px;color:#16A34A;font-weight:700;text-align:right;white-space:nowrap}"
-        "@container (max-width:290px){.vm-n{flex-direction:column;gap:6px}.vm-n>div:last-child{text-align:left!important}}"
-        "@container (max-width:340px){.vm-mp{display:block;line-height:10px}}"
-    )
-    ui.html(
+    pie = ("Dólar " + f"${fmt_n(dolar)} (cotizador) · " if usd else "") + "Estimado = prom. diario × días del mes"
+    arriba = (
         '<div class="vm-w">'
         '<div class="vm-n"><div><div class="vm-l">Llevás</div>'
-        f'<div class="vm-v" style="color:#2563EB">{fmt_m(monto)}</div></div>'
+        f'<div class="vm-v" style="color:#2563EB">{f"u$ {fmt_n(monto / dolar)}" if usd else fmt_m(monto)}</div></div>'
         '<div style="text-align:right"><div class="vm-l">Estimado fin de mes</div>'
-        f'<div class="vm-v" style="color:#16A34A">{_m1(est)}</div></div></div>'
+        f'<div class="vm-v" style="color:#16A34A">{_mt(est)}</div></div></div>'
         '<div style="position:relative;height:16px;margin:4px 0 2px">'
         '<div style="position:absolute;inset:0;border-radius:8px;background:#F3F4F6;overflow:hidden">'
         f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(est):.2f}%;background:#DCFCE7"></div>'
         f'<div style="position:absolute;left:0;top:0;bottom:0;width:{_pc(monto):.2f}%;background:#2563EB;border-radius:8px"></div>'
         f'</div>{rayas}</div>'
         f'<div style="position:relative;height:{alto_labs}px;margin-bottom:4px">{"".join(labs)}</div>'
-        f'<div style="font-size:10px;line-height:13px;font-weight:700;margin-bottom:3px">{frase}</div>'
-        '<div style="height:1px;background:#F3F4F6;margin-bottom:3px"></div>'
-        + tabla +
-        '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:4px">'
-        f'Dólar: ${fmt_n(dolar)} (cotizador) · Estimado = prom. diario × días del mes</div></div>'
+        f'<div style="font-size:10px;line-height:13px;font-weight:700">{frase}</div></div>'
+    )
+    abajo = (tabla + '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:4px">' + pie + '</div>')
+    return arriba, abajo
+
+
+def _css_ventas_mes() -> None:
+    ui.add_css(
+        ".vm-w{container-type:inline-size}"
+        ".vm-n{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}"
+        ".vm-n>div{min-width:0}"
+        ".vm-l{font-size:9px;line-height:11px;color:#6B7280}"
+        ".vm-v{font-size:22px;line-height:26px;font-weight:700;white-space:nowrap}"
+        ".vm-g{display:flex;flex-direction:column}"
+        ".vm-r{display:grid;grid-template-columns:62px 1fr 1.1fr 1fr;column-gap:6px;align-items:center;padding:1px 4px}"
+        ".vm-z{background:#F9FAFB}"
+        ".vm-c{font-size:8.5px;line-height:10px;color:#9CA3AF;text-align:right;white-space:nowrap}"
+        ".vm-t{font-size:10px;color:#6B7280;white-space:nowrap}"
+        ".vm-h{font-size:10.5px;line-height:13px;color:#374151;text-align:right;white-space:nowrap}"
+        ".vm-f{font-size:10.5px;line-height:13px;color:#16A34A;font-weight:700;text-align:right;white-space:nowrap}"
+        "@container (max-width:290px){.vm-n{flex-direction:column;gap:6px}.vm-n>div:last-child{text-align:left!important}}"
     )
 
 
@@ -1471,12 +1501,10 @@ def _pintar_home_inline(
                             with ui.row().classes("items-baseline gap-1 no-wrap"):
                                 ui.label("FACTURACIÓN MENSUAL").style(_LBL)
                                 lbl_prom = ui.label("").style("font-size:11px;color:#9ca3af;font-weight:400")
-                            with ui.row().classes("gap-0 no-wrap").style("background:#f3f4f6;border-radius:999px;padding:2px;margin-left:auto"):
-                                pill_ars = ui.label("$ ARS")
-                                pill_usd = ui.label("US$")
+                            pill_ars, pill_usd, _activar_fm = _pills_moneda()
                         chart_fm = ui.echart(chart_options).classes("w-full").style("flex:1;min-height:200px;height:auto")
 
-                        def _redibujar_fm(_chart=chart_fm, _lbl=lbl_prom, _pa=pill_ars, _pu=pill_usd) -> None:
+                        def _redibujar_fm(_chart=chart_fm, _lbl=lbl_prom) -> None:
                             moneda = estado_fm["moneda"]
                             opciones, prom = _facturacion_mensual_options(
                                 por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card,
@@ -1486,10 +1514,7 @@ def _pintar_home_inline(
                             _chart.update()
                             _lbl.set_text(f"(prom. {prom})" if prom else "")
                             _lbl.set_visibility(bool(prom))
-                            _base = "font-size:10px;font-weight:600;padding:2px 10px;border-radius:999px;cursor:pointer;"
-                            _on, _off = f"{_base}background:{_AZUL_BARRA};color:#fff", f"{_base}background:transparent;color:#6b7280"
-                            _pa.style(replace=_on if moneda == "ARS" else _off)
-                            _pu.style(replace=_on if moneda == "USD" else _off)
+                            _activar_fm(moneda)
 
                         def _aplicar_moneda_fm(moneda: str) -> None:
                             estado_fm["moneda"] = moneda
@@ -1855,7 +1880,28 @@ def _pintar_home_inline(
                     with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px"):
                         ui.label(f"VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:0")
                         ui.label(f"día {today_local.day} de {calendar.monthrange(today_local.year, today_local.month)[1]} · faltan {calendar.monthrange(today_local.year, today_local.month)[1] - today_local.day}").style("font-size:10px;color:#9CA3AF")
-                    _pintar_ventas_mes(por_mes, margen_mes, today_local, dolar_oficial2, user_id)
+                    # Selector de moneda: re-renderiza solo esta tarjeta con los datos ya cargados (sin recargar ni pedir nada)
+                    estado_vm = {"moneda": "ARS"}
+                    ads_vm = _ads_gasto_mes(user_id, today_local)
+                    _css_ventas_mes()
+                    html_arriba = ui.html("")
+                    with ui.element("div").style("display:flex;justify-content:flex-end;margin:1px 0"):
+                        pill_vm_ars, pill_vm_usd, _activar_vm = _pills_moneda()
+                    html_tabla = ui.html("")
+
+                    def _redibujar_vm() -> None:
+                        arriba, abajo = _ventas_mes_partes(por_mes, margen_mes, today_local, dolar_oficial2, ads_vm, estado_vm["moneda"])
+                        html_arriba.set_content(arriba)
+                        html_tabla.set_content(abajo)
+                        _activar_vm(estado_vm["moneda"])
+
+                    def _aplicar_moneda_vm(moneda: str) -> None:
+                        estado_vm["moneda"] = moneda
+                        _redibujar_vm()
+
+                    pill_vm_ars.on("click", lambda: _aplicar_moneda_vm("ARS"))
+                    pill_vm_usd.on("click", lambda: _aplicar_moneda_vm("USD"))
+                    _redibujar_vm()
 
 
 # ---------------------------------------------------------------------------
