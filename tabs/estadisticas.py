@@ -54,6 +54,54 @@ def fmt_m(val) -> str:
 _ADS_VIOLETA = "#7B4FD6"
 _ADS_NARANJA = "#C2410C"
 _ADS_VERDE = "#1D9A6C"
+_PROMO_ROSA = "#DB2777"
+_PROMO_NARANJA = "#E8901A"
+
+
+def _promo_de_orden(items: List[Any], payments: List[Any]) -> Tuple[int, float, float, float]:
+    """(unidades, importe, precio_lista, cupones) de una orden, contando solo los ítems con promo del vendedor.
+    Un ítem tiene promo si gross_price (precio de lista de la línea) > unit_price * cantidad: es el mismo criterio
+    que usa la pestaña Ventas para el tag "Promo". Los cupones son el coupon_amount de los pagos aprobados
+    (cupones al comprador, financiados por ML o por el vendedor: el cache no distingue quién pone cada uno),
+    solo si la orden tiene promo. (0, 0, 0, 0) si no hay promo."""
+    uds, imp, lista = 0, 0.0, 0.0
+    for it in items or []:
+        if not isinstance(it, dict):
+            continue
+        try:
+            q = int(it.get("quantity") or 0)
+            up = float(it.get("unit_price") or 0)
+            gross = float(it.get("gross_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if q > 0 and gross > up * q + 0.01:
+            uds += q
+            imp += up * q
+            lista += gross
+    if not uds:
+        return 0, 0.0, 0.0, 0.0
+    aporte = 0.0
+    for p in payments or []:
+        if isinstance(p, dict) and p.get("status") in (None, "approved"):
+            try:
+                aporte += float(p.get("coupon_amount") or 0)
+            except (TypeError, ValueError):
+                pass
+    return uds, imp, lista, aporte
+
+
+def _kpi_fila(cuadros: List[Tuple[str, str, str, str]]) -> None:
+    """Fila de cuadros (título, valor grande, color, subtexto) con el mismo estilo que Publicidad."""
+    with ui.row().classes("w-full gap-2 flex-nowrap"):
+        for _lx, _val, _clr, _sub in cuadros:
+            ui.html(
+                f'<div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:6px;'
+                f'padding:6px 2px;text-align:center;width:100%;box-sizing:border-box">'
+                f'<div style="font-size:10px;color:#9ca3af;margin-bottom:2px">{_lx}</div>'
+                f'<div style="font-size:20px;font-weight:700;color:{_clr};line-height:1;margin-bottom:3px">{_val}</div>'
+                f'<div style="font-size:9px;color:#6b7280;white-space:nowrap">{_sub}</div>'
+                f'</div>'
+            ).style("flex:1;min-width:0")
 
 
 def _fmt_dec(val: float, dec: int) -> str:
@@ -926,35 +974,10 @@ def _pintar_home_inline(
                         "solo_catalogo": _es_solo_catalogo,
                     }
 
-                top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:14]
+                top_list = sorted(top_grouped.values(), key=lambda x: x["units"], reverse=True)[:12]
                 total_unid_mes = ventas_mes_actual_unid if ventas_mes_actual_unid > 0 else 1
 
-                with ui.element("div").style(f"flex:1.3;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
-                    with ui.element("div").style("padding:12px 14px"):
-                        ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
-                        if not top_list:
-                            ui.label("Sin ventas este mes").style("font-size:12px;color:#9ca3af")
-                        else:
-                            for i, p in enumerate(top_list):
-                                pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                tit = _smart_truncate(p["title"] or "—", 60)
-                                with ui.row().classes("w-full items-center gap-2 mb-1"):
-                                    with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
-                                        ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
-                                    ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
-                                    if p.get("solo_catalogo"):
-                                        with ui.element("span").style(
-                                                "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
-                                                "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
-                                            ui.label("CATÁLOGO")
-                                    with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
-                                        ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
-                                        ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
-                            if top_sin_sku:
-                                ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
-                                    "font-size:9px;color:#9ca3af;margin-top:4px")
-
-                # Card Stock + Últimas ventas
+                # Publicaciones propias (se muestran en la tarjeta Top Ventas)
                 items_list = (items_data or {}).get("results") or []
                 # Deduplicar por SKU — misma lógica que Productos
                 _groups: Dict[tuple, list] = {}
@@ -982,6 +1005,40 @@ def _pintar_home_inline(
                 unidades_propias_en_stock = sum(int(it.get("available_quantity") or 0) for it in propias)
                 marcas_propias = [str(it.get("marca") or "").strip() for it in propias]
                 marcas_distintas = len({m for m in marcas_propias if m and m != "—"})
+
+                with ui.element("div").style(f"flex:1.3;min-width:280px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
+                    with ui.element("div").style("padding:12px 14px"):
+                        ui.label(f"TOP VENTAS — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:8px")
+                        if not top_list:
+                            ui.label("Sin ventas este mes").style("font-size:12px;color:#9ca3af")
+                        else:
+                            for i, p in enumerate(top_list):
+                                pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
+                                tit = _smart_truncate(p["title"] or "—", 60)
+                                with ui.row().classes("w-full items-center gap-2").style("margin-bottom:1px"):
+                                    with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
+                                        ui.label(str(i + 1)).style("color:white;font-size:8px;font-weight:700")
+                                    ui.label(tit).style("font-size:11px;color:#111827;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0")
+                                    if p.get("solo_catalogo"):
+                                        with ui.element("span").style(
+                                                "background:#f3f4f6;color:#6b7280;font-size:8px;font-weight:600;"
+                                                "padding:1px 5px;border-radius:8px;flex-shrink:0;white-space:nowrap"):
+                                            ui.label("CATÁLOGO")
+                                    with ui.element("div").style("display:flex;align-items:center;gap:2px;flex-shrink:0"):
+                                        ui.label(f"{p['units']}u").style(f"font-size:11px;color:{_BLUE};font-weight:500;white-space:nowrap")
+                                        ui.label(f"· {pct:.1f}%").style("font-size:11px;color:#6b7280;white-space:nowrap")
+                            if top_sin_sku:
+                                ui.label(f"{top_sin_sku} publicación(es) sin SKU mapeado — no se agruparon").style(
+                                    "font-size:9px;color:#9ca3af;margin-top:4px")
+                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-top:8px;margin-bottom:4px")
+                        with ui.row().classes("gap-2 w-full flex-nowrap"):
+                            for _lp, _vp in (("Marcas", str(marcas_distintas)),
+                                             ("Publicaciones propias", str(publicaciones_propias_con_stock)),
+                                             ("Unidades propias", fmt_n(unidades_propias_en_stock))):
+                                with ui.element("div").style("flex:1;text-align:center;padding:4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
+                                    ui.label(_lp).style("font-size:9px;color:#6b7280")
+                                    ui.label(_vp).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
+
                 def _orden_fecha(o):
                     ds = o.get("date_closed") or o.get("date_created") or o.get("date_last_updated") or ""
                     return ds[:10] if ds else ""
@@ -989,17 +1046,6 @@ def _pintar_home_inline(
 
                 with ui.element("div").style(f"flex:1;min-width:260px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("padding:12px 14px"):
-                        ui.label("PUBLICACIONES").style(f"{_LBL};margin-bottom:6px")
-                        with ui.row().classes("gap-2 w-full flex-nowrap mb-3"):
-                            with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                ui.label("Marcas").style("font-size:9px;color:#6b7280")
-                                ui.label(str(marcas_distintas)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                            with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                ui.label("Publicaciones propias").style("font-size:8px;color:#6b7280")
-                                ui.label(str(publicaciones_propias_con_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
-                            with ui.element("div").style(f"flex:1;text-align:center;padding:6px 4px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:4px"):
-                                ui.label("Unidades propias").style("font-size:8px;color:#6b7280")
-                                ui.label(fmt_n(unidades_propias_en_stock)).style(f"font-size:16px;font-weight:700;color:{_BLUE}")
                         _vd_cuotas: Dict[str, str] = {}
                         try:
                             _vd_conn = get_connection()
@@ -1017,6 +1063,7 @@ def _pintar_home_inline(
                             pass
                         cuotas_dist: Dict[int, int] = {1: 0, 3: 0, 6: 0, 9: 0, 12: 0}
                         total_unidades_mes_c = 0
+                        _pr_u, _pr_imp, _pr_lista, _pr_aporte = 0, 0.0, 0.0, 0.0
                         for _ord in results:
                             _dt_s = (_ord.get("date_created") or _ord.get("date_closed")
                                      or _ord.get("date_last_updated") or "")
@@ -1040,9 +1087,21 @@ def _pintar_home_inline(
                                 _inst_key = 1
                             cuotas_dist[_inst_key] += _uds_c
                             total_unidades_mes_c += _uds_c
+                            _po = _promo_de_orden(_items_c, _ord.get("payments"))
+                            _pr_u += _po[0]; _pr_imp += _po[1]; _pr_lista += _po[2]; _pr_aporte += _po[3]
+                        ui.label(f"PROMOCIONES — {mes_actual_nom.upper()}").style(f"{_LBL};margin-bottom:4px")
+                        _kpi_fila([
+                            ("Con promo", fmt_n(_pr_u), _PROMO_ROSA,
+                             f"{_fmt_dec(_pr_u / total_unidades_mes_c * 100, 1) if total_unidades_mes_c else '0,0'}% del total"),
+                            ("Facturación", _fmt_corto_ads(_pr_imp), _PROMO_ROSA,
+                             f"{_fmt_dec(_pr_imp / ventas_mes_actual_monto * 100, 1) if ventas_mes_actual_monto else '0,0'}% del total"),
+                            ("Desc. prom.", f"{_fmt_dec((_pr_lista - _pr_imp) / _pr_lista * 100, 1) if _pr_lista else '0,0'}%",
+                             _PROMO_NARANJA, "sobre lista"),
+                            ("Cupones", _fmt_corto_ads(_pr_aporte), _ADS_VERDE, "en ventas con promo"),
+                        ])
                         _base_c = total_unidades_mes_c or 1
                         _total_str = f"{total_unidades_mes_c:,}".replace(",", ".")
-                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-bottom:6px")
+                        ui.label(f"VENTAS Y CUOTAS — {mes_actual_nom.upper()} · {_total_str} unidades").style(f"{_LBL};margin-top:8px;margin-bottom:6px")
                         with ui.row().classes("w-full gap-2 flex-nowrap"):
                             for _cx, _lx, _clr in [
                                 (1,  "1x",  "#185fa5"),
