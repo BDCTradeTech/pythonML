@@ -153,7 +153,8 @@ def _query_ventas(user_id: int) -> Dict[str, int]:
         conn.close()
 
 
-_CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores"), ("salud_audit", "Salud")]
+_CRON_JOBS = [("stock", "Stock"), ("competidores", "Competidores"), ("salud_audit", "Salud"),
+              ("ordenes_cache", "Órdenes")]
 _DIAS_LETRA = ["L", "M", "X", "J", "V", "S", "D"]  # datetime.weekday(): 0=lunes ... 6=domingo
 
 
@@ -187,14 +188,17 @@ def _fmt_dt(iso: Optional[str]) -> str:
 _CRON_LOG_FILES = {
     "stock":        "/var/log/pythonml_stock.log",
     "competidores": "/var/log/pythonml_comp.log",
+    "ordenes_cache": "/var/log/pythonml_ordenes.log",
 }
 _CRON_LOG_MARKERS = {
     "stock":        ("Stock snapshot {date}", "Snapshot completado"),
     "competidores": ("Snapshot competidores {date}", "COMPLETADO"),
+    "ordenes_cache": ("Refresco órdenes {date}", "Refresco completado"),
 }
 _CRON_LOG_USER_START = {
     "stock":        re.compile(r"Procesando seller_id=\S+ \(user_id=(\d+),"),
     "competidores": re.compile(r"user_id=(\d+) — \d+ catálogos\s*$"),
+    "ordenes_cache": re.compile(r"Procesando user_id=(\d+)\s*$"),
 }
 
 

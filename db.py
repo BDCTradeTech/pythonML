@@ -1419,6 +1419,10 @@ def init_db() -> None:
         )
         """
     )
+    try:
+        cur.execute("ALTER TABLE ml_orders_cache ADD COLUMN date_last_updated TEXT")
+    except sqlite3.OperationalError:
+        pass
 
     # Archivos de gastos impositivos por período y sección
     cur.execute(
@@ -3439,6 +3443,21 @@ def get_cached_stale_ok(key: str, max_age_minutes: Optional[int] = None) -> Opti
 # ---------------------------------------------------------------------------
 
 
+def init_orders_cache_schema() -> None:
+    """Garantiza la columna date_last_updated de ml_orders_cache (idempotente). La usan los scripts
+    ordenes_cache_refresh.py / corregir_historial_ordenes.py, que pueden correr antes de que la app
+    reinicie y ejecute init_db()."""
+    conn = get_connection()
+    try:
+        try:
+            conn.execute("ALTER TABLE ml_orders_cache ADD COLUMN date_last_updated TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # la columna ya existe
+    finally:
+        conn.close()
+
+
 def get_orders_cache(user_id: int) -> List[Dict]:
     import json as _json
     conn = get_connection()
@@ -3484,8 +3503,8 @@ def upsert_orders_cache(user_id: int, orders: List[Dict]) -> None:
                 """
                 INSERT OR REPLACE INTO ml_orders_cache
                     (order_id, user_id, date_created, date_closed, total_amount, paid_amount,
-                     status, items_json, payments_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     status, items_json, payments_json, date_last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     oid, user_id,
@@ -3493,6 +3512,7 @@ def upsert_orders_cache(user_id: int, orders: List[Dict]) -> None:
                     o.get("total_amount"), o.get("paid_amount"),
                     o.get("status"),
                     _json.dumps(items), _json.dumps(pays),
+                    o.get("date_last_updated"),
                 ),
             )
         conn.commit()
