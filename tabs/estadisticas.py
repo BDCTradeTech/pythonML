@@ -1206,7 +1206,7 @@ def _pintar_home_inline(
                             _max_u_top = max((q["units"] for q in top_list), default=1) or 1
                             for i, p in enumerate(top_list):
                                 pct = (100.0 * p["units"] / total_unid_mes) if total_unid_mes else 0
-                                _stk = "—" if p.get("stock") is None else fmt_n(p["stock"])
+                                _stk = "—" if p.get("stock") is None else f'{fmt_n(p["stock"])}u'
                                 _fill = max(2.0, 100.0 * p["units"] / _max_u_top)  # puesto 1 = 100% de la barra
                                 with ui.element("div").style("display:flex;align-items:center;gap:8px;margin-bottom:3px"):
                                     with ui.element("div").style(f"width:16px;height:16px;border-radius:50%;background:{_BLUE};display:flex;align-items:center;justify-content:center;flex-shrink:0"):
@@ -1214,7 +1214,7 @@ def _pintar_home_inline(
                                     with ui.element("div").style("flex:1;min-width:0"):
                                         # Titulo completo (sin "..."): si no entra en una linea, hace wrap.
                                         ui.html(f'{_html.escape(p["title"] or "—")} <span style="color:#9CA3AF">({_stk})</span>').style(
-                                            "font-size:11px;line-height:13px;color:#111827;overflow-wrap:anywhere")
+                                            "font-size:10px;line-height:13px;color:#111827;overflow-wrap:anywhere")
                                         with ui.element("div").style("display:flex;align-items:center;gap:6px;margin-top:2px"):
                                             with ui.element("div").style("flex:0 1 70%;height:4px;border-radius:2px;background:#F3F4F6;overflow:hidden"):
                                                 ui.element("div").style(f"height:4px;width:{_fill:.1f}%;border-radius:2px;background:#3B82F6")
