@@ -7,6 +7,7 @@ orden que se cancela / reembolsa después queda para siempre con el status viejo
 
 Uso (cron diario, de madrugada):
     python3 /opt/pythonml/ordenes_cache_refresh.py
+Backfill manual de solo las preguntas: python3 ordenes_cache_refresh.py --solo-preguntas
 Cron: 30 4 * * * cd /opt/pythonml && set -a && . ./.env && set +a && ./venv/bin/python3 ordenes_cache_refresh.py >> /var/log/pythonml_ordenes.log 2>&1
 (04:30: después de competidores_snapshot (04:00, termina ~04:15) y antes de salud_audit (05:30).)
 
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -100,6 +102,101 @@ def buscar_ordenes(
     return out, truncado
 
 
+JOB_PREGUNTAS = "preguntas_resp"
+VENTANA_PREGUNTAS_DIAS = 30
+
+
+def _norm_utc(s: Optional[str]) -> Optional[str]:
+    """ISO de ML (con fraccion de 9 digitos y offset) -> 'YYYY-MM-DDTHH:MM:SS+00:00' en UTC."""
+    if not s:
+        return None
+    try:
+        s2 = re.sub(r"(\.\d{6})\d+", r"\1", s.replace("Z", "+00:00"))
+        return datetime.fromisoformat(s2).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    except ValueError:
+        return None
+
+
+def buscar_preguntas_respondidas(
+    access_token: str, seller_id: str, dias: int = VENTANA_PREGUNTAS_DIAS, session=None,
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """GET questions/search?status=ANSWERED paginado (solo lectura), de la mas nueva a la mas vieja, hasta salir de la
+    ventana de `dias` dias (por fecha de la PREGUNTA). Siempre re-lee la ventana completa: una pregunta de hace 3 dias
+    respondida hoy tiene una fecha de pregunta vieja, asi que un incremental por fecha la perderia.
+    Devuelve (filas para upsert_preguntas_resp, truncado)."""
+    if session is None:
+        from ml_api import get_ml_session
+        session = get_ml_session()
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
+    corte = _norm_utc(_iso_art(datetime.now(timezone.utc) - timedelta(days=dias)))
+    filas: List[Dict[str, Any]] = []
+    offset = 0
+    truncado = False
+    for _ in range(100):
+        params = {"seller_id": seller_id, "status": "ANSWERED", "sort_fields": "date_created",
+                  "sort_types": "DESC", "limit": PAGE_SIZE, "offset": offset}
+        data = None
+        for intento in range(3):
+            try:
+                r = session.get("https://api.mercadolibre.com/questions/search", params=params,
+                                headers=headers, timeout=30)
+                if r.ok:
+                    data = r.json()
+                    break
+                log.warning("questions/search %s offset=%s intento %s: %s", r.status_code, offset, intento + 1, r.text[:150])
+            except Exception as e:  # red / timeout
+                log.warning("questions/search offset=%s intento %s: %s", offset, intento + 1, e)
+            time.sleep(2 * (intento + 1))
+        if data is None:
+            truncado = True
+            break
+        qs = data.get("questions") or []
+        fuera = False
+        for q in qs:
+            fp = _norm_utc(q.get("date_created"))
+            if not fp or not q.get("id"):
+                continue
+            if fp < corte:
+                fuera = True
+                break
+            ans = q.get("answer") or {}
+            filas.append({
+                "question_id": q["id"], "fecha_pregunta": fp, "fecha_respuesta": _norm_utc(ans.get("date_created")),
+                "status": q.get("status"), "deleted": bool(q.get("deleted_from_listing")), "hold": bool(q.get("hold")),
+            })
+        offset += len(qs)
+        if fuera or len(qs) < PAGE_SIZE:
+            break
+    else:
+        truncado = True
+    return filas, truncado
+
+
+def cargar_preguntas_usuario(user_id: int, token: str, seller_id: str) -> None:
+    """Carga de ml_preguntas_resp de un usuario, con su propio try/except y su propia fila en cron_runs
+    (job 'preguntas_resp'): si falla, queda logueado y las ordenes siguen. Un usuario sin preguntas no es error."""
+    from db import log_cron_run, upsert_preguntas_resp
+    t0 = time.time()
+    status, count, error = "fail", 0, None
+    try:
+        filas, truncado = buscar_preguntas_respondidas(token, seller_id)
+        if not filas and truncado:
+            error = "questions/search fallo sin devolver preguntas"
+        else:
+            count = upsert_preguntas_resp(user_id, filas)
+            status = "partial" if truncado else "ok"
+            error = "paginado incompleto (una pagina de questions/search fallo)" if truncado else None
+        log.info("  user_id=%s: %d preguntas respondidas guardadas (%s)", user_id, count, status)
+    except Exception as e:
+        error = str(e)
+        log.exception("Error cargando preguntas de user_id=%s", user_id)
+    finally:
+        try:
+            log_cron_run(JOB_PREGUNTAS, user_id, status, count, time.time() - t0, error)
+        except Exception as log_e:
+            log.error("No se pudo loguear cron_runs (preguntas): %s", log_e)
+
+
 def _estado_previo(user_id: int) -> Dict[str, str]:
     from db import get_connection
     conn = get_connection()
@@ -138,7 +235,7 @@ def refrescar_usuario(user_id: int, token: str, seller_id: str, dias: int = VENT
 
 def main() -> None:
     import requests
-    from db import get_connection, init_cron_runs_db, init_orders_cache_schema, log_cron_run
+    from db import get_connection, init_cron_runs_db, init_orders_cache_schema, init_preguntas_resp_schema, log_cron_run
     from ml_api import get_ml_access_token
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -146,6 +243,8 @@ def main() -> None:
     log.info("=== Refresco órdenes %s ===", hoy)
     init_cron_runs_db()
     init_orders_cache_schema()
+    init_preguntas_resp_schema()
+    solo_preguntas = "--solo-preguntas" in sys.argv  # backfill manual: salta el refresco de ordenes
     conn = get_connection()
     creds = conn.execute("SELECT id, user_id, raw_data FROM ml_credentials").fetchall()
     conn.close()
@@ -174,13 +273,17 @@ def main() -> None:
             if not seller_id:
                 error = "No se pudo resolver seller_id"
                 continue
+            cargar_preguntas_usuario(user_id, token, seller_id)  # no propaga errores: las ordenes siguen
+            if solo_preguntas:
+                continue
             status, count, error = refrescar_usuario(user_id, token, seller_id)
         except Exception as e:
             error = str(e)
             log.error("Error procesando user_id=%s: %s", user_id, e)
         finally:
             try:
-                log_cron_run(JOB, user_id, status, count, time.time() - t0, error)
+                if not solo_preguntas:
+                    log_cron_run(JOB, user_id, status, count, time.time() - t0, error)
             except Exception as log_e:
                 log.error("No se pudo loguear cron_runs: %s", log_e)
     log.info("=== Refresco completado ===")

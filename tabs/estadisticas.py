@@ -28,7 +28,7 @@ from ml_api import (
     ml_get_shipping_preferences,
     _parse_ml_item_body,
 )
-from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range
+from db import get_connection, get_cotizador_param, get_marca_override_map, get_ads_campaign_daily_range, get_tiempo_respuesta_preguntas
 from sales_core import es_venta, fecha_venta, monto_venta, unidades_venta
 
 
@@ -392,6 +392,100 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
         '<div class="ac-w"><div style="display:flex;flex-direction:column;gap:6px;flex:1;min-height:0">'
         + "".join(filas) + '</div></div>'
     ).style("flex:1;min-height:0;display:flex;flex-direction:column")
+
+
+# Termometro de reputacion de ML: (level_id, nombre, color palido, color pleno), de izquierda (peor) a derecha (mejor).
+_REP_NIVELES = [
+    ("1_red", "Rojo", "#FEE2E2", "#DC2626"),
+    ("2_orange", "Naranja", "#FFEDD5", "#EA580C"),
+    ("3_yellow", "Amarillo", "#FEF9C3", "#EAB308"),
+    ("4_light_green", "Verde claro", "#DCFCE7", "#4ADE80"),
+    ("5_green", "Verde", "#DCFCE7", "#16A34A"),
+]
+
+
+def _fmt_minutos(m: float) -> str:
+    """Duracion en minutos como '38 min' / '2 h 15 min' / '1 d 3 h'."""
+    m = int(round(m or 0))
+    if m < 60:
+        return f"{m} min"
+    if m < 1440:
+        h, rem = divmod(m, 60)
+        return f"{h} h {rem} min" if rem else f"{h} h"
+    d, rem_min = divmod(m, 1440)
+    h = rem_min // 60
+    return f"{d} d {h} h" if h else f"{d} d"
+
+
+def _pintar_reputacion(
+    level_id: Any, metricas: List[Tuple[str, Optional[float], float]], n_sin_responder: Optional[int],
+    tiempo: Optional[Dict[str, Any]], lbl: str,
+) -> None:
+    """Contenido de la tarjeta REPUTACION (R1): nivel arriba a la derecha, termometro de 5 segmentos, una fila por metrica con
+    barra del uso del limite de ML (valor / limite, tope 100%), preguntas sin responder y tiempo de respuesta (mediana).
+    metricas = (nombre, tasa 0-1 o None, limite 0-1)."""
+    actual = next((n for n in _REP_NIVELES if n[0] == str(level_id)), None)
+    col_nivel = actual[3] if actual else "#6B7280"
+    ui.add_css(
+        ".rp-f{display:flex;align-items:center;gap:6px;margin-bottom:4px;line-height:14px}"
+        ".rp-n{flex:0 0 76px;font-size:10px;color:#374151;white-space:nowrap}"
+        ".rp-b{flex:1;min-width:24px;height:6px;border-radius:3px;background:#F3F4F6;overflow:hidden}"
+        ".rp-b>div{height:100%;border-radius:3px}"
+        ".rp-v{flex:0 0 auto;font-size:10.5px;white-space:nowrap;text-align:right}"
+        ".rp-v i{font-style:normal;color:#9CA3AF;font-weight:400}"
+    )
+    with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
+        ui.label("REPUTACIÓN").style(lbl)
+        ui.label(f"● {actual[1] if actual else 'Sin nivel'}").style(f"font-size:11px;font-weight:700;color:{col_nivel}")
+    segs = "".join(
+        '<div style="flex:1;display:flex;flex-direction:column;align-items:center">'
+        f'<div style="width:100%;height:10px;border-radius:2px;background:{pleno if actual and lid == actual[0] else palido}"></div>'
+        + (f'<div style="width:0;height:0;margin-top:1px;border-left:4px solid transparent;border-right:4px solid transparent;'
+           f'border-bottom:5px solid {pleno}"></div>' if actual and lid == actual[0] else '<div style="height:6px"></div>')
+        + '</div>'
+        for lid, _nom, palido, pleno in _REP_NIVELES
+    )
+    filas = []
+    for nombre, tasa, lim in metricas:
+        lim_txt = f"{lim * 100:g}".replace(".", ",") + "%"
+        if tasa is None:
+            filas.append(f'<div class="rp-f"><span class="rp-n">{nombre}</span><div class="rp-b"></div>'
+                         f'<span class="rp-v" style="color:#9CA3AF"><b>—</b> <i>/ {lim_txt}</i></span></div>')
+            continue
+        uso = tasa / lim if lim > 0 else 1.0
+        col = "#16A34A" if uso < 0.5 else ("#D97706" if uso < 0.8 else "#DC2626")
+        val = f"{tasa * 100:.2f}%".replace(".", ",")
+        filas.append(
+            f'<div class="rp-f" title="Usás el {min(uso * 100, 999):.0f}% del límite de ML ({lim_txt})"><span class="rp-n">{nombre}</span>'
+            f'<div class="rp-b"><div style="width:{min(uso * 100, 100):.1f}%;background:{col}"></div></div>'
+            f'<span class="rp-v" style="color:{col}"><b>{val}</b> <i>/ {lim_txt}</i></span></div>'
+        )
+    extra = '<div style="height:1px;background:#F3F4F6;margin:5px 0"></div>'
+    if n_sin_responder is not None:
+        cq = "#16A34A" if n_sin_responder == 0 else ("#D97706" if n_sin_responder <= 5 else "#DC2626")
+        extra += (f'<div class="rp-f"><span class="rp-n" style="flex:1">Preguntas sin responder</span>'
+                  f'<span class="rp-v" style="color:{cq}"><b>{n_sin_responder}</b></span></div>')
+    if tiempo:
+        med = tiempo["mediana"]
+        ct = "#16A34A" if med <= 60 else ("#D97706" if med <= 360 else "#DC2626")
+        n = tiempo["n"]
+        tip = (f"Promedio: {_fmt_minutos(tiempo['promedio'])} · la mediana evita que 2 o 3 preguntas lentas "
+               "distorsionen el número")
+        extra += (f'<div title="{tip}" style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
+                  f'<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
+                  f'<span class="rp-v" style="color:{ct}"><b>{_fmt_minutos(med)}</b></span></div>'
+                  f'<div style="font-size:8.5px;line-height:10px;color:#9CA3AF">mediana · últimos 30 días · '
+                  f'{n} pregunta{"s" if n != 1 else ""}</div></div>')
+    else:
+        extra += ('<div style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
+                  '<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
+                  '<span class="rp-v" style="color:#9CA3AF"><b>—</b></span></div>'
+                  '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF">mediana · últimos 30 días · sin datos</div></div>')
+    ui.html(
+        f'<div style="display:flex;gap:3px;margin-bottom:6px">{segs}</div>' + "".join(filas) + extra
+        + '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:5px">'
+          'Barra = cuánto del límite de ML estás usando</div>'
+    )
 
 
 def _titulo_seccion(texto: str, color: str, margin_top: Any = 0) -> None:
@@ -1039,10 +1133,6 @@ def _pintar_home_inline(
             rate_canc = _get_rate(canc, tot)
             rate_delayed = _get_rate(delayed, tot)
             rate_mediat = _get_rate(mediat, tot) if mediat else 0.0
-            level_id = rep.get("level_id") or "—"
-            level_label = {"1_red": "Rojo", "2_orange": "Naranja", "3_yellow": "Amarillo", "4_light_green": "Verde claro", "5_green": "Verde"}.get(str(level_id), str(level_id))
-            level_colors = {"1_red": "#ef4444", "2_orange": "#f97316", "3_yellow": "#eab308", "4_light_green": "#84cc16", "5_green": "#22c55e"}
-            level_color = level_colors.get(str(level_id), "#6b7280")
             MAX_CLAIMS, MAX_MEDIAT, MAX_CANC, MAX_DELAYED = 0.01, 0.005, 0.005, 0.08
 
             def _to_float_rate(v: Any) -> Optional[float]:
@@ -1054,36 +1144,6 @@ def _pintar_home_inline(
                 except (TypeError, ValueError):
                     return None
 
-            def _semaforo(rate_raw: Any, max_val: float, label: str) -> None:
-                rate_f = _to_float_rate(rate_raw)
-                if rate_f is None:
-                    rate_pct_str = "—"
-                    color = "#9ca3af"
-                    bar_pct = 0.0
-                elif rate_f == 0:
-                    rate_pct_str = "0,00%"
-                    color = "#16A34A"
-                    bar_pct = 0.0
-                else:
-                    rate_pct_str = f"{rate_f * 100:.2f}%".replace(".", ",")
-                    ratio = rate_f / max_val if max_val > 0 else 1.0
-                    if ratio < 0.5:
-                        color = "#16A34A"
-                    elif ratio < 0.9:
-                        color = "#BA7517"
-                    else:
-                        color = "#A32D2D"
-                    bar_pct = min(ratio * 100, 100)
-                with ui.element("div").style("margin-bottom:5px"):
-                    with ui.element("div").style("display:flex;align-items:center;gap:6px"):
-                        with ui.element("div").style(f"width:8px;height:8px;border-radius:50%;background:{color};flex-shrink:0"):
-                            pass
-                        ui.label(label).style("font-size:11px;flex:1;color:#374151")
-                        ui.label(rate_pct_str).style(f"font-size:11px;font-weight:600;color:{color}")
-                    with ui.element("div").style("height:3px;border-radius:2px;background:#f3f4f6;margin-top:3px"):
-                        with ui.element("div").style(f"height:3px;border-radius:2px;background:{color};width:{bar_pct:.1f}%"):
-                            pass
-
             def _pct_fmt(val: Any) -> str:
                 if val is None:
                     return "—"
@@ -1094,29 +1154,18 @@ def _pintar_home_inline(
                     return "—"
 
             with ui.row().classes("w-full gap-2 flex-wrap items-stretch overflow-hidden max-w-full"):
-                # Card Reputación
+                # Card Reputación (R1)
                 with ui.element("div").style(f"flex:1;min-width:220px;{_CARD_NP};overflow:hidden;flex-shrink:0"):
                     with ui.element("div").style("padding:12px 14px"):
-                        ui.label("REPUTACIÓN").style(f"{_LBL};margin-bottom:8px")
-                        with ui.row().classes("gap-2 items-center mb-3"):
-                            with ui.element("div").style(f"width:10px;height:10px;border-radius:50%;background:{level_color};flex-shrink:0"):
-                                pass
-                            ui.label(f"Nivel: {level_label}").style(f"color:{level_color};font-weight:600;font-size:13px")
-                        _semaforo(rate_claims, MAX_CLAIMS, f"Reclamos (máx {MAX_CLAIMS*100:.0f}%)")
-                        _semaforo(rate_mediat, MAX_MEDIAT, f"Mediaciones (máx {MAX_MEDIAT*100:.1f}%)")
-                        _semaforo(rate_canc, MAX_CANC, f"Cancelaciones (máx {MAX_CANC*100:.1f}%)")
-                        _semaforo(rate_delayed, MAX_DELAYED, f"Demora envíos (máx {MAX_DELAYED*100:.0f}%)")
-                        if questions is not None:
-                            n_q = len(questions)
-                            q_color = "#16A34A" if n_q == 0 else "#A32D2D"
-                            with ui.element("div").style("margin-bottom:5px"):
-                                with ui.element("div").style("display:flex;align-items:center;gap:6px"):
-                                    with ui.element("div").style(
-                                        f"width:8px;height:8px;border-radius:50%;"
-                                        f"background:{q_color};flex-shrink:0"):
-                                        pass
-                                    ui.label("Preguntas sin responder").style("font-size:11px;flex:1;color:#374151")
-                                    ui.label(str(n_q)).style(f"font-size:11px;font-weight:600;color:{q_color}")
+                        _pintar_reputacion(
+                            rep.get("level_id"),
+                            [("Reclamos", _to_float_rate(rate_claims), MAX_CLAIMS),
+                             ("Mediaciones", _to_float_rate(rate_mediat), MAX_MEDIAT),
+                             ("Cancelaciones", _to_float_rate(rate_canc), MAX_CANC),
+                             ("Demora envíos", _to_float_rate(rate_delayed), MAX_DELAYED)],
+                            len(questions) if questions is not None else None,
+                            get_tiempo_respuesta_preguntas(user_id) if user_id else None, _LBL,
+                        )
 
                 # Card Aceleración de ventas (reemplaza Ventas por período)
                 with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;flex-shrink:0;display:flex;flex-direction:column"):

@@ -1528,6 +1528,7 @@ def init_db() -> None:
     init_salud_tables()
     init_descuentos_activaciones_table()
     init_ml_stock_snapshots_schema()
+    init_preguntas_resp_schema()
 
 
 # ---------------------------------------------------------------------------
@@ -3456,6 +3457,93 @@ def init_orders_cache_schema() -> None:
             pass  # la columna ya existe
     finally:
         conn.close()
+
+
+def init_preguntas_resp_schema() -> None:
+    """Tabla ml_preguntas_resp (idempotente): preguntas RESPONDIDAS de los ultimos 30 dias por usuario, con la fecha de la
+    pregunta y la de la respuesta, para el "Tiempo de respuesta" de Estadisticas sin consultar a ML al renderizar.
+    Las fechas se guardan normalizadas a UTC (YYYY-MM-DDTHH:MM:SS+00:00), asi se comparan como texto. La carga la hace
+    ordenes_cache_refresh.py (cron de las 4:30) y puede correr antes de que la app reinicie y ejecute init_db()."""
+    conn = get_connection()
+    try:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS ml_preguntas_resp (
+                user_id         INTEGER NOT NULL,
+                question_id     INTEGER NOT NULL,
+                fecha_pregunta  TEXT NOT NULL,
+                fecha_respuesta TEXT,
+                status          TEXT,
+                deleted         INTEGER NOT NULL DEFAULT 0,
+                hold            INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, question_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_preguntas_resp_user_fecha ON ml_preguntas_resp(user_id, fecha_pregunta)"
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def upsert_preguntas_resp(user_id: int, filas: List[Dict[str, Any]]) -> int:
+    """Upsert idempotente de preguntas respondidas. Cada fila: question_id, fecha_pregunta, fecha_respuesta, status,
+    deleted, hold. Devuelve la cantidad de filas escritas."""
+    if not filas:
+        return 0
+    conn = get_connection()
+    try:
+        conn.executemany(
+            """
+            INSERT INTO ml_preguntas_resp (user_id, question_id, fecha_pregunta, fecha_respuesta, status, deleted, hold)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, question_id) DO UPDATE SET
+                fecha_pregunta=excluded.fecha_pregunta,
+                fecha_respuesta=excluded.fecha_respuesta,
+                status=excluded.status,
+                deleted=excluded.deleted,
+                hold=excluded.hold
+            """,
+            [(user_id, int(f["question_id"]), f["fecha_pregunta"], f.get("fecha_respuesta"), f.get("status"),
+              1 if f.get("deleted") else 0, 1 if f.get("hold") else 0) for f in filas],
+        )
+        conn.commit()
+        return len(filas)
+    finally:
+        conn.close()
+
+
+def get_tiempo_respuesta_preguntas(user_id: int, dias: int = 30) -> Optional[Dict[str, Any]]:
+    """Tiempo de respuesta a preguntas del usuario, en minutos: mediana, promedio y cantidad de las preguntas
+    RESPONDIDAS cuya pregunta llego en los ultimos `dias` dias. Excluye borradas (deleted_from_listing), en espera
+    (hold) y las que no tienen status ANSWERED o fecha de respuesta. None si no hay ninguna."""
+    from datetime import timedelta as _td
+    corte = (datetime.now(timezone.utc) - _td(days=dias)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    conn = get_connection()
+    try:
+        rows = conn.execute(
+            "SELECT fecha_pregunta, fecha_respuesta FROM ml_preguntas_resp "
+            "WHERE user_id = ? AND fecha_pregunta >= ? AND deleted = 0 AND hold = 0 AND status = 'ANSWERED' "
+            "AND fecha_respuesta IS NOT NULL",
+            (user_id, corte),
+        ).fetchall()
+    finally:
+        conn.close()
+    mins: List[float] = []
+    for r in rows:
+        try:
+            d = (datetime.fromisoformat(r[1]) - datetime.fromisoformat(r[0])).total_seconds() / 60
+        except (TypeError, ValueError):
+            continue
+        mins.append(max(d, 0.0))
+    if not mins:
+        return None
+    mins.sort()
+    n = len(mins)
+    mediana = mins[n // 2] if n % 2 else (mins[n // 2 - 1] + mins[n // 2]) / 2
+    return {"n": n, "mediana": mediana, "promedio": sum(mins) / n}
 
 
 def get_orders_cache(user_id: int) -> List[Dict]:
