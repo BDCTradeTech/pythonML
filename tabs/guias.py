@@ -4,6 +4,7 @@ Pestaña Guías: análisis de documentos de importación con IA.
 """
 from __future__ import annotations
 
+import html as html_mod
 import io
 import json
 import logging
@@ -912,12 +913,15 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
         iva_val = _to_float(r["iva_aduanero"])
         fob_val = _to_float(r["fob_total"])
         tc3 = _to_float(r["tipo_cambio_3"])
+        # iva_21 solo se resta si el desglose del courier lo suma en total_factura (LHS/Transporter);
+        # en Sixtar/NC es un tributo aparte que no está en total_factura y restarlo subestimaba la traída.
+        iva21_resta = (iva21_val or 0.0) if any(k == "iva_21" for k, _, _ in tf_components) else 0.0
         traida_usd = None
         if dolar_blue and dolar_blue != 0 and pa_val is not None and tc3 and tc3 != 0:
             traida_usd = (
                 total_factura + (pa_val * dolar_blue)
                 - (iva_val or 0.0)
-                - (iva21_val or 0.0)
+                - iva21_resta
             ) / tc3
 
         total_traida_pct = None
@@ -932,7 +936,7 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "total_factura": total_factura,
             "pa_val": pa_val,
             "iva_val": iva_val or 0.0,
-            "iva21_val": iva21_val or 0.0,
+            "iva21_val": iva21_resta,
             "dolar_blue": dolar_blue,
             "tc3": tc3,
             "traida_usd": traida_usd,
@@ -966,6 +970,11 @@ def _list_guias(user_id: int, filtros: dict | None = None) -> List[Dict[str, Any
             "total_traida_pct": total_traida_pct,
             "costo_sin_iva": costo_sin_iva,
             "traida_breakdown": traida_breakdown,
+            "tc_kg": tc_for_kg,
+            "imp_aduana_usd": (
+                ((_to_float(r["derechos_importacion"]) or 0.0) + (_to_float(r["tasa_estadistica"]) or 0.0)) / tc3
+                if tc3 else None
+            ),
             "total_real": r["total_real"] or "",
             "revisar_iva": r["revisar_iva"] or "",
             "almacenaje_kg": almacenaje_kg,
@@ -1480,6 +1489,160 @@ def _render_campos(data: Dict[str, Any]) -> None:
                         ui.input(value=pval_str).props("dense outlined").style(
                             "flex:1;font-size:12px"
                         )
+
+
+# ── Indicadores de la tab (cuadros + tabla por courier) ───────────────────────
+
+_COLOR_COURIER = {"LHS": "#2563EB", "NC Supplies": "#7C3AED", "Sixtar": "#0891B2", "Transporter": "#9CA3AF"}
+
+
+def _fmt_dec(v: float, dec: int = 2) -> str:
+    """Coma decimal y punto de miles."""
+    return f"{v:,.{dec}f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def _agregar_indicadores(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Suma en USD las guías de `rows` (salida de _list_guias). Usa traida_usd tal como la calcula la app
+    (componentes de la factura + PA - IVA); flete con el mismo dólar que 'Valor Kg'. Las guías sin dólar, PA
+    o peso no entran en las métricas de costo (sí en FOB y peso)."""
+    a = {"n": len(rows), "fob": 0.0, "kg": 0.0, "fob_k": 0.0,
+         "n_c": 0, "kg_c": 0.0, "fob_c": 0.0, "traida": 0.0, "flete": 0.0, "imp": 0.0, "n_imp": 0}
+    for r in rows:
+        fob = _to_float(r["fob_total"]) or 0.0
+        kg = _to_float(r["kgs"]) or 0.0
+        a["fob"] += fob
+        if kg > 0:
+            a["kg"] += kg
+            a["fob_k"] += fob
+        tr, tc = r["traida_usd"], r["tc_kg"]
+        if tr is None or kg <= 0 or not tc:
+            continue
+        imp = r["imp_aduana_usd"] or 0.0
+        a["n_c"] += 1
+        a["kg_c"] += kg
+        a["fob_c"] += fob
+        a["traida"] += tr
+        a["flete"] += (_to_float(r["flete_aereo"]) or 0.0) / tc
+        a["imp"] += imp
+        if imp > 0:
+            a["n_imp"] += 1
+    return a
+
+
+def _titulo_indicadores(filtros: dict | None, n: int) -> str:
+    filtros = filtros or {}
+    hoy = (datetime.utcnow() - timedelta(hours=3)).date()
+    f = filtros.get("fecha", "Todas")
+    if f == "Este mes":
+        periodo = f"{_MESES_GUIAS[hoy.month - 1]} {hoy.year}"
+    elif f == "Este año":
+        periodo = f"Este año {hoy.year}"
+    elif f in _MESES_GUIAS:
+        periodo = f"{f} {hoy.year}"
+    elif f in ("Hoy", "Esta semana"):
+        periodo = f
+    else:
+        periodo = "Todas las fechas"
+    courier = filtros.get("courier") or "Todos"
+    courier_txt = "Todos los couriers" if courier == "Todos" else courier
+    return f"{periodo} · {n} {'guía' if n == 1 else 'guías'} · {courier_txt}".upper()
+
+
+def _build_indicadores(user_id: int, container, filtros: dict | None) -> None:
+    container.clear()
+    rows = _list_guias(user_id, filtros)
+    if not rows:
+        return
+    tot = _agregar_indicadores(rows)
+    couriers = sorted({(r["courier"] or "Sin courier") for r in rows})
+    por_kg_fob = tot["fob_k"] / tot["kg"] if tot["kg"] else None
+    fob_c, kg_c = tot["fob_c"], tot["kg_c"]
+    pct_traida = (tot["traida"] / fob_c * 100) if fob_c else None
+    flete_kg = (tot["flete"] / kg_c) if kg_c else None
+    traida_kg = ((tot["traida"] - tot["imp"]) / kg_c) if kg_c else None
+    if tot["imp"] > 0:
+        pct_imp = _fmt_dec(tot["imp"] / fob_c * 100, 1) if fob_c else "—"
+        sub_imp = f"{pct_imp}% del FOB · {tot['n_imp']} {'guía' if tot['n_imp'] == 1 else 'guías'}"
+    else:
+        sub_imp = "sin derechos"
+    sub_flete = f"{couriers[0]} · tarifa fija" if len(couriers) == 1 else "promedio ponderado"
+    azul, naranja, verde = "#2563EB", "#EA580C", "#059669"
+    cuadros = [
+        ("Mercadería (FOB)", f"u$s {_fmt_dec(tot['fob'], 0)}", f"{tot['n']} {'guía' if tot['n'] == 1 else 'guías'}", azul),
+        ("Peso total", f"{_fmt_dec(tot['kg'], 0)} kg",
+         f"u$s {_fmt_dec(por_kg_fob, 0)} de FOB por kg" if por_kg_fob is not None else "—", azul),
+        ("Costo de traída", f"u$s {_fmt_dec(tot['traida'], 0)}",
+         f"{_fmt_dec(pct_traida, 1)}% sobre FOB" if pct_traida is not None else "—", naranja),
+        ("Flete por kg", f"u$s {_fmt_dec(flete_kg)}" if flete_kg is not None else "—", sub_flete, naranja),
+        ("Traída por kg", f"u$s {_fmt_dec(traida_kg)}" if traida_kg is not None else "—", "flete + gastos + PA", naranja),
+        ("Impuestos aduana", f"u$s {_fmt_dec(tot['imp'], 0)}", sub_imp, verde),
+    ]
+    celdas = "".join(
+        f'<div style="background:#F7F8FA;border:1px solid #E5E7EB;border-left:3px solid {col};border-radius:6px;'
+        f'padding:6px 8px;min-width:0">'
+        f'<div style="font-size:11px;color:#6b7280;white-space:nowrap">{html_mod.escape(lbl)}</div>'
+        f'<div style="font-size:18px;font-weight:500;color:#111827;line-height:1.25;white-space:nowrap">{val}</div>'
+        f'<div style="font-size:11px;color:#9ca3af;white-space:nowrap">{html_mod.escape(sub)}</div></div>'
+        for lbl, val, sub, col in cuadros
+    )
+
+    # Tabla por courier
+    por_c: Dict[str, list] = {}
+    for r in rows:
+        por_c.setdefault(r["courier"] or "Sin courier", []).append(r)
+    aggs = sorted(((c, _agregar_indicadores(rs)) for c, rs in por_c.items()), key=lambda x: -x[1]["kg"])
+    cols = "170px 60px 70px 215px 90px 90px 70px 80px 90px 80px"
+    th = "font-size:11px;color:#6b7280;font-weight:500;padding:4px 6px;border-bottom:1px solid #E5E7EB;"
+    hdr = "".join(
+        f'<div style="{th}text-align:{al}">{t}</div>'
+        for t, al in [("Courier", "left"), ("Guías", "right"), ("Kg", "right"), ("% del peso", "left"),
+                      ("FOB", "right"), ("Traída", "right"), ("% s/FOB", "right"), ("Flete/kg", "right"),
+                      ("Traída/kg", "right"), ("", "left")]
+    )
+    td = "font-size:12px;color:#111827;padding:5px 6px;border-bottom:1px solid #F3F4F6;white-space:nowrap;"
+    filas = ""
+    for c, g in aggs:
+        col = _COLOR_COURIER.get(c, "#9CA3AF")
+        pct_peso = g["kg"] / tot["kg"] * 100 if tot["kg"] else 0.0
+        tr_pct = (g["traida"] / g["fob_c"] * 100) if g["fob_c"] else None
+        fl_kg = (g["flete"] / g["kg_c"]) if g["kg_c"] else None
+        tr_kg = ((g["traida"] - g["imp"]) / g["kg_c"]) if g["kg_c"] else None
+        pocas = "pocas guías" if (g["n"] < 5 or g["kg"] < 20) else ""
+        tr_pct_txt = (_fmt_dec(tr_pct, 1) + "%") if tr_pct is not None else "—"
+        fl_kg_txt = ("u$s " + _fmt_dec(fl_kg)) if fl_kg is not None else "—"
+        tr_kg_txt = ("u$s " + _fmt_dec(tr_kg)) if tr_kg is not None else "—"
+        filas += (
+            f'<div style="{td}display:flex;align-items:center;gap:6px">'
+            f'<span style="width:8px;height:8px;border-radius:50%;background:{col};display:inline-block"></span>'
+            f'{html_mod.escape(c)}</div>'
+            f'<div style="{td}text-align:right">{g["n"]}</div>'
+            f'<div style="{td}text-align:right">{_fmt_dec(g["kg"], 0)}</div>'
+            f'<div style="{td}display:flex;align-items:center;gap:6px">'
+            f'<div style="width:150px;height:6px;background:#E5E7EB;border-radius:3px">'
+            f'<div style="height:6px;width:{pct_peso:.1f}%;background:{col};border-radius:3px"></div></div>'
+            f'<span style="font-size:11px;color:#6b7280">{_fmt_dec(pct_peso, 0)}%</span></div>'
+            f'<div style="{td}text-align:right">u$s {_fmt_dec(g["fob"], 0)}</div>'
+            f'<div style="{td}text-align:right">u$s {_fmt_dec(g["traida"], 0)}</div>'
+            f'<div style="{td}text-align:right">{tr_pct_txt}</div>'
+            f'<div style="{td}text-align:right">{fl_kg_txt}</div>'
+            f'<div style="{td}text-align:right;font-weight:600">{tr_kg_txt}</div>'
+            f'<div style="{td}font-size:11px;color:#9ca3af">{pocas}</div>'
+        )
+    sin_costo = tot["n"] - tot["n_c"]
+    nota = ""
+    if sin_costo:
+        txt = "guía sin dólar, PA o peso excluida" if sin_costo == 1 else "guías sin dólar, PA o peso excluidas"
+        nota = f'<div style="font-size:11px;color:#9ca3af;margin-top:4px">{sin_costo} {txt} de los costos</div>'
+    titulo = html_mod.escape(_titulo_indicadores(filtros, tot["n"]))
+    lbl = "font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500"
+    with container:
+        ui.html(
+            f'<div style="{lbl};margin-bottom:6px">{titulo}</div>'
+            f'<div style="display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px">{celdas}</div>'
+            f'<div style="{lbl};margin:10px 0 2px">Por courier</div>'
+            f'<div style="display:grid;grid-template-columns:{cols};width:max-content;max-width:100%">{hdr}{filas}</div>'
+            f'{nota}'
+        )
 
 
 def _rebuild_tabla(
@@ -2305,7 +2468,8 @@ def _show_traida_dialog(breakdown: dict) -> None:
         _fila("Total Factura", _fmt_ars(tf))
         _fila(pa_label, f"+ {_fmt_ars(pa_ars)}" if pa_ars is not None else "—")
         _fila("− IVA Aduanero", f"− {_fmt_ars(iva_val)}")
-        _fila("− IVA % 21", f"− {_fmt_ars(iva21_val)}")
+        if iva21_val:
+            _fila("− IVA % 21", f"− {_fmt_ars(iva21_val)}")
         _divider()
 
         with ui.element("div").style(
@@ -3373,9 +3537,16 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
     guias_recien: set = set()
     _filtros: dict = {"courier": "Todos", "origen": "Todos", "fecha": "Este mes", "busqueda": ""}
 
+    indic_ref: list = [None]
+
     def _refresh(recien: set | None = None) -> None:
         if tabla_ref[0] is None:
             return
+        if indic_ref[0] is not None:
+            try:
+                _build_indicadores(user_id, indic_ref[0], _filtros)
+            except Exception:
+                logger.exception("[guias] indicadores user_id=%s", user_id)
         _rebuild_tabla(
             user_id, tabla_ref[0], filas_ref, parsed_ref, sort_state,
             _refresh, filtros=_filtros,
@@ -3421,6 +3592,9 @@ def build_tab_guias() -> Optional[Callable[[], None]]:
                 _refresh,
             )
     logger.warning("[DBG] build_tab_guias: paneles OK")
+
+    # ── Indicadores (arriba de los filtros) ───────────────────────────────────
+    indic_ref[0] = ui.element("div").style("padding:12px 20px 0;width:100%;box-sizing:border-box")
 
     # ── Barra de filtros ──────────────────────────────────────────────────────
     with ui.element("div").style(
