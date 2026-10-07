@@ -2158,7 +2158,7 @@ def build_tab_ventas(container) -> None:
                         dt = datetime.strptime(dt_str[:10], "%Y-%m-%d")
                 except Exception:
                     continue
-                _dt_date = dt.date() if isinstance(dt, datetime) else dt
+                _dt_date = fecha_venta(ord_item) or (dt.date() if isinstance(dt, datetime) else dt)  # dia en hora Argentina
                 if dia_ini is not None and (_dt_date < dia_ini or _dt_date > dia_fin):
                     continue
                 ord_total = ord_item.get("total_amount") or ord_item.get("paid_amount")
