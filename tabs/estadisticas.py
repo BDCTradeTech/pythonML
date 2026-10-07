@@ -482,19 +482,19 @@ def _pintar_reputacion(
     """Contenido de la tarjeta REPUTACION (R1): nivel arriba a la derecha, termometro de 5 segmentos, una fila por metrica con
     barra del uso del limite de ML (valor / limite, tope 100%), preguntas sin responder y tiempo de respuesta oficial de ML.
     metricas = (nombre, tasa 0-1 o None, limite 0-1). Los valores van en dos columnas de ancho fijo a la derecha (valor
-    alineado a la derecha, "/ limite" a la izquierda); preguntas y tiempo comparten el borde derecho de la columna del valor."""
+    alineado a la derecha, "(X% max)" a la izquierda); preguntas y tiempo comparten el borde derecho de la columna del valor."""
     actual = next((n for n in _REP_NIVELES if n[0] == str(level_id)), None)
     col_nivel = actual[3] if actual else "#6B7280"
     ui.add_css(
         ".rp-f{display:flex;align-items:center;gap:6px;margin-bottom:4px;line-height:14px;font-variant-numeric:tabular-nums}"
-        ".rp-n{flex:0 0 76px;font-size:10px;color:#374151;white-space:nowrap}"
+        ".rp-n{flex:0 0 84px;font-size:11.5px;color:#374151;white-space:nowrap}"
         ".rp-b{flex:1;min-width:24px;height:6px;border-radius:3px;background:#F3F4F6;overflow:hidden}"
         ".rp-b>div{height:100%;border-radius:3px}"
-        ".rp-v1{flex:0 0 auto;min-width:40px;font-size:10.5px;font-weight:700;text-align:right;white-space:nowrap;"
+        ".rp-v1{flex:0 0 auto;min-width:40px;font-size:12px;font-weight:700;text-align:right;white-space:nowrap;"
         "font-variant-numeric:tabular-nums}"
-        ".rp-v2{flex:0 0 32px;font-size:10px;font-weight:400;color:#9CA3AF;text-align:left;white-space:nowrap;"
+        ".rp-v2{flex:0 0 54px;font-size:10px;font-weight:400;color:#9CA3AF;text-align:left;white-space:nowrap;"
         "font-variant-numeric:tabular-nums}"
-        ".rp-s{font-size:8.5px;line-height:10px;color:#9CA3AF}"
+        ".rp-s{font-size:9.5px;line-height:11px;color:#9CA3AF}"
     )
     with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
         ui.label("REPUTACIÓN").style(lbl)
@@ -512,7 +512,7 @@ def _pintar_reputacion(
         lim_txt = f"{lim * 100:g}".replace(".", ",") + "%"
         if tasa is None:
             filas.append(f'<div class="rp-f"><span class="rp-n">{nombre}</span><div class="rp-b"></div>'
-                         f'<span class="rp-v1" style="color:#9CA3AF">—</span><span class="rp-v2">/ {lim_txt}</span></div>')
+                         f'<span class="rp-v1" style="color:#9CA3AF">—</span><span class="rp-v2">({lim_txt} máx)</span></div>')
             continue
         uso = tasa / lim if lim > 0 else 1.0
         col = "#16A34A" if uso < 0.5 else ("#D97706" if uso < 0.8 else "#DC2626")
@@ -520,13 +520,13 @@ def _pintar_reputacion(
         filas.append(
             f'<div class="rp-f" title="Usás el {min(uso * 100, 999):.0f}% del límite de ML ({lim_txt})"><span class="rp-n">{nombre}</span>'
             f'<div class="rp-b"><div style="width:{min(uso * 100, 100):.1f}%;background:{col}"></div></div>'
-            f'<span class="rp-v1" style="color:{col}">{val}</span><span class="rp-v2">/ {lim_txt}</span></div>'
+            f'<span class="rp-v1" style="color:{col}">{val}</span><span class="rp-v2">({lim_txt} máx)</span></div>'
         )
     extra = '<div style="height:1px;background:#F3F4F6;margin:5px 0"></div>'
     if n_sin_responder is not None:
         cq = "#16A34A" if n_sin_responder == 0 else ("#D97706" if n_sin_responder <= 5 else "#DC2626")
         extra += (f'<div class="rp-f"><span class="rp-n" style="flex:1">Preguntas sin responder</span>'
-                  f'<span class="rp-v1" style="color:{cq}">{n_sin_responder}</span><span class="rp-v2"></span></div>')
+                  f'<span class="rp-v1" style="color:{cq}">{n_sin_responder}</span></div>')
     if tiempo and tiempo.get("total") is not None:
         tot = float(tiempo["total"])
         ct = "#16A34A" if tot <= 60 else ("#D97706" if tot <= 360 else "#DC2626")
@@ -534,18 +534,18 @@ def _pintar_reputacion(
                              if tiempo.get(k) is not None)
         extra += ('<div style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
                   '<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
-                  f'<span class="rp-v1" style="color:{ct}">{_fmt_minutos(tot)}</span><span class="rp-v2"></span></div>'
+                  f'<span class="rp-v1" style="color:{ct}">{_fmt_minutos(tot)}</span></div>'
                   '<div class="rp-s">MercadoLibre · últimos 14 días</div>'
                   + (f'<div class="rp-s">{franjas}</div>' if franjas else '') + '</div>')
     else:
         sub = "sin preguntas en el período" if (tiempo or {}).get("sin_preguntas") else "sin datos"
         extra += ('<div style="margin-bottom:3px"><div class="rp-f" style="margin-bottom:0">'
                   '<span class="rp-n" style="flex:1">Tiempo de respuesta</span>'
-                  '<span class="rp-v1" style="color:#9CA3AF">—</span><span class="rp-v2"></span></div>'
+                  '<span class="rp-v1" style="color:#9CA3AF">—</span></div>'
                   f'<div class="rp-s">MercadoLibre · últimos 14 días · {sub}</div></div>')
     ui.html(
         f'<div style="display:flex;gap:3px;margin-bottom:6px">{segs}</div>' + "".join(filas) + extra
-        + '<div style="font-size:8.5px;line-height:10px;color:#9CA3AF;margin-top:5px">'
+        + '<div style="font-size:9.5px;line-height:11px;color:#9CA3AF;margin-top:5px">'
           'Barra = cuánto del límite de ML estás usando</div>'
     )
 
