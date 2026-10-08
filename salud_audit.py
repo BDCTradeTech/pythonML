@@ -36,6 +36,7 @@ import argparse
 import json
 import logging
 import os
+import re
 import sys
 import time
 from collections import defaultdict
@@ -747,6 +748,30 @@ def _mayorista_revisar_payload(token: str, item: dict, prices_body: dict, user_i
     return payload
 
 
+# SKU o título que indican caja abierta / reacondicionado ("C.abierta", "C.Abierta", "Caja abierta", "reacond…")
+RE_CAJA_ABIERTA = re.compile(r"c\.?\s*abierta|caja\s*abierta|reacond", re.IGNORECASE)
+
+
+def clasificar_estado(condicion: Optional[str], item_condition: Optional[str], sku: Optional[str],
+                      texto_cabierta: Optional[int]) -> Dict[str, Any]:
+    """Estado de UNA publicación para Salud: "Usado" si condition != new, o ITEM_CONDITION no es
+    Nuevo (usado/reacondicionado/caja abierta), o el SKU/título dicen caja abierta/reacondicionado;
+    "Nuevo" en el resto. `sin_dato` = snapshot sin ningún insumo. `tipo` = lo que dice ITEM_CONDITION
+    cuando no es Nuevo (Caja abierta / Reacondicionado / Usado); sin ITEM_CONDITION y condition != new
+    -> "Usado". `aviso` = el SKU/título dicen caja abierta pero ITEM_CONDITION es Nuevo o no existe
+    (la publicación no está bien cargada en ML); si ITEM_CONDITION ya lo dice, no hay aviso."""
+    cond = (condicion or "").strip().lower()
+    ic = (item_condition or "").strip().lower()
+    por_texto = bool(RE_CAJA_ABIERTA.search(sku or "")) or bool(texto_cabierta)
+    por_ml = (bool(cond) and cond != "new") or (bool(ic) and ic not in ("nuevo", "new"))
+    return {
+        "usado": por_ml or por_texto,
+        "aviso": por_texto and ic in ("", "nuevo", "new"),
+        "tipo": (item_condition or "").strip() if ic and ic not in ("nuevo", "new") else ("Usado" if cond and cond != "new" else None),
+        "sin_dato": not cond and not ic and not por_texto,
+    }
+
+
 def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
                 seller_id: str = "", session: Optional[requests.Session] = None,
                 user_id: Optional[int] = None) -> Dict[str, Any]:
@@ -768,6 +793,9 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
         "status": item.get("status"),
         "listing_type_id": item.get("listing_type_id"),
         "condicion": item.get("condition"),
+        "item_condition": next((a.get("value_name") for a in item.get("attributes") or []
+                                if a.get("id") == "ITEM_CONDITION"), None),
+        "texto_cabierta": 1 if RE_CAJA_ABIERTA.search(item.get("title") or "") else 0,
         "gtin": "",
         "descripcion_len": None,
         "short_status": None,
@@ -956,8 +984,8 @@ def audit_item(token: str, item: dict, cat_attrs_cache: Dict[str, list],
 
 def write_snapshot(conn, user_id: int, item_id: str, data: Dict[str, Any], snapshot_date: str) -> None:
     cols = [
-        "sku", "catalog_listing", "status", "listing_type_id", "condicion", "gtin",
-        "descripcion_len", "short_status", "fotos_cantidad", "mayorista_estado",
+        "sku", "catalog_listing", "status", "listing_type_id", "condicion", "item_condition",
+        "texto_cabierta", "gtin", "descripcion_len", "short_status", "fotos_cantidad", "mayorista_estado",
         "mayorista_tiers_json", "mayorista_revisar_json", "flex_status", "retiro_persona", "garantia_tipo",
         "garantia_tiempo", "envio_gratis", "regulatoria_estado",
         "atributos_faltantes_editables", "atributos_faltantes_bloqueados",

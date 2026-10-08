@@ -57,6 +57,7 @@ from salud_audit import (
     _standard_amount_de,
     audit_sku,
     audit_skus_nuevos,
+    clasificar_estado,
 )
 
 _OK = "#2E7D32"
@@ -347,6 +348,28 @@ def _cat_dim(items: List[dict], val_fn, etiquetas: Dict[str, str], color_fn) -> 
     return {"texto": f"{n_dom}/{total} {etiquetas.get(dominante, dominante)}", "color": _MID, "orden": n_dom / total}
 
 
+def _condicion_dim(items: List[dict]) -> Dict[str, Any]:
+    """Columna 'Condición': Nuevo/Usado según clasificar_estado() (condition, ITEM_CONDITION, SKU y
+    título), no solo el campo condition de ML. "usado" = alguna publicación del SKU clasifica como Usado
+    (lo lee el filtro Estado). Con aviso ⚠️ si el texto dice caja abierta pero ITEM_CONDITION es Nuevo o no existe; el tooltip muestra el tipo real."""
+    est = [(it, clasificar_estado(it.get("condicion"), it.get("item_condition"), it.get("sku"), it.get("texto_cabierta")))
+           for it in items]
+    etiquetados = [{"e": "usado" if e["usado"] else "nuevo"} for _it, e in est if not e["sin_dato"]]
+    d = _cat_dim(etiquetados, lambda x: x["e"], {"nuevo": "Nuevo", "usado": "Usado"},
+                 lambda v: _OK if v == "nuevo" else _MID)
+    d["usado"] = any(e["usado"] for _it, e in est)
+    n_aviso = sum(1 for _it, e in est if e["aviso"])
+    tipos = Counter(e["tipo"] for _it, e in est if e["tipo"])
+    lineas = []
+    if tipos:
+        lineas.append(", ".join(t if len(tipos) == 1 else f"{t} ({n})" for t, n in tipos.most_common()))
+    if n_aviso:
+        d["texto"] += " ⚠️"
+        lineas.append("En ML figura como Nuevo" + (f" ({n_aviso} de {len(items)} publicaciones)" if n_aviso < len(items) else ""))
+    d["tooltip"] = "\n".join(lineas) or None
+    return d
+
+
 def _magnitud_dim(items: List[dict], val_fn) -> Dict[str, Any]:
     vals = [val_fn(it) for it in items if val_fn(it) is not None]
     if not vals:
@@ -544,10 +567,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
         "retiro_persona": _bool_dim(items, lambda it: bool(it.get("retiro_persona")) if it.get("retiro_persona") is not None else None),
         "garantia": _bool_dim(items, lambda it: bool(it.get("garantia_tipo"))),
         "envio_gratis": _bool_dim(items, lambda it: bool(it.get("envio_gratis")) if it.get("envio_gratis") is not None else None),
-        "condicion": _cat_dim(
-            items, lambda it: it.get("condicion"),
-            {"new": "Nuevo", "used": "Usado"}, lambda v: _OK if v == "new" else _MID,
-        ),
+        "condicion": _condicion_dim(items),
     }
 
     editables_vals = [it.get("atributos_faltantes_editables") for it in items if it.get("atributos_faltantes_editables") is not None]
@@ -627,6 +647,7 @@ def _sku_summary(sku: str, items: List[dict], prod_meta: Dict[str, Any],
         "producto": (prod_meta.get(sku) or {}).get("nombre") or "",
         "marca": (prod_meta.get(sku) or {}).get("marca") or "",
         "stock": (prod_meta.get(sku) or {}).get("stock"),
+        "es_usado": bool(dims["condicion"].get("usado")),
         "precio": precio,
         "precio_lista": precio_lista,
         "promo_hasta": promo_hasta,
@@ -811,7 +832,8 @@ _PUNTAJE_BANDAS = (
 
 def _puntaje_distribucion(filas: List[dict]) -> Dict[str, Any]:
     """Distribución del Puntaje ML por SKU, con el MISMO valor de la columna Puntaje ML
-    (row["puntaje_ml"]). Toda la cuenta: recibe todas las filas, no las filtradas de la tabla."""
+    (row["puntaje_ml"]). No sigue los filtros Stock/Marca/búsqueda; solo las filas que se le pasan
+    (la pestaña le pasa las del filtro Estado)."""
     cuentas = [0] * len(_PUNTAJE_BANDAS)
     total = 0
     suma = 0.0
@@ -835,7 +857,7 @@ def _puntaje_distribucion(filas: List[dict]) -> Dict[str, Any]:
             "sin_puntaje": sin_puntaje, "bandas": [(b[0], b[1], n) for b, n in zip(_PUNTAJE_BANDAS, cuentas)]}
 
 
-def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str]) -> tuple:
+def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str], skus: Optional[set] = None) -> tuple:
     """(promedio por SKU, fecha) del Puntaje ML en el snapshot más
     cercano a 7 días antes de `snap_date` (entre 6 y 8 días atrás), o (None, None) si no hay uno
     completo (>= 50% de filas del mayor de la ventana, mismo criterio que _latest_snapshot_date)."""
@@ -865,7 +887,8 @@ def _puntaje_semana_pasada(user_id: int, snap_date: Optional[str]) -> tuple:
         ).fetchall()
         por_sku: Dict[Any, List[dict]] = defaultdict(list)
         for r in rows:
-            por_sku[r["sku"]].append({"performance_score": r["performance_score"]})
+            if skus is None or r["sku"] in skus:  # skus: mismos SKUs que el filtro Estado de la tabla
+                por_sku[r["sku"]].append({"performance_score": r["performance_score"]})
         puntajes = [v for v in (_puntaje_de_items(g) for g in por_sku.values()) if v is not None]
         return (sum(puntajes) / len(puntajes), fecha) if puntajes else (None, None)
     finally:
@@ -1796,18 +1819,22 @@ def build_tab_salud(container) -> None:
 
     with container:
         with ui.column().classes("w-full gap-1 px-2 pb-2 pt-0"):
-            dist_puntaje = _puntaje_distribucion(filas_todas)
             marcas_disponibles = sorted({f["marca"] for f in filas_todas if f["marca"]})
             # Bloque principal (alto de dos filas): recuadro | barra + filtros | botón + última corrida
             with ui.row().classes("w-full no-wrap items-stretch gap-3"):
-                _recuadro_puntaje_general(dist_puntaje, _puntaje_semana_pasada(uid, snap_date))
+                recuadro_box = ui.row().classes("no-wrap gap-0").style("flex:none;align-self:stretch")
                 with ui.column().classes("grow gap-2").style("min-width:0"):
-                    _barra_puntaje(dist_puntaje)
+                    barra_box = ui.column().classes("w-full gap-0")
                     if filas_todas:
-                        with ui.row().classes("items-center gap-3 no-wrap w-full"):
+                        # sin no-wrap: en pantallas angostas los filtros pasan a otra línea en vez de romper la fila
+                        with ui.row().classes("items-center gap-3 w-full"):
                             stock_sel = ui.select(
                                 {"con_stock": "Con stock", "sin_stock": "Sin stock", "ambas": "Ambas"},
                                 value="con_stock", label="Stock",
+                            ).props("dense outlined").classes("w-36")
+                            estado_sel = ui.select(
+                                {"nuevos": "Nuevos", "caja_abierta": "Caja abierta", "todos": "Todos"},
+                                value="nuevos", label="Estado",
                             ).props("dense outlined").classes("w-36")
                             marca_sel = ui.select(
                                 {"": "Todas", **{m: m for m in marcas_disponibles}},
@@ -1815,7 +1842,7 @@ def build_tab_salud(container) -> None:
                             ).props("dense outlined").classes("w-44")
                             buscador = ui.input(placeholder="Buscar por SKU o producto...").props(
                                 "dense outlined clearable debounce=300"
-                            ).style("flex:none;width:max(220px, calc((100% - 470px) / 3))")
+                            ).style("flex:none;width:max(220px, calc((100% - 626px) / 3))")
                 with ui.column().classes("items-end justify-center gap-0").style("flex:none"):
                     estado_auditar_nuevos = ui.label("").classes("text-xs").style(f"color:{_MID}")
                     estado_auditar_nuevos.set_visibility(False)
@@ -1844,12 +1871,35 @@ def build_tab_salud(container) -> None:
 
             # Una línea chica: resumen del puntaje (izq.) + leyenda de íconos (der.)
             with ui.row().classes("w-full items-center justify-between no-wrap text-xs text-gray-500"):
-                ui.label(_resumen_puntaje(dist_puntaje, snap_date)).tooltip(
+                resumen_lbl = ui.label("").tooltip(
                     "El puntaje de cada sku es el de la columna Puntaje ML (promedio de sus publicaciones). "
                     "Sin puntaje = skus sin valor en esa columna: ML no devuelve puntaje para ninguna de sus publicaciones")
                 leyenda_row = ui.row().classes("items-center gap-3 text-xs text-gray-500")
             indicador_stock = ui.label("Actualizando stock…").classes("text-xs").style(f"color:{_MID}")
             indicador_stock.set_visibility(False)
+
+            def _filas_por_estado(filas: List[dict]) -> List[dict]:
+                """Filtro Estado: Nuevos = no clasifican como Usado; Caja abierta = clasifican como Usado."""
+                if estado_sel.value == "nuevos":
+                    return [f for f in filas if not f["es_usado"]]
+                if estado_sel.value == "caja_abierta":
+                    return [f for f in filas if f["es_usado"]]
+                return list(filas)
+
+            def _refrescar_contadores() -> None:
+                """Recuadro, barra y resumen de Puntaje ML: siguen el filtro Estado (no Stock/Marca/búsqueda)."""
+                filas_est = _filas_por_estado(filas_todas)
+                dist = _puntaje_distribucion(filas_est)
+                previo = _puntaje_semana_pasada(uid, snap_date, None if estado_sel.value == "todos" else {f["sku"] for f in filas_est})
+                recuadro_box.clear()
+                with recuadro_box:
+                    _recuadro_puntaje_general(dist, previo)
+                barra_box.clear()
+                with barra_box:
+                    _barra_puntaje(dist)
+                resumen_lbl.set_text(_resumen_puntaje(dist, snap_date))
+
+            _refrescar_contadores()
 
             header_div = ui.element("div").style("width:100%;overflow:hidden")
             table_container = ui.element("div").style("width:100%;height:calc(100vh - 320px);overflow-y:scroll;overflow-x:auto")
@@ -2495,12 +2545,13 @@ def build_tab_salud(container) -> None:
 
             def _render() -> None:
                 stock_filtro = stock_sel.value
+                base = _filas_por_estado(filas_todas)
                 if stock_filtro == "con_stock":
-                    visibles = [f for f in filas_todas if (f["stock"] or 0) > 0]
+                    visibles = [f for f in base if (f["stock"] or 0) > 0]
                 elif stock_filtro == "sin_stock":
-                    visibles = [f for f in filas_todas if not (f["stock"] or 0) > 0]
+                    visibles = [f for f in base if not (f["stock"] or 0) > 0]
                 else:
-                    visibles = list(filas_todas)
+                    visibles = base
 
                 marca_filtro = marca_sel.value
                 if marca_filtro:
@@ -2821,11 +2872,12 @@ def build_tab_salud(container) -> None:
                                                 if d:
                                                     lbl = ui.label(d["texto"]).style(f"color:{d['color']};font-weight:600")
                                                     if d.get("tooltip"):
-                                                        lbl.tooltip(d["tooltip"])
+                                                        lbl.tooltip(d["tooltip"]).style("white-space: pre-line")
                                                 else:
                                                     ui.label("—")
 
             stock_sel.on_value_change(lambda: _render())
+            estado_sel.on_value_change(lambda: (_refrescar_contadores(), _render()))
             marca_sel.on_value_change(lambda: _render())
             buscador.on_value_change(lambda: _render())
             _render()

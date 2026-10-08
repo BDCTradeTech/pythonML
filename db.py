@@ -194,6 +194,13 @@ def init_salud_tables() -> None:
     # cotizar envío -- ninguno de los dos casos debe mostrarse como "revisado y sano".
     if "mayorista_revisar_json" not in _salud_cols:
         cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN mayorista_revisar_json TEXT")
+    # Migración: item_condition (ITEM_CONDITION.value_name: Nuevo/Usado/Reacondicionado/Caja abierta) y
+    # texto_cabierta (1 si el título dice caja abierta/reacondicionado) -- insumos de clasificar_estado()
+    # (salud_audit.py) para el filtro "Estado" de Salud. NULL = snapshot anterior a estas columnas.
+    if "item_condition" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN item_condition TEXT")
+    if "texto_cabierta" not in _salud_cols:
+        cur.execute("ALTER TABLE salud_item_snapshots ADD COLUMN texto_cabierta INTEGER")
     conn.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS uq_salud_item_snapshot
