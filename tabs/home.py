@@ -76,18 +76,30 @@ _CSS = (
     ".hm-a b{font-size:14px}}"
 ).replace("__TMIN__", str(_TILE_MIN)).replace("__TMAX__", str(_TILE_MAX)).replace("__TGAP__", str(_TILE_GAP))
 
-# Ajusta el alto del contenedor al alto real de la ventana: top real (getBoundingClientRect) hasta el borde inferior - 16 px.
+# Ajusta el alto del contenedor al alto real de la ventana: top real (getBoundingClientRect + scrollY) hasta el borde inferior
+# - 16 px, y despues mide el desborde real de la pagina (scrollHeight - innerHeight) y se lo resta, una sola vez: por debajo de
+# la Home Quasar/NiceGUI suman padding del tab panel (16) y de .nicegui-content (16), asi que 16 fijos no alcanzan. Piso de
+# 420 px: en ventanas muy bajas se prefiere que la pagina scrollee antes que recortar contenido.
 _JS_FIT = """
 (function(){
   function fit(){
     var el=document.querySelector('.hm-w'); if(!el||el.offsetParent===null) return;
     if(window.innerWidth<=768){ el.style.height='auto'; return; }
-    var top=el.getBoundingClientRect().top;
-    el.style.height=Math.max(420, window.innerHeight-top-16)+'px';
+    var top=el.getBoundingClientRect().top+(window.scrollY||0);
+    var h=window.innerHeight-top-16;
+    el.style.height=Math.max(420,h)+'px';
+    var ov=document.documentElement.scrollHeight-window.innerHeight;
+    if(ov>0){ el.style.height=Math.max(420,h-ov)+'px'; }
   }
   window.__hmFit=fit;
-  if(!window.__hmFitBound){ window.addEventListener('resize', function(){ if(window.__hmFit) window.__hmFit(); }); window.__hmFitBound=true; }
-  fit(); setTimeout(fit,60); setTimeout(fit,300);
+  if(!window.__hmFitBound){
+    var tm=null;
+    window.addEventListener('resize', function(){ clearTimeout(tm); tm=setTimeout(function(){ if(window.__hmFit) window.__hmFit(); },150); });
+    window.__hmFitBound=true;
+  }
+  fit();
+  if(document.fonts&&document.fonts.ready){ document.fonts.ready.then(function(){ if(window.__hmFit) window.__hmFit(); }); }
+  setTimeout(fit,300);
 })();
 """
 
