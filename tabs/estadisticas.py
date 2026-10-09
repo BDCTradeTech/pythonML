@@ -288,12 +288,12 @@ def _x_punto(i: int, n: int, w: float = 200.0) -> float:
     return xs[-1]
 
 
-def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Callable[[float], str]) -> Tuple[str, float, float]:
+def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Callable[[float], str]) -> Tuple[str, List[float], float]:
     """Mini grafico de 90 dias: media movil 7d (azul), recta del promedio de 90 dias (gris punteada) y el area entre ambas
     (verde si 7d > promedio, roja si no, cortada en los cruces). Eje X lineal por tramos (_x_punto): las 6 anclas
     (90d, 60d, 30d, 15d, 7d, ayer) quedan parejas, con una marca vertical punteada cada una, y la fila de valores de abajo
     se alinea con ellas. SVG con viewBox fijo que se estira al contenedor (preserveAspectRatio none, trazos non-scaling),
-    sin ejes ni grilla. Devuelve (svg, y del ultimo punto 7d en %, y de la recta en %)."""
+    sin ejes ni grilla. Devuelve (svg, y en % de la linea 7d en cada ancla (mismos indices que _x_anclas), y de la recta en %)."""
     n = len(m7)
     w, h = 200.0, 60.0
     lo = min(min(m7), prom)
@@ -346,7 +346,14 @@ def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Calla
         f'<path d="{l7}" fill="none" stroke="#2563EB" stroke-width="1.8" vector-effect="non-scaling-stroke"/>'
         f'{cols}</svg>'
     )
-    return svg, _y(m7[-1]) / h * 100, yp / h * 100
+    return svg, [_y(m7[n - d]) / h * 100 for d in _ANC_DIAS], yp / h * 100
+
+
+def _pct_anclas(m7: List[float], a90: float) -> List[Tuple[int, float, int]]:
+    """Por ancla: (indice en m7, promedio 7d de la linea en ese punto, % redondeado vs el promedio de 90 dias).
+    Lee el mismo m7 y los mismos indices (n - d) que dibuja _svg_aceleracion; la ultima ancla (ayer) es a7 del velocimetro."""
+    n = len(m7)
+    return [(n - d, m7[n - d], round((m7[n - d] / a90 - 1) * 100)) for d in _ANC_DIAS]
 
 
 def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy: Any) -> None:
@@ -401,25 +408,29 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
             _p = f'<b style="color:{col}">{pct_txt}</b> {rel}'
             frase = (f'<b>{nombre}:</b> esta semana {fmt_dia(a7)}, {_p} '
                      f'<span class="fp-l">tu promedio de 90 días</span><span class="fp-c">prom. 90 días</span> ({fmt_v(a90)})')
-            svg, y7, _yp = _svg_aceleracion(fechas[-90:], m7, a90, fmt_v)
-            graf = (svg + f'<div style="position:absolute;right:0;top:{y7:.1f}%;width:6px;height:6px;border-radius:50%;'
-                    'background:#2563EB;transform:translate(50%,-50%);pointer-events:none"></div>')
+            svg, ys_anc, _yp = _svg_aceleracion(fechas[-90:], m7, a90, fmt_v)
+            circ = ""
+            for k, (_i, _v, r_k) in enumerate(_pct_anclas(m7, a90)):
+                c_k = "#6B7280" if not r_k else ("#16A34A" if r_k > 0 else "#DC2626")
+                circ += (f'<div style="position:absolute;left:{k * 100 / (len(_ANC_DIAS) - 1):.1f}%;top:{ys_anc[k]:.1f}%;'
+                         f'width:7.8px;height:7.8px;box-sizing:border-box;border-radius:50%;background:#fff;'
+                         f'border:1.8px solid {c_k};transform:translate(-50%,-50%);pointer-events:none"></div>')
+            graf = svg + circ
 
         celdas = []
+        anc = None if sin_ventas else _pct_anclas(m7, a90)
         for k, n_d in enumerate(_ANC_DIAS):
-            v = sum(serie[-n_d:]) / n_d
             pos = {0: "left:0", len(_ANC_DIAS) - 1: "right:0"}.get(k, f"left:{k * 100 / (len(_ANC_DIAS) - 1):.1f}%")
-            if n_d == 90:
-                txt, c, rot = fmt_v(v), "#6B7280", "90d"
+            rot = "ayer" if n_d == 1 else f"hace {n_d}d"
+            if anc is None:
+                txt, c, ttl = "—", "#6B7280", rot
             else:
-                rot = "ayer" if n_d == 1 else f"{n_d}d"
-                r = None if sin_ventas else round((v / a90 - 1) * 100)  # mismo redondeo que la frase y el velocimetro
-                txt = "—" if r is None else ("0%" if r == 0 else f"{r:+d}%".replace("-", "−"))
+                i_k, v_k, r = anc[k]  # r: mismo redondeo que la frase y el velocimetro
+                txt = "0%" if r == 0 else f"{r:+d}%".replace("-", "−")
                 c = "#6B7280" if not r else ("#16A34A" if r > 0 else "#DC2626")
-            if n_d == 1:
-                ttl = "Ayer: " + (str(int(v)) if v == int(v) and nombre == "Unidades" else fmt_v(v)) + (" u" if nombre == "Unidades" else "")
-            else:
-                ttl = f"{n_d} días: {fmt_dia(v)}"
+                f_k = fechas[-90:][i_k].strftime("%d/%m")
+                cuando = f"Ayer ({f_k})" if n_d == 1 else f"Hace {n_d} días ({f_k})"
+                ttl = f"{cuando}: semana {fmt_dia(v_k)} · {txt} vs prom. 90d ({fmt_v(a90)})"
             celdas.append(f'<div style="{pos}" title="{ttl}"><span>{rot}</span><b style="color:{c}">{txt}</b></div>')
         filas.append(
             '<div class="ac-r">'
