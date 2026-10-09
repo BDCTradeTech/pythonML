@@ -40,7 +40,7 @@ _FILA_ACCESO_MIN = 44
 _ALTO_GRILLA_ACCESOS = 536  # alto estimado de la grilla de accesos a 930 px de viewport (para elegir 2, 3 o 4 columnas)
 
 _CSS = (
-    ".hm-w{display:flex;flex-direction:column;gap:12px;height:calc(100vh - %dpx);min-height:520px;overflow:hidden}"
+    ".hm-w{display:flex;flex-direction:column;gap:12px;height:calc(100vh - __CHROME__px);min-height:520px;overflow:hidden}"
     ".hm-sal{flex:0 0 auto}.hm-sal b{display:block;font-size:24px;line-height:30px;color:#111827;font-weight:600}"
     ".hm-sal span{display:block;font-size:13px;line-height:18px;color:#6B7280}"
     ".hm-tj{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}"
@@ -73,8 +73,8 @@ _CSS = (
     ".hm-a .x span{display:block;font-size:10.5px;line-height:13px;color:#9CA3AF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
     "@media (max-width:640px){.hm-w{height:auto;min-height:0;overflow:visible}.hm-tj{grid-template-columns:repeat(2,minmax(0,1fr))}"
     ".hm-ab{grid-template-columns:minmax(0,1fr);flex:none}.hm-b{overflow:visible}.hm-gr{grid-template-columns:repeat(2,minmax(0,1fr));"
-    "grid-auto-rows:%dpx}.hm-t .v{font-size:22px}}"
-) % (_CHROME, _FILA_ACCESO_MIN)
+    "grid-auto-rows:__FILA__px}.hm-t .v{font-size:22px}}"
+).replace("__CHROME__", str(_CHROME)).replace("__FILA__", str(_FILA_ACCESO_MIN))
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
