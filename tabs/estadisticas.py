@@ -269,10 +269,31 @@ def _svg_velocimetro(pct: float, tip: str, ancho: int = 55) -> str:
     )
 
 
+_ANC_DIAS = (90, 60, 30, 15, 7, 1)  # anclas del eje X: el dia 1 es ayer; "hace N dias" = primer dia de la ventana de N dias
+_TIP_EJE = "El eje no es proporcional: cada tramo entre marcas tiene distinta cantidad de días (30, 30, 15, 8, 7)"
+
+
+def _x_anclas(n: int, w: float = 200.0) -> List[float]:
+    """X de las 6 anclas, repartidas parejo de 0 a w (indices n-90, n-60, ... n-1 de la serie de n puntos)."""
+    return [w * k / (len(_ANC_DIAS) - 1) for k in range(len(_ANC_DIAS))]
+
+
+def _x_punto(i: int, n: int, w: float = 200.0) -> float:
+    """X del punto i (0..n-1) con eje lineal por tramos: entre dos anclas los puntos se reparten parejo dentro de ese tramo."""
+    idx = [n - d for d in _ANC_DIAS]  # 0, 30, 60, 75, 83, 89 para n = 90
+    xs = _x_anclas(n, w)
+    for k in range(len(idx) - 1):
+        if i <= idx[k + 1]:
+            return xs[k] + (i - idx[k]) / (idx[k + 1] - idx[k]) * (xs[k + 1] - xs[k])
+    return xs[-1]
+
+
 def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Callable[[float], str]) -> Tuple[str, float, float]:
     """Mini grafico de 90 dias: media movil 7d (azul), recta del promedio de 90 dias (gris punteada) y el area entre ambas
-    (verde si 7d > promedio, roja si no, cortada en los cruces). SVG con viewBox fijo que se estira al contenedor
-    (preserveAspectRatio none, trazos non-scaling), sin ejes ni grilla. Devuelve (svg, y del ultimo punto 7d en %, y de la recta en %)."""
+    (verde si 7d > promedio, roja si no, cortada en los cruces). Eje X lineal por tramos (_x_punto): las 6 anclas
+    (90d, 60d, 30d, 15d, 7d, ayer) quedan parejas, con una marca vertical punteada cada una, y la fila de valores de abajo
+    se alinea con ellas. SVG con viewBox fijo que se estira al contenedor (preserveAspectRatio none, trazos non-scaling),
+    sin ejes ni grilla. Devuelve (svg, y del ultimo punto 7d en %, y de la recta en %)."""
     n = len(m7)
     w, h = 200.0, 60.0
     lo = min(min(m7), prom)
@@ -282,7 +303,7 @@ def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Calla
     hi += rng * 0.08
 
     def _x(i: float) -> float:
-        return i / (n - 1) * w if n > 1 else 0.0
+        return _x_punto(int(i), n, w)
 
     def _y(v: float) -> float:
         return h - (v - lo) / (hi - lo) * h
@@ -305,16 +326,21 @@ def _svg_aceleracion(fechas: List[Any], m7: List[float], prom: float, fmt: Calla
             _poli(verde if d0 > 0 else rojo, [(x0, _y(m7[i])), (xc, yp), (x0, yp)])
             _poli(verde if d1 > 0 else rojo, [(xc, yp), (x1, _y(m7[i + 1])), (x1, yp)])
     l7 = "M" + " L".join(f"{_x(i):.2f},{_y(v):.2f}" for i, v in enumerate(m7))
-    bw = w / n
-    cols = "".join(
-        f'<rect x="{_x(i) - bw / 2:.2f}" y="0" width="{bw:.2f}" height="{h}" fill="transparent">'
-        f'<title>{fechas[i].strftime("%d/%m/%Y")}: prom. 7d {fmt(m7[i])} · prom. 90d {fmt(prom)}</title></rect>'
-        for i in range(n)
+    marcas = "".join(
+        f'<line x1="{x:.2f}" y1="0" x2="{x:.2f}" y2="{h:.0f}" stroke="#CBD5E1" stroke-width="1" '
+        f'stroke-dasharray="2 2" vector-effect="non-scaling-stroke"/>' for x in _x_anclas(n, w)
     )
+    xs = [_x(i) for i in range(n)]
+    cols = ""
+    for i in range(n):  # cada punto cubre hasta la mitad hacia sus vecinos
+        xa = (xs[i - 1] + xs[i]) / 2 if i > 0 else 0.0
+        xb = (xs[i] + xs[i + 1]) / 2 if i < n - 1 else w
+        cols += (f'<rect x="{xa:.2f}" y="0" width="{xb - xa:.2f}" height="{h:.0f}" fill="transparent">'
+                 f'<title>{fechas[i].strftime("%d/%m/%Y")}: prom. 7d {fmt(m7[i])} · prom. 90d {fmt(prom)}' + chr(10) + f'{_TIP_EJE}</title></rect>')
     svg = (
         f'<svg viewBox="0 0 {w:.0f} {h:.0f}" preserveAspectRatio="none" '
-        f'style="position:absolute;inset:0;width:100%;height:100%;display:block">'
-        f'<path d="{" ".join(verde)}" fill="#BBF7D0"/><path d="{" ".join(rojo)}" fill="#FECACA"/>'
+        f'style="position:absolute;inset:0;width:100%;height:100%;display:block"><title>{_TIP_EJE}</title>'
+        f'{marcas}<path d="{" ".join(verde)}" fill="#BBF7D0"/><path d="{" ".join(rojo)}" fill="#FECACA"/>'
         f'<line x1="0" y1="{yp:.2f}" x2="{w:.0f}" y2="{yp:.2f}" stroke="#6B7280" stroke-width="1.2" '
         f'stroke-dasharray="4 3" vector-effect="non-scaling-stroke"/>'
         f'<path d="{l7}" fill="none" stroke="#2563EB" stroke-width="1.8" vector-effect="non-scaling-stroke"/>'
@@ -340,9 +366,11 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
         ".ac-g{flex:0 0 56px;display:flex;flex-direction:column;align-items:center;text-align:center}"
         ".ac-c{flex:1;min-width:0;display:flex;flex-direction:column}"
         ".ac-cr{position:relative;height:var(--ach)}"
-        ".ac-v{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));text-align:center;margin-top:2px}"
+        ".ac-v{position:relative;height:20px;margin-top:2px}"
+        ".ac-v>div{position:absolute;top:0;text-align:center;white-space:nowrap;transform:translateX(-50%)}"
+        ".ac-v>div:first-child{transform:none;text-align:left}.ac-v>div:last-child{transform:none;text-align:right}"
         ".ac-v span{display:block;font-size:8px;line-height:9px;color:#9CA3AF}"
-        ".ac-v b{display:block;font-size:9.5px;line-height:11px;font-weight:700;white-space:nowrap}"
+        ".ac-v b{display:block;font-size:9.5px;line-height:11px;font-weight:700}"
         "@container (max-width:340px){.ac-v b{font-size:8.5px}}"
         "@container (max-width:300px){.ac-b{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto;align-self:center}"
         ".ac-c{display:block}.ac-r{--ach:70px}}"
@@ -378,13 +406,21 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
                     'background:#2563EB;transform:translate(50%,-50%);pointer-events:none"></div>')
 
         celdas = []
-        txt90 = fmt_v(a90)
-        for rot, n_d in (("90d", 90), ("60d", 60), ("30d", 30), ("15d", 15), ("7d", 7), ("ayer", 1)):
+        for k, n_d in enumerate(_ANC_DIAS):
             v = sum(serie[-n_d:]) / n_d
-            txt = fmt_v(v) if not (n_d == 1 and v == int(v) and nombre == "Unidades") else str(int(v))
-            c = "#6B7280" if n_d == 90 or fmt_v(v) == txt90 else ("#16A34A" if v > a90 else "#DC2626")
-            ttl = "Vendido ayer" if n_d == 1 else f"Promedio por día de los últimos {n_d} días completos (hasta ayer)"
-            celdas.append(f'<div title="{ttl}"><span>{rot}</span><b style="color:{c}">{txt}</b></div>')
+            pos = {0: "left:0", len(_ANC_DIAS) - 1: "right:0"}.get(k, f"left:{k * 100 / (len(_ANC_DIAS) - 1):.1f}%")
+            if n_d == 90:
+                txt, c, rot = fmt_v(v), "#6B7280", "90d"
+            else:
+                rot = "ayer" if n_d == 1 else f"{n_d}d"
+                r = None if sin_ventas else round((v / a90 - 1) * 100)  # mismo redondeo que la frase y el velocimetro
+                txt = "—" if r is None else ("0%" if r == 0 else f"{r:+d}%".replace("-", "−"))
+                c = "#6B7280" if not r else ("#16A34A" if r > 0 else "#DC2626")
+            if n_d == 1:
+                ttl = "Ayer: " + (str(int(v)) if v == int(v) and nombre == "Unidades" else fmt_v(v)) + (" u" if nombre == "Unidades" else "")
+            else:
+                ttl = f"{n_d} días: {fmt_dia(v)}"
+            celdas.append(f'<div style="{pos}" title="{ttl}"><span>{rot}</span><b style="color:{c}">{txt}</b></div>')
         filas.append(
             '<div class="ac-r">'
             f'<div class="ac-f">{frase}</div>'
