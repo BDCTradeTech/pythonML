@@ -1,7 +1,7 @@
 """
 home_data.py
 Datos de la pestaña Home. Cero llamadas a ML: todo sale de la DB (ml_orders_cache, ventas_datos, productos,
-salud_item_snapshots, cron_runs) y del JSON "home_snapshot" que deja el cron home_refresh.py en cotizador_datos.
+salud_item_snapshots, competidores_snapshots, sku_catalogos, cron_runs) y del JSON "home_snapshot" que deja el cron home_refresh.py en cotizador_datos.
 Sin dependencias de UI: se puede medir con un script. Todo por user_id.
 """
 from __future__ import annotations
@@ -15,7 +15,7 @@ from db import get_connection, get_orders_cache
 from home_refresh import leer_snapshot
 from sales_core import ART, es_venta, fecha_venta, monto_venta, unidades_venta
 
-ROJO, NARANJA, VERDE = 0, 1, 2  # orden de la lista: rojos, naranjas, verdes
+ROJO, NARANJA, VERDE, GRIS = 0, 1, 2, 3  # orden de la lista: rojos, naranjas, verdes, grises (sin dato)
 MAX_ITEMS = 6
 
 # Crons nocturnos esperados: (job en cron_runs, nombre, hora, minuto, gracia en minutos para considerarlo vencido).
@@ -118,12 +118,12 @@ def _ventas_hoy_mes(ordenes: List[Dict[str, Any]], user_id: int, ahora: datetime
     )
 
 
-def _serie_horaria(ordenes: List[Dict[str, Any]], ahora: datetime, u_hoy: int, u_ayer_ahora: int) -> Dict[str, Any]:
-    """Acumulado de unidades por hora ART de hoy y de ayer sobre un eje X continuo en horas (0 a 24), con el criterio de
-    sales_core. Cada punto cerrado es el acumulado al CIERRE de la hora (x=1 -> hasta 00:59 ... x=24 -> todo el día).
-    Hoy: puntos de las horas ya cerradas + un último punto en x = hora actual fraccional (11:36 -> 11,6) con u_hoy.
-    Ayer: las 24 horas + un punto en ese mismo x con u_ayer_ahora. u_hoy / u_ayer_ahora son los de la tarjeta VENTAS HOY
-    (una sola fuente); así "ahora" cae sobre las dos líneas. Puntos = [x, unidades]."""
+def _acum_horario(ordenes: List[Dict[str, Any]], ahora: datetime, valor, v_hoy: float, v_ayer_ahora: float) -> Dict[str, Any]:
+    """Acumulado por hora ART de hoy y de ayer sobre un eje X continuo en horas (0 a 24), con el criterio de sales_core.
+    `valor(orden)` es lo que se acumula (unidades o monto). Cada punto cerrado es el acumulado al CIERRE de la hora (x=1 ->
+    hasta 00:59 ... x=24 -> todo el día). Hoy: puntos de las horas ya cerradas + un último punto en x = hora actual fraccional
+    (11:36 -> 11,6) con v_hoy. Ayer: las 24 horas + un punto en ese mismo x con v_ayer_ahora. v_hoy / v_ayer_ahora son los de la
+    tarjeta VENTAS HOY (una sola fuente); así "ahora" cae sobre las dos líneas. Puntos = [x, valor]."""
     hoy, ayer = ahora.date(), ahora.date() - timedelta(days=1)
     por_h_hoy, por_h_ayer = [0] * 24, [0] * 24
     for o in ordenes:
@@ -135,7 +135,7 @@ def _serie_horaria(ordenes: List[Dict[str, Any]], ahora: datetime, u_hoy: int, u
         d = _dt_art(o)
         if d is None:
             continue
-        (por_h_hoy if f == hoy else por_h_ayer)[d.hour] += unidades_venta(o)
+        (por_h_hoy if f == hoy else por_h_ayer)[d.hour] += valor(o)
     hora = ahora.hour
     x_ahora = round(hora + (ahora.minute + ahora.second / 60) / 60, 4)
     pts_hoy: List[List[float]] = [[0, 0]]
@@ -146,18 +146,26 @@ def _serie_horaria(ordenes: List[Dict[str, Any]], ahora: datetime, u_hoy: int, u
         b += por_h_ayer[h]
         if h == hora:  # el punto "ahora" va antes del cierre de esta hora (o lo reemplaza si son las HH:00 en punto)
             if pts_ayer[-1][0] == x_ahora:
-                pts_ayer[-1][1] = u_ayer_ahora
+                pts_ayer[-1][1] = v_ayer_ahora
             else:
-                pts_ayer.append([x_ahora, u_ayer_ahora])
+                pts_ayer.append([x_ahora, v_ayer_ahora])
         if h < hora:
             pts_hoy.append([h + 1, a])
         pts_ayer.append([h + 1, b])
     if pts_hoy[-1][0] == x_ahora:
-        pts_hoy[-1][1] = u_hoy
+        pts_hoy[-1][1] = v_hoy
     else:
-        pts_hoy.append([x_ahora, u_hoy])
+        pts_hoy.append([x_ahora, v_hoy])
     return {"hora": hora, "hoy": pts_hoy, "ayer": pts_ayer, "ayer_total": b,
-            "ahora": {"x": x_ahora, "hoy": u_hoy, "ayer": u_ayer_ahora, "hhmm": ahora.strftime("%H:%M")}}
+            "ahora": {"x": x_ahora, "hoy": v_hoy, "ayer": v_ayer_ahora, "hhmm": ahora.strftime("%H:%M")}}
+
+
+def _serie_horaria(ordenes: List[Dict[str, Any]], ahora: datetime, hoy_d: Dict[str, Any]) -> Dict[str, Any]:
+    """Las dos series de Ventas por hora: unidades (raíz del dict, como siempre) y facturación (clave "monto", monto_venta de
+    sales_core). Los valores "ahora" son los de la tarjeta VENTAS HOY (hoy_d), así que los dos gráficos y la tarjeta coinciden."""
+    out = _acum_horario(ordenes, ahora, unidades_venta, hoy_d["u"], hoy_d["u_ayer"])
+    out["monto"] = _acum_horario(ordenes, ahora, monto_venta, hoy_d["monto"], hoy_d["monto_ayer"])
+    return out
 
 
 def _titulos_ventas(user_id: int, ordenes: List[Dict[str, Any]], elegidas: List[Dict[str, Any]]) -> Dict[str, str]:
@@ -319,35 +327,96 @@ def _alerta_perdidas(user_id: int, ordenes: List[Dict[str, Any]], hoy: date) -> 
             "detalle": f"−{_abrev_pesos(perdida)} en total sobre {len(ids)} órdenes{nota}", "destino": "ventas", "ts": ts}
 
 
-def _alerta_caja_abierta(user_id: int) -> Optional[Dict[str, Any]]:
-    """Publicaciones activas cuyo SKU/título dicen caja abierta pero ITEM_CONDITION es Nuevo o falta (aviso ⚠️ de Salud)."""
-    from salud_audit import clasificar_estado
+_UMBRAL_IGUAL = 0.5   # % de diferencia dentro del cual nuestro precio y el del competidor más barato cuentan como "igual"
+_UMBRAL_ROJO = 10.0   # % por encima del más barato desde el cual el punto es rojo
+_HORAS_DATO_VIGENTE = 36
+COMP_MIN_VENTAS = 50  # competidores con menos ventas totales (seller_total_ventas) no cuentan: precios atípicos de vendedores chicos
+
+
+def _peso(v: float) -> str:
+    return "$" + f"{int(round(v)):,}".replace(",", ".")
+
+
+def _comparar_catalogos(user_id: int) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Un renglón por PRODUCTO DE CATÁLOGO activo (sku_catalogos.estado_publicacion='activo_con_stock', el mismo universo del cron)
+    con al menos un competidor válido (precio no NULL y al menos COMP_MIN_VENTAS ventas totales) en el último snapshot de competidores_snapshots;
+    los catálogos sin competidor válido no entran:
+    nuestro = precio de venta más bajo (price_vigente, con promo; si falta, price de lista) entre nuestras publicaciones activas
+    del último snapshot de Salud con SKU de ese catálogo; comp = precio mínimo de los competidores. pct = nuestro / comp - 1.
+    Devuelve (renglones, snapshot_date de competidores)."""
     conn = get_connection()
     try:
-        fecha = conn.execute("SELECT MAX(snapshot_date) FROM salud_item_snapshots WHERE user_id=?", (user_id,)).fetchone()[0]
-        if not fecha:
-            return None
-        rows = conn.execute(
-            "SELECT sku, condicion, item_condition, texto_cabierta, created_at FROM salud_item_snapshots "
-            "WHERE user_id=? AND snapshot_date=? AND status='active'", (user_id, fecha)).fetchall()
+        f_comp = conn.execute("SELECT MAX(snapshot_date) FROM competidores_snapshots WHERE user_id=? AND price IS NOT NULL",
+                              (user_id,)).fetchone()[0]
+        f_salud = conn.execute("SELECT MAX(snapshot_date) FROM salud_item_snapshots WHERE user_id=?", (user_id,)).fetchone()[0]
+        if not f_comp or not f_salud:
+            return [], f_comp
+        # Tres lecturas simples y el cruce en Python: un JOIN por UPPER(TRIM(sku)) no usa índice y tardaba más de 1 s.
+        comp: Dict[str, float] = {}
+        for r in conn.execute("SELECT catalog_product_id AS cpid, MIN(price) AS p FROM competidores_snapshots "
+                              "WHERE user_id=? AND snapshot_date=? AND price IS NOT NULL AND price>0 AND COALESCE(seller_total_ventas, 0)>=? "
+                              "GROUP BY catalog_product_id", (user_id, f_comp, COMP_MIN_VENTAS)):
+            comp[r["cpid"]] = float(r["p"])
+        precio_sku: Dict[str, float] = {}
+        for r in conn.execute("SELECT UPPER(TRIM(sku)) AS sku, MIN(COALESCE(price_vigente, price)) AS p FROM salud_item_snapshots "
+                              "WHERE user_id=? AND snapshot_date=? AND status='active' AND COALESCE(price_vigente, price)>0 "
+                              "GROUP BY UPPER(TRIM(sku))", (user_id, f_salud)):
+            precio_sku[r["sku"]] = float(r["p"])
+        catalogo: Dict[str, Dict[str, Any]] = {}
+        for r in conn.execute("SELECT catalog_product_id AS cpid, UPPER(TRIM(sku)) AS sku, sku AS sku_raw, catalog_name AS nombre "
+                              "FROM sku_catalogos WHERE user_id=? AND estado_publicacion='activo_con_stock'", (user_id,)):
+            c = catalogo.setdefault(r["cpid"], {"nuestro": None, "nombre": None, "sku": r["sku_raw"]})
+            p = precio_sku.get(r["sku"])
+            if p is not None and (c["nuestro"] is None or p < c["nuestro"]):
+                c["nuestro"] = p
+            c["nombre"] = c["nombre"] or r["nombre"]
     finally:
         conn.close()
-    n, ts = 0, None
-    ej = ""
-    for r in rows:
-        if clasificar_estado(r["condicion"], r["item_condition"], r["sku"], r["texto_cabierta"])["aviso"]:
-            n += 1
-            ej = ej or str(r["sku"] or "")
-        if r["created_at"] and (ts is None or r["created_at"] > ts):
-            ts = r["created_at"]
+    out = []
+    for cpid, pc in comp.items():
+        c = catalogo.get(cpid)
+        if c and c["nuestro"] is not None:
+            out.append({"cpid": cpid, "nombre": c["nombre"] or c["sku"] or cpid, "nuestro": c["nuestro"], "comp": pc,
+                        "pct": (c["nuestro"] / pc - 1) * 100})
+    return out, f_comp
+
+
+def _alerta_competidores(user_id: int, ahora: datetime) -> Optional[Dict[str, Any]]:
+    """COMPETIDORES: cuántos productos de catálogo nuestros están más caros que el competidor más barato (más de 0,5% arriba),
+    iguales (±0,5%) o más baratos. Datos de la corrida de las 04:00 (cron_runs 'competidores' + competidores_snapshots), sin ML."""
+    conn = get_connection()
     try:
-        ts_f = datetime.fromisoformat(str(ts)).replace(tzinfo=ART).timestamp() if ts else None
+        run = conn.execute("SELECT run_datetime FROM cron_runs WHERE job='competidores' AND user_id=? AND status IN ('ok','partial') "
+                           "ORDER BY run_date DESC LIMIT 1", (user_id,)).fetchone()
+    finally:
+        conn.close()
+    if not run:
+        return None  # este usuario nunca tuvo corridas de competidores: no aplica
+    try:
+        ts_dt = datetime.fromisoformat(run["run_datetime"]).replace(tzinfo=ART)
     except Exception:
-        ts_f = None
-    if not n:
-        return {"nivel": VERDE, "titulo": "Caja abierta bien cargada", "detalle": "Sin avisos ⚠️ en Salud", "destino": "salud", "ts": ts_f}
-    return {"nivel": NARANJA, "titulo": f"{n} publicaciones de caja abierta con aviso ⚠️",
-            "detalle": f"ITEM_CONDITION figura Nuevo o falta (p. ej. {ej})", "destino": "salud", "ts": ts_f}
+        ts_dt = None
+    filas, f_comp = _comparar_catalogos(user_id)
+    viejo = (ts_dt is None or (ahora - ts_dt) > timedelta(hours=_HORAS_DATO_VIGENTE) or not f_comp
+             or f_comp < (ahora - timedelta(hours=_HORAS_DATO_VIGENTE)).date().isoformat())
+    if viejo:
+        return {"nivel": GRIS, "titulo": "Sin dato reciente de competidores",
+                "detalle": "Última corrida: " + (ts_dt.strftime("%d/%m %H:%M") if ts_dt else "—"), "destino": None,
+                "ts": ts_dt.timestamp() if ts_dt else None}
+    if not filas:
+        return None
+    mas = sorted((f for f in filas if f["pct"] > _UMBRAL_IGUAL), key=lambda f: -f["pct"])
+    igual = [f for f in filas if abs(f["pct"]) <= _UMBRAL_IGUAL]
+    menos = [f for f in filas if f["pct"] < -_UMBRAL_IGUAL]
+    nivel = ROJO if any(f["pct"] > _UMBRAL_ROJO for f in mas) else (NARANJA if mas else VERDE)
+    hhmm = ts_dt.strftime("%H:%M")
+    top = [f"{str(f['nombre'])[:40]} +{f['pct']:.0f}% ({_peso(f['nuestro'])} vs {_peso(f['comp'])})" for f in mas[:3]]
+    pie = [f"Ignora vendedores con menos de {COMP_MIN_VENTAS} ventas", f"dato de las {hhmm}"]
+    tip = "\n".join(top + pie) if top else f"Ninguno más caro\n" + "\n".join(pie)
+    return {"nivel": nivel, "titulo": f"{len(mas)} de {len(filas)} productos de catálogo más caros",
+            "detalle": f"{len(mas)} más caros · {len(igual)} iguales · {len(menos)} más baratos",
+            "barra": {"mas": len(mas), "igual": len(igual), "menos": len(menos)}, "tip": tip,
+            "destino": None, "ts": ts_dt.timestamp()}
 
 
 def _alertas_crons(user_id: int, ahora: datetime) -> List[Dict[str, Any]]:
@@ -448,7 +517,7 @@ def cargar_home(user_id: int, ahora: Optional[datetime] = None) -> Dict[str, Any
     horaria, ultimas = None, {"dia": "hoy", "filas": []}
     if usr["tiene_ml"]:
         try:
-            horaria = _serie_horaria(ordenes, ahora, hoy_d["u"], hoy_d["u_ayer"])  # los de la tarjeta: una sola fuente
+            horaria = _serie_horaria(ordenes, ahora, hoy_d)  # los de la tarjeta: una sola fuente
             ultimas = _ultimas_ventas(user_id, ordenes, ahora)
         except Exception:
             import logging
@@ -460,7 +529,7 @@ def cargar_home(user_id: int, ahora: Optional[datetime] = None) -> Dict[str, Any
     if usr["tiene_ml"]:
         for nombre, fn in (("stock", lambda: _alerta_stock(user_id, ordenes, hoy)),
                            ("perdidas", lambda: _alerta_perdidas(user_id, ordenes, hoy)),
-                           ("caja_abierta", lambda: _alerta_caja_abierta(user_id)),
+                           ("competidores", lambda: _alerta_competidores(user_id, ahora)),
                            ("crons", lambda: _alertas_crons(user_id, ahora))):
             t1 = time.perf_counter()
             try:
@@ -483,7 +552,7 @@ def cargar_home(user_id: int, ahora: Optional[datetime] = None) -> Dict[str, Any
         alertas = alertas[:MAX_ITEMS]
     elif alertas or usr["tiene_ml"]:
         alertas = [{"nivel": VERDE, "titulo": "Todo en orden",
-                    "detalle": "Sin alertas de stock, pérdidas, publicaciones, crons ni reputación", "destino": None, "ts": None}]
+                    "detalle": "Sin alertas de stock, pérdidas, competidores, crons ni reputación", "destino": None, "ts": None}]
     t["total"] = time.perf_counter() - t0
     return {
         "ahora": ahora, "usuario": usr, "hoy": hoy_d, "mes": mes_d, "horaria": horaria, "ultimas": ultimas,

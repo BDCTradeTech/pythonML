@@ -17,12 +17,12 @@ from typing import Any, Callable, Dict, List, Optional
 from nicegui import app, ui
 
 from db import get_user_tab_permissions
-from home_data import NARANJA, ROJO, VERDE, cargar_home
+from home_data import GRIS, NARANJA, ROJO, VERDE, cargar_home
 from sales_core import ART
 
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 _MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
-_COL_NIVEL = {ROJO: "#DC2626", NARANJA: "#F59E0B", VERDE: "#16A34A"}
+_COL_NIVEL = {ROJO: "#DC2626", NARANJA: "#F59E0B", VERDE: "#16A34A", GRIS: "#9CA3AF"}
 _CSS = (
     ".hm-w{display:flex;flex-direction:column;gap:12px;min-height:0;overflow:hidden}"
     ".hm-sal{flex:0 0 auto}.hm-sal b{display:block;font-size:24px;line-height:30px;color:#111827;font-weight:600}"
@@ -41,7 +41,10 @@ _CSS = (
     ".hm-b h4{margin:0 0 8px;font-size:11px;line-height:14px;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500;"
     "display:flex;justify-content:space-between;align-items:baseline;flex:0 0 auto}"
     ".hm-b h4 a{font-size:12px;text-transform:none;letter-spacing:0;color:#2563EB;cursor:pointer;font-weight:500}.hm-b h4 a:hover{text-decoration:underline}"
+    ".hm-vh .hm-g{flex:1 1 0;min-height:0;display:flex;flex-direction:column}.hm-vh .hm-g+.hm-g{margin-top:6px}"
     ".hm-vh .hm-ch{flex:1;min-height:0;height:auto}"
+    ".hm-b h4 .r{font-size:12px;text-transform:none;letter-spacing:0;color:#6B7280;font-weight:400}.hm-b h4 .r b{color:#111827;font-weight:600}"
+    ".hm-bar{display:flex;height:9px;border-radius:5px;overflow:hidden;margin:3px 0 2px}"
     ".hm-pie{flex:0 0 auto;margin-top:6px;font-size:11.5px;line-height:16px;color:#6B7280;display:flex;flex-wrap:wrap;align-items:center;gap:0 6px}"
     ".hm-pie svg{vertical-align:middle}"
     ".hm-uv{flex:1;min-height:0;overflow:hidden}"
@@ -60,7 +63,7 @@ _CSS = (
     ".hm-i .x span{display:block;font-size:13px;line-height:17px;color:#6B7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
     "@media (max-width:768px){.hm-w{height:auto!important;overflow:visible}.hm-tj{grid-template-columns:repeat(2,minmax(0,1fr))}"
     ".hm-ab{grid-template-columns:minmax(0,1fr);grid-template-rows:none;flex:none}.hm-dr{grid-template-rows:none}.hm-b{overflow:visible}"
-    ".hm-vh .hm-ch{flex:none;height:260px}.hm-uv{flex:none}.hm-li{flex:none;grid-template-columns:minmax(0,1fr)}.hm-t .v{font-size:22px}}"
+    ".hm-vh .hm-g{flex:none}.hm-vh .hm-ch{flex:none;height:200px}.hm-uv{flex:none}.hm-li{flex:none;grid-template-columns:minmax(0,1fr)}.hm-t .v{font-size:22px}}"
 )
 
 # Ajusta el alto del contenedor al alto real de la ventana: top real (getBoundingClientRect + scrollY) hasta el borde inferior
@@ -181,10 +184,19 @@ def _tarjetas(d: Dict[str, Any]) -> None:
             _tarjeta("#9CA3AF", "Preguntas", "—", "sin dato todavía", "")
 
 
-def _opciones_horaria(hz: Dict[str, Any]) -> Dict[str, Any]:
-    """Opciones del echart de Ventas por hora, con eje X continuo en horas (0 a 24): ayer (gris punteada, 24 h) y hoy (azul con
-    área celeste, hasta la hora actual). Los dos tienen un punto en x = hora actual fraccional con los valores de la tarjeta
-    ("N u ahora" / "M u ayer a esta hora"), así el marcador de ayer cae sobre su línea. Tooltips ya armados en Python."""
+_JS_PESOS_EJE = ("v => v >= 1e6 ? '$' + (v / 1e6).toFixed(v % 1e6 ? 1 : 0).replace('.', ',') + 'M' : "
+                 "(v >= 1e3 ? '$' + Math.round(v / 1e3) + 'k' : '$' + v)")
+
+
+def _opciones_horaria(hz: Dict[str, Any], monto: bool = False) -> Dict[str, Any]:
+    """Opciones de un echart de Ventas por hora, con eje X continuo en horas (0 a 24): ayer (gris punteada, 24 h) y hoy (hasta la
+    hora actual; azul con área celeste en UNIDADES, verde con área #DCFCE7 en FACTURACIÓN). Los dos tienen un punto en x = hora
+    actual fraccional con los valores de la tarjeta, así el marcador de ayer cae sobre su línea. `hz` es la serie de unidades
+    (raíz de d["horaria"]) o la de monto (d["horaria"]["monto"], con monto=True). Tooltips ya armados en Python."""
+    from tabs.estadisticas import _abrev_pesos
+    fmt = _abrev_pesos if monto else (lambda v: f"{int(v)}")
+    sufijo = "" if monto else " u"
+    color, area = ("#16A34A", "#DCFCE7") if monto else ("#2563EB", "#DBEAFE")
     ah = hz["ahora"]
     x_ahora, n, m = ah["x"], ah["hoy"], ah["ayer"]
     pos_n, pos_m = ("top", "bottom") if n >= m else ("bottom", "top")
@@ -192,50 +204,64 @@ def _opciones_horaria(hz: Dict[str, Any]) -> Dict[str, Any]:
     tips = []
     for x, v in hz["ayer"]:  # un texto por punto de la serie de ayer (la que tiene todos los x)
         h_txt = ah["hhmm"] if x == x_ahora else (f"{int(x) - 1} h" if x else "0:00")
-        t_hoy = f"hoy {hoy_en[x]} u · " if x in hoy_en else ""
-        tips.append(f"{h_txt} · {t_hoy}ayer {v} u")
+        t_hoy = f"hoy {fmt(hoy_en[x])}{sufijo} · " if x in hoy_en else ""
+        tips.append(f"{h_txt} · {t_hoy}ayer {fmt(v)}{sufijo}")
     datos_hoy: List[Any] = [list(p) for p in hz["hoy"]]
     datos_hoy[-1] = {"value": [x_ahora, n], "symbol": "circle", "symbolSize": 9,
-                     "itemStyle": {"color": "#2563EB", "borderColor": "#fff", "borderWidth": 2},
-                     "label": {"show": True, "position": pos_n, "formatter": f"{n} u ahora", "color": "#2563EB",
+                     "itemStyle": {"color": color, "borderColor": "#fff", "borderWidth": 2},
+                     "label": {"show": True, "position": pos_n, "formatter": f"{fmt(n)}{sufijo} ahora", "color": color,
                                "fontWeight": 600, "fontSize": 12}}
     datos_ayer: List[Any] = [list(p) for p in hz["ayer"]]
     k = next(i for i, p in enumerate(hz["ayer"]) if p[0] == x_ahora)
     datos_ayer[k] = {"value": [x_ahora, m], "symbol": "circle", "symbolSize": 8,
                      "itemStyle": {"color": "#6B7280", "borderColor": "#fff", "borderWidth": 2},
-                     "label": {"show": True, "position": pos_m, "formatter": f"{m} u ayer a esta hora", "color": "#6B7280",
+                     "label": {"show": True, "position": pos_m, "formatter": f"{fmt(m)}{sufijo} ayer a esta hora", "color": "#6B7280",
                                "fontSize": 11}}
+    eje_y: Dict[str, Any] = {"type": "value", "axisLabel": {"color": "#9CA3AF", "fontSize": 11},
+                             "splitLine": {"lineStyle": {"color": "#F3F4F6"}}}
+    if monto:
+        eje_y["axisLabel"][":formatter"] = _JS_PESOS_EJE
+    else:
+        eje_y["minInterval"] = 1
     return {
         "animation": False,
-        "grid": {"left": 34, "right": 70, "top": 26, "bottom": 24},
+        "grid": {"left": 48, "right": 70, "top": 26, "bottom": 24},
         "tooltip": {"trigger": "axis",
                     ":formatter": "p => " + json.dumps(tips, ensure_ascii=False) + "[p.find(q => q.seriesName === 'ayer').dataIndex]"},
         "xAxis": {"type": "value", "min": 0, "max": 24, "interval": 1, "axisLabel": {"color": "#6B7280", "fontSize": 11},
                   "axisLine": {"lineStyle": {"color": "#E5E7EB"}}, "axisTick": {"show": False}, "splitLine": {"show": False}},
-        "yAxis": {"type": "value", "minInterval": 1, "axisLabel": {"color": "#9CA3AF", "fontSize": 11},
-                  "splitLine": {"lineStyle": {"color": "#F3F4F6"}}},
+        "yAxis": eje_y,
         "series": [
             {"name": "ayer", "type": "line", "data": datos_ayer, "symbol": "none", "z": 1,
              "lineStyle": {"color": "#9CA3AF", "width": 1.8, "type": "dashed"}},
             {"name": "hoy", "type": "line", "data": datos_hoy, "symbol": "none", "z": 3,
-             "lineStyle": {"color": "#2563EB", "width": 2.4}, "areaStyle": {"color": "#DBEAFE", "opacity": 0.75}},
+             "lineStyle": {"color": color, "width": 2.4}, "areaStyle": {"color": area, "opacity": 0.75}},
         ],
     }
 
 
 def _ventas_hora(d: Dict[str, Any]) -> None:
+    """Dos gráficos apilados con el mismo eje de horas: UNIDADES arriba y FACTURACIÓN abajo, repartiéndose el alto del bloque."""
+    from tabs.estadisticas import _abrev_pesos
     with ui.element("div").classes("hm-b hm-vh"):
-        ui.html("<h4>Ventas por hora — hoy vs ayer</h4>")
         hz = d.get("horaria")
         if not hz:
+            ui.html("<h4>Ventas por hora — hoy vs ayer</h4>")
             ui.html('<div class="hm-vacio">' + ("No se pudo calcular (ver Log)." if d["usuario"]["tiene_ml"]
                                                  else "Sin cuenta de MercadoLibre.") + "</div>")
             return
-        ui.echart(_opciones_horaria(hz)).classes("hm-ch w-full")
+        hm = hz["monto"]
+        for titulo, serie, es_monto, f in (("Unidades por hora", hz, False, lambda v: f"{int(v)}"),
+                                           ("Facturación por hora", hm, True, _abrev_pesos)):
+            ah = serie["ahora"]
+            resumen = (f'hoy <b>{f(ah["hoy"])}</b> · ayer a esta hora <b>{f(ah["ayer"])}</b> · ayer cerró <b>{f(serie["ayer_total"])}</b>')
+            with ui.element("div").classes("hm-g"):
+                ui.html(f'<h4><span>{titulo}</span><span class="r">{resumen}</span></h4>')
+                ui.echart(_opciones_horaria(serie, es_monto)).classes("hm-ch w-full")
         ui.html(
             '<div class="hm-pie"><svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#2563EB" stroke-width="2.4"/></svg>'
             'hoy (acumulado) · <svg width="18" height="6"><line x1="0" y1="3" x2="18" y2="3" stroke="#9CA3AF" stroke-width="1.8" '
-            f'stroke-dasharray="4 3"/></svg>ayer · ayer cerró en <b style="color:#111827">{hz["ayer_total"]} u</b></div>')
+            'stroke-dasharray="4 3"/></svg>ayer</div>')
 
 
 def _ultimas_ventas(d: Dict[str, Any], puede: Callable[[str], bool], navegar: Optional[Callable[[str], Any]]) -> None:
@@ -257,6 +283,15 @@ def _ultimas_ventas(d: Dict[str, Any], puede: Callable[[str], bool], navegar: Op
         ui.html(f'<div class="hm-uv">{filas}</div>').style("display:contents")
 
 
+def _barra(b: Optional[Dict[str, int]]) -> str:
+    """Barra horizontal de 9 px con 3 tramos proporcionales (más caras / iguales / más baratas); '' si no hay."""
+    if not b:
+        return ""
+    tramos = "".join(f'<div style="flex:{b[k]} 1 0;background:{c}"></div>'
+                     for k, c in (("mas", "#F59E0B"), ("igual", "#9CA3AF"), ("menos", "#16A34A")) if b.get(k))
+    return f'<div class="hm-bar">{tramos}</div>'
+
+
 def _atencion(d: Dict[str, Any], puede: Callable[[str], bool], navegar: Optional[Callable[[str], Any]]) -> None:
     with ui.element("div").classes("hm-b"):
         ui.html("<h4>Necesita tu atención</h4>")
@@ -271,9 +306,13 @@ def _atencion(d: Dict[str, Any], puede: Callable[[str], bool], navegar: Optional
                 with ui.element("div").classes("hm-i" + (" c" if clic else "")) as it:
                     ui.html(
                         f'<div class="d" style="background:{_COL_NIVEL[a["nivel"]]}"></div>'
-                        f'<div class="x"><b>{escape(a["titulo"])}</b><span>{escape(a["detalle"])}</span></div>'
+                        f'<div class="x"><b>{escape(a["titulo"])}</b>{_barra(a.get("barra"))}<span>{escape(a["detalle"])}</span></div>'
                     ).style("display:contents")
-                it.tooltip(f'{a["titulo"]} — {a["detalle"]}' + (f" · {hace}" if hace else ""))
+                if a.get("tip"):
+                    with it:
+                        ui.tooltip(a["tip"] + (f" · {hace}" if hace else "")).style("white-space:pre-line")
+                else:
+                    it.tooltip(f'{a["titulo"]} — {a["detalle"]}' + (f" · {hace}" if hace else ""))
                 if clic:
                     it.on("click", lambda _e, k=dest: navegar(k))
 
