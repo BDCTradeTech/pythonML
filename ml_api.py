@@ -1923,10 +1923,14 @@ def ml_get_orders(
     offset: int = 0,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
+    raise_on_error: bool = False,
 ) -> Dict[str, Any]:
     """Lista órdenes del vendedor. Pagina hasta `limit` (máx 50 por request, ML no acepta más).
     sort=date_desc para órdenes más recientes primero.
-    date_from/date_to: ISO 8601 (ej. 2025-02-01T00:00:00.000-03:00) para filtrar por fecha."""
+    date_from/date_to: ISO 8601 (ej. 2025-02-01T00:00:00.000-03:00) para filtrar por fecha.
+    raise_on_error=True (lo usa el cron home_refresh): si falla la consulta principal (orders/search con seller, la primera
+    de las 4 variantes; las otras son alternativas que suelen dar 404) levanta RuntimeError en vez de devolver una lista
+    vacía que no se distingue de "no hay órdenes". Por defecto (False) el comportamiento es el de siempre."""
     log = logging.getLogger(__name__)
     headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     page_size = 50
@@ -1938,6 +1942,7 @@ def ml_get_orders(
 
     all_flat: List[Dict[str, Any]] = []
     seen_ids: set = set()
+    fallo_principal: List[str] = []  # motivo si falló la consulta principal (primera variante)
 
     def _flatten_raw(raw_list: list) -> list:
         out = []
@@ -1953,18 +1958,20 @@ def ml_get_orders(
                 out.append(r)
         return out
 
-    for url, extra in [
+    for idx_var, (url, extra) in enumerate([
         ("https://api.mercadolibre.com/orders/search", {"seller": seller_id}),
         ("https://api.mercadolibre.com/orders/search", {"seller": seller_id, "caller.id": seller_id}),
         ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id}),
         ("https://api.mercadolibre.com/marketplace/orders/search", {"seller.id": seller_id, "caller.id": seller_id}),
-    ]:
+    ]):
         off = offset
         while len(all_flat) < limit and off <= ORDERS_MAX_OFFSET:
             params: Dict[str, Any] = {**extra, **date_params, "limit": page_size, "offset": off, "sort": "date_desc"}
             try:
                 resp = get_ml_session().get(url, params=params, headers=headers, timeout=25)
                 if not resp.ok:
+                    if idx_var == 0:
+                        fallo_principal.append(f"HTTP {resp.status_code} en orders/search (offset {off})")
                     if off == offset:
                         try:
                             err_body = resp.json()
@@ -2004,11 +2011,16 @@ def ml_get_orders(
                 if len(raw) < page_size:
                     break
             except Exception as ex:
+                if idx_var == 0:
+                    fallo_principal.append(f"{type(ex).__name__} en orders/search: {ex}")
                 log.debug("ML orders %s: %s", url.split("/")[-1], ex)
                 break
 
         if len(all_flat) >= limit:
             break
+
+    if raise_on_error and fallo_principal:
+        raise RuntimeError("ml_get_orders: " + fallo_principal[0])
 
     if all_flat:
         faltan_items = [o for o in all_flat[:limit] if not (o.get("order_items") or o.get("items")) and o.get("id")]
@@ -2061,15 +2073,17 @@ def ml_get_shipments_today(access_token: str, shipping_ids: list) -> Dict[str, i
     return {"flex": flex_count, "me": me_count}
 
 
-def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
+def ml_get_pending_labels(access_token: str, seller_id: str, max_age_minutes: int = 15, raise_on_error: bool = False) -> Dict[str, int]:
     """Etiquetas pendientes de imprimir (ready_to_ship + ready_to_print).
     Rango según día de semana Argentina (UTC-3):
       Domingo: vie+sab+dom | Lunes: vie+sab+dom+lun | resto: ayer+hoy
-    Retorna {"total": N, "flex": N, "correo": N}."""
+    Retorna {"total": N, "flex": N, "correo": N}. max_age_minutes: vigencia del cache en DB (0 = siempre consulta a ML).
+    raise_on_error=True (cron home_refresh): si falla orders/search o algún GET /shipments levanta RuntimeError y NO guarda el
+    cache, en vez de devolver un conteo parcial/0 que no se distingue de la realidad. Por defecto (False) todo igual que siempre."""
     if not access_token or not seller_id:
         return {"total": 0, "flex": 0, "correo": 0}
     from db import get_cached, set_cached
-    cached = get_cached(f"cache_pending_labels_{seller_id}", max_age_minutes=15)
+    cached = get_cached(f"cache_pending_labels_{seller_id}", max_age_minutes=max_age_minutes)
     if cached is not None:
         return cached
     tz_arg = timezone(timedelta(hours=-3))
@@ -2088,6 +2102,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
     ship_ids: List[str] = []
     offset = 0
     stop = False
+    errores: List[str] = []
     while not stop:
         try:
             r = get_ml_session().get(
@@ -2097,6 +2112,7 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
                 headers=headers, timeout=15,
             )
             if r.status_code != 200:
+                errores.append(f"orders/search HTTP {r.status_code}")
                 break
             data = r.json()
             results = data.get("results", [])
@@ -2115,8 +2131,11 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
             offset += 50
             if offset >= total_paging:
                 break
-        except Exception:
+        except Exception as ex:
+            errores.append(f"orders/search {type(ex).__name__}: {ex}")
             break
+    if raise_on_error and errores:
+        raise RuntimeError("ml_get_pending_labels: " + errores[0])
     unique_ids = list(dict.fromkeys(ship_ids))  # dedup preservando orden
 
     def _fetch_shipment(sid: str):
@@ -2133,11 +2152,13 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
 
     flex = 0
     correo = 0
+    sin_dato = 0
     with ThreadPoolExecutor(max_workers=20) as executor:
         futures = {executor.submit(_fetch_shipment, sid): sid for sid in unique_ids}
         for future in as_completed(futures):
             sd = future.result()
             if sd is None:
+                sin_dato += 1
                 continue
             if (str(sd.get("status") or "") == "ready_to_ship"
                     and "ready_to_print" in str(sd.get("substatus") or "")):
@@ -2145,6 +2166,8 @@ def ml_get_pending_labels(access_token: str, seller_id: str) -> Dict[str, int]:
                     flex += 1
                 else:
                     correo += 1
+    if raise_on_error and sin_dato:
+        raise RuntimeError(f"ml_get_pending_labels: {sin_dato} de {len(unique_ids)} envíos sin respuesta de ML")
     resultado = {"total": flex + correo, "flex": flex, "correo": correo}
     set_cached(f"cache_pending_labels_{seller_id}", resultado)
     return resultado
@@ -2316,8 +2339,11 @@ def ml_get_shipping_preferences(access_token: str, seller_id: str) -> Optional[D
     return None
 
 
-def ml_get_orders_incremental(access_token: str, seller_id: str, user_id: int) -> Dict[str, Any]:
-    """Fetch incremental usando cache en DB. Primera vez: fetch completo (~23s). Subsiguiente: solo nuevas."""
+def ml_get_orders_incremental(access_token: str, seller_id: str, user_id: int, devolver_cache: bool = True,
+                              raise_on_error: bool = False) -> Dict[str, Any]:
+    """Fetch incremental usando cache en DB. Primera vez: fetch completo (~23s). Subsiguiente: solo nuevas.
+    devolver_cache=False solo actualiza el cache (lo usa el cron home_refresh) y no relee las ~14k ordenes: devuelve {"results": []}.
+    raise_on_error=True: si ML falla levanta RuntimeError antes de escribir nada en el cache (ver ml_get_orders)."""
     from db import get_orders_cache, get_orders_cache_max_date, upsert_orders_cache
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
 
@@ -2332,18 +2358,20 @@ def ml_get_orders_incremental(access_token: str, seller_id: str, user_id: int) -
         dt_from -= _td(days=1)
         date_from_str = dt_from.strftime("%Y-%m-%dT%H:%M:%S.000-03:00")
         log.warning(f"[ORDERS_CACHE] incremental desde {date_from_str}")
-        new_data = ml_get_orders(access_token, seller_id, limit=500, date_from=date_from_str)
+        new_data = ml_get_orders(access_token, seller_id, limit=500, date_from=date_from_str, raise_on_error=raise_on_error)
         new_results = new_data.get("results") or []
         if new_results:
             upsert_orders_cache(user_id, new_results)
             log.warning(f"[ORDERS_CACHE] upserted {len(new_results)} nuevas")
     else:
         log.warning("[ORDERS_CACHE] primera carga — fetch completo")
-        all_data = ml_get_orders(access_token, seller_id, limit=10000)
+        all_data = ml_get_orders(access_token, seller_id, limit=10000, raise_on_error=raise_on_error)
         all_results = all_data.get("results") or []
         upsert_orders_cache(user_id, all_results)
         log.warning(f"[ORDERS_CACHE] cacheadas {len(all_results)} órdenes")
 
+    if not devolver_cache:
+        return {"results": []}
     return {"results": get_orders_cache(user_id)}
 
 

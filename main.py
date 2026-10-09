@@ -161,7 +161,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.10.09.02"
+VERSION = "3.26.10.09.03"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -629,11 +629,15 @@ def show_main_layout(container) -> None:
         # Siempre arrancar en Home
         tab_inicial = "Home"
 
+        home_refrescar = [lambda: None]  # lo completa build_tab_home_welcome; se llama al volver a la Home
+
         def _go(lbl: str):
             def f():
                 tab_panels.value = tab_map[lbl]
                 app.storage.user["last_tab"] = lbl
                 _lazy_load(lbl)
+                if lbl == "Home":
+                    home_refrescar[0]()
             return f
 
         def navigate_to(lbl: str) -> None:
@@ -981,7 +985,17 @@ def show_main_layout(container) -> None:
         with tab_panels:
             with ui.tab_panel(tab_home):
                 home_welcome_container = ui.column().classes("w-full")
-            build_tab_home_welcome(home_welcome_container)
+            _key_to_label = {v: k for k, v in label_to_key.items()}
+            _key_to_label.update({"publicidad": "Publicidad", "tn_diferencias": "Diferencias"})
+
+            def _navegar_home(key: str) -> None:
+                """Accesos y alertas de la Home: lleva a la pestaña de ese tab_key (si existe)."""
+                lbl = _key_to_label.get(key)
+                if lbl in tab_map and lbl != "Home":
+                    navigate_to(lbl)
+
+            home_refrescar[0] = build_tab_home_welcome(
+                home_welcome_container, navegar=_navegar_home, activa=lambda: tab_panels.value is tab_home)
             with ui.tab_panel(tab_estadisticas):
                 estadisticas_container = ui.column().classes("w-full")
 

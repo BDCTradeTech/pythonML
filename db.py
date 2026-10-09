@@ -3510,14 +3510,21 @@ def init_preguntas_resp_schema() -> None:
         conn.close()
 
 
-def get_orders_cache(user_id: int) -> List[Dict]:
+def get_orders_cache(user_id: int, desde: Optional[str] = None) -> List[Dict]:
+    """Órdenes cacheadas del usuario. desde (YYYY-MM-DD): solo las de date_created >= desde (la Home no necesita las ~14k)."""
     import json as _json
     conn = get_connection()
     try:
-        rows = conn.execute(
-            "SELECT * FROM ml_orders_cache WHERE user_id = ? ORDER BY date_created DESC",
-            (user_id,),
-        ).fetchall()
+        if desde:
+            rows = conn.execute(
+                "SELECT * FROM ml_orders_cache WHERE user_id = ? AND date_created >= ? ORDER BY date_created DESC",
+                (user_id, desde),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM ml_orders_cache WHERE user_id = ? ORDER BY date_created DESC",
+                (user_id,),
+            ).fetchall()
         result = []
         for r in rows:
             order = dict(r)
