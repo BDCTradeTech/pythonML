@@ -10,7 +10,7 @@ import re
 import html as _html
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date as _date, datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from nicegui import app, background_tasks, run, ui
@@ -986,6 +986,70 @@ def _pastilla_pct(valores: List[float], i: int) -> str:
     return f"{{pos|▲ {txt}}}" if pct >= 0 else f"{{neg|▼ {txt}}}"
 
 
+# Fechas fuertes de venta de electrónica en ML que se marcan arriba de las barras de FACTURACIÓN MENSUAL.
+# mes -> (emoji, nombre completo, nombre corto para la leyenda). Solo estos 6.
+EVENTOS_COMERCIALES = {
+    5: ("🔥", "Hot Sale", "Hot Sale"),
+    6: ("👔", "Día del Padre", "Día del Padre"),
+    8: ("🧸", "Día de las Infancias", "Infancias"),
+    10: ("💐", "Día de la Madre", "Día de la Madre"),
+    11: ("🛒", "CyberMonday + Black Friday", "Cyber + Black Friday"),
+    12: ("🎄", "Navidad", "Navidad"),
+}
+# Hot Sale y CyberMonday cambian cada año: se cargan acá. {año: {evento: (día desde, día hasta, mes)}}; Black Friday: (día, mes).
+# Un año que no esté: el tooltip muestra solo el nombre del evento, sin fecha.
+FECHAS_EVENTOS_POR_ANIO = {
+    2025: {"hot_sale": (12, 14, 5), "cyber": (3, 5, 11), "black_friday": (28, 11)},
+    2026: {"hot_sale": (11, 13, 5), "cyber": (2, 4, 11), "black_friday": (27, 11)},
+}
+
+
+def _tercer_domingo(anio: int, mes: int) -> _date:
+    primero = _date(anio, mes, 1)
+    return primero + timedelta(days=(6 - primero.weekday()) % 7 + 14)
+
+
+def _evento_mes(mes: int, anio: int) -> Optional[Tuple[str, str, str]]:
+    """(emoji, texto del tooltip, nombre corto) del evento comercial del mes/año, o None si ese mes no tiene."""
+    ev = EVENTOS_COMERCIALES.get(mes)
+    if not ev:
+        return None
+    emoji, nombre, corto = ev
+    f = FECHAS_EVENTOS_POR_ANIO.get(anio) or {}
+    if mes == 5 and "hot_sale" in f:
+        d0, d1, m = f["hot_sale"]
+        return emoji, f"{nombre} · {d0}–{d1}/{m}/{anio}", corto
+    if mes == 11 and "cyber" in f and "black_friday" in f:
+        d0, d1, m = f["cyber"]
+        bd, bm = f["black_friday"]
+        return emoji, f"CyberMonday {d0}–{d1}/{m} · Black Friday {bd}/{bm}", corto
+    if mes in (6, 8, 10):
+        d = _tercer_domingo(anio, mes)
+        return emoji, f"{nombre} · {d.day}/{d.month}/{d.year}", corto
+    if mes == 12:
+        return emoji, f"{nombre} · 25/12/{anio}", corto
+    return emoji, nombre, corto  # Hot Sale / Cyber de un año que no está en FECHAS_EVENTOS_POR_ANIO
+
+
+def _leyenda_eventos(today_local, n_meses: int = 12) -> str:
+    """Leyenda de una línea con los eventos de los meses que se ven en el gráfico (en el orden de las barras), '' si no hay."""
+    n_meses = max(1, min(12, int(n_meses)))
+    y, m = today_local.year, today_local.month
+    meses = []
+    for _ in range(n_meses):
+        meses.append((y, m))
+        m -= 1
+        if m == 0:
+            y, m = y - 1, 12
+    meses.reverse()
+    partes = []
+    for anio, mes in meses:
+        ev = _evento_mes(mes, anio)
+        if ev:
+            partes.append(f"{ev[0]} {_html.escape(ev[2])}")
+    return "&nbsp;&nbsp;".join(partes)
+
+
 # Una barra más baja que esta fracción del eje Y no tiene lugar para el texto de unidades adentro:
 # las unidades van arriba, como segunda línea sobre el label de $.
 _FRACCION_BARRA_BAJA = 0.25
@@ -1040,6 +1104,20 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
     promedio_txt = corto(promedio) if any(v > 0 for v in cerrados) else None
     # Eje Y: la barra más alta (contando el estimado) llega cerca del techo, con lugar para su label
     y_max = max(efectivos[-n_meses:] + [promedio, 1.0]) * 1.15
+    # Eventos comerciales de los meses que se ven: circulito con emoji arriba del label de cada barra. La leyenda (HTML, abajo)
+    # sale del espacio del gráfico: se reserva debajo del eje (20 px en una línea, 32 px en celular, donde puede ir en 2 líneas).
+    base0 = len(keys) - n_meses
+    eventos = {i: ev for i in range(base0, len(keys)) for ev in [_evento_mes(int(keys[i][5:7]), int(keys[i][:4]))] if ev}
+    reserva_ley = (20 if n_meses >= 12 else 32) if eventos else 0
+    grid_bottom = 40 + reserva_ley
+    # Lugar para el circulito: 5 (distancia del label) + 24 (label de 2 líneas, el caso más alto) + 2 + 20 de circulito + 2 de aire,
+    # menos los 30 px de margen superior del grid. Con el alto mínimo del gráfico (200 px) la zona de barras mide 200 - 30 - grid_bottom.
+    alto_barras = 200 - 30 - grid_bottom
+    falta_px = 5 + 24 + 2 + 20 + 2 - 30
+    for i in eventos:
+        if alto_barras > falta_px:
+            y_max = max(y_max, efectivos[i] / (1 - falta_px / alto_barras))
+    lineas_label: Dict[int, int] = {}
     # Poca muestra (hasta el día 7): la parte estimada baja a ~0.45 de opacidad. Se hace con alpha en
     # relleno y contorno (no con itemStyle.opacity) para que el texto siga legible.
     tenue_fm = {"color": "rgba(55,138,221,0.07)", "borderColor": "rgba(55,138,221,0.45)"} if dias_t <= 7 else None
@@ -1068,6 +1146,7 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                 item_est["itemStyle"] = dict(tenue_fm)
             est_data.append(item_est)
             tope_fmt = f"{{m|{corto(est)} est.}}\n{{d|{dias_t}/{dias_m} días}}"
+            lineas_label[i] = 2
         else:
             tip = (f"{titulo_mes}<br/>Facturado: {completo(reales[i])}"
                    f"<br/>Unidades: {fmt_n(unidades[i])}<br/>Ticket prom.: {completo(ticket)}")
@@ -1076,6 +1155,7 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                 # barra baja: unidades arriba (gris oscuro) y $ debajo, sin superponerse
                 real_data.append({"value": real, "label": {"show": False}, "tooltip": {"formatter": tip}})
                 tope_fmt = f"{{u|{u_txt}}}\n{{m|{corto(reales[i])}}}"
+                lineas_label[i] = 2
             else:
                 real_data.append({
                     "value": real, "tooltip": {"formatter": tip},
@@ -1083,15 +1163,25 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                               "fontSize": 10, "formatter": u_txt},
                 })
                 tope_fmt = f"{{m|{corto(reales[i])}}}"
+                lineas_label[i] = 1
             est_data.append({"value": 0, "label": {"show": False}, "tooltip": {"show": False}})
         # el label de $ (y, si corresponde, de unidades) va en una serie auxiliar invisible, así
         # una misma barra puede llevar el texto de arriba y el de adentro
         tope_data.append({"value": round(efectivos[i], 0), "label": {"show": True, "formatter": tope_fmt}})
 
+    # Circulitos de eventos: serie de puntos invisible al hover salvo el círculo, ubicados sobre el label de cada barra.
+    ev_data = []
+    for i, (emoji, tip_ev, _corto) in eventos.items():
+        ev_data.append({
+            "value": [i - base0, round(efectivos[i], 0)],
+            "symbolOffset": [0, -(5 + lineas_label.get(i, 1) * 12 + 2 + 10)],
+            "label": {"show": True, "position": "inside", "formatter": emoji},
+            "tooltip": {"formatter": tip_ev},
+        })
     pastilla = {"padding": [1, 5, 1, 5], "fontSize": 9, "fontWeight": "bold", "borderRadius": 8}
     opciones = {
         "backgroundColor": "transparent",
-        "grid": {"left": 5, "right": 16, "top": 30, "bottom": 40, "containLabel": False},
+        "grid": {"left": 5, "right": 16, "top": 30, "bottom": grid_bottom, "containLabel": False},
         "tooltip": {"trigger": "item"},
         "xAxis": {
             "type": "category", "data": labels, "axisTick": {"show": False},
@@ -1133,6 +1223,13 @@ def _facturacion_mensual_options(por_mes: Dict[str, Any], today_local, ventas_me
                              "d": {"fontSize": 8, "color": "#d4a24c", "align": "center"}},
                 },
                 "data": tope_data,
+            },
+            {
+                "name": "eventos", "type": "scatter", "z": 6, "symbol": "circle", "symbolSize": 20,
+                "itemStyle": {"color": "#FEF3C7", "borderColor": "#F59E0B", "borderWidth": 1},
+                "label": {"show": True, "position": "inside", "fontSize": 11},
+                "emphasis": {"scale": False},
+                "data": ev_data,
             },
         ],
     }
@@ -1556,15 +1653,25 @@ def _pintar_home_inline(
                                 ui.label("FACTURACIÓN MENSUAL").style(_LBL)
                                 lbl_prom = ui.label("").style("font-size:11px;color:#9ca3af;font-weight:400")
                             pill_ars, pill_usd, _activar_fm = _pills_moneda()
-                        chart_fm = ui.echart(chart_options).classes("w-full").style("flex:1;min-height:200px;height:auto")
+                        # La leyenda de eventos va dentro del área del gráfico (superpuesta abajo, con su lugar reservado en el grid):
+                        # el alto de la tarjeta es el de siempre. En celular (6 meses) puede ir en 2 líneas y el gráfico gana 12 px.
+                        with ui.element("div").style("position:relative;flex:1;display:flex;flex-direction:column"):
+                            chart_fm = ui.echart(chart_options).classes("w-full").style("flex:1;min-height:200px;height:auto")
+                            ley_fm = ui.html("")
 
-                        def _redibujar_fm(_chart=chart_fm, _lbl=lbl_prom) -> None:
+                        def _redibujar_fm(_chart=chart_fm, _lbl=lbl_prom, _ley=ley_fm) -> None:
                             moneda = estado_fm["moneda"]
+                            n_vis = 6 if estado_fm["angosto"] else 12
                             opciones, prom = _facturacion_mensual_options(
-                                por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card,
-                                6 if estado_fm["angosto"] else 12)
+                                por_mes, today_local, ventas_mes_actual_monto, moneda, dolar_card, n_vis)
                             _chart.options.clear()
                             _chart.options.update(opciones)
+                            texto_ley = _leyenda_eventos(today_local, n_vis)
+                            _ley.set_content(texto_ley)
+                            _ley.style(replace="position:absolute;left:14px;right:14px;bottom:3px;font-size:10px;line-height:13px;"
+                                       "color:#6B7280;pointer-events:none;"
+                                       + ("white-space:normal;" if estado_fm["angosto"] else "white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"))
+                            _chart.style(replace=f"flex:1;min-height:{212 if (estado_fm['angosto'] and texto_ley) else 200}px;height:auto")
                             _chart.update()
                             _lbl.set_text(f"(prom. {prom})" if prom else "")
                             _lbl.set_visibility(bool(prom))
