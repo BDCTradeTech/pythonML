@@ -188,6 +188,31 @@ _JS_PESOS_EJE = ("v => v >= 1e6 ? '$' + (v / 1e6).toFixed(v % 1e6 ? 1 : 0).repla
                  "(v >= 1e3 ? '$' + Math.round(v / 1e3) + 'k' : '$' + v)")
 
 
+_X_SIN_LUGAR = 20.5  # desde esta hora el texto de "ayer a esta hora" no entra a la derecha del punto: va a la izquierda
+
+
+def _etiqueta_ahora(texto: str, hoy: float, ayer: float, color: str) -> tuple:
+    """(formatter, rich) de la etiqueta del punto "ahora" de hoy: "56 u ahora (+65%)". El % es hoy/ayer a esta hora - 1 (valores
+    exactos del punto), redondeado a entero: verde si > 0, rojo si < 0, gris si 0. Sin paréntesis si ayer a esta hora es 0."""
+    base = {"fontSize": 12, "fontWeight": 600}
+    rich = {"t": {**base, "color": color}}
+    if not ayer:
+        return "{t|" + texto + "}", rich
+    pct = int(round((hoy / ayer - 1) * 100))
+    rich["p"] = {**base, "color": "#16A34A" if pct > 0 else ("#DC2626" if pct < 0 else "#6B7280")}
+    return "{t|" + texto + " (}{p|" + (f"{pct:+d}%" if pct else "0%") + "}{t|)}", rich
+
+
+def _etiqueta_ayer(valor: str, x_ahora: float) -> Dict[str, Any]:
+    """Etiqueta "<valor> ayer a esta hora" del punto gris de ayer: a la derecha del punto y un poco más abajo (ahí la línea
+    punteada sube), con fondo blanco para que ninguna línea la cruce. Con "ahora" cerca de las 24 h va a la izquierda, abajo."""
+    derecha = x_ahora <= _X_SIN_LUGAR
+    return {"show": True, "position": "right" if derecha else "left", "offset": [6, 14] if derecha else [-6, 14],
+            "formatter": "{b|" + valor + "} ayer a esta hora",
+            "rich": {"b": {"fontSize": 12, "fontWeight": "bold", "color": "#4B5563"}},
+            "color": "#4B5563", "fontSize": 12, "backgroundColor": "#FFFFFF", "padding": [2, 4], "borderRadius": 4}
+
+
 def _opciones_horaria(hz: Dict[str, Any], monto: bool = False) -> Dict[str, Any]:
     """Opciones de un echart de Ventas por hora, con eje X continuo en horas (0 a 24): ayer (gris punteada, 24 h) y hoy (hasta la
     hora actual; azul con área celeste en UNIDADES, verde con área #DCFCE7 en FACTURACIÓN). Los dos tienen un punto en x = hora
@@ -199,24 +224,23 @@ def _opciones_horaria(hz: Dict[str, Any], monto: bool = False) -> Dict[str, Any]
     color, area = ("#16A34A", "#DCFCE7") if monto else ("#2563EB", "#DBEAFE")
     ah = hz["ahora"]
     x_ahora, n, m = ah["x"], ah["hoy"], ah["ayer"]
-    pos_n, pos_m = ("top", "bottom") if n >= m else ("bottom", "top")
+    pos_n = "top" if n >= m else "bottom"
     hoy_en = {x: v for x, v in hz["hoy"]}
     tips = []
     for x, v in hz["ayer"]:  # un texto por punto de la serie de ayer (la que tiene todos los x)
         h_txt = ah["hhmm"] if x == x_ahora else (f"{int(x) - 1} h" if x else "0:00")
         t_hoy = f"hoy {fmt(hoy_en[x])}{sufijo} · " if x in hoy_en else ""
         tips.append(f"{h_txt} · {t_hoy}ayer {fmt(v)}{sufijo}")
+    etq_hoy, rich_hoy = _etiqueta_ahora(f"{fmt(n)}{sufijo} ahora", n, m, color)
     datos_hoy: List[Any] = [list(p) for p in hz["hoy"]]
     datos_hoy[-1] = {"value": [x_ahora, n], "symbol": "circle", "symbolSize": 9,
                      "itemStyle": {"color": color, "borderColor": "#fff", "borderWidth": 2},
-                     "label": {"show": True, "position": pos_n, "formatter": f"{fmt(n)}{sufijo} ahora", "color": color,
-                               "fontWeight": 600, "fontSize": 12}}
+                     "label": {"show": True, "position": pos_n, "formatter": etq_hoy, "rich": rich_hoy}}
     datos_ayer: List[Any] = [list(p) for p in hz["ayer"]]
     k = next(i for i, p in enumerate(hz["ayer"]) if p[0] == x_ahora)
     datos_ayer[k] = {"value": [x_ahora, m], "symbol": "circle", "symbolSize": 8,
                      "itemStyle": {"color": "#6B7280", "borderColor": "#fff", "borderWidth": 2},
-                     "label": {"show": True, "position": pos_m, "formatter": f"{fmt(m)}{sufijo} ayer a esta hora", "color": "#6B7280",
-                               "fontSize": 11}}
+                     "label": _etiqueta_ayer(f"{fmt(m)}{sufijo}", x_ahora)}
     eje_y: Dict[str, Any] = {"type": "value", "axisLabel": {"color": "#9CA3AF", "fontSize": 11},
                              "splitLine": {"lineStyle": {"color": "#F3F4F6"}}}
     if monto:
