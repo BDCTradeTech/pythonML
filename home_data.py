@@ -118,6 +118,117 @@ def _ventas_hoy_mes(ordenes: List[Dict[str, Any]], user_id: int, ahora: datetime
     )
 
 
+def _serie_horaria(ordenes: List[Dict[str, Any]], ahora: datetime, u_hoy: int, u_ayer_ahora: int) -> Dict[str, Any]:
+    """Acumulado de unidades por hora ART de hoy y de ayer sobre un eje X continuo en horas (0 a 24), con el criterio de
+    sales_core. Cada punto cerrado es el acumulado al CIERRE de la hora (x=1 -> hasta 00:59 ... x=24 -> todo el día).
+    Hoy: puntos de las horas ya cerradas + un último punto en x = hora actual fraccional (11:36 -> 11,6) con u_hoy.
+    Ayer: las 24 horas + un punto en ese mismo x con u_ayer_ahora. u_hoy / u_ayer_ahora son los de la tarjeta VENTAS HOY
+    (una sola fuente); así "ahora" cae sobre las dos líneas. Puntos = [x, unidades]."""
+    hoy, ayer = ahora.date(), ahora.date() - timedelta(days=1)
+    por_h_hoy, por_h_ayer = [0] * 24, [0] * 24
+    for o in ordenes:
+        if not es_venta(o):
+            continue
+        f = fecha_venta(o)
+        if f != hoy and f != ayer:
+            continue
+        d = _dt_art(o)
+        if d is None:
+            continue
+        (por_h_hoy if f == hoy else por_h_ayer)[d.hour] += unidades_venta(o)
+    hora = ahora.hour
+    x_ahora = round(hora + (ahora.minute + ahora.second / 60) / 60, 4)
+    pts_hoy: List[List[float]] = [[0, 0]]
+    pts_ayer: List[List[float]] = [[0, 0]]
+    a = b = 0
+    for h in range(24):
+        a += por_h_hoy[h]
+        b += por_h_ayer[h]
+        if h == hora:  # el punto "ahora" va antes del cierre de esta hora (o lo reemplaza si son las HH:00 en punto)
+            if pts_ayer[-1][0] == x_ahora:
+                pts_ayer[-1][1] = u_ayer_ahora
+            else:
+                pts_ayer.append([x_ahora, u_ayer_ahora])
+        if h < hora:
+            pts_hoy.append([h + 1, a])
+        pts_ayer.append([h + 1, b])
+    if pts_hoy[-1][0] == x_ahora:
+        pts_hoy[-1][1] = u_hoy
+    else:
+        pts_hoy.append([x_ahora, u_hoy])
+    return {"hora": hora, "hoy": pts_hoy, "ayer": pts_ayer, "ayer_total": b,
+            "ahora": {"x": x_ahora, "hoy": u_hoy, "ayer": u_ayer_ahora, "hhmm": ahora.strftime("%H:%M")}}
+
+
+def _titulos_ventas(user_id: int, ordenes: List[Dict[str, Any]], elegidas: List[Dict[str, Any]]) -> Dict[str, str]:
+    """{item_id: título a mostrar} para los ítems de las órdenes elegidas, sin llamar a ML. Mismo criterio que Top Ventas de
+    Estadísticas: si el ítem es una publicación de catálogo se muestra el título de NUESTRA publicación propia (no catálogo)
+    del mismo SKU (gold_special primero); si no hay, el título de la orden cortado a 60. Qué es catálogo/propia sale del
+    último snapshot de Salud; los títulos, de las órdenes cacheadas (la más nueva de cada ítem)."""
+    from tabs.estadisticas import _cortar_titulo
+    titulo_orden: Dict[str, str] = {}
+    for o in ordenes:  # vienen de la más nueva a la más vieja: gana la primera
+        for it in _it(o):
+            obj = it.get("item") or it
+            iid, t = str(obj.get("id") or ""), str(obj.get("title") or "").strip()
+            if iid and t and iid not in titulo_orden:
+                titulo_orden[iid] = t
+    ids: Dict[str, str] = {}
+    for o in elegidas:
+        for it in _it(o):
+            obj = it.get("item") or it
+            if obj.get("id"):
+                ids[str(obj["id"])] = _sku_de(it)
+    if not ids:
+        return {}
+    conn = get_connection()
+    try:
+        fecha = conn.execute("SELECT MAX(snapshot_date) FROM salud_item_snapshots WHERE user_id=?", (user_id,)).fetchone()[0]
+        filas = conn.execute(
+            "SELECT item_id, UPPER(TRIM(sku)) AS sku, catalog_listing, status, listing_type_id FROM salud_item_snapshots "
+            "WHERE user_id=? AND snapshot_date=?", (user_id, fecha)).fetchall() if fecha else []
+    finally:
+        conn.close()
+    por_item = {r["item_id"]: r for r in filas}
+    propias_de: Dict[str, List[Any]] = {}
+    for r in filas:
+        if r["catalog_listing"] != 1 and r["status"] == "active" and r["sku"] and r["item_id"] in titulo_orden:
+            propias_de.setdefault(r["sku"], []).append(r)
+    out: Dict[str, str] = {}
+    for iid, sku_orden in ids.items():
+        base = titulo_orden.get(iid, "Sin nombre")
+        r = por_item.get(iid)
+        if r is None or r["catalog_listing"] != 1:
+            out[iid] = base  # publicación propia (o sin dato en Salud): título de la orden
+            continue
+        cands = sorted(propias_de.get(r["sku"] or sku_orden, []),
+                       key=lambda c: (0 if str(c["listing_type_id"] or "").lower() == "gold_special" else 1, c["item_id"]))
+        out[iid] = titulo_orden[cands[0]["item_id"]] if cands else _cortar_titulo(base, 60)
+    return out
+
+
+def _ultimas_ventas(user_id: int, ordenes: List[Dict[str, Any]], ahora: datetime, n: int = 8) -> Dict[str, Any]:
+    """Las últimas n órdenes de hoy (de ayer si hoy todavía no hay), de la más nueva a la más vieja."""
+    hoy = ahora.date()
+    ventas = [(o, fecha_venta(o)) for o in ordenes if es_venta(o)]
+    dia = hoy if any(f == hoy for _, f in ventas) else hoy - timedelta(days=1)
+    del_dia = [o for o, f in ventas if f == dia]
+    del_dia.sort(key=lambda o: _dt_art(o) or datetime.min.replace(tzinfo=ART), reverse=True)
+    sel = del_dia[:n]
+    tit = _titulos_ventas(user_id, ordenes, sel)
+    filas = []
+    for o in sel:
+        items = list(_it(o))
+        obj = (items[0].get("item") or items[0]) if items else {}
+        nombre = tit.get(str(obj.get("id") or ""), "Sin nombre")
+        if len(items) > 1:
+            nombre += f" (+{len(items) - 1} más)"
+        d = _dt_art(o)
+        filas.append({"hora": d.strftime("%H:%M") if d else "", "titulo": nombre, "u": unidades_venta(o), "monto": monto_venta(o),
+                      "order_id": str(o.get("order_id") or o.get("id") or "")})
+    return {"dia": "hoy" if dia == hoy else "ayer", "filas": filas}
+
+
 def _alerta_stock(user_id: int, ordenes: List[Dict[str, Any]], hoy: date) -> Optional[Dict[str, Any]]:
     """SKUs con stock para menos de 7 días: productos.stock / (unidades vendidas en los últimos 30 días completos / 30)."""
     d0, d1 = hoy - timedelta(days=30), hoy - timedelta(days=1)
@@ -333,6 +444,16 @@ def cargar_home(user_id: int, ahora: Optional[datetime] = None) -> Dict[str, Any
     t1 = time.perf_counter()
     hoy_d, mes_d = _ventas_hoy_mes(ordenes, user_id, ahora) if usr["tiene_ml"] else ({}, {})
     t["ventas+mes"] = time.perf_counter() - t1
+    t1 = time.perf_counter()
+    horaria, ultimas = None, {"dia": "hoy", "filas": []}
+    if usr["tiene_ml"]:
+        try:
+            horaria = _serie_horaria(ordenes, ahora, hoy_d["u"], hoy_d["u_ayer"])  # los de la tarjeta: una sola fuente
+            ultimas = _ultimas_ventas(user_id, ordenes, ahora)
+        except Exception:
+            import logging
+            logging.exception("[HOME] ventas por hora / últimas ventas fallaron (user_id=%s)", user_id)
+    t["horaria+ultimas"] = time.perf_counter() - t1
 
     alertas: List[Dict[str, Any]] = []
     rep_d, rep_alerta = (None, None)
@@ -365,7 +486,7 @@ def cargar_home(user_id: int, ahora: Optional[datetime] = None) -> Dict[str, Any
                     "detalle": "Sin alertas de stock, pérdidas, publicaciones, crons ni reputación", "destino": None, "ts": None}]
     t["total"] = time.perf_counter() - t0
     return {
-        "ahora": ahora, "usuario": usr, "hoy": hoy_d, "mes": mes_d,
+        "ahora": ahora, "usuario": usr, "hoy": hoy_d, "mes": mes_d, "horaria": horaria, "ultimas": ultimas,
         "envios": snap.get("envios"), "preguntas": snap.get("preguntas"), "ts_ordenes": (snap.get("ordenes") or {}).get("ts"),
         "reputacion": rep_d, "alertas": alertas, "tiempos": t,
     }
