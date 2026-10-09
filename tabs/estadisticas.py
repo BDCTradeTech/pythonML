@@ -332,21 +332,21 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
     fechas = [ayer - timedelta(days=i) for i in range(95, -1, -1)]  # 96 dias completos, del mas viejo al mas nuevo
     ui.add_css(
         ".ac-w{container-type:inline-size;flex:1;min-height:0;display:flex;flex-direction:column}"
-        ".ac-r{flex:1 1 0;min-height:0;display:flex;flex-direction:column;gap:3px;background:#F9FAFB;border:1px solid #F3F4F6;"
-        "border-radius:6px;padding:5px 8px}"
+        ".ac-r{--ach:42px;flex:1 1 0;min-height:0;display:flex;flex-direction:column;gap:2px;background:#F9FAFB;border:1px solid #F3F4F6;"
+        "border-radius:6px;padding:4px 8px}"
         ".ac-f{font-size:9.5px;line-height:12px;color:#374151;white-space:nowrap}.ac-f .fp-l{display:none}"
         ".ac-f .fp-c{display:inline}"
-        ".ac-b{flex:1;min-height:0;display:flex;align-items:center;gap:8px}"
-        ".ac-g{flex:0 0 60px;display:flex;flex-direction:column;align-items:center;text-align:center}"
-        ".ac-c{flex:1;min-width:0;align-self:stretch;display:flex;flex-direction:column}"
-        ".ac-cr{flex:1;min-height:30px;display:flex}"
-        ".ac-cv{position:relative;flex:1;min-width:0}"
-        ".ac-et{position:relative;flex:0 0 46px}"
-        ".ac-t{position:absolute;left:6px;transform:translateY(-50%);font-size:9px;line-height:10px;white-space:nowrap}"
-        ".ac-ax{display:flex;justify-content:space-between;font-size:8px;line-height:9px;color:#9CA3AF;margin-right:46px}"
+        ".ac-b{flex:0 0 auto;display:flex;align-items:center;gap:8px}"
+        ".ac-g{flex:0 0 56px;display:flex;flex-direction:column;align-items:center;text-align:center}"
+        ".ac-c{flex:1;min-width:0;display:flex;flex-direction:column}"
+        ".ac-cr{position:relative;height:var(--ach)}"
+        ".ac-v{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));text-align:center;margin-top:2px}"
+        ".ac-v span{display:block;font-size:8px;line-height:9px;color:#9CA3AF}"
+        ".ac-v b{display:block;font-size:9.5px;line-height:11px;font-weight:700;white-space:nowrap}"
+        "@container (max-width:340px){.ac-v b{font-size:8.5px}}"
         "@container (max-width:300px){.ac-b{flex-direction:column;align-items:stretch}.ac-g{flex:0 0 auto;align-self:center}"
-        ".ac-c{min-height:84px}.ac-cr{min-height:70px}}"
-        "@media (max-width:640px){.ac-w{flex:none}.ac-r{flex:none;min-height:120px}.ac-cr{min-height:70px}"
+        ".ac-c{display:block}.ac-r{--ach:70px}}"
+        "@media (max-width:640px){.ac-w{flex:none}.ac-r{flex:none;--ach:70px}"
         ".ac-f{white-space:normal}.ac-f .fp-l{display:inline}.ac-f .fp-c{display:none}}"
     )
     filas = []
@@ -367,29 +367,30 @@ def _pintar_aceleracion(ventas: Dict[str, int], facturado: Dict[str, float], hoy
             frase = f"<b>{nombre}:</b> Sin ventas en los últimos 90 días"
             graf = ('<div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;'
                     'font-size:10px;color:#9CA3AF">Sin ventas</div>')
-            etiquetas = ""
         else:
             r = round(pct)
             rel = "sobre" if r > 0 else ("debajo de" if r < 0 else "en línea con")
             _p = f'<b style="color:{col}">{pct_txt}</b> {rel}'
             frase = (f'<b>{nombre}:</b> esta semana {fmt_dia(a7)}, {_p} '
                      f'<span class="fp-l">tu promedio de 90 días</span><span class="fp-c">prom. 90 días</span> ({fmt_v(a90)})')
-            svg, y7, yp = _svg_aceleracion(fechas[-90:], m7, a90, fmt_v)
+            svg, y7, _yp = _svg_aceleracion(fechas[-90:], m7, a90, fmt_v)
             graf = (svg + f'<div style="position:absolute;right:0;top:{y7:.1f}%;width:6px;height:6px;border-radius:50%;'
                     'background:#2563EB;transform:translate(50%,-50%);pointer-events:none"></div>')
-            if abs(y7 - yp) < 24:  # etiquetas muy cerca: separarlas verticalmente alrededor del punto medio
-                mid = max(12.0, min(88.0, (y7 + yp) / 2))
-                y7, yp = (mid - 12, mid + 12) if y7 <= yp else (mid + 12, mid - 12)
-            y7, yp = max(6.0, min(94.0, y7)), max(6.0, min(94.0, yp))
-            etiquetas = (f'<div class="ac-t" style="top:{y7:.1f}%;color:#2563EB;font-weight:700">semana</div>'
-                         f'<div class="ac-t" style="top:{yp:.1f}%;color:#6B7280">prom. 90d</div>')
+
+        celdas = []
+        txt90 = fmt_v(a90)
+        for rot, n_d in (("90d", 90), ("60d", 60), ("30d", 30), ("15d", 15), ("7d", 7), ("ayer", 1)):
+            v = sum(serie[-n_d:]) / n_d
+            txt = fmt_v(v) if not (n_d == 1 and v == int(v) and nombre == "Unidades") else str(int(v))
+            c = "#6B7280" if n_d == 90 or fmt_v(v) == txt90 else ("#16A34A" if v > a90 else "#DC2626")
+            ttl = "Vendido ayer" if n_d == 1 else f"Promedio por día de los últimos {n_d} días completos (hasta ayer)"
+            celdas.append(f'<div title="{ttl}"><span>{rot}</span><b style="color:{c}">{txt}</b></div>')
         filas.append(
             '<div class="ac-r">'
             f'<div class="ac-f">{frase}</div>'
-            f'<div class="ac-b"><div class="ac-g" title="{tip}">{_svg_velocimetro(pct, tip)}'
-            f'<div style="font-size:14px;line-height:16px;font-weight:700;color:{col}">{pct_txt}</div></div>'
-            f'<div class="ac-c"><div class="ac-cr"><div class="ac-cv">{graf}</div><div class="ac-et">{etiquetas}</div></div>'
-            '<div class="ac-ax"><span>hace 90 días</span><span>ayer</span></div></div></div></div>'
+            f'<div class="ac-b"><div class="ac-g" title="{tip}">{_svg_velocimetro(pct, tip, 48)}'
+            f'<div style="font-size:13px;line-height:14px;font-weight:700;color:{col}">{pct_txt}</div></div>'
+            f'<div class="ac-c"><div class="ac-cr">{graf}</div><div class="ac-v">{"".join(celdas)}</div></div></div></div>'
         )
     ui.html(
         '<div class="ac-w"><div style="display:flex;flex-direction:column;gap:6px;flex:1;min-height:0">'
@@ -1482,8 +1483,14 @@ def _pintar_home_inline(
                 # Card Aceleración de ventas (reemplaza Ventas por período)
                 with ui.element("div").style(f"flex:1;min-width:300px;{_CARD_NP};overflow:hidden;flex-shrink:0;display:flex;flex-direction:column"):
                     with ui.element("div").style("padding:12px 14px;flex:1;min-height:0;display:flex;flex-direction:column"):
-                        with ui.element("div").style("display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px"):
+                        with ui.element("div").style("display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:0 8px;margin-bottom:6px"):
                             ui.label("ACELERACIÓN DE VENTAS").style(_LBL)
+                            ui.html(
+                                '<span style="display:inline-flex;align-items:center;gap:3px;margin-right:8px">'
+                                '<svg width="14" height="6" viewBox="0 0 14 6"><line x1="0" y1="3" x2="14" y2="3" stroke="#2563EB" stroke-width="1.8"/></svg>semana</span>'
+                                '<span style="display:inline-flex;align-items:center;gap:3px">'
+                                '<svg width="14" height="6" viewBox="0 0 14 6"><line x1="0" y1="3" x2="14" y2="3" stroke="#6B7280" stroke-width="1.2" stroke-dasharray="4 3"/></svg>prom. 90 días</span>'
+                            ).style("font-size:8.5px;color:#6B7280;white-space:nowrap")
                         _pintar_aceleracion(ventas_por_dia, facturacion_por_dia, today_local)
 
                 # Card Facturación Mensual (echart)
