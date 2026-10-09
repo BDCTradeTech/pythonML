@@ -161,7 +161,7 @@ from helpers.activity_logger import log_event
 DB_PATH = Path(__file__).with_name("app.db")
 
 # Versión del sistema: formato 2.aa.mm.dd.hh (aa=año, mm=mes, dd=día, hh=hora 00-23). Ej.: 2.26.04.14.12
-VERSION = "3.26.10.09.05"
+VERSION = "3.26.10.09.06"
 
 # ── Menú de MERCADOLIBRE ─────────────────────────────────────────────────────
 # Estilo del menú: "grouped" (mega-menú por columnas, agrupado por tema) o
@@ -201,6 +201,46 @@ ML_MENU_GROUPS = [
         ("FLEX", "Flex", "flex", "local_shipping", None),
     ]),
 ]
+
+# Resto de los menús de la barra (los que no son MERCADOLIBRE). La Home arma sus accesos con esto + ML_MENU_GROUPS.
+# Cada menú: (nombre, condición de visibilidad, ítems). condición: None | "admin" (solo con permiso admin) | "tiendanube"
+# (solo con credenciales de Tienda Nube). Cada ítem: (etiqueta, tab_key para navegar, tab_key del permiso, icono, default del permiso).
+# OJO: la barra de arriba todavía arma estos menús a mano más abajo (_nav_item); si se agrega o mueve una pestaña, tocar los dos lugares.
+NAV_MENUS = [
+    ("TIENDANUBE", "tiendanube", [
+        ("VINCULACIÓN", "tn_vinculacion", "tn_vinculacion", "sync_alt", True),
+        ("DIFERENCIAS", "tn_diferencias", "tn_diferencias", "price_check", True),
+    ]),
+    ("BDC", None, [
+        ("INVOICES", "compras", "compras", "receipt_long", True),
+        ("STOCK BDC", "stock_bdc", "stock_bdc", "warehouse", True),
+        ("COMPRAS", "compras_lista", "compras_lista", "shopping_cart", True),
+        ("PEDIDOS", "pedidos", "pedidos", "list_alt", True),
+        ("HISTÓRICOS", "historicos", "historicos", "history", True),
+    ]),
+    ("COMEX", None, [
+        ("IMPORTACION", "importacion", "importacion", "flight_takeoff", True),
+        ("GUÍAS", "guias", "guias", "assignment", True),
+        ("TRANSFERENCIAS", "transferencias", "transferencias", "swap_horiz", True),
+        ("PESOS", "pesos", "pesos", "monitor_weight", True),
+        ("COURIERS", "couriers", "couriers", "local_shipping", True),
+    ]),
+    ("IMPUESTOS", None, [
+        ("ARCA", "arca", "arca", "gavel", True),
+        ("GASTOS", "gastos", "gastos", "payments", True),
+    ]),
+    ("CONFIG", None, [
+        ("DATOS", "datos", "datos", "storage", True),
+        ("CONFIGURACIÓN", "configuracion", "configuracion", "settings", True),
+    ]),
+    ("ADMIN", "admin", [
+        ("PERMISOS", "admin", "admin", "admin_panel_settings", False),
+        ("ACTIVIDAD", "actividad", "actividad", "history", False),
+        ("LOG", "log", "admin", "article", False),
+    ]),
+]
+# Menús de la Home en el orden de la barra: MERCADOLIBRE (aplanado desde ML_MENU_GROUPS) y el resto.
+HOME_MENUS = [("MERCADOLIBRE", None, [(et, key, key, ic, True) for _g, its in ML_MENU_GROUPS for et, _lbl, key, ic, _tag in its])] + NAV_MENUS
 
 # ── IA & Server status cache ─────────────────────────────────────────────────
 _IA_CACHE: Dict[str, Dict[str, Any]] = {
@@ -995,7 +1035,8 @@ def show_main_layout(container) -> None:
                     navigate_to(lbl)
 
             home_refrescar[0] = build_tab_home_welcome(
-                home_welcome_container, navegar=_navegar_home, activa=lambda: tab_panels.value is tab_home)
+                home_welcome_container, navegar=_navegar_home, activa=lambda: tab_panels.value is tab_home,
+                menus=HOME_MENUS, tiene_tn=bool(get_tiendanube_credentials(user["id"])))
             with ui.tab_panel(tab_estadisticas):
                 estadisticas_container = ui.column().classes("w-full")
 

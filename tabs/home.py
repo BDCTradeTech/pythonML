@@ -10,37 +10,31 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from html import escape
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from nicegui import app, ui
 
 from db import get_user_tab_permissions
 from home_data import NARANJA, ROJO, VERDE, cargar_home
 from sales_core import ART
-from tabs.constants import TAB_DESCRIPTIONS, TAB_REGISTRY, LABEL_BY_TAB
+from tabs.constants import TAB_DESCRIPTIONS, LABEL_BY_TAB
 
 _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 _MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 _COL_NIVEL = {ROJO: "#DC2626", NARANJA: "#F59E0B", VERDE: "#16A34A"}
-_COL_SECCION = {"Home": "#16A34A", "MercadoLibre": "#2563EB", "BDC": "#7C3AED", "Comex": "#0891B2", "Impuestos": "#D97706",
-                "Config": "#6B7280", "TiendaNube": "#0EA5E9", "Admin": "#DC2626"}
-_ICONOS = {"dashboard": "dashboard", "estadisticas": "bar_chart", "ventas": "receipt_long", "productos": "inventory_2",
-           "salud": "health_and_safety", "descuentos": "percent", "cuotas": "credit_card", "promos": "local_offer",
-           "publicidad": "campaign", "competidores": "compare_arrows", "preguntas": "question_answer", "flex": "two_wheeler",
-           "busqueda": "search", "stock": "warehouse", "balance": "account_balance", "compras": "request_quote",
-           "stock_bdc": "inventory", "compras_lista": "shopping_cart", "pedidos": "local_shipping", "historicos": "history",
-           "importacion": "upload_file", "guias": "flight_land", "transferencias": "swap_horiz", "couriers": "airport_shuttle",
-           "pesos": "currency_exchange", "arca": "gavel", "gastos": "payments", "datos": "storage", "configuracion": "settings",
-           "tn_vinculacion": "link", "tn_diferencias": "difference", "admin": "admin_panel_settings", "actividad": "monitor_heart"}
+# Color del ícono de cada tile según el menú de la barra de arriba al que pertenece.
+_COL_MENU = {"MERCADOLIBRE": "#2563EB", "TIENDANUBE": "#0EA5E9", "BDC": "#7C3AED", "COMEX": "#0891B2",
+             "IMPUESTOS": "#D97706", "CONFIG": "#6B7280", "ADMIN": "#DC2626"}
+_DESC_EXTRA = {"log": "estado y detalle de las corridas de los crons."}  # pestañas sin entrada en TAB_DESCRIPTIONS
 
-# Alturas (px) para entrar sin scroll a 1900x930: ver el cálculo en el reporte. El alto del contenedor es
-# 100vh - _CHROME; el bloque de abajo toma lo que sobra (flex:1) y sus grillas reparten ese alto (filas 1fr), nunca crecen.
-_CHROME = 150
-_FILA_ACCESO_MIN = 44
-_ALTO_GRILLA_ACCESOS = 536  # alto estimado de la grilla de accesos a 930 px de viewport (para elegir 2, 3 o 4 columnas)
+# Accesos agrupados por los menús de la barra. Un grupo de más de _TOPE_FILAS tiles se parte en columnas; los chicos se
+# juntan en una columna con "A · B" de encabezado; siempre _NCOLS columnas del mismo ancho (más solo si no hay otra forma).
+_TOPE_FILAS = 8
+_NCOLS = 5
+_TILE_MAX, _TILE_MIN, _TILE_GAP = 48, 40, 8  # px: el tile mide 48 y baja hasta 40 si falta alto, antes de agregar columnas
 
 _CSS = (
-    ".hm-w{display:flex;flex-direction:column;gap:12px;height:calc(100vh - __CHROME__px);min-height:520px;overflow:hidden}"
+    ".hm-w{display:flex;flex-direction:column;gap:12px;min-height:0;overflow:hidden}"
     ".hm-sal{flex:0 0 auto}.hm-sal b{display:block;font-size:24px;line-height:30px;color:#111827;font-weight:600}"
     ".hm-sal span{display:block;font-size:13px;line-height:18px;color:#6B7280}"
     ".hm-tj{flex:0 0 auto;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}"
@@ -50,31 +44,52 @@ _CSS = (
     ".hm-t .v{font-size:26px;line-height:34px;font-weight:600;color:#111827;white-space:nowrap}"
     ".hm-t .s{font-size:11.5px;line-height:16px;color:#6B7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
     ".hm-t .a{font-size:10.5px;line-height:14px;color:#9CA3AF;min-height:14px}"
-    ".hm-ab{flex:1 1 0;min-height:0;display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:12px}"
+    ".hm-ab{flex:1 1 0;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);grid-template-rows:minmax(0,1fr);gap:12px}"
     ".hm-b{background:#fff;border:1px solid #E0E2E7;border-radius:10px;padding:12px 14px;display:flex;flex-direction:column;"
     "min-height:0;overflow:hidden}"
     ".hm-b h4{margin:0 0 8px;font-size:11px;line-height:14px;color:#6B7280;text-transform:uppercase;letter-spacing:.05em;font-weight:500}"
     ".hm-li{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}"
-    ".hm-i{flex:0 0 auto;display:flex;align-items:center;gap:10px;padding:8px 10px;border:1px solid #F3F4F6;border-radius:8px;"
-    "background:#F9FAFB;min-height:0;overflow:hidden}"
+    ".hm-i{flex:1 1 0;min-height:0;max-height:120px;display:flex;align-items:center;gap:10px;padding:0 10px;border:1px solid #F3F4F6;"
+    "border-radius:8px;background:#F9FAFB;overflow:hidden}"
     ".hm-i.c{cursor:pointer}.hm-i.c:hover{background:#F3F4F6}"
     ".hm-i .d{flex:0 0 10px;height:10px;border-radius:50%}"
     ".hm-i .x{flex:1;min-width:0}.hm-i .x b{display:block;font-size:13px;line-height:18px;color:#111827;font-weight:600;"
     "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
     ".hm-i .x span{display:block;font-size:11.5px;line-height:16px;color:#6B7280;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
     ".hm-i .e{flex:0 0 auto;font-size:10.5px;color:#9CA3AF;white-space:nowrap}.hm-i .g{flex:0 0 auto;font-size:20px;color:#9CA3AF}"
-    ".hm-gr{flex:1;min-height:0;display:grid;grid-template-columns:repeat(var(--n),minmax(0,1fr));grid-auto-rows:minmax(0,1fr);gap:6px}"
-    ".hm-a{display:flex;align-items:center;gap:8px;padding:0 8px;border:1px solid #F3F4F6;border-radius:8px;background:#F9FAFB;"
+    ".hm-cols{flex:1;min-height:0;display:grid;grid-template-columns:repeat(var(--nc),minmax(0,1fr));grid-template-rows:minmax(0,1fr);gap:20px}"
+    ".hm-col{min-width:0;min-height:0;display:flex;flex-direction:column}"
+    ".hm-hd{flex:0 0 auto;height:20px;padding-bottom:5px;margin-bottom:8px;border-bottom:1px solid #E5E7EB;font-size:14px;line-height:20px;"
+    "font-weight:700;color:#2563EB;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    ".hm-hd.v{border-bottom-color:transparent}"
+    ".hm-tl{flex:1;min-height:0;display:grid;grid-template-rows:repeat(var(--rows),minmax(__TMIN__px,__TMAX__px));gap:__TGAP__px;align-content:start}"
+    ".hm-a{display:flex;align-items:center;gap:10px;padding:0 10px;border:1px solid #F3F4F6;border-radius:8px;background:#F9FAFB;"
     "cursor:pointer;min-width:0;min-height:0;overflow:hidden}.hm-a:hover{background:#F3F4F6}"
-    ".hm-a .ic{flex:0 0 28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;color:#fff}"
-    ".hm-a .ic i{font-size:18px}"
-    ".hm-a .x{flex:1;min-width:0}.hm-a .x b{display:block;font-size:12.5px;line-height:16px;color:#111827;font-weight:600;"
-    "white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
-    ".hm-a .x span{display:block;font-size:10.5px;line-height:13px;color:#9CA3AF;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
-    "@media (max-width:640px){.hm-w{height:auto;min-height:0;overflow:visible}.hm-tj{grid-template-columns:repeat(2,minmax(0,1fr))}"
-    ".hm-ab{grid-template-columns:minmax(0,1fr);flex:none}.hm-b{overflow:visible}.hm-gr{grid-template-columns:repeat(2,minmax(0,1fr));"
-    "grid-auto-rows:__FILA__px}.hm-t .v{font-size:22px}}"
-).replace("__CHROME__", str(_CHROME)).replace("__FILA__", str(_FILA_ACCESO_MIN))
+    ".hm-a .ic{flex:0 0 30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:#fff}"
+    ".hm-a .ic i{font-size:20px}"
+    ".hm-a b{flex:1;min-width:0;font-size:17px;line-height:22px;color:#111827;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}"
+    ".hm-mob{display:none}"
+    "@media (max-width:768px){.hm-w{height:auto!important;overflow:visible}.hm-tj{grid-template-columns:repeat(2,minmax(0,1fr))}"
+    ".hm-ab{grid-template-columns:minmax(0,1fr);grid-template-rows:none;flex:none}.hm-b{overflow:visible}.hm-li{flex:none}"
+    ".hm-i{flex:none;min-height:56px}.hm-t .v{font-size:22px}.hm-desk{display:none}.hm-mob{display:block}"
+    ".hm-mg{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));grid-auto-rows:44px;gap:8px;margin-bottom:16px}"
+    ".hm-a b{font-size:14px}}"
+).replace("__TMIN__", str(_TILE_MIN)).replace("__TMAX__", str(_TILE_MAX)).replace("__TGAP__", str(_TILE_GAP))
+
+# Ajusta el alto del contenedor al alto real de la ventana: top real (getBoundingClientRect) hasta el borde inferior - 16 px.
+_JS_FIT = """
+(function(){
+  function fit(){
+    var el=document.querySelector('.hm-w'); if(!el||el.offsetParent===null) return;
+    if(window.innerWidth<=768){ el.style.height='auto'; return; }
+    var top=el.getBoundingClientRect().top;
+    el.style.height=Math.max(420, window.innerHeight-top-16)+'px';
+  }
+  window.__hmFit=fit;
+  if(!window.__hmFitBound){ window.addEventListener('resize', function(){ if(window.__hmFit) window.__hmFit(); }); window.__hmFitBound=true; }
+  fit(); setTimeout(fit,60); setTimeout(fit,300);
+})();
+"""
 
 
 def _require_login() -> Optional[Dict[str, Any]]:
@@ -178,32 +193,85 @@ def _atencion(d: Dict[str, Any], puede: Callable[[str], bool], navegar: Optional
                     it.on("click", lambda _e, k=dest: navegar(k))
 
 
-def _accesos(puede: Callable[[str], bool], navegar: Optional[Callable[[str], Any]]) -> None:
-    items = [(sec, key, lbl) for sec, key, lbl in TAB_REGISTRY if key != "home" and puede(key)]
-    n = len(items)
-    filas2 = -(-n // 2)
-    cols = 2 if filas2 * _FILA_ACCESO_MIN <= _ALTO_GRILLA_ACCESOS else (3 if -(-n // 3) * _FILA_ACCESO_MIN <= _ALTO_GRILLA_ACCESOS else 4)
+def _grupos_visibles(menus: List[Any], perms: Dict[str, bool], tiene_tn: bool) -> List[Any]:
+    """[(menú, [(etiqueta, nav_key, ícono)])] con los mismos criterios de visibilidad que la barra de arriba: permiso por
+    pestaña (get_user_tab_permissions, con el default de cada ítem), TIENDANUBE solo con credenciales y ADMIN solo con permiso admin.
+    Un menú sin pestañas permitidas no aparece."""
+    out = []
+    for nombre, cond, items in menus or []:
+        if (cond == "tiendanube" and not tiene_tn) or (cond == "admin" and not perms.get("admin", False)):
+            continue
+        tiles = [(et, key, ic) for et, key, perm, ic, dflt in items if perms.get(perm, dflt)]
+        if tiles:
+            out.append((nombre, tiles))
+    return out
+
+
+def _armar_columnas(grupos: List[Any]) -> Tuple[List[Dict[str, Any]], int]:
+    """Reparte los grupos en columnas de a lo sumo `tope` tiles (arranca en _TOPE_FILAS y sube solo si hacen falta más de
+    _NCOLS columnas). Un grupo más largo que el tope se parte en partes parejas (las siguientes sin encabezado); los grupos
+    chicos se juntan, en el orden de la barra, en una columna con "A · B" de encabezado. Devuelve (columnas, tope usado):
+    columna = {"head": str, "tiles": [(etiqueta, nav_key, ícono, menú)]}."""
+    tope = _TOPE_FILAS
+    while True:
+        cols: List[Dict[str, Any]] = []
+        for nombre, tiles in grupos:
+            n = -(-len(tiles) // tope)
+            tam = -(-len(tiles) // n)
+            for j in range(n):
+                parte = [(et, k, ic, nombre) for et, k, ic in tiles[j * tam:(j + 1) * tam]]
+                if j == 0 and cols and cols[-1]["abierta"] and len(cols[-1]["tiles"]) + len(parte) <= tope:
+                    cols[-1]["tiles"] += parte
+                    cols[-1]["names"].append(nombre)
+                else:
+                    cols.append({"names": [nombre] if j == 0 else [], "tiles": parte, "abierta": j == 0 and n == 1})
+        if len(cols) <= _NCOLS or tope >= 40:
+            break
+        tope += 1
+    for c in cols:
+        c["head"] = " · ".join(c.pop("names"))
+        c.pop("abierta")
+    return cols, tope
+
+
+def _tile(etiqueta: str, key: str, icono: str, menu: str, navegar: Optional[Callable[[str], Any]]) -> None:
+    nombre = LABEL_BY_TAB.get(key) or etiqueta.capitalize()
+    desc = TAB_DESCRIPTIONS.get(key) or _DESC_EXTRA.get(key, "")
+    with ui.element("div").classes("hm-a") as b:
+        ui.html(f'<div class="ic" style="background:{_COL_MENU.get(menu, "#6B7280")}"><i class="material-icons">{escape(icono)}</i></div>'
+                f'<b>{escape(nombre)}</b>').style("display:contents")
+    if desc:
+        b.tooltip(desc)  # la descripción va solo en el tooltip
+    if navegar:
+        b.on("click", lambda _e, k=key: navegar(k))
+
+
+def _accesos(grupos: List[Any], navegar: Optional[Callable[[str], Any]]) -> None:
+    cols, tope = _armar_columnas(grupos)
+    filas = max((len(c["tiles"]) for c in cols), default=1)
     with ui.element("div").classes("hm-b"):
-        ui.html("<h4>Accesos rápidos</h4>")
-        with ui.element("div").classes("hm-gr").style(f"--n:{cols}"):
-            for sec, key, lbl in items:
-                desc = TAB_DESCRIPTIONS.get(key, "")
-                desc1 = desc.split(". ")[0].split(" -- ")[0].replace("[EXPERIMENTAL, solo lectura] ", "")
-                with ui.element("div").classes("hm-a") as b:
-                    ui.html(
-                        f'<div class="ic" style="background:{_COL_SECCION.get(sec, "#6B7280")}"><i class="material-icons">'
-                        f'{_ICONOS.get(key, "apps")}</i></div><div class="x"><b>{LABEL_BY_TAB.get(key, lbl)}</b>'
-                        f'<span>{desc1}</span></div>').style("display:contents")
-                if desc:
-                    b.tooltip(desc)
-                if navegar:
-                    b.on("click", lambda _e, k=key: navegar(k))
+        ui.html("<h4>Accesos</h4>")
+        with ui.element("div").classes("hm-desk hm-cols").style(f"--nc:{max(_NCOLS, len(cols))};--rows:{filas}"):
+            for c in cols:
+                with ui.element("div").classes("hm-col"):
+                    ui.html(f'<div class="hm-hd{"" if c["head"] else " v"}">{escape(c["head"])}</div>')
+                    with ui.element("div").classes("hm-tl"):
+                        for et, key, ic, menu in c["tiles"]:
+                            _tile(et, key, ic, menu, navegar)
+        with ui.element("div").classes("hm-mob"):  # celular: un grupo debajo del otro, tiles en 2 columnas
+            for nombre, tiles in grupos:
+                ui.html(f'<div class="hm-hd">{escape(nombre)}</div>')
+                with ui.element("div").classes("hm-mg"):
+                    for et, key, ic in tiles:
+                        _tile(et, key, ic, nombre, navegar)
 
 
 def build_tab_home_welcome(container, navegar: Optional[Callable[[str], Any]] = None,
-                           activa: Optional[Callable[[], bool]] = None) -> Callable[[], None]:
+                           activa: Optional[Callable[[], bool]] = None, menus: Optional[List[Any]] = None,
+                           tiene_tn: bool = False) -> Callable[[], None]:
     """Pestaña Home. navegar(tab_key) lleva a una pestaña; activa() dice si la Home está visible (el redibujado de
-    cada 60 s se saltea si no). Devuelve la función de refresco (main la llama al volver a la Home)."""
+    cada 60 s se saltea si no). menus = estructura de los menús de la barra (main.HOME_MENUS); tiene_tn = la cuenta tiene
+    Tienda Nube vinculada. Devuelve la función de refresco (main la llama al volver a la Home)."""
     user = _require_login()
     if not user:
         return lambda: None
@@ -225,9 +293,10 @@ def build_tab_home_welcome(container, navegar: Optional[Callable[[str], Any]] = 
             ui.html(f'<div class="hm-sal"><b>{_saludo(ahora)}, {usr["nombre"] or user.get("username", "")}</b>'
                     f'<span>{_DIAS[ahora.weekday()].capitalize()} {ahora.day} de {_MESES[ahora.month - 1]} de {ahora.year}{tienda}</span></div>')
             _tarjetas(d)
+            ui.timer(0.1, lambda: ui.run_javascript(_JS_FIT), once=True)  # fija el alto real una vez montado el contenedor
             with ui.element("div").classes("hm-ab"):
                 _atencion(d, puede, navegar)
-                _accesos(puede, navegar)
+                _accesos(_grupos_visibles(menus or [], perms, tiene_tn), navegar)
 
     with container:
         _contenido()
